@@ -1,8 +1,7 @@
-use std::fs::File;
-use std::path::Path;
-use std::ffi::CStr;
 use super::io::{Hdf5Writer, get_hdf5_api};
 
+#[cfg(unix)]
+use std::fs::File;
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
 
@@ -115,7 +114,7 @@ impl ScanQueue {
         lock.lock()?;
         
         let result = (|| -> Result<(), String> {
-            if !Path::new(&self.qfile).exists() {
+            if !std::path::Path::new(&self.qfile).exists() {
                 return Ok(());
             }
             let writer = Hdf5Writer::open_or_create(&self.qfile)?;
@@ -154,7 +153,7 @@ pub unsafe extern "C" fn init_scan_queue(qfile_ptr: *const libc::c_char, total_p
     if qfile_ptr.is_null() {
         return std::ptr::null_mut();
     }
-    let qfile_cstr = unsafe { CStr::from_ptr(qfile_ptr) };
+    let qfile_cstr = unsafe { std::ffi::CStr::from_ptr(qfile_ptr) };
     let qfile = qfile_cstr.to_string_lossy().into_owned();
     let queue = Box::new(ScanQueue::new(&qfile, total_points));
     Box::into_raw(queue)

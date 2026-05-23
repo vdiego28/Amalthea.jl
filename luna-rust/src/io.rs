@@ -1,7 +1,12 @@
-use std::ffi::{CString, CStr};
-use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::ffi::CString;
 use num_complex::Complex;
+
+#[cfg(unix)]
+use std::ffi::CStr;
+#[cfg(unix)]
+use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::sync::OnceLock;
 
 // HDF5 Constants
 pub const H5F_ACC_RDONLY: libc::c_uint = 0x0000;
@@ -43,6 +48,7 @@ pub struct Hdf5Api {
     pub h5t_complex: libc::c_long,
 }
 
+#[cfg(unix)]
 fn find_hdf5_lib_path() -> Option<PathBuf> {
     // 1. Check user override environment variable
     if let Ok(val) = std::env::var("LUNA_HDF5_LIB") {
@@ -83,6 +89,7 @@ fn find_hdf5_lib_path() -> Option<PathBuf> {
     None
 }
 
+#[cfg(unix)]
 static HDF5_API: OnceLock<Result<Hdf5Api, String>> = OnceLock::new();
 
 #[allow(non_snake_case)]

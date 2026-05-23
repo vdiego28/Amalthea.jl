@@ -14,7 +14,7 @@ jobs:
           - os: ubuntu-latest
             julia-version: '1'
             group: physics
-          - os: windows-latest
+          - os: windows-2025-vs2026
             julia-version: '1'
             group: physics
           - os: macos-latest
@@ -32,7 +32,7 @@ jobs:
           - os: ubuntu-latest
             julia-version: '1'
             group: rust
-          - os: windows-latest
+          - os: windows-2025-vs2026
             julia-version: '1'
             group: rust
           - os: macos-latest
