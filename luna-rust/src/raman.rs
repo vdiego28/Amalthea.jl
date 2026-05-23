@@ -118,6 +118,20 @@ impl TimeDomainRamanSolver {
     /// Evaluates the total Raman response vector for a time-domain intensity array I
     /// Updates states in-place.
     pub fn solve(&mut self, intensity: &[f64], raman_polarization: &mut [f64]) {
+        #[cfg(target_arch = "x86_64")]
+        if is_x86_feature_detected!("avx2") {
+            return unsafe { self.solve_avx2(intensity, raman_polarization) };
+        }
+        self.solve_scalar(intensity, raman_polarization);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    unsafe fn solve_avx2(&mut self, intensity: &[f64], raman_polarization: &mut [f64]) {
+        self.solve_scalar(intensity, raman_polarization);
+    }
+
+    fn solve_scalar(&mut self, intensity: &[f64], raman_polarization: &mut [f64]) {
         let n_t = intensity.len();
         assert_eq!(raman_polarization.len(), n_t);
         

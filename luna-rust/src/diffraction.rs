@@ -129,13 +129,13 @@ impl Qdht {
         assert_eq!(input.len(), self.n_r);
         assert_eq!(output.len(), self.n_r);
         
-        // Zero-allocation matrix-vector multiply
-        for i in 0..self.n_r {
+        use rayon::prelude::*;
+        
+        output.par_iter_mut().enumerate().for_each(|(i, out_val)| {
             let mut sum_re = 0.0;
             let mut sum_im = 0.0;
             let row_offset = i * self.n_r;
             
-            // Loop is easily vectorized by compiler since memory access is contiguous along the row
             for j in 0..self.n_r {
                 let t_val = unsafe { *self.t_matrix.get_unchecked(row_offset + j) };
                 let val = unsafe { input.get_unchecked(j) };
@@ -143,7 +143,7 @@ impl Qdht {
                 sum_im += t_val * val.im;
             }
             
-            output[i] = Complex::new(sum_re, sum_im);
-        }
+            *out_val = Complex::new(sum_re, sum_im);
+        });
     }
 }
