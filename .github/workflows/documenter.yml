@@ -16,7 +16,7 @@ jobs:
         with:
           version: '1'
       - name: Cache Julia packages
-        uses: julia-actions/cache@v2
+        uses: julia-actions/cache@v3
       - name: Install dependencies and build package
         env:
           PYTHON: # remove PYTHON env variable to make sure packages are installed
