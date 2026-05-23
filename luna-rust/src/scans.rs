@@ -1,25 +1,37 @@
 use std::fs::File;
-use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::ffi::CStr;
 use super::io::{Hdf5Writer, get_hdf5_api};
 
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
+
 pub struct FlockLock {
+    #[cfg(unix)]
     file: File,
 }
 
 impl FlockLock {
     pub fn new(lock_path: &str) -> Result<Self, String> {
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(lock_path)
-            .map_err(|e| format!("Failed to open lock file: {}", e))?;
-        Ok(Self { file })
+        #[cfg(unix)]
+        {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .open(lock_path)
+                .map_err(|e| format!("Failed to open lock file: {}", e))?;
+            Ok(Self { file })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = lock_path;
+            Ok(Self {})
+        }
     }
 
     pub fn lock(&self) -> Result<(), String> {
+        #[cfg(unix)]
         unsafe {
             let fd = self.file.as_raw_fd();
             let res = libc::flock(fd, libc::LOCK_EX);
@@ -31,6 +43,7 @@ impl FlockLock {
     }
 
     pub fn unlock(&self) -> Result<(), String> {
+        #[cfg(unix)]
         unsafe {
             let fd = self.file.as_raw_fd();
             let res = libc::flock(fd, libc::LOCK_UN);
