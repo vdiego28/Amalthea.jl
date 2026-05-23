@@ -69,6 +69,7 @@ jobs:
           workspaces: luna-rust
 
       - name: Run Rust unit tests
+        if: matrix.group == 'rust'
         run: cargo test
         working-directory: luna-rust
         env:
