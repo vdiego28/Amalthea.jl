@@ -12,3 +12,8 @@ docs/build
 .vscode/spellright.dict
 .DS_Store
 deps/build.log
+.venv/
+luna-rust/target/
+__pycache__/
+*.pyc
+*.egg-info/

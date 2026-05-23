@@ -1,0 +1,10 @@
+# Example user-defined material file for Luna-Rust.jl
+# Load with: PhysData.register_material!("examples/custom_materials.toml")
+
+[HeIsotope]
+model = "Sellmeier"
+type = "gas"
+B = [0.014755297, 0.019977190]
+C = [0.006890300, 1288.5]
+chi3 = 3.43e-28
+ionisation_potential_eV = 24.587

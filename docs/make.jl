@@ -4,8 +4,8 @@ using Luna
 modulesdir = joinpath(Luna.Utils.lunadir(), "docs", "src", "modules")
 
 makedocs(
-    sitename = "Luna Documentation",
-    authors = "Christian Brahms and John C. Travers",
+    sitename = "Luna-Rust.jl Documentation",
+    authors = "Diego Andrés Valenzuela Berríos, Christian Brahms, and John C. Travers",
     pages = Any[
         "Home" => "index.md",
         "The numerical model" => [
@@ -26,5 +26,5 @@ makedocs(
 )
 
 deploydocs(
-    repo = "github.com/LupoLab/Luna.jl.git",
+    repo = "github.com/vdiego28/Luna-Rust.jl.git",
 )

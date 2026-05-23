@@ -60,7 +60,7 @@ end
 
     @test Modes.dimlimits(m) == Modes.dimlimits(m.m)
 
-    # make sure loss values are real - see https://github.com/LupoLab/Luna.jl/issues/288
+    # make sure loss values are real - see https://github.com/LupoLab/Luna-Rust.jl/issues/288
     t = 148e-9
     N = 6
     r_ext = 1.5e-6

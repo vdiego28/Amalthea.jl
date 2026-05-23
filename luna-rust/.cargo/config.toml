@@ -1,0 +1,19 @@
+# Cargo build configuration for luna-rust
+#
+# target-cpu=native tells rustc/LLVM to optimise for the CPU on which the
+# library is compiled, enabling AVX2, AVX-512, etc. automatically.
+#
+# NOTE: the resulting .so is NOT portable to older CPUs. This is intentional
+# for the local release build — the dispatcher in dispatch.rs detects available
+# ISA extensions at runtime and routes to CpuPortable when advanced features
+# are absent, so the Julia package remains safe to distribute.
+#
+# CI runners override this via CARGO_BUILD_RUSTFLAGS="" to avoid
+# illegal-instruction errors on older runner hardware.
+[build]
+rustflags = ["-C", "target-cpu=native"]
+
+[profile.bench]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

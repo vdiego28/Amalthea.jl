@@ -16,6 +16,39 @@ import HCubature: hquadrature
 import DSP: unwrap
 import Logging: @warn
 
+const _GREEK_ALIASES = Dict(
+    :lambda0        => :λ0,
+    :lam0           => :λ0,
+    :wavelength     => :λ0,
+    :lambda_lims    => :λlims,
+    :lam_lims       => :λlims,
+    :wavelength_lims => :λlims,
+    :tau_fwhm       => :τfwhm,
+    :tfwhm          => :τfwhm,
+    :duration       => :τfwhm,
+    :tau_w          => :τw,
+    :tw             => :τw,
+    :phi            => :ϕ,
+    :phase          => :ϕ,
+    :delta_t        => :δt,
+    :dt             => :δt,
+    :delta_lambda   => :Δλ,
+    :dlambda        => :Δλ,
+)
+
+function resolve_greek_aliases(kwargs)
+    resolved = Dict{Symbol,Any}()
+    for (k, v) in kwargs
+        canonical = get(_GREEK_ALIASES, k, k)
+        if haskey(resolved, canonical)
+            error("Duplicate keyword: both `$k` and `$(canonical)` were supplied. " *
+                  "Use only one form.")
+        end
+        resolved[canonical] = v
+    end
+    resolved
+end
+
 abstract type AbstractField end
 
 """
@@ -45,7 +78,13 @@ struct PulseField{eT, pT, iT} <: TimeField
     Itshape::iT
 end
 
-function PulseField(;λ0, Itshape, energy=nothing, power=nothing, ϕ=Float64[])
+function PulseField(; kwargs...)
+    kw = resolve_greek_aliases(kwargs)
+    λ0 = kw[:λ0]
+    Itshape = kw[:Itshape]
+    energy = get(kw, :energy, nothing)
+    power = get(kw, :power, nothing)
+    ϕ = get(kw, :ϕ, Float64[])
     if !isnothing(power)
         if !isnothing(energy)
             error("only one of `energy` or `power` can be specified")
@@ -63,7 +102,14 @@ Construct a (super)Gaussian shaped pulse with intensity/power FWHM `τfwhm`, eit
 `energy` or peak `power` specified, superGaussian parameter `m=1` and other parameters
 as defined for [`PulseField`](@ref).
 """
-function GaussField(;λ0, τfwhm, energy=nothing, power=nothing, ϕ=Float64[], m=1)
+function GaussField(; kwargs...)
+    kw = resolve_greek_aliases(kwargs)
+    λ0 = kw[:λ0]
+    τfwhm = kw[:τfwhm]
+    energy = get(kw, :energy, nothing)
+    power = get(kw, :power, nothing)
+    ϕ = get(kw, :ϕ, Float64[])
+    m = get(kw, :m, 1)
     if !isnothing(power)
         if !isnothing(energy)
             error("only one of `energy` or `power` can be specified")
@@ -82,8 +128,14 @@ natural width `τw`, or the intensity/power FWHM `τfwhm`, and either
 `energy` or peak `power` specified.
 Other parameters are as defined for [`PulseField`](@ref).
 """
-function SechField(;λ0, energy=nothing, power=nothing, τw=nothing, τfwhm=nothing,
-                    ϕ=Float64[])
+function SechField(; kwargs...)
+    kw = resolve_greek_aliases(kwargs)
+    λ0 = kw[:λ0]
+    energy = get(kw, :energy, nothing)
+    power = get(kw, :power, nothing)
+    τw = get(kw, :τw, nothing)
+    τfwhm = get(kw, :τfwhm, nothing)
+    ϕ = get(kw, :ϕ, Float64[])
     if !isnothing(τfwhm)
         if !isnothing(τw)
             error("only one of `τw` or `τfwhm` can be specified")
@@ -210,7 +262,13 @@ end
 Represents a field with spectral power density `Iω` and spectral phase `ϕω`, sampled on
 radial frequency axis `ω`.
 """
-DataField(ω, Iω, ϕω; energy, ϕ=Float64[], λ0=NaN) = DataField(ω, Iω, ϕω, energy, ϕ, λ0)
+function DataField(ω, Iω, ϕω; kwargs...)
+    kw = resolve_greek_aliases(kwargs)
+    energy = kw[:energy]
+    ϕ = get(kw, :ϕ, Float64[])
+    λ0 = get(kw, :λ0, NaN)
+    DataField(ω, Iω, ϕω, energy, ϕ, λ0)
+end
 
 """
     DataField(ω, Eω; energy, ϕ=Float64[], λ0=NaN)
@@ -218,8 +276,13 @@ DataField(ω, Iω, ϕω; energy, ϕ=Float64[], λ0=NaN) = DataField(ω, Iω, ϕ�
 Create a `DataField` from the complex frequency-domain field `Eω` sampled on radial
 frequency grid `ω`.
 """
-DataField(ω, Eω; energy, ϕ=Float64[], λ0=NaN) = DataField(ω, abs2.(Eω), unwrap(angle.(Eω)),
-                                                          energy, ϕ, λ0)
+function DataField(ω, Eω; kwargs...)
+    kw = resolve_greek_aliases(kwargs)
+    energy = kw[:energy]
+    ϕ = get(kw, :ϕ, Float64[])
+    λ0 = get(kw, :λ0, NaN)
+    DataField(ω, abs2.(Eω), unwrap(angle.(Eω)), energy, ϕ, λ0)
+end
 
 """
     DataField(fpath; energy, ϕ=Float64[], λ0=NaN)
@@ -231,9 +294,13 @@ contain 3 columns:
 - spectral power density (arbitrary units)
 - unwrapped spectral phase
 """
-function DataField(fpath; energy, ϕ=Float64[], λ0=NaN)
+function DataField(fpath; kwargs...)
+    kw = resolve_greek_aliases(kwargs)
+    energy = kw[:energy]
+    ϕ = get(kw, :ϕ, Float64[])
+    λ0 = get(kw, :λ0, NaN)
     dat = readdlm(fpath, ' ')
-    DataField(dat[:, 1]*2π, dat[:, 2], dat[:, 3]; energy, ϕ)
+    DataField(dat[:, 1]*2π, dat[:, 2], dat[:, 3], energy, ϕ, λ0)
 end
 
 """

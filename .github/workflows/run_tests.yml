@@ -4,22 +4,91 @@ on: [push, pull_request]
 
 jobs:
   test:
+    name: Test (${{ matrix.group }} - ${{ matrix.os }} - Julia ${{ matrix.julia-version }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        julia-version: ['lts', '1', 'pre']
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          # Physics group (full OS matrix on stable Julia)
+          - os: ubuntu-latest
+            julia-version: '1'
+            group: physics
+          - os: windows-latest
+            julia-version: '1'
+            group: physics
+          - os: macos-latest
+            julia-version: '1'
+            group: physics
+          # Physics group (other Julia versions on ubuntu-latest)
+          - os: ubuntu-latest
+            julia-version: 'lts'
+            group: physics
+          - os: ubuntu-latest
+            julia-version: 'pre'
+            group: physics
+
+          # Rust FFI group (full OS matrix on stable Julia to verify FFI linking)
+          - os: ubuntu-latest
+            julia-version: '1'
+            group: rust
+          - os: windows-latest
+            julia-version: '1'
+            group: rust
+          - os: macos-latest
+            julia-version: '1'
+            group: rust
+
+          # Simulation group (ubuntu-latest only)
+          - os: ubuntu-latest
+            julia-version: '1'
+            group: simulation
+
+          # I/O group (ubuntu-latest only)
+          - os: ubuntu-latest
+            julia-version: '1'
+            group: io
+
+          # Fields group (ubuntu-latest only)
+          - os: ubuntu-latest
+            julia-version: '1'
+            group: fields
+
     if: github.event.pull_request.draft == false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: luna-rust
+
+      - name: Run Rust unit tests
+        run: cargo test
+        working-directory: luna-rust
+        env:
+          CARGO_BUILD_RUSTFLAGS: "" # neutralize target-cpu=native from .cargo/config.toml
+
       - uses: julia-actions/setup-julia@latest
         with:
           version: ${{ matrix.julia-version }}
           arch: 'default'
+
+      - name: Cache Julia packages
+        uses: julia-actions/cache@v2
+
       - name: Install dependencies and build
         env:
           PYTHON: # remove PYTHON env variable to make sure packages are installed
         uses: julia-actions/julia-buildpkg@v1
+
       - name: Run tests
         uses: julia-actions/julia-runtest@v1
+        env:
+          JULIA_NUM_THREADS: auto
+          LUNA_TEST_GROUP: ${{ matrix.group }}

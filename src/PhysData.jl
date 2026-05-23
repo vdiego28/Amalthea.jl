@@ -69,6 +69,52 @@ const gas_str = Dict(
 const glass = (:SiO2, :BK7, :KBr, :CaF2, :BaF2, :Si, :MgF2, :ADPo, :ADPe, :KDPo, :KDPe, :CaCO3)
 const metal = (:Ag,:Al)
 
+# --- User material registry ---
+# Mutable Dict mapping Symbol → Sellmeier parameter NamedTuple.
+# Populated by register_material! at runtime.
+const _user_materials = Dict{Symbol, Any}()
+
+"""
+    register_material!(name::Symbol, params::NamedTuple)
+    register_material!(name::Symbol; B, C, model=:Sellmeier, type=:gas, chi3=0.0, ionisation_potential=NaN, reference_density=nothing, quantum_numbers=nothing, n2=0.0)
+    register_material!(filepath::AbstractString)
+
+Register a custom material (gas or glass) at runtime.
+"""
+function register_material!(name::Symbol; B, C, model=:Sellmeier, type=:gas,
+                             chi3=0.0, ionisation_potential=NaN, reference_density=nothing,
+                             quantum_numbers=nothing, n2=0.0, kwargs...)
+    if isnothing(reference_density)
+        reference_density = (type == :glass) ? 1.0 : (1.0 * bar) / (k_B * 273.15)
+    end
+    _user_materials[name] = (model=model, type=type, B=B, C=C,
+                              chi3=chi3, ionisation_potential=ionisation_potential,
+                              reference_density=reference_density,
+                              quantum_numbers=quantum_numbers, n2=n2)
+    @info "Registered material :$name"
+end
+
+function register_material!(filepath::AbstractString)
+    data = Base.TOML.parsefile(filepath)
+    for (name, params) in data
+        sym = Symbol(name)
+        B   = Float64.(params["B"])
+        C   = Float64.(params["C"])
+        model = Symbol(get(params, "model", "Sellmeier"))
+        type  = Symbol(get(params, "type", "gas"))
+        chi3 = get(params, "chi3", 0.0)
+        ip   = get(params, "ionisation_potential_eV", NaN)
+        ref_dens = get(params, "reference_density", nothing)
+        qn   = get(params, "quantum_numbers", nothing)
+        if !isnothing(qn)
+            qn = Tuple(Int.(qn))
+        end
+        n2_val = get(params, "n2", 0.0)
+        register_material!(sym; B, C, model, type, chi3, ionisation_potential=ip,
+                            reference_density=ref_dens, quantum_numbers=qn, n2=n2_val)
+    end
+end
+
 """
     wlfreq(ωλ)
 
@@ -145,6 +191,18 @@ Return function for linear polarisability γ, i.e. susceptibility of a single pa
 calculated from Sellmeier expansions.
 """
 function sellmeier_gas(material::Symbol)
+    # Check user registry first
+    if haskey(_user_materials, material)
+        mat = _user_materials[material]
+        ref_dens = mat.reference_density
+        return function γ(λ_μm)
+            χ1_ref = 0.0
+            for (b, c) in zip(mat.B, mat.C)
+                χ1_ref += b * λ_μm^2 / (λ_μm^2 - c)
+            end
+            return χ1_ref / ref_dens
+        end
+    end
     dens = dens_1bar_0degC[material]
     if material == :HeB
         B1 = 4977.77e-8
@@ -249,6 +307,16 @@ Sellmeier for glasses. Returns function of wavelength in μm which in turn retur
 refractive index directly
 """
 function sellmeier_glass(material::Symbol)
+    if haskey(_user_materials, material)
+        mat = _user_materials[material]
+        return function n(λ_μm)
+            n2 = 1.0
+            for (b, c) in zip(mat.B, mat.C)
+                n2 += b * λ_μm^2 / (λ_μm^2 - c)
+            end
+            return sqrt(max(n2, 1.0))
+        end
+    end
     if material == :SiO2
         #  J. Opt. Soc. Am. 55, 1205-1208 (1965)
         # TODO: Deal with sqrt of negative values better (somehow...)
@@ -446,7 +514,16 @@ end
 Get function which returns refractive index.
 """
 function ref_index_fun(material::Symbol, P=1.0, T=roomtemp; lookup=nothing)
-    if material in gas
+    if haskey(_user_materials, material)
+        mat = _user_materials[material]
+        if mat.type == :glass
+            sell = sellmeier_glass(material)
+            return λ -> sell(λ*1e6)
+        else
+            χ1 = χ1_fun(material, P, T)
+            return λ -> sqrt(1 + complex(χ1(λ)))
+        end
+    elseif material in gas
         χ1 = χ1_fun(material, P, T)
         return λ -> sqrt(1 + complex(χ1(λ)))
     elseif material in glass
@@ -586,6 +663,10 @@ References:
 
 """
 function γ3_gas(material::Symbol; source=nothing)
+    if haskey(_user_materials, material)
+        mat = _user_materials[material]
+        return mat.chi3 / mat.reference_density
+    end
     # TODO: More Bishop/Shelton; Wahlstrand updated values.
     if source === nothing
         if material in (:He, :HeB, :HeJ, :Ne, :Ar, :ArB, :Kr, :Xe, :N2)
@@ -657,7 +738,8 @@ function γ3_gas(material::Symbol; source=nothing)
 end
 
 function χ3(material::Symbol, P=1.0, T=roomtemp; source=nothing)
-    if material in glass
+    is_glass = material in glass || (haskey(_user_materials, material) && _user_materials[material].type == :glass)
+    if is_glass
         n2 = n2_glass(material, λ=1030e-9)
         n0 = real(ref_index(material, 1030e-9))
         return 4/3 * n2 * (ε_0*c*n0^2)
@@ -666,13 +748,17 @@ function χ3(material::Symbol, P=1.0, T=roomtemp; source=nothing)
 end
 
 function n2(material::Symbol, P=1.0, T=roomtemp; λ=nothing, source=nothing)
-    material in glass && return n2_glass(material::Symbol, λ=λ)
+    is_glass = material in glass || (haskey(_user_materials, material) && _user_materials[material].type == :glass)
+    is_glass && return n2_glass(material::Symbol, λ=λ)
     λ = isnothing(λ) ? 800e-9 : λ
     n0 = ref_index(material, λ, P, T)
     return @. 3/4 * χ3(material, P, T, source=source) / (ε_0*c*n0^2)
 end
 
 function n2_glass(material::Symbol; λ=nothing)
+    if haskey(_user_materials, material)
+        return _user_materials[material].n2
+    end
     if material == :SiO2
         return 2.7e-20
     elseif material == :MgF2
@@ -693,6 +779,14 @@ For a gas `material`, return the number density [m^-3] at pressure `P` [bar] and
 For a glass, this simply returns 1.0.
 """
 function density(material::Symbol, P=1.0, T=roomtemp)
+    if haskey(_user_materials, material)
+        mat = _user_materials[material]
+        if mat.type == :glass
+            return 1.0
+        end
+        # Ideal gas law fallback
+        return P == 0 ? zero(P) : (P * bar) / (k_B * T)
+    end
     material in glass && return 1.0
     P == 0 ? zero(P) : CoolProp.PropsSI("DMOLAR", "T", T, "P", bar*P, gas_str[material])*N_A
 end
@@ -705,7 +799,10 @@ dens_1atm_0degC = Dict(gi => density(gi, atm/bar, 273.15) for gi in gas)
 
 Calculate the pressure in bar of the `gas` at number density `density` and temperature `T`.
 """
-function pressure(gas, density, T=roomtemp)
+function pressure(gas::Symbol, density, T=roomtemp)
+    if haskey(_user_materials, gas)
+        return density == 0 ? zero(density) : (density * k_B * T) / bar
+    end
     density == 0 ? zero(density) :
                    CoolProp.PropsSI("P", "T", T, "DMOLAR", density/N_A, gas_str[gas])/bar
 end
@@ -729,6 +826,20 @@ Return the first ionisation potential of the `material` in a specific unit (defa
 Possible units are `:SI`, `:atomic` and `:eV`.
 """
 function ionisation_potential(material; unit=:SI)
+    if haskey(_user_materials, material)
+        ip_eV = _user_materials[material].ionisation_potential
+        isnan(ip_eV) && error("Ionisation potential not set for :$material")
+        Ip = ip_eV / 27.21138602
+        if unit == :atomic
+            return Ip
+        elseif unit == :eV
+            return ip_eV
+        elseif unit == :SI
+            return ip_eV * electron
+        else
+            throw(DomainError(unit, "Unknown unit $unit"))
+        end
+    end
     if material in (:He, :HeB, :HeJ)
         Ip = 0.9036
     elseif material == :Ne
@@ -776,6 +887,11 @@ end
 Return the quantum numbers of the `material` for use in the PPT ionisation rate.
 """
 function quantum_numbers(material)
+    if haskey(_user_materials, material)
+        qn = _user_materials[material].quantum_numbers
+        isnothing(qn) && error("Quantum numbers not set for :$material")
+        return qn
+    end
     # Returns n, l, ion Z
     if material in (:Ar, :ArB)
         return 3, 1, 1

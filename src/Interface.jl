@@ -44,8 +44,9 @@ peak power specified.
                 apply an arbitrary propagation to the pulse before the simulation starts.
 """
 function CustomPulse(;mode=:lowest, polarisation=:linear, propagator=nothing, kwargs...)
+    kw = Fields.resolve_greek_aliases(kwargs)
     CustomPulse(mode, polarisation,
-                Fields.PropagatedField(propagator, Fields.PulseField(;kwargs...)))
+                Fields.PropagatedField(propagator, Fields.PulseField(;kw...)))
 end
 
 struct GaussPulse{fT<:Fields.TimeField} <: AbstractPulse
@@ -79,8 +80,9 @@ specified.
                 apply an arbitrary propagation to the pulse before the simulation starts.
 """
 function GaussPulse(;mode=:lowest, polarisation=:linear, propagator=nothing, kwargs...)
+    kw = Fields.resolve_greek_aliases(kwargs)
     GaussPulse(mode, polarisation,
-               Fields.PropagatedField(propagator, Fields.GaussField(;kwargs...)))
+               Fields.PropagatedField(propagator, Fields.GaussField(;kw...)))
 end
 
 struct SechPulse{fT<:Fields.TimeField} <: AbstractPulse
@@ -113,8 +115,9 @@ specified, and duration given either as `τfwhm` or `τw`.
                 apply an arbitrary propagation to the pulse before the simulation starts.
 """
 function SechPulse(;mode=:lowest, polarisation=:linear, propagator=nothing, kwargs...)
+    kw = Fields.resolve_greek_aliases(kwargs)
     SechPulse(mode, polarisation,
-              Fields.PropagatedField(propagator, Fields.SechField(;kwargs...)))
+              Fields.PropagatedField(propagator, Fields.SechField(;kw...)))
 end
 
 struct DataPulse{fT<:Fields.TimeField} <: AbstractPulse
@@ -158,20 +161,23 @@ A custom pulse defined by tabulated data to be used with `prop_capillary`.
 """
 function DataPulse(ω::AbstractVector, Iω, ϕω;
                    mode=:lowest, polarisation=:linear, propagator=nothing, kwargs...)
+    kw = Fields.resolve_greek_aliases(kwargs)
     DataPulse(mode, polarisation,
-              Fields.PropagatedField(propagator, Fields.DataField(ω, Iω, ϕω; kwargs...)))
+              Fields.PropagatedField(propagator, Fields.DataField(ω, Iω, ϕω; kw...)))
 end
 
 function DataPulse(ω, Eω;
                    mode=:lowest, polarisation=:linear, propagator=nothing, kwargs...)
+    kw = Fields.resolve_greek_aliases(kwargs)
     DataPulse(mode, polarisation,
-              Fields.PropagatedField(propagator, Fields.DataField(ω, Eω; kwargs...)))
+              Fields.PropagatedField(propagator, Fields.DataField(ω, Eω; kw...)))
 end
 
 function DataPulse(fpath;
                    mode=:lowest, polarisation=:linear, propagator=nothing, kwargs...)
+    kw = Fields.resolve_greek_aliases(kwargs)
     DataPulse(mode, polarisation,
-              Fields.PropagatedField(propagator, Fields.DataField(fpath; kwargs...)))
+              Fields.PropagatedField(propagator, Fields.DataField(fpath; kw...)))
 end
 
 """
@@ -356,9 +362,15 @@ If `raman` is `true`, then the following options apply:
 - `status_period::Number`: Interval (in seconds) between printed status updates.
 """
 function prop_capillary(args...; status_period=5, kwargs...)
-    Eω, grid, linop, transform, FT, output = prop_capillary_args(args...; kwargs...)
+    kw = Fields.resolve_greek_aliases(kwargs)
+    Eω, grid, linop, transform, FT, output = prop_capillary_args(args...; kw...)
     Luna.run(Eω, grid, linop, transform, FT, output; status_period)
     output
+end
+
+function prop_capillary_args(args...; kwargs...)
+    kw = Fields.resolve_greek_aliases(kwargs)
+    _prop_capillary_args(args...; kw...)
 end
 
 """
@@ -370,7 +382,7 @@ simulation and returning the output, it returns the required arguments for `Luna
 which is useful for repeated simulations in an indentical fibre with different initial
 conditions.
 """
-function prop_capillary_args(radius, flength, gas, pressure;
+function _prop_capillary_args(radius, flength, gas, pressure;
                         λlims, trange, envelope=false, thg=nothing, δt=1,
                         λ0, τfwhm=nothing, τw=nothing, ϕ=Float64[],
                         power=nothing, energy=nothing,
@@ -972,9 +984,15 @@ Note that the current GNLSE model is single mode only.
 - `status_period::Number`: Interval (in seconds) between printed status updates.
 """
 function prop_gnlse(args...; status_period=5, kwargs...)
-    Eω, grid, linop, transform, FT, output = prop_gnlse_args(args...; kwargs...)
+    kw = Fields.resolve_greek_aliases(kwargs)
+    Eω, grid, linop, transform, FT, output = prop_gnlse_args(args...; kw...)
     Luna.run(Eω, grid, linop, transform, FT, output; status_period)
     output
+end
+
+function prop_gnlse_args(args...; kwargs...)
+    kw = Fields.resolve_greek_aliases(kwargs)
+    _prop_gnlse_args(args...; kw...)
 end
 
 """
@@ -986,7 +1004,7 @@ simulation and returning the output, it returns the required arguments for `Luna
 which is useful for repeated simulations in an indentical fibre with different initial
 conditions.
 """
-function prop_gnlse_args(γ, flength, βs; λ0, λlims, trange,
+function _prop_gnlse_args(γ, flength, βs; λ0, λlims, trange,
                         δt=1, τfwhm=nothing, τw=nothing, ϕ=Float64[],
                         power=nothing, energy=nothing,
                         pulseshape=:gauss, propagator=nothing,

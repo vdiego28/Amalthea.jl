@@ -9,7 +9,7 @@ shot-to-shot fluctuations characteristic of supercontinuum generation. An accura
 model is therefore essential for any simulation where noise-initiated nonlinear dynamics play
 a role.
 
-Luna.jl supports two noise models, selected via the `shotnoise` keyword argument in
+Luna-Rust.jl supports two noise models, selected via the `shotnoise` keyword argument in
 [`prop_capillary`](@ref Interface.prop_capillary) and [`prop_gnlse`](@ref Interface.prop_gnlse):
 
 - **`:input`** --- the traditional shot-noise approach.

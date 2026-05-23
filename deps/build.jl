@@ -1,9 +1,22 @@
-# from https://github.com/GeoscienceAustralia/HiQGA.jl/commit/db833bf32840503ee3bd0909b2b92993c239413c#diff-708e1c220f34be9ffbf04c0619b1f1a56388096c1df2b95603950d7adc80feaa
+# Build PyCall and install matplotlib
 import Pkg, Conda
 @info "building!"
-# Conda.pip_interop(true)
-# Conda.pip("install", "matplotlib")
 Conda.add("matplotlib")
 ENV["PYTHON"] = joinpath(Conda.ROOTENV, "bin", "python")
 Pkg.build("PyCall")
 @info "built PyCall!"
+
+# Build the Rust shared library luna-rust
+@info "Building Rust library luna-rust..."
+rust_dir = joinpath(@__DIR__, "..", "luna-rust")
+if isdir(rust_dir)
+    try
+        run(Cmd(`cargo build --release`, dir=rust_dir))
+        @info "Successfully compiled Rust library luna-rust."
+    catch e
+        @error "Failed to compile Rust library luna-rust: make sure Rust/Cargo (version >= 1.85) is installed on your system." e
+        rethrow(e)
+    end
+else
+    @warn "Rust directory not found at $rust_dir."
+end

@@ -1,6 +1,6 @@
 # Luna Rust (`luna-rust`)
 
-`luna-rust` is a high-performance, stateless physical propagation engine rewritten in Rust. It serves as the optimized backend for `Luna.jl`, migrating critical physics kernels, solvers, and spatial/spectral grids to Rust 2024 to exploit hardware vectorization (AVX-512, Apple AMX) and GPU acceleration (CUDA, Vulkan).
+`luna-rust` is a high-performance, stateless physical propagation engine rewritten in Rust. It serves as the optimized backend for `Luna-Rust.jl`, migrating critical physics kernels, solvers, and spatial/spectral grids to Rust 2024 to exploit hardware vectorization (AVX-512, Apple AMX) and GPU acceleration (CUDA, Vulkan).
 
 ---
 

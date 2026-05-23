@@ -1,10 +1,28 @@
 version: 2
 updates:
+  # Keep GitHub Actions up to date
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
+    labels:
+      - "CI"
+      - "dependencies"
+
+  # Keep Julia packages up to date
   - package-ecosystem: "julia"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
+    labels:
+      - "Julia"
+      - "dependencies"
+
+  # Keep Rust/Cargo dependencies up to date
+  - package-ecosystem: "cargo"
+    directory: "/luna-rust"
+    schedule:
+      interval: "monthly"
+    labels:
+      - "Rust"
+      - "dependencies"
