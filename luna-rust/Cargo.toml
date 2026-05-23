@@ -1,0 +1,12 @@
+[package]
+name = "luna-rust"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "luna_rust"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+libc = "0.2"
+num-complex = "0.4"
