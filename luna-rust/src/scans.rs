@@ -75,32 +75,21 @@ impl ScanQueue {
         lock.lock()?;
         
         let result = (|| -> Result<Option<usize>, String> {
-            let writer = Hdf5Writer::open_or_create(&self.qfile)?;
-            let api = get_hdf5_api()?;
-            
-            let dims = [self.total_points as u64];
-            let maxdims = [self.total_points as u64];
-            let dset_id = writer.create_dataset_2d(writer.file_id, "qdata", api.h5t_native_int, &dims, &maxdims)?;
-            
+            let writer = Hdf5Writer::open_existing(&self.qfile)?;
             let mut qdata = vec![0; self.total_points];
-            writer.read_dataset_int(dset_id, &mut qdata)?;
-            
-            let found_idx = qdata.iter().position(|&x| x == 0);
-            
+
+            let found_idx = writer.with_existing_int_dataset_2d("qdata", &mut qdata, |writer, dset_id, qdata| {
+                writer.read_dataset_int(dset_id, qdata)?;
+                Ok(qdata.iter().position(|&x| x == 0))
+            })?;
+
             if let Some(idx) = found_idx {
                 qdata[idx] = 1;
-                writer.write_dataset_int(dset_id, &qdata)?;
-                writer.close_dataset(dset_id);
+                writer.with_existing_int_dataset_2d("qdata", &mut qdata, |writer, dset_id, qdata| {
+                    writer.write_dataset_int(dset_id, qdata)
+                })?;
                 Ok(Some(idx))
             } else {
-                writer.close_dataset(dset_id);
-                
-                let all_finished = qdata.iter().all(|&x| x > 1);
-                if all_finished {
-                    let _ = std::fs::remove_file(&self.qfile);
-                    let _ = std::fs::remove_file(&self.lock_path);
-                }
-                
                 Ok(None)
             }
         })();
@@ -117,29 +106,20 @@ impl ScanQueue {
             if !std::path::Path::new(&self.qfile).exists() {
                 return Ok(());
             }
-            let writer = Hdf5Writer::open_or_create(&self.qfile)?;
-            let api = get_hdf5_api()?;
-            
-            let dims = [self.total_points as u64];
-            let maxdims = [self.total_points as u64];
-            let dset_id = writer.create_dataset_2d(writer.file_id, "qdata", api.h5t_native_int, &dims, &maxdims)?;
-            
+            let writer = Hdf5Writer::open_existing(&self.qfile)?;
             let mut qdata = vec![0; self.total_points];
-            writer.read_dataset_int(dset_id, &mut qdata)?;
-            
-            if idx < qdata.len() {
-                qdata[idx] = if success { 2 } else { 3 };
-                writer.write_dataset_int(dset_id, &qdata)?;
-            }
-            
-            writer.close_dataset(dset_id);
-            
-            let all_finished = qdata.iter().all(|&x| x > 1);
-            if all_finished {
-                let _ = std::fs::remove_file(&self.qfile);
-                let _ = std::fs::remove_file(&self.lock_path);
-            }
-            
+
+            writer.with_existing_int_dataset_2d("qdata", &mut qdata, |writer, dset_id, qdata| {
+                writer.read_dataset_int(dset_id, qdata)?;
+
+                if idx < qdata.len() {
+                    qdata[idx] = if success { 2 } else { 3 };
+                    writer.write_dataset_int(dset_id, qdata)?;
+                }
+
+                Ok(())
+            })?;
+
             Ok(())
         })();
         
@@ -155,6 +135,17 @@ pub unsafe extern "C" fn init_scan_queue(qfile_ptr: *const libc::c_char, total_p
     }
     let qfile_cstr = unsafe { std::ffi::CStr::from_ptr(qfile_ptr) };
     let qfile = qfile_cstr.to_string_lossy().into_owned();
+    if let Ok(writer) = Hdf5Writer::open_or_create(&qfile) {
+        if let Ok(api) = get_hdf5_api() {
+            let dims = [total_points as u64];
+            let maxdims = [total_points as u64];
+            if let Ok(dset_id) = writer.create_dataset_2d(writer.file_id, "qdata", api.h5t_native_int, &dims, &maxdims) {
+                let qdata = vec![0; total_points];
+                let _ = writer.write_dataset_int(dset_id, &qdata);
+                writer.close_dataset(dset_id);
+            }
+        }
+    }
     let queue = Box::new(ScanQueue::new(&qfile, total_points));
     Box::into_raw(queue)
 }

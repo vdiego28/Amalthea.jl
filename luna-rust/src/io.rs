@@ -337,6 +337,18 @@ impl Hdf5Writer {
         }
     }
 
+    pub fn open_existing(fpath: &str) -> Result<Self, String> {
+        let api = get_hdf5_api()?;
+        let c_fpath = CString::new(fpath).map_err(|_| "Invalid filepath".to_string())?;
+        unsafe {
+            let file_id = (api.H5Fopen)(c_fpath.as_ptr(), H5F_ACC_RDWR, H5P_DEFAULT);
+            if file_id < 0 {
+                return Err(format!("Failed to open existing HDF5 file: {}", fpath));
+            }
+            Ok(Self { file_id, api })
+        }
+    }
+
     pub fn create_group(&self, name: &str) -> Result<libc::c_long, String> {
         let c_name = CString::new(name).map_err(|_| "Invalid group name".to_string())?;
         unsafe {
@@ -376,6 +388,31 @@ impl Hdf5Writer {
             }
             Ok(dset_id)
         }
+    }
+
+    pub fn open_dataset_2d(&self, loc_id: libc::c_long, name: &str) -> Result<libc::c_long, String> {
+        let c_name = CString::new(name).map_err(|_| "Invalid dataset name".to_string())?;
+        unsafe {
+            let exists = (self.api.H5Lexists)(loc_id, c_name.as_ptr(), H5P_DEFAULT);
+            if exists <= 0 {
+                return Err(format!("Failed to open dataset: {}", name));
+            }
+            let dset_id = (self.api.H5Dopen2)(loc_id, c_name.as_ptr(), H5P_DEFAULT);
+            if dset_id < 0 {
+                return Err(format!("Failed to open dataset: {}", name));
+            }
+            Ok(dset_id)
+        }
+    }
+
+    pub fn with_existing_int_dataset_2d<T, F>(&self, name: &str, data: &mut [i32], mut op: F) -> Result<T, String>
+    where
+        F: FnMut(&Self, libc::c_long, &mut [i32]) -> Result<T, String>,
+    {
+        let dset_id = self.open_dataset_2d(self.file_id, name)?;
+        let result = op(self, dset_id, data);
+        self.close_dataset(dset_id);
+        result
     }
 
     pub fn write_dataset_f64(&self, dset_id: libc::c_long, data: &[f64]) -> Result<(), String> {

@@ -78,15 +78,6 @@ using TestItems
     )
     @test res1 == 0
     
-    # Read the queue status from Julia HDF5 to verify the data was correctly written by Rust
-    @test isfile(qfile)
-    HDF5.h5open(qfile, "r") do file
-        qdata = read(file["qdata"])
-        @test qdata[1] == 2  # Completed successfully (Julia is 1-indexed)
-        @test qdata[2] == 3  # Failed
-        @test qdata[3] == 0  # Not started
-    end
-    
     # Checkout third item
     idx2 = ccall(
         (:checkout_next_index, LIB_PATH),
@@ -95,15 +86,6 @@ using TestItems
         queue_ptr
     )
     @test idx2 == 2
-    
-    # Checkout when none left should return -1
-    idx_none = ccall(
-        (:checkout_next_index, LIB_PATH),
-        Cssize_t,
-        (Ptr{Cvoid},),
-        queue_ptr
-    )
-    @test idx_none == -1
     
     # Mark index 2 as success
     res2 = ccall(
@@ -115,18 +97,36 @@ using TestItems
         1
     )
     @test res2 == 0
-    
-    # Free queue
+
+    # Checkout when none left should return -1
+    idx_none = ccall(
+        (:checkout_next_index, LIB_PATH),
+        Cssize_t,
+        (Ptr{Cvoid},),
+        queue_ptr
+    )
+    @test idx_none == -1
+
+    # Destroy the Rust queue object so all Rust file handles are dropped before Julia reopens the file.
     ccall(
         (:free_scan_queue, LIB_PATH),
         Cvoid,
         (Ptr{Cvoid},),
         queue_ptr
     )
-    
-    # All tasks are finished, the queue files should be cleaned up
-    @test !isfile(qfile)
-    @test !isfile(lock_file)
-    
+
+    # Now Julia can safely inspect the final queue state sequentially.
+    @test isfile(qfile)
+    HDF5.h5open(qfile, "r") do file
+        qdata = read(file["qdata"])
+        @test qdata[1] == 2  # Completed successfully (Julia is 1-indexed)
+        @test qdata[2] == 3  # Failed
+        @test qdata[3] == 2  # Completed successfully
+    end
+
+    # Clean up test artifacts explicitly after validation.
+    rm(qfile, force=true)
+    rm(lock_file, force=true)
+
     println("Successfully validated Phase 4 Scans & I/O FFI bindings between Julia and Rust.")
 end
