@@ -72,14 +72,18 @@ if group == "All" || group == "physics"
     end
 end
 
-if group == "All" || group == "simulation"
+# sim-interface: the heaviest group — prop_capillary interface tests (~56 simulations)
+if group == "All" || group == "simulation" || group == "sim-interface"
     @testset "Interface" begin
         @info("================= test_interface.jl")
         include(joinpath(testdir, "test_interface.jl"))
         @info("================= test_greek_aliases.jl")
         include(joinpath(testdir, "test_greek_aliases.jl"))
     end
+end
 
+# sim-multimode: multi-mode and polarisation propagation tests
+if group == "All" || group == "simulation" || group == "sim-multimode"
     @testset "Multimode" begin
         @info("================= test_multimode.jl")
         include(joinpath(testdir, "test_multimode.jl"))
@@ -93,7 +97,10 @@ if group == "All" || group == "simulation"
         @info("================= test_polarisation_env.jl")
         include(joinpath(testdir, "test_polarisation_env.jl"))
     end
+end
 
+# sim-propagation: lighter propagation tests (radial, freespace, GNLSE, Kerr, Raman)
+if group == "All" || group == "simulation" || group == "sim-propagation"
     @testset "Radial Propagation" begin
         @info("================= test_radial.jl")
         include(joinpath(testdir, "test_radial.jl"))

@@ -39,10 +39,19 @@ jobs:
             julia-version: '1'
             group: rust
 
-          # Simulation group (ubuntu-latest only)
+          # Simulation group — split into 3 parallel jobs to cut wall time:
+          #   sim-interface    (~56 prop_capillary calls, the longest job)
+          #   sim-multimode    (multimode + polarisation tests)
+          #   sim-propagation  (radial, freespace, GNLSE, Kerr, Raman — lighter tests)
           - os: ubuntu-latest
             julia-version: '1'
-            group: simulation
+            group: sim-interface
+          - os: ubuntu-latest
+            julia-version: '1'
+            group: sim-multimode
+          - os: ubuntu-latest
+            julia-version: '1'
+            group: sim-propagation
 
           # I/O group (ubuntu-latest only)
           - os: ubuntu-latest
