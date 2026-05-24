@@ -3,9 +3,16 @@ import HDF5
 
 # Resolve the platform-correct shared library extension
 const _LIB_EXT = Sys.iswindows() ? "dll" : Sys.isapple() ? "dylib" : "so"
-const LIB_PATH = joinpath(@__DIR__, "../target/release/libluna_rust.$_LIB_EXT")
+const LIB_PATH = if Sys.iswindows()
+    joinpath(@__DIR__, "../target/release/luna_rust.dll")
+else
+    joinpath(@__DIR__, "../target/release/libluna_rust.$_LIB_EXT")
+end
 
 @testset "Julia-Rust Phase 4 Integration (Scans & I/O)" begin
+    # Pass HDF5 path to Rust side so it doesn't have to guess or search for it
+    ENV["LUNA_HDF5_LIB"] = HDF5.API.libhdf5
+    
     @test isfile(LIB_PATH)
     
     qfile = "julia_test_queue.h5"

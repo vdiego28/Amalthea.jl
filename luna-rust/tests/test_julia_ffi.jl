@@ -2,7 +2,11 @@ using Test
 
 # Resolve the platform-correct shared library extension
 const _LIB_EXT = Sys.iswindows() ? "dll" : Sys.isapple() ? "dylib" : "so"
-const LIB_PATH = joinpath(@__DIR__, "../target/release/libluna_rust.$_LIB_EXT")
+const LIB_PATH = if Sys.iswindows()
+    joinpath(@__DIR__, "../target/release/luna_rust.dll")
+else
+    joinpath(@__DIR__, "../target/release/libluna_rust.$_LIB_EXT")
+end
 
 @testset "Julia-Rust FFI Verification" begin
     # Verify the compiled library exists

@@ -2,7 +2,7 @@ import Test: @test, @testset
 
 @testset "Radial propagation" begin
 import Luna
-import Luna: Grid, Maths, PhysData, Nonlinear, Ionisation, NonlinearRHS, Output, Stats, LinearOps, Plotting
+import Luna: Grid, Maths, PhysData, Nonlinear, Ionisation, NonlinearRHS, Output, Stats, LinearOps, Plotting, Fields
 import Luna.PhysData: wlfreq
 import FFTW
 import Hankel
