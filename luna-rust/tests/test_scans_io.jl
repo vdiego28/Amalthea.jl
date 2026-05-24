@@ -1,8 +1,9 @@
 using Test
 import HDF5
 
-# Resolve the path to the compiled Rust shared library
-const LIB_PATH = joinpath(@__DIR__, "../target/release/libluna_rust.so")
+# Resolve the platform-correct shared library extension
+const _LIB_EXT = Sys.iswindows() ? "dll" : Sys.isapple() ? "dylib" : "so"
+const LIB_PATH = joinpath(@__DIR__, "../target/release/libluna_rust.$_LIB_EXT")
 
 @testset "Julia-Rust Phase 4 Integration (Scans & I/O)" begin
     @test isfile(LIB_PATH)

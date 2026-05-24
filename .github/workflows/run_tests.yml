@@ -75,6 +75,15 @@ jobs:
         env:
           CARGO_BUILD_RUSTFLAGS: "" # neutralize target-cpu=native from .cargo/config.toml
 
+      # Build the release shared library so the Julia FFI tests can load it.
+      # Must happen after `cargo test` (which builds debug) and before Julia runs.
+      - name: Build Rust release library (for Julia FFI tests)
+        if: matrix.group == 'rust'
+        run: cargo build --release
+        working-directory: luna-rust
+        env:
+          CARGO_BUILD_RUSTFLAGS: "" # neutralize target-cpu=native from .cargo/config.toml
+
       - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.julia-version }}
@@ -95,3 +104,4 @@ jobs:
         env:
           JULIA_NUM_THREADS: auto
           LUNA_TEST_GROUP: ${{ matrix.group }}
+
