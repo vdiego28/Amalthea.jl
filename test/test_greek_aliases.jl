@@ -1,7 +1,7 @@
-using Luna
-using Test
+using TestItems
 
-@testset "Greek aliases" begin
+@testitem "Greek aliases" tags=[:sim_interface] begin
+    using Luna
     # Compare prop_capillary with Unicode and ASCII aliases
     kwargs_unicode = (λ0=800e-9, τfwhm=10e-15, energy=1e-12, trange=400e-15,
                       λlims=(200e-9, 4e-6), shotnoise=false)

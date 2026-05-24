@@ -1,5 +1,8 @@
+using TestItems
+
+@testitem "Linearprop" tags=[:sim_propagation] begin
 using Luna
-import Test: @test, @testset
+import Test: @test
 
 radius = 125e-6 # HCF core radius
 flength = 3 # HCF length
@@ -33,3 +36,5 @@ GDD = β2*flength # total GDD accumulated
 energy_calc = Capillary.transmission(radius, λ0, flength)*energy # calculated energy at end
 @test isapprox(energy_calc, Processing.energy(out)[end]; rtol=1e-2)
 
+
+end

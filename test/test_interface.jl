@@ -1,3 +1,6 @@
+using TestItems
+
+@testitem "Interface" tags=[:sim_interface] begin
 using Luna
 import Luna.Capillary: besselj, get_unm
 import Luna.Modes: hquadrature
@@ -11,7 +14,6 @@ old_logger = Logging.global_logger(logger)
     args = (100e-6, 0.1, :He, 1)
     kwargs = (λ0=800e-9, τfwhm=10e-15, energy=1e-12, trange=400e-15,
               λlims=(200e-9, 4e-6), shotnoise=false)
-    lin = prop_capillary(args...; polarisation=:linear, kwargs...)
     @testset "linear, single mode" begin
         o1 = prop_capillary(args...; polarisation=0.0, kwargs...)
         o2 = prop_capillary(args...; polarisation=:linear, modes=1, kwargs...)
@@ -202,7 +204,7 @@ end
     Nmodes = 16
     ovlp = overlap.(1, 1:Nmodes, :HE, 0.64)
     gauss_overlaps = abs2.(ovlp)
-    phases = angle.(ovlp)
+
 
     a = 100e-6
     args = (a, 0.1, :He, 1)
@@ -387,7 +389,6 @@ end
     o12 = prop_capillary(args...; energy=e1, kwargs2...)
     eo12 = Processing.energy(o12)[:, end]
     kwargs = (λ0=800e-9, τfwhm=10e-15, trange=400e-15, λlims=(150e-9, 4e-6), shotnoise=false, modes=8)
-    e2 = 1e-9
     p = Pulses.LunaPulse(o1)
     p2 = Pulses.LunaPulse(o12)
     o2 = prop_capillary(args...; pulses=[p, p2], kwargs...)
@@ -437,3 +438,5 @@ end
 
 ##
 Logging.global_logger(old_logger)
+
+end

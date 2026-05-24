@@ -1,4 +1,7 @@
-import Test: @test, @testset, @test_broken
+using TestItems
+
+@testitem "Kerr" tags=[:sim_propagation] begin
+import Test: @test, @testset
 import Luna: Maths, Nonlinear, PhysData
 import FFTW
 
@@ -28,3 +31,5 @@ outeω = FFTW.rfft(real.(oute))
 # but also cross terms between positive and negative frequencies
 @test isapprox(abs.(outnω[1800:2400]), abs.(outfω[1800:2400]), rtol=1e-15)
 @test isapprox(abs.(outeω[1800:2400]), abs.(outfω[1800:2400]), rtol=1e-15)
+
+end

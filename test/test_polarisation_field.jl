@@ -1,4 +1,7 @@
-import Test: @test, @testset, @test_throws
+using TestItems
+
+@testitem "Polarisation_field" tags=[:sim_multimode] begin
+import Test: @test, @testset
 import Luna: Output
 
 @testset "Linear" begin
@@ -18,7 +21,7 @@ import Luna: Output
     dens0 = PhysData.density(gas, pres)
     densityfun(z) = dens0
     responses = (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),)
-    energyfun, energyfunω = Fields.energyfuncs(grid)
+    _, energyfunω = Fields.energyfuncs(grid)
     modes = (
          Capillary.MarcatiliMode(a, gas, pres, n=1, m=1, kind=:HE, ϕ=0.0, loss=false),
     )
@@ -68,7 +71,6 @@ end
     a = 125e-6
     gas = :Ar
     pres = 0.167
-    flength = 0.1
 
     τ = 10e-15
     λ0 = 800e-9
@@ -79,7 +81,7 @@ end
         z -> dens0
     end
     responses = (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),)
-    energyfun, energyfunω = Fields.energyfuncs(grid)
+    _, energyfunω = Fields.energyfuncs(grid)
     modes = (
         Capillary.MarcatiliMode(a, gas, pres, n=0, m=1, kind=:TM, ϕ=0.0, loss=false),
         Capillary.MarcatiliMode(a, gas, pres, n=2, m=1, kind=:HE, ϕ=π/4, loss=false),
@@ -123,4 +125,6 @@ end
     @test all(output["stats"]["peakintensity"] .≈ outputp["stats"]["peakintensity"])
     @test all(sum(output["stats"]["energy"], dims=1) .≈ sum(outputp["stats"]["energy"], dims=1))
     @test all(output["stats"]["fwhm_r"] .≈ outputp["stats"]["fwhm_r"])
+end
+
 end

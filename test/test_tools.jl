@@ -1,5 +1,8 @@
-import Test: @test, @testset, @test_throws
-import Luna: Capillary, Tools, PhysData
+using TestItems
+
+@testitem "Tools" tags=[:fields] begin
+import Test: @test, @testset
+import Luna: Capillary, Tools
 
 @testset "Params" begin
 m = Capillary.MarcatiliMode(125e-6, :HeB, 0.4, model=:reduced)
@@ -23,4 +26,6 @@ pressure = 1
 λRDW = Tools.λRDW(a, gas, pressure, λ0)
 @test λRDW - 188e-9 < 1e-9
 @test Tools.pressureRDW(a, gas, λRDW, λ0) ≈ pressure
+end
+
 end

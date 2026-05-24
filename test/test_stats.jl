@@ -1,3 +1,6 @@
+using TestItems
+
+@testitem "Stats" tags=[:io] begin
 using Luna
 import Test: @test, @testset
 import HCubature: hquadrature
@@ -10,7 +13,7 @@ import FunctionZeros: besselj_zero
     a = 13e-6
     unm = besselj_zero(0, 1)
     E(r) = besselj(0, unm*r/a)
-    norm, err = hquadrature(0, a) do r
+    norm, _ = hquadrature(0, a) do r
         2π*r * abs2(E(r))
     end
 
@@ -22,13 +25,12 @@ import FunctionZeros: besselj_zero
     grid = Grid.RealGrid(15e-2, 800e-9, (160e-9, 3000e-9), 1e-12)
     m = Capillary.MarcatiliMode(a, gas, pres, loss=false)
     aeff(z) = Modes.Aeff(m, z=z)
-    energyfun, energyfunω = Fields.energyfuncs(grid)
 
     dens0 = PhysData.density(gas, pres)
     densityfun(z) = dens0
     responses = (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),)
-    linop, βfun!, frame_vel, αfun = LinearOps.make_const_linop(grid, m, λ0)
-    inputs = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=1e-6)
+    linop, βfun!, _, _ = LinearOps.make_const_linop(grid, m, λ0)
+    inputs = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=energy)
     Eω, transform, FT = Luna.setup(
         grid, densityfun, responses, inputs, βfun!, aeff)
 
@@ -37,4 +39,6 @@ import FunctionZeros: besselj_zero
     Luna.run(Eω, grid, linop, transform, FT, output, status_period=5)
 
     @test all(output["stats"]["peakintensity"] .≈ output["stats"]["peakpower"]/norm)
+end
+
 end

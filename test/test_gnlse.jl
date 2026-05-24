@@ -1,5 +1,8 @@
+using TestItems
+
+@testitem "Gnlse" tags=[:sim_propagation] begin
 using Luna
-import Test: @test, @testset, @test_throws
+import Test: @test, @testset
 import Logging
 
 logger = Logging.SimpleLogger(stdout, Logging.Warn)
@@ -57,3 +60,4 @@ end
 
 ##
 Logging.global_logger(old_logger)
+end

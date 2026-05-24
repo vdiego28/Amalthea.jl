@@ -1,14 +1,14 @@
-using Test
+using TestItems
 
-# Resolve the platform-correct shared library extension
-const _LIB_EXT = Sys.iswindows() ? "dll" : Sys.isapple() ? "dylib" : "so"
-const LIB_PATH = if Sys.iswindows()
-    joinpath(@__DIR__, "../target/release/luna_rust.dll")
-else
-    joinpath(@__DIR__, "../target/release/libluna_rust.$_LIB_EXT")
-end
+@testitem "Julia-Rust Phase 3 Integration (Stepper & Dispatch)" tags=[:rust] begin
+    # Resolve the platform-correct shared library extension
+    _LIB_EXT = Sys.iswindows() ? "dll" : Sys.isapple() ? "dylib" : "so"
+    LIB_PATH = if Sys.iswindows()
+        joinpath(@__DIR__, "../target/release/luna_rust.dll")
+    else
+        joinpath(@__DIR__, "../target/release/libluna_rust.$_LIB_EXT")
+    end
 
-@testset "Julia-Rust Phase 3 Integration (Stepper & Dispatch)" begin
     @test isfile(LIB_PATH)
     
     # Initialize the simulation engine with Auto (0)

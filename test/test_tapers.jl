@@ -1,6 +1,9 @@
-import Test: @test, @testset, @test_throws
+using TestItems
+
+@testitem "Tapers" tags=[:physics] begin
+import Test: @test, @testset
 import Luna
-import Luna: Grid, Maths, Capillary, PhysData, Nonlinear, Ionisation, NonlinearRHS, Output, Stats, LinearOps, Modes
+import Luna: Grid, Capillary, PhysData, Nonlinear, Output, Stats, LinearOps, Modes
 
 import LinearAlgebra: norm
 @testset "mode-average vs modal" begin
@@ -21,7 +24,6 @@ end
 
 dens0 = PhysData.density(gas, pres)
 densityfun(z) = dens0
-energyfun, energyfunω = Fields.energyfuncs(grid)
 responses = (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),)
 
 ## mode-average
@@ -71,7 +73,6 @@ end
 
 dens0 = PhysData.density(gas, pres)
 densityfun(z) = dens0
-energyfun, energyfunω = Fields.energyfuncs(grid)
 responses = (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),)
 
 ## mode-average
@@ -92,7 +93,7 @@ Iωavg_c = let
 m = Capillary.MarcatiliMode(a, gas, pres, loss=false, model=:full);
 aeff(z) = Modes.Aeff(m, z=z)
 inputs = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=1e-6)
-linop, βfun!, frame_vel, αfun = LinearOps.make_const_linop(grid, m, λ0)
+linop, βfun!, _, _ = LinearOps.make_const_linop(grid, m, λ0)
 Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs, βfun!, aeff)
 statsfun = Stats.collect_stats(grid, Eω, Stats.ω0(grid))
 output = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
@@ -101,4 +102,6 @@ abs2.(output["Eω"])
 end
 
 @test all(Iωavg .≈ Iωavg_c)
+end
+
 end

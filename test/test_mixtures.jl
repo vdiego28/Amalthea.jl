@@ -1,5 +1,7 @@
+using TestItems
+
+@testitem "Mixtures" tags=[:io] begin
 using Luna
-import LinearAlgebra: norm
 import Test: @test, @testset
 
 @testset "refractive index" begin
@@ -45,7 +47,7 @@ densityfun = let dens0=PhysData.density(gas, pres)
 end
 responses = (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),)
 
-linop, βfun!, β1, αfun = LinearOps.make_const_linop(grid, m, λ0)
+linop, βfun!, _, _ = LinearOps.make_const_linop(grid, m, λ0)
 Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs, βfun!, aeff)
 statsfun = Stats.default(grid, Eω, m, linop, transform; gas=gas)
 output_single = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
@@ -62,7 +64,7 @@ responses = (
     (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),)
 )
 
-linop, βfun!, β1, αfun = LinearOps.make_const_linop(grid, m, λ0)
+linop, βfun!, _, _ = LinearOps.make_const_linop(grid, m, λ0)
 Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs, βfun!, aeff)
 statsfun = Stats.default(grid, Eω, m, linop, transform; gas=(gas, gas))
 output_mix = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
@@ -70,4 +72,5 @@ Luna.run(Eω, grid, linop, transform, FT, output_mix)
 
 
 @test all(output_mix.data["Eω"][grid.sidx, :] .== output_single.data["Eω"][grid.sidx, :])
+end
 end

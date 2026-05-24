@@ -1,3 +1,6 @@
+using TestItems
+
+@testitem "Utils" tags=[:fields] begin
 import Test: @test, @testset, @test_throws
 import Luna: Utils
 import HDF5
@@ -87,4 +90,5 @@ end
 
 end
 
+end
 end

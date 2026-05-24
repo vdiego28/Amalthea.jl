@@ -1,3 +1,6 @@
+using TestItems
+
+@testitem "Full_freespace" tags=[:sim_propagation] begin
 import Test: @test, @testset
 
 @testset "Full 3D propagation" begin
@@ -24,8 +27,6 @@ grid = Grid.RealGrid(L, 800e-9, (400e-9, 2000e-9), 80e-15)
 xygrid = Grid.FreeGrid(R, N)
 
 x = xygrid.x
-y = xygrid.y
-energyfun, energyfunω = Fields.energyfuncs(grid, xygrid)
 
 dens0 = PhysData.density(gas, pres)
 densityfun(z) = dens0
@@ -58,4 +59,5 @@ Iω0x = Maths.normbymax(dropdims(sum(Iω0yx, dims=1), dims=1))
 @test maximum(abs.(Iω0x .- Iω0_analytic)/norm(Iω0x)) < 5e-5
 @test maximum(abs.(Iω0y .- Iω0_analytic)/norm(Iω0y)) < 5e-5
 
+end
 end

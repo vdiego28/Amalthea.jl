@@ -1,3 +1,6 @@
+using TestItems
+
+@testitem "Noise" tags=[:fields] begin
 using Luna
 import Test: @test, @testset, @test_throws
 import Luna: Fields, Grid, Processing
@@ -263,3 +266,5 @@ end
 end
 
 Logging.global_logger(old_logger)
+
+end

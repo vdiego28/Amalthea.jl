@@ -1,9 +1,12 @@
+using TestItems
+
+@testitem "Rect_modes" tags=[:physics] begin
 import Test: @test, @testset
 import Cubature: hcubature
-import LinearAlgebra: dot, norm
+import LinearAlgebra: dot
 import Luna: RectModes
 import Luna.Modes
-import Luna.PhysData: c, ε_0, μ_0, wlfreq
+import Luna.PhysData: ε_0, μ_0, wlfreq
 
 a = 50e-6
 b = 12.5e-6
@@ -29,14 +32,14 @@ m = RectModes.RectMode(a, b, :Ar, 0.0, :Ag)
             e = em(xs)
             dl[1] == :polar ? xs[1]*e^2 : e^2
         end
-        val, err = hcubature(Aeff_num, dl[2], dl[3])
+        val, _ = hcubature(Aeff_num, dl[2], dl[3])
         num = val^2
         # Denominator
         function Aeff_den(xs)
             e = em(xs)
             dl[1] == :polar ? xs[1]*e^4 : e^4
         end
-        den, err = hcubature(Aeff_den, dl[2], dl[3])
+        den, _ = hcubature(Aeff_den, dl[2], dl[3])
         return num / den
     end
     function N(m; z=0)
@@ -47,7 +50,7 @@ m = RectModes.RectMode(a, b, :Ar, 0.0, :Ag)
             ret = sqrt(ε_0/μ_0)*dot(E, E)
             dl[1] == :polar ? xs[1]*ret : ret
         end
-        val, err = hcubature(Nfunc, dl[2], dl[3])
+        val, _ = hcubature(Nfunc, dl[2], dl[3])
         0.5*abs(val)
     end
 
@@ -88,4 +91,6 @@ m = RectModes.RectMode(a, b, :Ar, 0.0, :Ag)
     @test Modes.Aeff(m, z=L/2) ≈ Aeff(m, z=L/2)
     @test Modes.Aeff(m, z=L) ≈ Aeff(m, z=L)
     @test Modes.Aeff(m, z=L) ≈ Modes.Aeff(m, z=0)/4
+end
+
 end

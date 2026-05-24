@@ -1,3 +1,6 @@
+using TestItems
+
+@testitem "Physdata" tags=[:physics] begin
 import Test: @test, @test_throws, @testset, @test_broken
 import Luna: PhysData
 
@@ -109,5 +112,6 @@ end
         @test all(dens.(Plow) .≈ PhysData.density.(g, Plow))
         @test all(isapprox.(dens.(Pfine), PhysData.density.(g, Pfine), rtol=1e-6))
     end
+end
 end
 end

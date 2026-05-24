@@ -1,3 +1,6 @@
+using TestItems
+
+@testitem "Fields" tags=[:fields] begin
 import Test: @test, @testset
 using Luna
 import FFTW
@@ -19,7 +22,6 @@ end
     energy = 1e-6
     ϕ = [0.0, 0.0]
     grid = Grid.RealGrid(1.0, λ0, (160e-9, 3000e-9), 10e-12)
-    energy_t = Fields.energyfuncs(grid)[1]
     x = Array{Float64}(undef, length(grid.t))
     FT = FFTW.plan_rfft(x, 1)
 
@@ -45,7 +47,6 @@ end
     energy = 1e-6
     ϕ = [0.0, 0.0]
     grid = Grid.EnvGrid(1.0, λ0, (160e-9, 3000e-9), 10e-12)
-    energy_t = Fields.energyfuncs(grid)[1]
     x = Array{ComplexF64}(undef, length(grid.t))
     FT = FFTW.plan_fft(x, 1)
 
@@ -115,7 +116,6 @@ end
     energy = 1e-6
     ϕ = [0.0, 0.0]
     grid = Grid.RealGrid(1.0, λ0, (160e-9, 3000e-9), 10e-12)
-    energy_t = Fields.energyfuncs(grid)[1]
     x = Array{Float64}(undef, length(grid.t))
     FT = FFTW.plan_rfft(x, 1)
 
@@ -137,7 +137,6 @@ end
     energy = 1e-6
     ϕ = [0.0, 0.0]
     grid = Grid.EnvGrid(1.0, λ0, (160e-9, 3000e-9), 10e-12)
-    energy_t = Fields.energyfuncs(grid)[1]
     x = Array{ComplexF64}(undef, length(grid.t))
     FT = FFTW.plan_fft(x, 1)
 
@@ -164,7 +163,6 @@ end
     # so [0.0, τ0] is a delay by τ0
     ϕ = [0.0, τ0]
     grid = Grid.RealGrid(1.0, λ0, (160e-9, 3000e-9), 10e-12)
-    energy_t = Fields.energyfuncs(grid)[1]
     x = Array{Float64}(undef, length(grid.t))
     FT = FFTW.plan_rfft(x, 1)
 
@@ -189,7 +187,6 @@ end
     # so [0.0, τ0] is a delay by τ0
     ϕ = [0.0, τ0]
     grid = Grid.EnvGrid(1.0, λ0, (160e-9, 3000e-9), 10e-12)
-    energy_t = Fields.energyfuncs(grid)[1]
     x = Array{ComplexF64}(undef, length(grid.t))
     FT = FFTW.plan_fft(x, 1)
 
@@ -206,7 +203,6 @@ end
     @test isapprox(grid.t[argmax(It)], τ0, rtol=1e-15, atol=1e-15)
 
     # non zero
-    τ0 = -564e-15
 
     #real 
     τfwhm = 30e-15
@@ -217,7 +213,6 @@ end
     # so [0.0, τ0] is a delay by τ0
     ϕ = [0.0, τ0]
     grid = Grid.RealGrid(1.0, λ0, (160e-9, 3000e-9), 10e-12)
-    energy_t = Fields.energyfuncs(grid)[1]
     x = Array{Float64}(undef, length(grid.t))
     FT = FFTW.plan_rfft(x, 1)
 
@@ -242,7 +237,6 @@ end
     # so [0.0, τ0] is a delay by τ0
     ϕ = [0.0, τ0]
     grid = Grid.EnvGrid(1.0, λ0, (160e-9, 3000e-9), 10e-12)
-    energy_t = Fields.energyfuncs(grid)[1]
     x = Array{ComplexF64}(undef, length(grid.t))
     FT = FFTW.plan_fft(x, 1)
 
@@ -266,7 +260,6 @@ end
     energy = 1e-6
     ϕCEO = 0.0
     grid = Grid.RealGrid(1.0, λ0, (160e-9, 3000e-9), 10e-12)
-    energy_t = Fields.energyfuncs(grid)[1]
     x = Array{Float64}(undef, length(grid.t))
     FT = FFTW.plan_rfft(x, 1)
 
@@ -288,7 +281,6 @@ end
     energy = 1e-6
     ϕCEO = 0.0
     grid = Grid.EnvGrid(1.0, λ0, (160e-9, 3000e-9), 10e-12)
-    energy_t = Fields.energyfuncs(grid)[1]
     x = Array{ComplexF64}(undef, length(grid.t))
     FT = FFTW.plan_fft(x, 1)
 
@@ -310,9 +302,7 @@ end
     τfwhm = 30e-15
     λ0 = 800e-9
     energy = 1e-6
-    τ0 = 0.0
     grid = Grid.RealGrid(1.0, λ0, (100e-9, 3000e-9), 1e-12)
-    energy_t = Fields.energyfuncs(grid)[1]
     x = Array{Float64}(undef, length(grid.t))
     FT = FFTW.plan_rfft(x, 1)
 
@@ -338,9 +328,7 @@ end
     τfwhm = 30e-15
     λ0 = 800e-9
     energy = 1e-6
-    τ0 = 0.0
     grid = Grid.EnvGrid(1.0, λ0, (100e-9, 3000e-9), 1e-12)
-    energy_t = Fields.energyfuncs(grid)[1]
     x = Array{ComplexF64}(undef, length(grid.t))
     FT = FFTW.plan_fft(x, 1)
 
@@ -375,7 +363,6 @@ end
     Pavg = 20.0
     Δλ = 4e-9
     grid = Grid.EnvGrid(1.0, λ0, (980e-9, 1160e-9), 500e-12)
-    energy_t = Fields.energyfuncs(grid)[1]
     x = Array{ComplexF64}(undef, length(grid.t))
     FT = FFTW.plan_fft(x, 1)
     input = Fields.CWSech(λ0=λ0, Pavg=Pavg, Δλ=Δλ, rng=MersenneTwister(0))
@@ -451,7 +438,7 @@ end
     @test τ0m ≈ √2 * τ0
     # Check signs are correct:
     # α = 0.1 should give loss
-    et, eω = Fields.energyfuncs(grid)
+    _, eω = Fields.energyfuncs(grid)
     @test eω(Eω)*exp(-0.2) ≈ eω(Eωm)
     # β2 > 0 should give positive chirp:
     gab = Maths.gabor(grid.t, Et, [-10e-15, 10e-15], 3e-15)
@@ -710,7 +697,6 @@ end
     grid = Grid.RealGrid(1.0, λ0, (100e-9, 3000e-9), 500e-15)
     δt = grid.t[2] - grid.t[1]
     ϕCEO = δt*PhysData.wlfreq(λ0)
-    energy_t = Fields.energyfuncs(grid)[1]
     x = Array{Float64}(undef, length(grid.t))
     FT = FFTW.plan_rfft(x, 1)
 
@@ -809,4 +795,6 @@ end
 
     @test isapprox(w1x, w1; rtol=1e-2)
     @test isapprox(w1y, w1; rtol=1e-2)
+end
+
 end

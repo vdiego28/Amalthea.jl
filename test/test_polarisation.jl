@@ -1,5 +1,8 @@
-import Test: @test, @testset, @test_throws
-import Luna: Polarisation, Output, Modes
+using TestItems
+
+@testitem "Polarisation" tags=[:sim_multimode] begin
+import Test: @test, @testset
+import Luna: Polarisation
 import LinearAlgebra: norm
 
 @testset "Jones" begin
@@ -33,4 +36,6 @@ import LinearAlgebra: norm
     L = Polarisation.LP()*C
     @test norm(Polarisation.Stokes(L, normalise=true) - [1; 1; 0; 0]) < 1e-15
     @test isapprox(Polarisation.Stokes(L)[1], 0.5)
+end
+
 end

@@ -1,3 +1,6 @@
+using TestItems
+
+@testitem "Processing" tags=[:fields] begin
 import Test: @test, @testset
 import FFTW
 using Luna
@@ -9,7 +12,6 @@ import NumericalIntegration: integrate
 λ0 = 800e-9
 τfwhm = 30e-15
 energy = 1e-3
-ω0 = wlfreq(λ0)
 
 
 rg = Grid.RealGrid(1, λ0, (200e-9, 3000e-9), 0.5e-12)
@@ -293,4 +295,5 @@ end
     @test isapprox(Processing.peakpower(out; sumdims=2)[1], pHE11+pHE12; rtol=1e-4)
 
     @test isapprox(out["stats"]["peakpower_allmodes"][1], pHE11+pHE12; rtol=1e-4)
+end
 end

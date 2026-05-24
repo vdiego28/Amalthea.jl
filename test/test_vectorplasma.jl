@@ -1,9 +1,11 @@
-import Test: @test, @testset, @test_throws
+using TestItems
+
+@testitem "Vectorplasma" tags=[:io] begin
+import Test: @test, @testset
 
 @testset "Vector plasma" begin
     # scalar modal model, vector modal at 0 degrees and vector modal at 45 degrees should be identical
     using Luna
-    import LinearAlgebra: norm
     a = 9e-6
     gas = :Ar
     pres = 5
@@ -12,7 +14,6 @@ import Test: @test, @testset, @test_throws
     λ0 = 1500e-9
     energy = 1.7e-6
     grid = Grid.RealGrid(flength, λ0, (600e-9, 3000e-9), 1e-12)
-    energyfun, energyfunω = Fields.energyfuncs(grid)
     dens0 = PhysData.density(gas, pres)
     densityfun(z) = dens0
     ionpot = PhysData.ionisation_potential(gas)
@@ -21,7 +22,7 @@ import Test: @test, @testset, @test_throws
     modes = (
         Capillary.MarcatiliMode(a, gas, pres, n=1, m=1, kind=:HE, ϕ=0.0, loss=false),
     )
-    nmodes = length(modes)
+
     plasma = Nonlinear.PlasmaCumtrapz(grid.to, grid.to,
                                     ionrate, ionpot)
     responses = (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),
@@ -51,7 +52,7 @@ import Test: @test, @testset, @test_throws
         Capillary.MarcatiliMode(a, gas, pres, n=1, m=1, kind=:HE, ϕ=0.0, loss=false),
         Capillary.MarcatiliMode(a, gas, pres, n=1, m=1, kind=:HE, ϕ=π/2, loss=false),
     )
-    nmodes = length(modes)
+
     inputs = ((mode=1, fields=(Fields.GaussField(λ0=λ0, τfwhm=τfwhm, energy=energy/2),)),
               (mode=2, fields=(Fields.GaussField(λ0=λ0, τfwhm=τfwhm, energy=energy/2),)))
     Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs, modes,
@@ -62,4 +63,6 @@ import Test: @test, @testset, @test_throws
     Luna.run(Eω, grid, linop, transform, FT, outvector45)
     Iωv45 = abs2.(outvector45.data["Eω"][:,1,1]) .+ abs2.(outvector45.data["Eω"][:,2,1])
     @test Iωs ≈ Iωv45
+end
+
 end

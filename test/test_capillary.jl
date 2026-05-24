@@ -1,9 +1,11 @@
-import Test: @test, @testset, @test_broken
-import SpecialFunctions: besselj
+using TestItems
+
+@testitem "Capillary" tags=[:physics] begin
+import Test: @test, @testset
 import Luna.Modes: hcubature
-import LinearAlgebra: dot, norm
-import Luna: Modes, Capillary, Grid
-import Luna.PhysData: c, roomtemp, ref_index_fun, ε_0, μ_0
+import LinearAlgebra: dot
+import Luna: Modes, Capillary
+import Luna.PhysData: ref_index_fun, ε_0, μ_0
 import Luna.PhysData: wlfreq
 
 @testset "loss" begin
@@ -168,4 +170,6 @@ end
     @test m.m == 1
     @test isapprox(m.unm, 5.136, rtol=1e-4) # Number from Marcatili paper
     @test Capillary.mode_string(m) == "HE₋₁₁"
+end
+
 end

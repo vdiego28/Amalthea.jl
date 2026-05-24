@@ -1,13 +1,13 @@
-import Test: @test, @testset
+using TestItems
 
-@testset "Radial propagation" begin
+@testitem "Radial" tags=[:sim_propagation] begin
+import Test: @test, @testset
 import Luna
-import Luna: Grid, Maths, PhysData, Nonlinear, Ionisation, NonlinearRHS, Output, Stats, LinearOps, Plotting, Fields
-import Luna.PhysData: wlfreq
-import FFTW
+import Luna: Grid, Maths, PhysData, Nonlinear, Ionisation, NonlinearRHS, Output, LinearOps, Fields
 import Hankel
 import LinearAlgebra: norm
 
+@testset "Radial propagation" begin
 gas = :Ar
 pres = 1.2
 τ = 20e-15
@@ -20,20 +20,6 @@ N = 128
 
 grid = Grid.RealGrid(L, 800e-9, (400e-9, 2000e-9), 0.2e-12)
 q = Hankel.QDHT(R, N, dim=2)
-
-energyfun, energyfun_ω = Fields.energyfuncs(grid, q)
-
-function prop(E, z)
-    Eω = FFTW.rfft(E, 1)
-    Eωk = q * Eω
-    kzsq = @. (grid.ω/PhysData.c)^2 - (q.k^2)'
-    kzsq[kzsq .< 0] .= 0
-    kz = sqrt.(kzsq)
-    @. Eωk *= exp(-1im * z * (kz - grid.ω/PhysData.c))
-    Eω = q \ Eωk
-    E = FFTW.irfft(Eω, length(grid.t), 1)
-    return E
-end
 
 dens0 = PhysData.density(gas, pres)
 densityfun(z) = dens0
@@ -62,4 +48,6 @@ Iλ0_analytic = Maths.gauss.(q.r, w1/2)*(w0/w1)^2 # analytical solution (in para
 Ir = Maths.normbymax(Iλ0[:, end])
 Ira = Maths.normbymax(Iλ0_analytic)
 @test maximum(abs.(Ir .- Ira)/norm(Ir)) < 1.5e-4
+end
+
 end

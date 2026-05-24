@@ -1,6 +1,8 @@
+using TestItems
+
+@testitem "Gradient" tags=[:fields] begin
 import Luna
-import Luna: Grid, Maths, Capillary, PhysData, Nonlinear, Ionisation, NonlinearRHS, Output, Stats, LinearOps, Modes, Fields
-import Luna.PhysData: wlfreq
+import Luna: Grid, Capillary, PhysData, Nonlinear, Output, Stats, LinearOps, Modes, Fields
 import Test: @test, @testset
 
 @testset "multi-point" begin
@@ -37,8 +39,8 @@ dens0 = PhysData.density(gas, pres)
 dens(z) = dens0
 m = Capillary.MarcatiliMode(a, gas, pres, loss=false)
 aeff(z) = Modes.Aeff(m, z=z)
-energyfun, energyfunω = Fields.energyfuncs(grid)
-linop, βfun!, frame_vel, αfun = LinearOps.make_const_linop(grid, m, λ0)
+_, energyfunω = Fields.energyfuncs(grid)
+linop, βfun!, _, _ = LinearOps.make_const_linop(grid, m, λ0)
 Eω, transform, FT = Luna.setup(
     grid, dens, responses, inputs, βfun!, aeff)
 statsfun = Stats.collect_stats(grid, Eω,
@@ -51,7 +53,7 @@ Luna.run(Eω, grid, linop, transform, FT, output_const, status_period=10)
 coren, densityfun = Capillary.gradient(gas, L, pres, pres)
 m = Capillary.MarcatiliMode(a, coren, loss=false)
 aeff(z) = Modes.Aeff(m, z=z)
-energyfun, energyfunω = Fields.energyfuncs(grid)
+_, energyfunω = Fields.energyfuncs(grid)
 linop, βfun! = LinearOps.make_linop(grid, m, λ0)
 Eω, transform, FT = Luna.setup(
     grid, densityfun, responses, inputs, βfun!, aeff)
@@ -65,7 +67,7 @@ Luna.run(Eω, grid, linop, transform, FT, output_grad, status_period=10)
 coren, densityfun = Capillary.gradient(gas, [0,L], [pres, pres]);
 m = Capillary.MarcatiliMode(a, coren, loss=false)
 aeff(z) = Modes.Aeff(m, z=z)
-energyfun, energyfunω = Fields.energyfuncs(grid)
+_, energyfunω = Fields.energyfuncs(grid)
 linop, βfun! = LinearOps.make_linop(grid, m, λ0)
 Eω, transform, FT = Luna.setup(
     grid, densityfun, responses, inputs, βfun!, aeff)
@@ -97,8 +99,8 @@ dens0 = PhysData.density(gas, pres)
 dens(z) = dens0
 m = Capillary.MarcatiliMode(a, gas, pres, loss=false)
 aeff(z) = Modes.Aeff(m, z=z)
-energyfun, energyfunω = Fields.energyfuncs(grid);
-linop, βfun!, frame_vel, αfun = LinearOps.make_const_linop(grid, m, λ0);
+_, energyfunω = Fields.energyfuncs(grid);
+linop, βfun!, _, _ = LinearOps.make_const_linop(grid, m, λ0);
 Eω, transform, FT = Luna.setup(grid, dens, responses, inputs, βfun!, aeff)
 statsfun = Stats.collect_stats(grid, Eω,
                                Stats.ω0(grid),
@@ -110,7 +112,7 @@ Luna.run(Eω, grid, linop, transform, FT, output_const, status_period=10)
 coren, densityfun = Capillary.gradient(gas, L, pres, pres)
 m = Capillary.MarcatiliMode(a, coren, loss=false)
 aeff(z) = Modes.Aeff(m, z=z)
-energyfun, energyfunω = Fields.energyfuncs(grid)
+_, energyfunω = Fields.energyfuncs(grid)
 linop, βfun! = LinearOps.make_linop(grid, m, λ0)
 Eω, transform, FT = Luna.setup(
     grid, densityfun, responses, inputs, βfun!, aeff)
@@ -124,7 +126,7 @@ Luna.run(Eω, grid, linop, transform, FT, output_grad, status_period=10)
 coren, densityfun = Capillary.gradient(gas, [0,L], [pres, pres]);
 m = Capillary.MarcatiliMode(a, coren, loss=false)
 aeff(z) = Modes.Aeff(m, z=z)
-energyfun, energyfunω = Fields.energyfuncs(grid)
+_, energyfunω = Fields.energyfuncs(grid)
 linop, βfun! = LinearOps.make_linop(grid, m, λ0)
 Eω, transform, FT = Luna.setup(
     grid, densityfun, responses, inputs, βfun!, aeff)
@@ -136,4 +138,6 @@ Luna.run(Eω, grid, linop, transform, FT, output_grad_array, status_period=10)
 
 @test all(output_grad.data["Eω"][grid.sidx, :] .≈ output_const.data["Eω"][grid.sidx, :])
 @test all(output_grad_array.data["Eω"][grid.sidx, :] .≈ output_const.data["Eω"][grid.sidx, :])
+end
+
 end

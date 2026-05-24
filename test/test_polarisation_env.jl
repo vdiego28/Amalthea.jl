@@ -1,5 +1,7 @@
-import Test: @test, @testset, @test_throws
-import Luna: Output
+using TestItems
+
+@testitem "Polarisation_env" tags=[:sim_multimode] begin
+import Test: @test, @testset
 
 @testset "Linear" begin
     # compare radial single pol, to radial linear pol at 45 degrees,
@@ -17,7 +19,7 @@ import Luna: Output
     dens0 = PhysData.density(gas, pres)
     densityfun(z) = dens0
     responses = (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),)
-    energyfun, energyfunω = Fields.energyfuncs(grid)
+    _, energyfunω = Fields.energyfuncs(grid)
 
     modes = (
          Capillary.MarcatiliMode(a, gas, pres, n=1, m=1, kind=:HE, ϕ=0.0, loss=false),
@@ -59,4 +61,6 @@ import Luna: Output
     @test all(output["stats"]["peakintensity"] .≈ outputp["stats"]["peakintensity"])
     @test all(output["stats"]["energy"] .≈ sum(outputp["stats"]["energy"], dims=1))
     @test all(output["stats"]["fwhm_r"] .≈ outputp["stats"]["fwhm_r"])
+end
+
 end

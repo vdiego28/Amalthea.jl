@@ -1,3 +1,6 @@
+using TestItems
+
+@testitem "Antiresonant" tags=[:physics] begin
 import Test: @test, @testset, @test_throws
 import Luna: Antiresonant, Capillary, Modes
 import Luna.PhysData: wlfreq
@@ -69,6 +72,6 @@ end
     gas = :Ar
     pres = 80.0
     m = Antiresonant.VincettiMode(Rco, gas, pres; wallthickness=t, tube_radius=r_ext, Ntubes=N)
-    println(Modes.dB_per_m(m, wlfreq(515e-9)))
     @test isreal(Modes.dB_per_m(m, wlfreq(515e-9)))
+end
 end

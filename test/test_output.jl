@@ -1,6 +1,10 @@
+using TestItems
+
+@testitem "Output" tags=[:io] begin
 import Test: @test, @testset, @test_throws
 import Luna: Output, Processing
 using EllipsisNotation
+import LinearAlgebra: norm
 
 @testset "HDF5" begin
     import HDF5
@@ -15,7 +19,6 @@ using EllipsisNotation
     t1 = 10
     t = collect(range(t0, stop=t1, length=n))
     ω = randn((1024,))
-    wd = dirname(@__FILE__)
     gitc = Utils.git_commit()
     o = Output.HDF5Output(fpath, t0, t1, n, statsfun; yname="y", tname="t")
     extra = Dict()
@@ -64,7 +67,6 @@ end
     t1 = 10
     t = collect(range(t0, stop=t1, length=n))
     ω = randn((1024,))
-    wd = dirname(@__FILE__)
     gitc = Utils.git_commit()
     o = Output.MemoryOutput(t0, t1, n, statsfun, yname="y", tname="t")
     extra = Dict()
@@ -102,9 +104,7 @@ fpath = joinpath(dirpath, "test.h5")
 fpath_comp = joinpath(dirpath, "test_comp.h5")
 @testset "HDF5 vs Memory" begin
     using Luna
-    import FFTW
     import HDF5
-    import LinearAlgebra: norm
 
     a = 13e-6
     gas = :Ar
@@ -121,7 +121,7 @@ fpath_comp = joinpath(dirpath, "test_comp.h5")
         z -> dens0
     end
     responses = (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),)
-    linop, βfun!, frame_vel, αfun = LinearOps.make_const_linop(grid, m, λ0)
+    linop, βfun!, _, _ = LinearOps.make_const_linop(grid, m, λ0)
 
     inputs = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=1e-6)
     Eω, transform, FT = Luna.setup(
@@ -202,7 +202,6 @@ rm(splitdir(fpath)[1], force=true)
 fpath = joinpath(homedir(), ".luna", "output_test", "test.h5")
 @testset "Continuing" begin
     using Luna
-    import FFTW
     import HDF5
 
     a = 13e-6
@@ -217,7 +216,7 @@ fpath = joinpath(homedir(), ".luna", "output_test", "test.h5")
     dens0 = PhysData.density(gas, pres)
     densityfun(z) = dens0
     responses = (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),)
-    linop, βfun!, frame_vel, αfun = LinearOps.make_const_linop(grid, m, λ0)
+    linop, βfun!, _, _ = LinearOps.make_const_linop(grid, m, λ0)
 
     # Run with arbitrary error at 3 cm
     inputs = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=1e-6)
@@ -276,3 +275,5 @@ fpath = joinpath(homedir(), ".luna", "output_test", "test.h5")
 end
 rm(fpath, force=true)
 rm(splitdir(fpath)[1], force=true)
+
+end

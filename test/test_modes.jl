@@ -1,3 +1,6 @@
+using TestItems
+
+@testitem "Modes" tags=[:physics] begin
 import Test: @test, @testset, @test_throws
 import FunctionZeros: besselj_zero
 import SpecialFunctions: besselj
@@ -117,7 +120,7 @@ Etr2 = Et2 .* Er2 # create spatio-temporal pulse profile
 Etr = Etr1 .+ Etr2
 Eωr = FFTW.rfft(Etr, 1)
 
-ert, ekω = Fields.energyfuncs(grid, q)
+ert, _ = Fields.energyfuncs(grid, q)
 energy1 = ert(Etr1)
 energy2 = ert(Etr2)
 @test ert(Etr) ≈ energy1 + energy2
@@ -130,7 +133,7 @@ Eωm2 = Modes.overlap(m2, q.r, Eωr; dim=2, norm=false)
 Etm1 = FFTW.irfft(Eωm1[:, 1], length(grid.t))
 Etm2 = FFTW.irfft(Eωm2[:, 1], length(grid.t))
 
-et, eω = Fields.energyfuncs(grid)
+et, _ = Fields.energyfuncs(grid)
 # check that the non-normalised overlap integral preserves the total energy
 @test isapprox(et(Etm1), energy1, rtol=1e-3)
 @test isapprox(et(Etm2), energy2, rtol=1e-3)
@@ -184,7 +187,7 @@ Etr2 = Et2 .* Er2 # create spatio-temporal pulse profile
 Etr = Etr1 .+ Etr2
 Eωr = FFTW.rfft(Etr, 1)
 
-ert, ekω = Fields.energyfuncs(grid, q)
+ert, _ = Fields.energyfuncs(grid, q)
 energy1 = ert(Etr1)
 energy2 = ert(Etr2)
 @test ert(Etr) ≈ energy1 + energy2
@@ -195,7 +198,7 @@ newgrid = Grid.RealGrid(1, 800e-9, (160e-9, 3000e-9), 1e-12)
 
 Eωm = Modes.overlap(modes, newgrid, grid, q.r, Eωr)
 
-et, eω = Fields.energyfuncs(newgrid)
+_, eω = Fields.energyfuncs(newgrid)
 # do we preserve the energy?
 @test isapprox(eω(Eωm[:, 1]), energy1, rtol=1e-3)
 @test isapprox(eω(Eωm[:, 2]), energy2, rtol=1e-3)
@@ -343,8 +346,6 @@ modes = (
          Capillary.MarcatiliMode(a, gas, pressure, n=1, m=4, kind=:HE, ϕ=0.0, loss=false),
          Capillary.MarcatiliMode(a, gas, pressure, n=1, m=4, kind=:HE, ϕ=0.0, loss=false),
     )
-energyfun, energyfunω = Fields.energyfuncs(grid)
-
 dens0 = PhysData.density(gas, pressure)
 densityfun(z) = dens0
 responses = (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),)
@@ -429,9 +430,11 @@ end # testset "makemodes"
 
     # check that Etxy gives the same results when called with vectors and single points
     xs = (collect(range(0, a, 16)), collect(range(0, 2π, 8)))
-    t, Etxy_grid = Processing.getEtxy(out, xs, flength; oversampling=1)
+    _, Etxy_grid = Processing.getEtxy(out, xs, flength; oversampling=1)
     @testset "comparing at $x1, $x2" for (x1idx, x1) in enumerate(xs[1]), (x2idx, x2) in enumerate(xs[2])
         _, Etthis = Processing.getEtxy(out, (x1, x2), flength; oversampling=1)
         @test Etthis ≈ Etxy_grid[:, x1idx, x2idx, :]
     end
 end # testset "spatial field and fluence"
+
+end

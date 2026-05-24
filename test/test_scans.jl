@@ -1,3 +1,6 @@
+using TestItems
+
+@testitem "Scans" tags=[:io] begin
 import Test: @test, @testset, @test_throws
 using Luna
 import HDF5
@@ -146,20 +149,22 @@ end
 if ~("GITHUB_ACTIONS" in keys(ENV))
 @testset "multi-process queue scan" begin
     ps = addprocs(2)
-    @everywhere using Luna
-    function worker()
-        energies = collect(range(5e-6, 20e-6; length=16))
-        scan = Scan("scantest_queue_multiproc", Scans.QueueExec(); energy=energies)
-        idcs_run = Int[]
-        runscan(scan) do scanidx, energy
-            prop_capillary(125e-6, 3, :He, 0.8; λ0=800e-9, τfwhm=10e-15, energy=energy,
-                           trange=400e-15, λlims=(200e-9, 4e-6))
-            push!(idcs_run, scanidx)
+    @everywhere begin
+        using Luna
+        function worker_scans()
+            energies = collect(range(5e-6, 20e-6; length=16))
+            scan = Scan("scantest_queue_multiproc", Scans.QueueExec(); energy=energies)
+            idcs_run = Int[]
+            runscan(scan) do scanidx, energy
+                prop_capillary(125e-6, 3, :He, 0.8; λ0=800e-9, τfwhm=10e-15, energy=energy,
+                               trange=400e-15, λlims=(200e-9, 4e-6))
+                push!(idcs_run, scanidx)
+            end
+            idcs_run
         end
-        idcs_run
     end
-    r2 = @spawnat ps[1] worker()
-    r3 = @spawnat ps[2] worker()
+    r2 = remotecall(Main.worker_scans, ps[1])
+    r3 = remotecall(Main.worker_scans, ps[2])
     i2 = fetch(r2)
     i3 = fetch(r3)
     # check that both processes ran something
@@ -174,28 +179,29 @@ end
 ##
 @testset "multi-process queue scan with error" begin
     ps = addprocs(2)
-    @everywhere using Luna
-    @everywhere import Logging: with_logger, NullLogger
-    # do it again but with one process giving an error
-    scanname = "scantest_queue_multiproc_err"
-    function worker_err()
-        energies = collect(range(5e-6, 20e-6; length=16))
-        scan = Scan(scanname, Scans.QueueExec(); energy=energies)
-        idcs_run = Int[]
-        runscan(scan) do scanidx, energy
-            with_logger(NullLogger()) do
-                prop_capillary(125e-6, 3, :He, 0.8; λ0=800e-9, τfwhm=10e-15, energy=energy,
-                            trange=400e-15, λlims=(200e-9, 4e-6))
-                if scanidx == 16
-                    error("This exception is expected as part of the test suite")
+    @everywhere begin
+        using Luna
+        import Logging: with_logger, NullLogger
+        function worker_err(scanname)
+            energies = collect(range(5e-6, 20e-6; length=16))
+            scan = Scan(scanname, Scans.QueueExec(); energy=energies)
+            idcs_run = Int[]
+            runscan(scan) do scanidx, energy
+                with_logger(NullLogger()) do
+                    prop_capillary(125e-6, 3, :He, 0.8; λ0=800e-9, τfwhm=10e-15, energy=energy,
+                                trange=400e-15, λlims=(200e-9, 4e-6))
+                    if scanidx == 16
+                        error("This exception is expected as part of the test suite")
+                    end
+                    push!(idcs_run, scanidx)
                 end
-                push!(idcs_run, scanidx)
             end
+            idcs_run
         end
-        idcs_run
     end
-    r2 = @spawnat ps[1] worker_err()
-    r3 = @spawnat ps[2] worker_err()
+    scanname = "scantest_queue_multiproc_err"
+    r2 = remotecall(Main.worker_err, ps[1], scanname)
+    r3 = remotecall(Main.worker_err, ps[2], scanname)
     i2 = fetch(r2)
     i3 = fetch(r3)
     # check that both processes ran something
@@ -217,15 +223,16 @@ end
     energies = collect(range(5e-6, 20e-6; length=16))
     scan = Scan("scantest_queue_multiproc_exec", Scans.QueueExec(4); energy=energies)
     td = joinpath(tempdir(), tempname())
-    runscan(scan) do scanidx, energy
-        println("running on $(myid())")
-        prop_capillary(125e-6, 3, :He, 0.8; λ0=800e-9, τfwhm=10e-15, energy=energy,
-                       trange=400e-15, λlims=(200e-9, 4e-6),
-                       filepath=joinpath(td, makefilename(scan, scanidx)))
-        open(joinpath(td, "$(scanidx)_on_$(myid())"), "w") do io
-            write(io, "$scanidx ran on $(myid())")
+    Main.eval(quote
+        runscan($scan) do scanidx, energy
+            prop_capillary(125e-6, 3, :He, 0.8; λ0=800e-9, τfwhm=10e-15, energy=energy,
+                           trange=400e-15, λlims=(200e-9, 4e-6),
+                           filepath=joinpath($td, makefilename($scan, scanidx)))
+            open(joinpath($td, "$(scanidx)_on_$(myid())"), "w") do io
+                write(io, "$scanidx ran on $(myid())")
+            end
         end
-    end
+    end)
     # should be exactly 2 files per scanidx: output .h5 and "scanidx_on_procid"
     @test length(readdir(td)) == 2length(energies)
     rm(td; recursive=true)
@@ -236,15 +243,16 @@ end
     energies = collect(range(5e-6, 20e-6; length=16))
     scan = Scan("scantest_queue_multiproc_exec_again", Scans.QueueExec(4); energy=energies)
     td = joinpath(tempdir(), tempname())
-    runscan(scan) do scanidx, energy
-        println("running on $(myid())")
-        prop_capillary(125e-6, 3, :He, 0.8; λ0=800e-9, τfwhm=10e-15, energy=energy,
-                       trange=400e-15, λlims=(200e-9, 4e-6),
-                       filepath=joinpath(td, makefilename(scan, scanidx)))
-        open(joinpath(td, "$(scanidx)_on_$(myid())"), "w") do io
-            write(io, "$scanidx ran on $(myid())")
+    Main.eval(quote
+        runscan($scan) do scanidx, energy
+            prop_capillary(125e-6, 3, :He, 0.8; λ0=800e-9, τfwhm=10e-15, energy=energy,
+                           trange=400e-15, λlims=(200e-9, 4e-6),
+                           filepath=joinpath($td, makefilename($scan, scanidx)))
+            open(joinpath($td, "$(scanidx)_on_$(myid())"), "w") do io
+                write(io, "$scanidx ran on $(myid())")
+            end
         end
-    end
+    end)
     # should be exactly 2 files per scanidx: output .h5 and "scanidx_on_procid"
     @test length(readdir(td)) == 2length(energies)
     rm(td; recursive=true)
@@ -277,4 +285,5 @@ end
         @test length(readdir(td)) == length(energies)
     @test all(startswith.(readdir(td), "newname"))
     end
+end
 end

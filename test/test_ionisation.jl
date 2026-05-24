@@ -1,3 +1,6 @@
+using TestItems
+
+@testitem "Ionisation" tags=[:physics] begin
 import Test: @test, @testset, @test_throws
 using Luna
 import NumericalIntegration: integrate, SimpsonEven
@@ -81,7 +84,7 @@ end
     )
 
     λ0 = 800e-9
-    Eω, grid, linop, transform, FT, output = with_logger(NullLogger()) do
+    _, _, _, transform, _, _ = with_logger(NullLogger()) do
         Interface.prop_capillary_args(100e-6, 1, gas, 1;
                                       λ0, τfwhm=10e-15, energy=1e-6,
                                       λlims=(200e-9, 4e-6), trange=0.5e-12,
@@ -97,7 +100,7 @@ end
     @test ir2.spline.y == ir.spline.y
 
     # now same again with mostly default options (just fewer points, for speed)
-    Eω, grid, linop, transform, FT, output = with_logger(NullLogger()) do
+    _, _, _, transform, _, _ = with_logger(NullLogger()) do
         Interface.prop_capillary_args(100e-6, 1, gas, 1;
                                       λ0, τfwhm=10e-15, energy=1e-6,
                                       λlims=(200e-9, 4e-6), trange=0.5e-12,
@@ -134,4 +137,6 @@ end
                                             λ0=800e-9, trange=70e-15, λlims=(100e-9,6e-6),
                                             τfwhm=6e-15, energy=1.5e-3, preionfrac=-0.001,
                                             PPT_options=Dict(:cache => false, :N => 2^12))
+end
+
 end

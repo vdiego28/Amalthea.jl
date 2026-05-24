@@ -1,15 +1,19 @@
-using Test
-import HDF5
+using TestItems
 
-# Resolve the platform-correct shared library extension
-const _LIB_EXT = Sys.iswindows() ? "dll" : Sys.isapple() ? "dylib" : "so"
-const LIB_PATH = if Sys.iswindows()
-    joinpath(@__DIR__, "../target/release/luna_rust.dll")
-else
-    joinpath(@__DIR__, "../target/release/libluna_rust.$_LIB_EXT")
-end
+@testitem "Julia-Rust Phase 4 Integration (Scans & I/O)" tags=[:rust] begin
+    import HDF5
 
-@testset "Julia-Rust Phase 4 Integration (Scans & I/O)" begin
+    # Safely disable locking for local Windows testing
+    Sys.iswindows() && (ENV["HDF5_USE_FILE_LOCKING"] = "FALSE")
+
+    # Resolve the platform-correct shared library extension
+    _LIB_EXT = Sys.iswindows() ? "dll" : Sys.isapple() ? "dylib" : "so"
+    LIB_PATH = if Sys.iswindows()
+        joinpath(@__DIR__, "../target/release/luna_rust.dll")
+    else
+        joinpath(@__DIR__, "../target/release/libluna_rust.$_LIB_EXT")
+    end
+
     # Pass HDF5 path to Rust side so it doesn't have to guess or search for it
     ENV["LUNA_HDF5_LIB"] = HDF5.API.libhdf5
     
