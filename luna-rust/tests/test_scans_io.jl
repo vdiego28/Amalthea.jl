@@ -1,10 +1,11 @@
 using TestItems
 
+# Safely disable locking for local Windows testing before HDF5 is loaded.
+Sys.iswindows() && (ENV["HDF5_USE_FILE_LOCKING"] = "FALSE")
+
 @testitem "Julia-Rust Phase 4 Integration (Scans & I/O)" tags=[:rust] begin
     import HDF5
 
-    # Safely disable locking for local Windows testing
-    Sys.iswindows() && (ENV["HDF5_USE_FILE_LOCKING"] = "FALSE")
 
     # Resolve the platform-correct shared library extension
     _LIB_EXT = Sys.iswindows() ? "dll" : Sys.isapple() ? "dylib" : "so"

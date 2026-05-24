@@ -1,11 +1,10 @@
-import numpy as np
-
 class LunaOutput:
     def __init__(self, jl_output):
         self._jl_output = jl_output
 
     def __getitem__(self, key):
-        from ._julia import _jl
+        from ._julia import get_julia
+        _jl, _ = get_julia()
         try:
             val = self._jl_output[key]
         except Exception as e:
@@ -13,7 +12,9 @@ class LunaOutput:
         return self._to_python(val)
 
     def _to_python(self, val):
-        from ._julia import _jl
+        from ._julia import get_julia
+        import numpy as np
+        _jl, _ = get_julia()
         # If it is a Dict, Group, File or MemoryOutput/HDF5Output
         if (_jl.isa(val, _jl.Dict) or 
             _jl.isa(val, _jl.Luna.Output.HDF5.Group) or 
@@ -28,7 +29,8 @@ class LunaOutput:
         return val
 
     def __contains__(self, key):
-        from ._julia import _jl
+        from ._julia import get_julia
+        _jl, _ = get_julia()
         if _jl.isa(self._jl_output, _jl.Dict):
             return _jl.haskey(self._jl_output, key)
         elif _jl.isa(self._jl_output, _jl.Luna.Output.AbstractOutput):
@@ -38,7 +40,8 @@ class LunaOutput:
         return False
 
     def keys(self):
-        from ._julia import _jl
+        from ._julia import get_julia
+        _jl, _ = get_julia()
         if _jl.isa(self._jl_output, _jl.Dict):
             return list(self._jl_output.keys())
         elif _jl.isa(self._jl_output, _jl.Luna.Output.MemoryOutput):

@@ -19,7 +19,8 @@ _ASCII_TO_UNICODE = {
 }
 
 def _to_julia_type(k, v):
-    from ._julia import _jl
+    from ._julia import get_julia
+    _jl, _ = get_julia()
     if isinstance(v, str):
         if k in ("gas", "pulseshape", "polarisation", "model", "plasma", "ramanmodel", "modes"):
             return _jl.Symbol(v)
