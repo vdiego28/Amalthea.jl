@@ -99,7 +99,7 @@ impl Library {
         }
         #[cfg(windows)]
         {
-            extern "system" {
+            unsafe extern "system" {
                 fn GetProcAddress(hModule: *mut std::ffi::c_void, lpProcName: *const libc::c_char) -> *mut std::ffi::c_void;
             }
             let ptr = unsafe { GetProcAddress(self.handle, c_name.as_ptr()) };
@@ -121,7 +121,7 @@ impl Drop for Library {
             }
             #[cfg(windows)]
             {
-                extern "system" {
+                unsafe extern "system" {
                     fn FreeLibrary(hModule: *mut std::ffi::c_void) -> libc::c_int;
                 }
                 FreeLibrary(self.handle);
@@ -184,7 +184,7 @@ fn find_hdf5_lib_path() -> Option<PathBuf> {
                 let path_os = std::ffi::OsStr::new(*name);
                 let mut wide: Vec<u16> = path_os.encode_wide().collect();
                 wide.push(0);
-                extern "system" {
+                unsafe extern "system" {
                     fn LoadLibraryW(lpLibFileName: *const u16) -> *mut std::ffi::c_void;
                     fn FreeLibrary(hModule: *mut std::ffi::c_void) -> libc::c_int;
                 }
