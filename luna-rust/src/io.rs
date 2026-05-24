@@ -1,4 +1,4 @@
-use std::ffi::{CString, CStr};
+use std::ffi::CString;
 use num_complex::Complex;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -49,9 +49,10 @@ struct Library {
 
 impl Library {
     unsafe fn load(path: &Path) -> Result<Self, String> {
-        let path_str = path.to_string_lossy();
         #[cfg(unix)]
         {
+            // Moved inside the unix block so Windows doesn't complain about it
+            let path_str = path.to_string_lossy(); 
             let c_path = CString::new(path_str.as_ref()).map_err(|e| e.to_string())?;
             let handle = unsafe { libc::dlopen(c_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL) };
             if handle.is_null() {
@@ -59,7 +60,8 @@ impl Library {
                 let err_msg = if err.is_null() {
                     "Unknown dlopen error".to_string()
                 } else {
-                    unsafe { CStr::from_ptr(err).to_string_lossy().into_owned() }
+                    // Added std::ffi:: here since we removed the global import
+                    unsafe { std::ffi::CStr::from_ptr(err).to_string_lossy().into_owned() }
                 };
                 return Err(err_msg);
             }
@@ -71,7 +73,7 @@ impl Library {
             let path_os = path.as_os_str();
             let mut wide: Vec<u16> = path_os.encode_wide().collect();
             wide.push(0);
-            extern "system" {
+            unsafe extern "system" {
                 fn LoadLibraryW(lpLibFileName: *const u16) -> *mut std::ffi::c_void;
                 fn GetLastError() -> u32;
             }
