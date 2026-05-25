@@ -1,4 +1,36 @@
 use num_complex::Complex;
+use std::sync::OnceLock;
+use crate::cuda::{GpuBuffer, get_gpu_context, get_cublas_api, cublasOperation_t};
+
+#[derive(Debug)]
+pub struct GpuBuffers {
+    pub d_t_matrix: GpuBuffer,
+    pub d_input_re: GpuBuffer,
+    pub d_input_im: GpuBuffer,
+    pub d_output_re: GpuBuffer,
+    pub d_output_im: GpuBuffer,
+}
+
+impl GpuBuffers {
+    pub fn new(n_r: usize, t_matrix: &[f64]) -> Result<Self, String> {
+        let f64_size = std::mem::size_of::<f64>();
+        let d_t_matrix = GpuBuffer::alloc(n_r * n_r * f64_size)?;
+        let d_input_re = GpuBuffer::alloc(n_r * f64_size)?;
+        let d_input_im = GpuBuffer::alloc(n_r * f64_size)?;
+        let d_output_re = GpuBuffer::alloc(n_r * f64_size)?;
+        let d_output_im = GpuBuffer::alloc(n_r * f64_size)?;
+        
+        d_t_matrix.copy_to_device(t_matrix)?;
+        
+        Ok(Self {
+            d_t_matrix,
+            d_input_re,
+            d_input_im,
+            d_output_re,
+            d_output_im,
+        })
+    }
+}
 
 /// Evaluation of the 0-th order Bessel function of the first kind J0(x)
 pub fn j0(x: f64) -> f64 {
@@ -76,7 +108,7 @@ pub fn find_j0_zeros(n: usize) -> Vec<f64> {
 }
 
 /// Quasi-Discrete Hankel Transform (QDHT) solver
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Qdht {
     pub n_r: usize,
     pub aperture_radius: f64,
@@ -84,6 +116,21 @@ pub struct Qdht {
     pub k: Vec<f64>,  // Reciprocal/spectral grid points (size n_r)
     pub t_matrix: Vec<f64>, // Flattened symmetric transform matrix T_ij (n_r x n_r)
     pub j1_zeros: Vec<f64>, // j1 evaluated at zeros of j0 (needed for scaling factors)
+    pub gpu_buffers: OnceLock<Option<GpuBuffers>>,
+}
+
+impl Clone for Qdht {
+    fn clone(&self) -> Self {
+        Self {
+            n_r: self.n_r,
+            aperture_radius: self.aperture_radius,
+            r: self.r.clone(),
+            k: self.k.clone(),
+            t_matrix: self.t_matrix.clone(),
+            j1_zeros: self.j1_zeros.clone(),
+            gpu_buffers: OnceLock::new(),
+        }
+    }
 }
 
 impl Qdht {
@@ -120,7 +167,17 @@ impl Qdht {
             k,
             t_matrix,
             j1_zeros,
+            gpu_buffers: OnceLock::new(),
         }
+    }
+
+    fn get_or_init_gpu_buffers(&self) -> Option<&GpuBuffers> {
+        if get_gpu_context().is_none() {
+            return None;
+        }
+        self.gpu_buffers.get_or_init(|| {
+            GpuBuffers::new(self.n_r, &self.t_matrix).ok()
+        }).as_ref()
     }
 
     /// Performs the Hankel Transform in-place using dense Level-2 BLAS matrix-vector product
@@ -129,6 +186,68 @@ impl Qdht {
         assert_eq!(input.len(), self.n_r);
         assert_eq!(output.len(), self.n_r);
         
+        if let Some(gpu_buffers) = self.get_or_init_gpu_buffers() {
+            if let Ok(ctx) = crate::cuda::activate_context() {
+                if let Ok(cublas) = get_cublas_api() {
+                    let mut h_re = vec![0.0; self.n_r];
+                    let mut h_im = vec![0.0; self.n_r];
+                    for i in 0..self.n_r {
+                        h_re[i] = input[i].re;
+                        h_im[i] = input[i].im;
+                    }
+                    
+                    let _ = gpu_buffers.d_input_re.copy_to_device(&h_re);
+                    let _ = gpu_buffers.d_input_im.copy_to_device(&h_im);
+                    
+                    let alpha = 1.0f64;
+                    let beta = 0.0f64;
+                    
+                    unsafe {
+                        let res_re = (cublas.cublasDgemv_v2)(
+                            ctx.cublas_handle,
+                            cublasOperation_t::CUBLAS_OP_N,
+                            self.n_r as libc::c_int,
+                            self.n_r as libc::c_int,
+                            &alpha,
+                            gpu_buffers.d_t_matrix.dptr as *const f64,
+                            self.n_r as libc::c_int,
+                            gpu_buffers.d_input_re.dptr as *const f64,
+                            1,
+                            &beta,
+                            gpu_buffers.d_output_re.dptr as *mut f64,
+                            1,
+                        );
+                        
+                        let res_im = (cublas.cublasDgemv_v2)(
+                            ctx.cublas_handle,
+                            cublasOperation_t::CUBLAS_OP_N,
+                            self.n_r as libc::c_int,
+                            self.n_r as libc::c_int,
+                            &alpha,
+                            gpu_buffers.d_t_matrix.dptr as *const f64,
+                            self.n_r as libc::c_int,
+                            gpu_buffers.d_input_im.dptr as *const f64,
+                            1,
+                            &beta,
+                            gpu_buffers.d_output_im.dptr as *mut f64,
+                            1,
+                        );
+                        
+                        if res_re == 0 && res_im == 0 {
+                            let _ = gpu_buffers.d_output_re.copy_to_host(&mut h_re);
+                            let _ = gpu_buffers.d_output_im.copy_to_host(&mut h_im);
+                            
+                            for i in 0..self.n_r {
+                                output[i] = Complex::new(h_re[i], h_im[i]);
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Fallback to CPU Rayon
         use rayon::prelude::*;
         
         output.par_iter_mut().enumerate().for_each(|(i, out_val)| {

@@ -67,26 +67,6 @@ fn is_apple_amx_available() -> bool {
     }
 }
 
-fn is_cuda_available() -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        // Try dynamic load of libcuda.so.1 via dlopen
-        unsafe {
-            if let Ok(c_name) = std::ffi::CString::new("libcuda.so.1") {
-                let handle = libc::dlopen(c_name.as_ptr(), libc::RTLD_LAZY);
-                if !handle.is_null() {
-                    libc::dlclose(handle);
-                    return true;
-                }
-            }
-        }
-        std::path::Path::new("/dev/nvidia0").exists()
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        false
-    }
-}
 
 fn is_vulkan_available() -> bool {
     #[cfg(target_os = "linux")]
@@ -111,13 +91,12 @@ fn is_vulkan_available() -> bool {
 
 impl SimulationEngine {
     pub fn try_init_cuda() -> Result<Self, String> {
-        if is_cuda_available() {
-            Ok(Self {
+        match crate::cuda::init_gpu_context() {
+            Ok(_) => Ok(Self {
                 active_path: HardwarePath::GpuCuda,
                 thread_pool_size: 1,
-            })
-        } else {
-            Err("CUDA driver or device not found".to_string())
+            }),
+            Err(e) => Err(format!("CUDA driver or device not found: {}", e)),
         }
     }
 

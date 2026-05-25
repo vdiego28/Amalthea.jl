@@ -1,4 +1,5 @@
 /// 1D Cubic Spline Interpolation Segment: S_i(x) = a + b(x - x_i) + c(x - x_i)^2 + d(x - x_i)^3
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct SplineSegment {
     pub x: f64,
@@ -141,5 +142,89 @@ impl PptIonizationRate {
             Some(ln_rate) => Ok(ln_rate.exp()),
             None => Ok(0.0), // fallback safety
         }
+    }
+
+    /// Evaluates ionization rates for a vector of field strength values, using GPU acceleration if available.
+    pub fn rate_vector(&self, fields: &[f64], rates: &mut [f64]) -> Result<(), String> {
+        let n_t = fields.len();
+        assert_eq!(rates.len(), n_t);
+        
+        if let Some(ctx) = crate::cuda::get_gpu_context() {
+            if self.rate_vector_gpu(ctx, fields, rates).is_ok() {
+                return Ok(());
+            }
+        }
+        
+        for i in 0..n_t {
+            rates[i] = self.rate(fields[i])?;
+        }
+        Ok(())
+    }
+
+    fn rate_vector_gpu(&self, ctx: &crate::cuda::GpuContext, fields: &[f64], rates: &mut [f64]) -> Result<(), String> {
+        let n_t = fields.len();
+        let num_segments = self.spline_lut.segments.len();
+        
+        let d_fields = crate::cuda::GpuBuffer::alloc(n_t * std::mem::size_of::<f64>())?;
+        let d_rates = crate::cuda::GpuBuffer::alloc(n_t * std::mem::size_of::<f64>())?;
+        let d_segments = crate::cuda::GpuBuffer::alloc(num_segments * std::mem::size_of::<SplineSegment>())?;
+        let d_err = crate::cuda::GpuBuffer::alloc(std::mem::size_of::<libc::c_int>())?;
+        
+        d_fields.copy_to_device(fields)?;
+        d_segments.copy_to_device(&self.spline_lut.segments)?;
+        
+        let err_initial = [0 as libc::c_int];
+        d_err.copy_to_device(&err_initial)?;
+        
+        let mut d_fields_ptr = d_fields.dptr;
+        let mut d_rates_ptr = d_rates.dptr;
+        let mut d_segments_ptr = d_segments.dptr;
+        let mut e_min_val = self.e_min;
+        let mut e_max_val = self.e_max;
+        let mut num_segments_val = num_segments as libc::c_int;
+        let mut n_t_val = n_t as libc::c_int;
+        let mut d_err_ptr = d_err.dptr;
+        
+        let mut args: [*mut libc::c_void; 8] = [
+            &mut d_fields_ptr as *mut _ as *mut libc::c_void,
+            &mut d_rates_ptr as *mut _ as *mut libc::c_void,
+            &mut d_segments_ptr as *mut _ as *mut libc::c_void,
+            &mut e_min_val as *mut _ as *mut libc::c_void,
+            &mut e_max_val as *mut _ as *mut libc::c_void,
+            &mut num_segments_val as *mut _ as *mut libc::c_void,
+            &mut n_t_val as *mut _ as *mut libc::c_void,
+            &mut d_err_ptr as *mut _ as *mut libc::c_void,
+        ];
+        
+        let block_size = 256;
+        let grid_size = (n_t + block_size - 1) / block_size;
+        
+        crate::cuda::activate_context()?;
+        let driver = crate::cuda::get_driver_api()?;
+        
+        unsafe {
+            let res = (driver.cuLaunchKernel)(
+                ctx.ppt_fn,
+                grid_size as libc::c_uint, 1, 1,
+                block_size as libc::c_uint, 1, 1,
+                0,
+                std::ptr::null_mut(),
+                args.as_mut_ptr(),
+                std::ptr::null_mut(),
+            );
+            
+            if res != 0 {
+                return Err(format!("cuLaunchKernel for ppt_ionization_kernel failed: {}", res));
+            }
+        }
+        
+        let mut err_res = [0 as libc::c_int];
+        d_err.copy_to_host(&mut err_res)?;
+        if err_res[0] != 0 {
+            return Err("Electric field amplitude exceeded upper bound of ionization rate lookup table".to_string());
+        }
+        
+        d_rates.copy_to_host(rates)?;
+        Ok(())
     }
 }

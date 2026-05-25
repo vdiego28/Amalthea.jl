@@ -1,6 +1,7 @@
 pub mod grid;
 pub mod ffi;
 pub mod dispersion;
+pub mod cuda;
 pub mod diffraction;
 pub mod ionization;
 pub mod raman;
@@ -287,5 +288,121 @@ mod tests {
         let idx5 = queue.checkout_next_index().unwrap();
         assert_eq!(idx5, None);
         assert!(!std::path::Path::new(qfile).exists());
+    }
+
+    #[test]
+    fn test_gpu_qdht_numerical_equivalence() {
+        if let Err(err) = crate::cuda::init_gpu_context() {
+            println!("Skipping GPU QDHT test: GPU context not available: {}", err);
+            return;
+        }
+        
+        let n_zeros = 64;
+        let radius = 10.0;
+        let qdht = Qdht::new(n_zeros, radius);
+        
+        let n_grid = qdht.n_r;
+        let mut input = vec![Complex::new(0.0, 0.0); n_grid];
+        for i in 0..n_grid {
+            let r = qdht.r[i];
+            input[i] = Complex::new((-r * r).exp(), 0.0);
+        }
+        
+        let mut gpu_output = vec![Complex::new(0.0, 0.0); n_grid];
+        qdht.transform(&input, &mut gpu_output);
+        
+        let mut cpu_output = vec![Complex::new(0.0, 0.0); n_grid];
+        for i in 0..n_grid {
+            let mut sum_re = 0.0;
+            let mut sum_im = 0.0;
+            let row_offset = i * n_grid;
+            for j in 0..n_grid {
+                let t_val = qdht.t_matrix[row_offset + j];
+                let val = input[j];
+                sum_re += t_val * val.re;
+                sum_im += t_val * val.im;
+            }
+            cpu_output[i] = Complex::new(sum_re, sum_im);
+        }
+        
+        for i in 0..n_grid {
+            assert!((gpu_output[i].re - cpu_output[i].re).abs() < 1e-12);
+            assert!((gpu_output[i].im - cpu_output[i].im).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn test_gpu_raman_numerical_equivalence() {
+        if let Err(err) = crate::cuda::init_gpu_context() {
+            println!("Skipping GPU Raman test: GPU context not available: {}", err);
+            return;
+        }
+        
+        let osc = RamanOscillator {
+            omega: 1e12,
+            gamma: 2e11,
+            coupling: 0.1,
+        };
+        
+        let dt = 1e-14;
+        let mut solver = TimeDomainRamanSolver::new(vec![osc], dt);
+        
+        let mut intensity = vec![0.0; 100];
+        for i in 10..100 {
+            intensity[i] = 1e15;
+        }
+        
+        let mut gpu_pol = vec![0.0; 100];
+        solver.solve(&intensity, &mut gpu_pol);
+        
+        let mut cpu_pol = vec![0.0; 100];
+        let mut states = vec![(0.0, 0.0); solver.oscillators.len()];
+        cpu_pol[0] = 0.0;
+        for n in 0..99 {
+            let i_n = intensity[n];
+            let i_np1 = intensity[n + 1];
+            let mut total_q = 0.0;
+            for i in 0..solver.oscillators.len() {
+                let coeffs = &solver.step_coeffs[i];
+                let (q, dq) = states[i];
+                let q_new = coeffs.a11 * q + coeffs.a12 * dq + coeffs.b0_1 * i_n + coeffs.b1_1 * i_np1;
+                let dq_new = coeffs.a21 * q + coeffs.a22 * dq + coeffs.b0_2 * i_n + coeffs.b1_2 * i_np1;
+                states[i] = (q_new, dq_new);
+                total_q += q_new;
+            }
+            cpu_pol[n + 1] = total_q;
+        }
+        
+        for i in 0..100 {
+            assert!((gpu_pol[i] - cpu_pol[i]).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn test_gpu_ionization_numerical_equivalence() {
+        if let Err(err) = crate::cuda::init_gpu_context() {
+            println!("Skipping GPU Ionization test: GPU context not available: {}", err);
+            return;
+        }
+        
+        let e_min = 1.0e8;
+        let e_max = 5.0e9;
+        let n_points = 128;
+        let rate_fn = |e: f64| 1.2 * (e / 1.0e9).exp();
+        
+        let ppt = PptIonizationRate::new(e_min, e_max, n_points, rate_fn);
+        
+        let mut fields = vec![0.0; 100];
+        for i in 0..100 {
+            fields[i] = e_min + (i as f64) * (e_max - e_min) / 101.0;
+        }
+        
+        let mut gpu_rates = vec![0.0; 100];
+        ppt.rate_vector(&fields, &mut gpu_rates).unwrap();
+        
+        for i in 0..100 {
+            let cpu_rate = ppt.rate(fields[i]).unwrap();
+            assert!((gpu_rates[i] - cpu_rate).abs() / cpu_rate < 1e-12);
+        }
     }
 }

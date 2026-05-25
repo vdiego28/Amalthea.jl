@@ -7,6 +7,7 @@ pub struct RamanOscillator {
 }
 
 /// Precomputed matrix exponential coefficients for a single oscillator at a fixed time step Δt
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct PrecomputedStepCoeffs {
     // 2x2 matrix exponential A = exp(M * dt)
@@ -118,11 +119,67 @@ impl TimeDomainRamanSolver {
     /// Evaluates the total Raman response vector for a time-domain intensity array I
     /// Updates states in-place.
     pub fn solve(&mut self, intensity: &[f64], raman_polarization: &mut [f64]) {
+        if let Some(ctx) = crate::cuda::get_gpu_context() {
+            if self.solve_gpu(ctx, intensity, raman_polarization).is_ok() {
+                return;
+            }
+        }
+
         #[cfg(target_arch = "x86_64")]
         if is_x86_feature_detected!("avx2") {
             return unsafe { self.solve_avx2(intensity, raman_polarization) };
         }
         self.solve_scalar(intensity, raman_polarization);
+    }
+
+    fn solve_gpu(&self, ctx: &crate::cuda::GpuContext, intensity: &[f64], raman_polarization: &mut [f64]) -> Result<(), String> {
+        let n_t = intensity.len();
+        let num_oscillators = self.oscillators.len();
+        
+        let d_intensity = crate::cuda::GpuBuffer::alloc(n_t * std::mem::size_of::<f64>())?;
+        let d_polarization = crate::cuda::GpuBuffer::alloc(n_t * std::mem::size_of::<f64>())?;
+        let d_coeffs = crate::cuda::GpuBuffer::alloc(num_oscillators * std::mem::size_of::<PrecomputedStepCoeffs>())?;
+        
+        d_intensity.copy_to_device(intensity)?;
+        d_coeffs.copy_to_device(&self.step_coeffs)?;
+        
+        let mut d_intensity_ptr = d_intensity.dptr;
+        let mut d_polarization_ptr = d_polarization.dptr;
+        let mut d_coeffs_ptr = d_coeffs.dptr;
+        let mut num_osc_val = num_oscillators as libc::c_int;
+        let mut n_t_val = n_t as libc::c_int;
+        let mut n_series_val = 1 as libc::c_int;
+        
+        let mut args: [*mut libc::c_void; 6] = [
+            &mut d_intensity_ptr as *mut _ as *mut libc::c_void,
+            &mut d_polarization_ptr as *mut _ as *mut libc::c_void,
+            &mut d_coeffs_ptr as *mut _ as *mut libc::c_void,
+            &mut num_osc_val as *mut _ as *mut libc::c_void,
+            &mut n_t_val as *mut _ as *mut libc::c_void,
+            &mut n_series_val as *mut _ as *mut libc::c_void,
+        ];
+        
+        crate::cuda::activate_context()?;
+        let driver = crate::cuda::get_driver_api()?;
+        
+        unsafe {
+            let res = (driver.cuLaunchKernel)(
+                ctx.raman_fn,
+                1, 1, 1,
+                1, 1, 1,
+                0,
+                std::ptr::null_mut(),
+                args.as_mut_ptr(),
+                std::ptr::null_mut(),
+            );
+            
+            if res != 0 {
+                return Err(format!("cuLaunchKernel for raman_ade_kernel failed: {}", res));
+            }
+        }
+        
+        d_polarization.copy_to_host(raman_polarization)?;
+        Ok(())
     }
 
     #[cfg(target_arch = "x86_64")]
