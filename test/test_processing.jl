@@ -297,3 +297,9 @@ end
     @test isapprox(out["stats"]["peakpower_allmodes"][1], pHE11+pHE12; rtol=1e-4)
 end
 end
+
+@testset "getIω error paths" begin
+    ω = collect(1.0:10.0)
+    Eω = collect(1.0:10.0)
+    @test_throws ErrorException Processing.getIω(ω, Eω, :unknown_axis)
+end
