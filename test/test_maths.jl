@@ -331,5 +331,18 @@ end
     end
 end
 
+@testset "fftfreq and rfftfreq" begin
+    # Happy paths
+    x1 = collect(range(0.0, stop=10.0, length=11))
+    k1 = Maths.fftfreq(x1)
+    k1r = Maths.rfftfreq(x1)
+    @test length(k1) == 11
+    @test length(k1r) == 6
+
+    # Error paths: non-uniformly spaced
+    x_err = [0.0, 1.0, 2.0, 4.0, 5.0]
+    @test_throws ErrorException Maths.fftfreq(x_err)
+    @test_throws ErrorException Maths.rfftfreq(x_err)
+end
 
 end
