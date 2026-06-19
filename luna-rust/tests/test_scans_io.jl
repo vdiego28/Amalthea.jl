@@ -108,6 +108,9 @@ Sys.iswindows() && (ENV["HDF5_USE_FILE_LOCKING"] = "FALSE")
     )
     @test idx_none == -1
 
+    # Add a small GC sleep to let HDF5 descriptors flush on some OS.
+    GC.gc()
+    sleep(0.1)
     # Destroy the Rust queue object so all Rust file handles are dropped before Julia reopens the file.
     ccall(
         (:free_scan_queue, LIB_PATH),
@@ -116,6 +119,7 @@ Sys.iswindows() && (ENV["HDF5_USE_FILE_LOCKING"] = "FALSE")
         queue_ptr
     )
 
+    sleep(0.1)
     # Now Julia can safely inspect the final queue state sequentially.
     @test isfile(qfile)
     HDF5.h5open(qfile, "r") do file
