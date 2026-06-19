@@ -175,9 +175,9 @@ end
                 x0 >= spl.x[end] ? length(spl.x) :
                 findfirst(x -> x>x0, spl.x)
     ff = Maths.FastFinder(x)
-    @test_throws ErrorException Maths.FastFinder(x[end:-1:1])
-    @test_throws ErrorException Maths.FastFinder(shuffle(x))
-    @test_throws ErrorException Maths.FastFinder(vcat(x[1], x))
+    @test_throws ErrorException("Input array for FastFinder must be sorted in ascending order.") Maths.FastFinder(x[end:-1:1])
+    @test_throws ErrorException("Input array for FastFinder must be sorted in ascending order.") Maths.FastFinder(shuffle(x))
+    @test_throws ErrorException("Entries in input array for FastFinder must be unique.") Maths.FastFinder(vcat(x[1], x))
     @test all(abs.(spl.(x) .- y) .< 5e-18)
     x2 = range(0.0, 2π, length=300)
     idcs = spl.ifun.(x2)
