@@ -1,7 +1,0 @@
-with open("python/tests/test_python_api.py", "r") as f:
-    content = f.read()
-
-content = content.replace("with mock.patch('luna_rust.LunaOutput', autospec=True) as mock_out:", "with mock.patch('luna_rust.output.LunaOutput') as mock_out:")
-
-with open("python/tests/test_python_api.py", "w") as f:
-    f.write(content)

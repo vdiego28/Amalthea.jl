@@ -12,7 +12,7 @@ def mock_julia():
         mock_jl = mock.MagicMock()
         mock_luna = mock.MagicMock()
         mock_get.return_value = (mock_jl, mock_luna)
-        with mock.patch('luna_rust.LunaOutput', autospec=True) as mock_out:
+        with mock.patch('luna_rust.output.LunaOutput', autospec=True) as mock_out:
             mock_out_inst = mock.MagicMock()
             mock_out.return_value = mock_out_inst
             mock_out_inst.__contains__.return_value = True

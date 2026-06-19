@@ -1,7 +1,0 @@
-with open("python/tests/test_python_api.py", "r") as f:
-    content = f.read()
-
-content = content.replace("def mock_julia():\n    with mock.patch('luna_rust.get_julia') as mock_get:\n        pass\n        mock_get_kwargs.return_value = (mock_jl, mock_luna)\n        pass\n        mock_get_output.return_value = (mock_jl, mock_luna)\n        with mock.patch('luna_rust.LunaOutput', autospec=True) as mock_out:\n            mock_out_inst = mock.MagicMock()\n            mock_out.return_value = mock_out_inst\n            mock_out_inst.__contains__.return_value = True\n            mock_out_inst.__getitem__.return_value = np.zeros((10, 10))\n            yield mock_luna\n", "def mock_julia():\n    import sys\n    sys.modules['juliapkg'] = mock.MagicMock()\n    sys.modules['juliacall'] = mock.MagicMock()\n    with mock.patch('luna_rust._julia.get_julia') as mock_get:\n        mock_jl = mock.MagicMock()\n        mock_luna = mock.MagicMock()\n        mock_get.return_value = (mock_jl, mock_luna)\n        with mock.patch('luna_rust.output.LunaOutput') as mock_out:\n            mock_out_inst = mock.MagicMock()\n            mock_out.return_value = mock_out_inst\n            mock_out_inst.__contains__.return_value = True\n            mock_out_inst.__getitem__.return_value = np.zeros((10, 10))\n            yield mock_luna\n")
-
-with open("python/tests/test_python_api.py", "w") as f:
-    f.write(content)

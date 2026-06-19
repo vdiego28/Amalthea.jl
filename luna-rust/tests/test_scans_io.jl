@@ -6,7 +6,6 @@ ENV["HDF5_USE_FILE_LOCKING"] = "FALSE"
 @testitem "Julia-Rust Phase 4 Integration (Scans & I/O)" tags=[:rust] begin
     import HDF5
 
-
     # Resolve the platform-correct shared library extension
     _LIB_EXT = Sys.iswindows() ? "dll" : Sys.isapple() ? "dylib" : "so"
     LIB_PATH = if Sys.iswindows()
@@ -39,6 +38,9 @@ ENV["HDF5_USE_FILE_LOCKING"] = "FALSE"
     )
     @test queue_ptr != C_NULL
     
+    # Sleep a bit to make sure IO operations complete
+    sleep(0.5)
+
     # First checkout should get index 0
     idx0 = ccall(
         (:checkout_next_index, LIB_PATH),
@@ -48,6 +50,8 @@ ENV["HDF5_USE_FILE_LOCKING"] = "FALSE"
     )
     @test idx0 == 0
     
+    sleep(0.5)
+
     # Second checkout should get index 1
     idx1 = ccall(
         (:checkout_next_index, LIB_PATH),
@@ -57,6 +61,8 @@ ENV["HDF5_USE_FILE_LOCKING"] = "FALSE"
     )
     @test idx1 == 1
     
+    sleep(0.5)
+
     # Mark index 0 as completed successfully (success = 1)
     res0 = ccall(
         (:mark_completed, LIB_PATH),
@@ -68,6 +74,8 @@ ENV["HDF5_USE_FILE_LOCKING"] = "FALSE"
     )
     @test res0 == 0
     
+    sleep(0.5)
+
     # Mark index 1 as failed (success = 0)
     res1 = ccall(
         (:mark_completed, LIB_PATH),
@@ -79,6 +87,8 @@ ENV["HDF5_USE_FILE_LOCKING"] = "FALSE"
     )
     @test res1 == 0
     
+    sleep(0.5)
+
     # Checkout third item
     idx2 = ccall(
         (:checkout_next_index, LIB_PATH),
@@ -88,6 +98,8 @@ ENV["HDF5_USE_FILE_LOCKING"] = "FALSE"
     )
     @test idx2 == 2
     
+    sleep(0.5)
+
     # Mark index 2 as success
     res2 = ccall(
         (:mark_completed, LIB_PATH),
@@ -98,6 +110,8 @@ ENV["HDF5_USE_FILE_LOCKING"] = "FALSE"
         1
     )
     @test res2 == 0
+
+    sleep(0.5)
 
     # Checkout when none left should return -1
     idx_none = ccall(
@@ -115,6 +129,8 @@ ENV["HDF5_USE_FILE_LOCKING"] = "FALSE"
         (Ptr{Cvoid},),
         queue_ptr
     )
+
+    sleep(0.5)
 
     # Now Julia can safely inspect the final queue state sequentially.
     @test isfile(qfile)
