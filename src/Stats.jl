@@ -116,7 +116,7 @@ function peakpower(grid, Eω, window::Vector{<:Real}; label)
             Pt .= abs2.(Etbuf)
             d[key] = dropdims(maximum(Pt, dims=1), dims=1)
             d[key*"_allmodes"] = maximum(eachindex(grid.t)) do ii
-                sum(Pt[ii, :]; dims=2)
+                @views sum(Pt[ii, :]; dims=2)
             end
         else
             d[key] = maximum(abs2, Etbuf)
