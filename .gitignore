@@ -17,3 +17,4 @@ luna-rust/target/
 __pycache__/
 *.pyc
 *.egg-info/
+julia*

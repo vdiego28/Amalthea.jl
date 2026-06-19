@@ -23,6 +23,14 @@ import FFTW
     @test isapprox(Maths.derivative(x -> exp.(2x), 1, 1), 2*exp(2))
     @test isapprox(Maths.derivative(x -> exp.(2x), 1, 2), 4*exp(2))
     @test isapprox(Maths.derivative(x -> exp.(-x.^2), 0, 1), 0, atol=1e-14)
+@testset "level_xings error paths" begin
+    x = collect(range(-1, stop=1, length=100))
+    y = Maths.gauss.(x, fwhm=0.2)
+
+    @test_throws ErrorException Maths.level_xings(x, y; minmax=:invalid)
+    @test_throws ErrorException Maths.level_xings(x, y; method=:invalid)
+end
+
 end
 
 @testset "Moments" begin
