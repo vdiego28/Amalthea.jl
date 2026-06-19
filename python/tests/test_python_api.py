@@ -41,3 +41,28 @@ def test_gnlse_ascii():
     )
     assert "Eω" in o
     assert o["Eω"].shape[1] > 0
+
+def test_gnlse_unicode():
+    gamma = 0.1
+    flength = 0.001
+    betas = (0.0, 0.0, -1e-26)
+    o = luna_rust.prop_gnlse(
+        gamma, flength, betas,
+        λ0=835e-9, τfwhm=100e-15, energy=1e-12,
+        λlims=(450e-9, 2000e-9), trange=4e-12,
+        raman=True, shock=True, shotnoise=False, saveN=11
+    )
+    assert "Eω" in o
+    assert o["Eω"].shape[1] > 0
+
+def test_gnlse_duplicate_kwargs():
+    gamma = 0.1
+    flength = 0.001
+    betas = (0.0, 0.0, -1e-26)
+    with pytest.raises(ValueError):
+        luna_rust.prop_gnlse(
+            gamma, flength, betas,
+            lambda0=835e-9, λ0=835e-9, tau_fwhm=100e-15, energy=1e-12,
+            lambda_lims=(450e-9, 2000e-9), trange=4e-12,
+            raman=True, shock=True, shotnoise=False, saveN=11
+        )
