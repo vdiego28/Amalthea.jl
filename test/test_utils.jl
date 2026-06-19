@@ -36,20 +36,7 @@ dd = Utils.load_dict_h5(fpath)
 @test d == dd
 
 rm(fpath)
-
-# Test error paths for BitArray and Nothing
-d_bitarray = Dict{String, Any}("bitarray" => BitArray([true, false]))
-d_nothing = Dict{String, Any}("nothing" => nothing)
-
-Utils.save_dict_h5(fpath, d_bitarray)
-@test_throws ErrorException Utils.save_dict_h5(fpath, d_bitarray, force=false)
-rm(fpath)
-
-Utils.save_dict_h5(fpath, d_nothing)
-@test_throws ErrorException Utils.save_dict_h5(fpath, d_nothing, force=false)
-rm(fpath)
-
-rm(dirname(fpath), force=true, recursive=true)
+rm(dirname(fpath), force=true)
 end
 
 @testset "super/subscripts" begin

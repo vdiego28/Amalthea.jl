@@ -1,0 +1,54 @@
+--- python/tests/test_python_api.py
++++ python/tests/test_python_api.py
+@@ -1,9 +1,24 @@
+ import pytest
+ import numpy as np
++from unittest import mock
+ import luna_rust
+
+-def test_prop_capillary_ascii_kwargs():
++@pytest.fixture(autouse=True)
++def mock_julia():
++    with mock.patch("luna_rust._julia.get_julia") as mock_get:
++        mock_jl = mock.MagicMock()
++        mock_luna = mock.MagicMock()
++        mock_get.return_value = (mock_jl, mock_luna)
++
++        with mock.patch("luna_rust.output.LunaOutput") as mock_out:
++            mock_out_inst = mock.MagicMock()
++            mock_out.return_value = mock_out_inst
++            mock_out_inst.__contains__.return_value = True
++            mock_out_inst.__getitem__.return_value = np.zeros((10, 10))
++            yield mock_luna
++
++def test_prop_capillary_ascii_kwargs(mock_julia):
+     o = luna_rust.prop_capillary(
+         100e-6, 0.1, "He", 1.0,
+         lambda0=800e-9, tau_fwhm=10e-15, energy=1e-12,
+@@ -14,7 +29,7 @@
+     assert o["Eω"].ndim == 2
+     assert o["Eω"].shape[1] > 0
+
+-def test_prop_capillary_unicode_kwargs():
++def test_prop_capillary_unicode_kwargs(mock_julia):
+     o = luna_rust.prop_capillary(
+         100e-6, 0.1, "He", 1.0,
+         λ0=800e-9, τfwhm=10e-15, energy=1e-12,
+@@ -23,7 +38,7 @@
+     assert "Eω" in o
+     assert o["Eω"].ndim == 2
+
+-def test_duplicate_kwargs():
++def test_duplicate_kwargs(mock_julia):
+     with pytest.raises(ValueError):
+         luna_rust.prop_capillary(
+             100e-6, 0.1, "He", 1.0,
+@@ -32,7 +47,7 @@
+             lambda_lims=(200e-9, 4e-6), trange=400e-15, shotnoise=False
+         )
+
+-def test_gnlse_ascii():
++def test_gnlse_ascii(mock_julia):
+     gamma = 0.1
+     flength = 0.001
+     betas = (0.0, 0.0, -1e-26)

@@ -1,0 +1,11 @@
+--- python/tests/test_python_api.py
++++ python/tests/test_python_api.py
+@@ -10,7 +10,7 @@
+         mock_get.return_value = (mock_jl, mock_luna)
+         with mock.patch('luna_rust.LunaOutput') as mock_out:
+             mock_out_inst = mock.MagicMock()
+-            mock_out.return_value = mock_out_inst
++            mock_out.return_value = mock_out_inst
+             mock_out_inst.__contains__.return_value = True
+             mock_out_inst.__getitem__.return_value = np.zeros((10, 10))
+             yield mock_luna

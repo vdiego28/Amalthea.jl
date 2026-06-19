@@ -1,4 +1,4 @@
-import pytest
+content = """import pytest
 import numpy as np
 import luna_rust
 from unittest import mock
@@ -58,3 +58,6 @@ def test_gnlse_ascii(mock_julia):
     )
     assert "Eω" in o
     assert o["Eω"].shape[1] > 0
+"""
+with open("python/tests/test_python_api.py", "w") as f:
+    f.write(content)

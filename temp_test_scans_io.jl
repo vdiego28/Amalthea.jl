@@ -1,9 +1,3 @@
-using TestItems
-
-# Safely disable locking for testing before HDF5 is loaded.
-ENV["HDF5_USE_FILE_LOCKING"] = "FALSE"
-
-@testitem "Julia-Rust Phase 4 Integration (Scans & I/O)" tags=[:rust] begin
     import HDF5
 
 
@@ -17,18 +11,18 @@ ENV["HDF5_USE_FILE_LOCKING"] = "FALSE"
 
     # Pass HDF5 path to Rust side so it doesn't have to guess or search for it
     ENV["LUNA_HDF5_LIB"] = HDF5.API.libhdf5
-    
+
     @test isfile(LIB_PATH)
-    
+
     qfile = "julia_test_queue.h5"
     lock_file = qfile * "_lock"
-    
+
     # Ensure clean state
     rm(qfile, force=true)
     rm(lock_file, force=true)
-    
+
     total_points = 3
-    
+
     # Initialize queue
     queue_ptr = ccall(
         (:init_scan_queue, LIB_PATH),
@@ -38,7 +32,7 @@ ENV["HDF5_USE_FILE_LOCKING"] = "FALSE"
         total_points
     )
     @test queue_ptr != C_NULL
-    
+
     # First checkout should get index 0
     idx0 = ccall(
         (:checkout_next_index, LIB_PATH),
@@ -47,7 +41,7 @@ ENV["HDF5_USE_FILE_LOCKING"] = "FALSE"
         queue_ptr
     )
     @test idx0 == 0
-    
+
     # Second checkout should get index 1
     idx1 = ccall(
         (:checkout_next_index, LIB_PATH),
@@ -56,7 +50,7 @@ ENV["HDF5_USE_FILE_LOCKING"] = "FALSE"
         queue_ptr
     )
     @test idx1 == 1
-    
+
     # Mark index 0 as completed successfully (success = 1)
     res0 = ccall(
         (:mark_completed, LIB_PATH),
@@ -67,7 +61,7 @@ ENV["HDF5_USE_FILE_LOCKING"] = "FALSE"
         1
     )
     @test res0 == 0
-    
+
     # Mark index 1 as failed (success = 0)
     res1 = ccall(
         (:mark_completed, LIB_PATH),
@@ -78,7 +72,7 @@ ENV["HDF5_USE_FILE_LOCKING"] = "FALSE"
         0
     )
     @test res1 == 0
-    
+
     # Checkout third item
     idx2 = ccall(
         (:checkout_next_index, LIB_PATH),
@@ -87,7 +81,7 @@ ENV["HDF5_USE_FILE_LOCKING"] = "FALSE"
         queue_ptr
     )
     @test idx2 == 2
-    
+
     # Mark index 2 as success
     res2 = ccall(
         (:mark_completed, LIB_PATH),
@@ -130,4 +124,3 @@ ENV["HDF5_USE_FILE_LOCKING"] = "FALSE"
     rm(lock_file, force=true)
 
     println("Successfully validated Phase 4 Scans & I/O FFI bindings between Julia and Rust.")
-end

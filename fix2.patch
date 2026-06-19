@@ -1,0 +1,12 @@
+--- luna-rust/tests/test_scans_io.jl
++++ luna-rust/tests/test_scans_io.jl
+@@ -1,7 +1,7 @@
+ using TestItems
+
+-# Safely disable locking for local Windows testing before HDF5 is loaded.
+-Sys.iswindows() && (ENV["HDF5_USE_FILE_LOCKING"] = "FALSE")
++# Safely disable locking for testing before HDF5 is loaded.
++ENV["HDF5_USE_FILE_LOCKING"] = "FALSE"
+
+ @testitem "Julia-Rust Phase 4 Integration (Scans & I/O)" tags=[:rust] begin
+     import HDF5

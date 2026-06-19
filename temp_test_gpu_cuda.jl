@@ -1,6 +1,3 @@
-using TestItems
-
-@testitem "Julia-Rust Phase 5 GPU CUDA Dispatch" tags=[:rust] begin
     _LIB_EXT = Sys.iswindows() ? "dll" : Sys.isapple() ? "dylib" : "so"
     LIB_PATH = if Sys.iswindows()
         joinpath(@__DIR__, "../target/release/luna_rust.dll")
@@ -9,7 +6,7 @@ using TestItems
     end
 
     @test isfile(LIB_PATH)
-    
+
     # Initialize the simulation engine with GpuCuda (5)
     engine_ptr = ccall(
         (:init_simulation_engine, LIB_PATH),
@@ -18,7 +15,7 @@ using TestItems
         5 # GpuCuda
     )
     @test engine_ptr != C_NULL
-    
+
     # Retrieve active hardware path
     active_path = ccall(
         (:get_active_hardware_path, LIB_PATH),
@@ -26,11 +23,11 @@ using TestItems
         (Ptr{Cvoid},),
         engine_ptr
     )
-    
+
     # It must return a valid hardware path (>= 1)
     @test active_path >= 1
     println("Active hardware path returned from Rust engine: ", active_path)
-    
+
     # Free the engine
     ccall(
         (:free_simulation_engine, LIB_PATH),
@@ -39,4 +36,3 @@ using TestItems
         engine_ptr
     )
     println("Successfully verified dynamic GPU CUDA dispatch from Julia FFI.")
-end
