@@ -5,7 +5,9 @@ Sys.iswindows() && (ENV["HDF5_USE_FILE_LOCKING"] = "FALSE")
 
 @testitem "Julia-Rust Phase 4 Integration (Scans & I/O)" tags=[:rust] begin
     import HDF5
-
+    # Force HDF5 to be loaded into the current process memory so that all its
+    # dependent libraries (e.g. libsz) are already loaded when Rust dlopens it.
+    using HDF5
 
     # Resolve the platform-correct shared library extension
     _LIB_EXT = Sys.iswindows() ? "dll" : Sys.isapple() ? "dylib" : "so"
