@@ -116,6 +116,9 @@ Sys.iswindows() && (ENV["HDF5_USE_FILE_LOCKING"] = "FALSE")
         queue_ptr
     )
 
+    # Give the filesystem a moment to sync before reading
+    sleep(0.5)
+
     # Now Julia can safely inspect the final queue state sequentially.
     @test isfile(qfile)
     HDF5.h5open(qfile, "r") do file

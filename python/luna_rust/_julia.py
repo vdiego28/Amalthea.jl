@@ -28,6 +28,7 @@ def get_julia():
             juliapkg.add("Luna", path=_luna_path)
 
             from juliacall import Main as _main
+            _main.seval("import Pkg; Pkg.build(\"PyCall\")")
             _main.seval("using Luna")
             _jl = _main
             Luna = _main.Luna
