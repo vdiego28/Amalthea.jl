@@ -236,8 +236,10 @@ function interpolate(s::Stepper, ti::Float64)
         return s.yn
     end
     σ = (ti - s.t)/s.dt
-    σp = map(p -> σ^p, range(1, stop=4))
-    b = sum(σp.*interpC, dims=1)
+    σ2 = σ^2
+    σ3 = σ2*σ
+    σ4 = σ3*σ
+    b = ntuple(ii -> σ*interpC[1,ii] + σ2*interpC[2,ii] + σ3*interpC[3,ii] + σ4*interpC[4,ii], Val(7))
     fill!(s.yi, 0)
     for ii = 1:7
          s.yi .+= s.ks[ii].*b[ii]
@@ -256,8 +258,10 @@ function interpolate(s::PreconStepper, ti::Float64)
         return s.yn
     end
     σ = (ti - s.t)/s.dt
-    σp = map(p -> σ^p, range(1, stop=4))
-    b = sum(σp.*interpC, dims=1)
+    σ2 = σ^2
+    σ3 = σ2*σ
+    σ4 = σ3*σ
+    b = ntuple(ii -> σ*interpC[1,ii] + σ2*interpC[2,ii] + σ3*interpC[3,ii] + σ4*interpC[4,ii], Val(7))
     fill!(s.yi, 0)
     for ii = 1:7
          s.yi .+= s.ks[ii].*b[ii]
