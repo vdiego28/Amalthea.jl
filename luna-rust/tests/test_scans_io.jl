@@ -118,7 +118,7 @@ Sys.iswindows() && (ENV["HDF5_USE_FILE_LOCKING"] = "FALSE")
 
     # Now Julia can safely inspect the final queue state sequentially.
     @test isfile(qfile)
-    HDF5.h5open(qfile, "r") do file
+    HDF5.h5open(qfile, "r"; swmr=true) do file
         qdata = read(file["qdata"])
         @test qdata[1] == 2  # Completed successfully (Julia is 1-indexed)
         @test qdata[2] == 3  # Failed
