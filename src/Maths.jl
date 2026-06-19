@@ -742,7 +742,7 @@ Ensure that the x array contains unique and sorted values (while preserving the
 relaionship between the x and y values).
 """
 function check_spline_args(x, y)
-    if any(diff(x) .== 0)
+    if length(unique(x)) != length(x)
         error("entries in x must be unique")
     end
     if !issorted(x)

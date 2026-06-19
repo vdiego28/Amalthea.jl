@@ -331,5 +331,30 @@ end
     end
 end
 
+@testset "check_spline_args" begin
+    # Happy path
+    x = [1.0, 2.0, 3.0]
+    y = [10.0, 20.0, 30.0]
+    x_out, y_out = Maths.check_spline_args(x, y)
+    @test x_out == x
+    @test y_out == y
+
+    # Unsorted path
+    x_unsorted = [2.0, 1.0, 3.0]
+    y_unsorted = [20.0, 10.0, 30.0]
+    x_out, y_out = Maths.check_spline_args(x_unsorted, y_unsorted)
+    @test x_out == [1.0, 2.0, 3.0]
+    @test y_out == [10.0, 20.0, 30.0]
+
+    # Error path (adjacent duplicate)
+    x_dup = [1.0, 2.0, 2.0, 3.0]
+    y_dup = [10.0, 20.0, 20.0, 30.0]
+    @test_throws ErrorException Maths.check_spline_args(x_dup, y_dup)
+
+    # Error path (non-adjacent duplicate)
+    x_dup2 = [1.0, 2.0, 1.0]
+    y_dup2 = [10.0, 20.0, 10.0]
+    @test_throws ErrorException Maths.check_spline_args(x_dup2, y_dup2)
+end
 
 end
