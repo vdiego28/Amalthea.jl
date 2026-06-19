@@ -130,6 +130,9 @@ end
     @test Maths.fwhm(x, y, method=:spline) == Maths.fwhm(x, y, method=:spline, minmax=:max)
     @test abs(Maths.fwhm(x, y, method=:nearest) - fw) < δx
 
+    @test_throws "Unknown FWHM method unknown" Maths.fwhm(x, y, method=:unknown)
+    @test_throws "minmax has to be :min or :max" Maths.fwhm(x, y, minmax=:unknown)
+
     fw = 0.1
     sep = 0.5
     y = Maths.gauss.(x, fwhm=fw, x0=-sep/2) + Maths.gauss.(x, fwhm=fw, x0=sep/2)
