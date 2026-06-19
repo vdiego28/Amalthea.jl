@@ -14,12 +14,16 @@ d["float"] = 1.0
 d["float[]"] = [1.0, 2.0, 3.0]
 d["string"] = "foo"
 d["nothing"] = nothing
+d["bitarray"] = BitArray([true, false, true])
 d["dict"] = Dict("foo"=>5, "bar"=>[1, 2, 3], "baz"=>Dict("complex"=>5.0+2.0im))
 fpath = joinpath(Utils.cachedir(), "output_test", "test.h5")
 isfile(fpath) && rm(fpath)
 isdir(dirname(fpath)) || mkpath(dirname(fpath))
 Utils.save_dict_h5(fpath, d)
-@test_throws ErrorException Utils.save_dict_h5(fpath, d, force=false)
+for k in ["float", "bitarray", "nothing"]
+    d_single = Dict{String, Any}(k => d[k])
+    @test_throws "Dataset $k exists in $fpath. Set force=true to overwrite." Utils.save_dict_h5(fpath, d_single, force=false)
+end
 HDF5.h5open(fpath) do file
     for k in ["float", "float[]", "string"]
         @test d[k] == read(file[k])
