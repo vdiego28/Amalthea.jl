@@ -219,7 +219,7 @@ function initialise(o::HDF5Output, y)
     dims = Tuple(cdims)
     chdims = (dims[1:end-1]..., 1) # Chunk size is that of one z-point
     mdims = copy(cdims)
-    mdims[end] = HDF5.API.H5S_UNLIMITED
+    mdims[end] = -1
     maxdims = Tuple(mdims)
     HDF5.h5open(o.fpath, "r+") do file
         if o.compression
@@ -229,7 +229,7 @@ function initialise(o::HDF5Output, y)
             HDF5.create_dataset(file, o.yname, HDF5.datatype(ComplexF64), (dims, maxdims),
                           chunk=chdims)
         end
-        HDF5.create_dataset(file, o.tname, HDF5.datatype(Float64), ((dims[end],), (HDF5.API.H5S_UNLIMITED,)),
+        HDF5.create_dataset(file, o.tname, HDF5.datatype(Float64), ((dims[end],), (-1,)),
                       chunk=(1,))
         statsnames = sort(collect(keys(o.stats_tmp[end])))
         o.cachehash = hash((statsnames, size(y)))
@@ -382,13 +382,13 @@ function append_stats!(parent, a::Array{Dict{String,Any},1})
 end
 
 function create_dataset(parent, name, x::Number)
-    HDF5.create_dataset(parent, name, HDF5.datatype(typeof(x)), ((1,), (HDF5.API.H5S_UNLIMITED,)),
+    HDF5.create_dataset(parent, name, HDF5.datatype(typeof(x)), ((1,), (-1,)),
                   chunk=(1,))
 end
 
 function create_dataset(parent, name, x::AbstractArray)
     dims = (size(x)..., 1)
-    maxdims = (size(x)..., HDF5.API.H5S_UNLIMITED)
+    maxdims = (size(x)..., -1)
     HDF5.create_dataset(parent, name, HDF5.datatype(eltype(x)), (dims, maxdims),
                   chunk=dims)
 end
@@ -679,7 +679,7 @@ function scansave(scan, scanidx; stats=nothing, fpath=nothing,
                     #= last dimension of a statistics array is number of steps,
                         so save in chunks of 100 steps =#
                     fixeddims_v = size(v)[1:end-1]
-                    mdims = (fixeddims_v..., HDF5.API.H5S_UNLIMITED, shape...)
+                    mdims = (fixeddims_v..., -1, shape...)
                     chdims = (fixeddims_v..., 100, fill(1, length(shape))...)
                     HDF5.create_dataset(group, k, HDF5.datatype(eltype(v)), (dims, mdims),
                                   chunk=chdims)
