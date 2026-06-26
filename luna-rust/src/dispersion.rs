@@ -164,3 +164,19 @@ impl ChebyshevDispersion {
         (val, dy_dω, d2y_dω2)
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sellmeier_gas_d2n_dw2() {
+        let gas = SellmeierGas { b1: 1.2, c1: 3.4e15 };
+        let w = 1.0e7;
+        let h = 1.0e1;
+
+        let exact = gas.d2n_dω2(w);
+        let fd = (gas.dn_dω(w + h) - gas.dn_dω(w - h)) / (2.0 * h);
+
+        assert!((exact - fd).abs() / exact.abs() < 1e-10);
+    }
+}
