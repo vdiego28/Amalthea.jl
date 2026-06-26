@@ -467,7 +467,7 @@ function runscan(f, scan::Scan{SlurmExec})
         end
     end
     @info "Submitting job..."
-    out = read(`sbatch $subfile`, String)
+    out = read(Cmd(["sbatch", subfile]), String)
     @info "Slurm submission output:\n$out"
 end
 
@@ -500,7 +500,7 @@ function runscan(f, scan::Scan{CondorExec})
         end
     end
     @info "Submitting job..."
-    out = read(`condor_submit $subfile`, String)
+    out = read(Cmd(["condor_submit", subfile]), String)
     @info "Condor submission output:\n$out"
 end
 
@@ -525,11 +525,11 @@ function runscan(f, scan::Scan{<:SSHExec})
         name = scan.name
         folder = Dates.format(Dates.now(), "yyyymmdd_HHMMSS") * "_$name"
         @info "Making directory \$HOME/$subdir/$folder"
-        read(`ssh $host "mkdir -p \$HOME/$subdir/$folder"`)
+        read(Cmd(["ssh", host, "mkdir -p \$HOME/$subdir/$folder"]))
         @info "Transferring file..."
-        read(`scp $script $host:\~/$subdir/$folder`)
+        read(Cmd(["scp", script, "$host:~/$subdir/$folder"]))
         @info "Running Luna script on remote host $host"
-        read(`ssh $host julia \$HOME/$subdir/$folder/$scriptfile`, String)
+        read(Cmd(["ssh", host, "julia", "\$HOME/$subdir/$folder/$scriptfile"]), String)
     end
 end
 
