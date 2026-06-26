@@ -190,13 +190,13 @@ end
 
 function show(io::IO, t::TransModal)
     grid = "grid type: $(typeof(t.grid))"
-    modes = "modes: $(t.ts.nmodes)\n"*" "^4*join([string(mi) for mi in t.ts.ms], "\n    ")
+    modes = "modes: $(t.ts.nmodes)\n"*" "^4*join((string(mi) for mi in t.ts.ms), "\n    ")
     p = t.ts.indices == 1:2 ? "x,y" : t.ts.indices == 1 ? "x" : "y"
     pol = "polarisation: $p"
     samples = "time grid size: $(length(t.grid.t)) / $(length(t.grid.to))"
-    resp = "responses: "*join([string(typeof(ri)) for ri in t.resp], "\n    ")
+    resp = "responses: "*join((string(typeof(ri)) for ri in t.resp), "\n    ")
     full = "full: $(t.full)"
-    out = join(["TransModal", modes, pol, grid, samples, full, resp], "\n  ")
+    out = join(("TransModal", modes, pol, grid, samples, full, resp), "\n  ")
     print(io, out)
 end
 
@@ -387,8 +387,8 @@ end
 function show(io::IO, t::TransModeAvg)
     grid = "grid type: $(typeof(t.grid))"
     samples = "time grid size: $(length(t.grid.t)) / $(length(t.grid.to))"
-    resp = "responses: "*join([string(typeof(ri)) for ri in t.resp], "\n    ")
-    out = join(["TransModeAvg", grid, samples, resp], "\n  ")
+    resp = "responses: "*join((string(typeof(ri)) for ri in t.resp), "\n    ")
+    out = join(("TransModeAvg", grid, samples, resp), "\n  ")
     print(io, out)
 end
 
@@ -511,10 +511,10 @@ end
 function show(io::IO, t::TransRadial)
     grid = "grid type: $(typeof(t.grid))"
     samples = "time grid size: $(length(t.grid.t)) / $(length(t.grid.to))"
-    resp = "responses: "*join([string(typeof(ri)) for ri in t.resp], "\n    ")
+    resp = "responses: "*join((string(typeof(ri)) for ri in t.resp), "\n    ")
     nr = "radial points: $(t.QDHT.N)"
     R = "aperture: $(t.QDHT.R)"
-    out = join(["TransRadial", grid, samples, nr, R, resp], "\n  ")
+    out = join(("TransRadial", grid, samples, nr, R, resp), "\n  ")
     print(io, out)
 end
 
@@ -661,10 +661,10 @@ end
 function show(io::IO, t::TransFree)
     grid = "grid type: $(typeof(t.grid))"
     samples = "time grid size: $(length(t.grid.t)) / $(length(t.grid.to))"
-    resp = "responses: "*join([string(typeof(ri)) for ri in t.resp], "\n    ")
+    resp = "responses: "*join((string(typeof(ri)) for ri in t.resp), "\n    ")
     y = "y grid: $(minimum(t.xygrid.y)) to $(maximum(t.xygrid.y)), N=$(length(t.xygrid.y))"
     x = "x grid: $(minimum(t.xygrid.x)) to $(maximum(t.xygrid.x)), N=$(length(t.xygrid.x))"
-    out = join(["TransFree", grid, samples, y, x, resp], "\n  ")
+    out = join(("TransFree", grid, samples, y, x, resp), "\n  ")
     print(io, out)
 end
 
