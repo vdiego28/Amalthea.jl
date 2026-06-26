@@ -524,12 +524,15 @@ function runscan(f, scan::Scan{<:SSHExec})
         scriptfile = basename(script)
         name = scan.name
         folder = Dates.format(Dates.now(), "yyyymmdd_HHMMSS") * "_$name"
+        dir = "\$HOME/$(Base.shell_escape_posixly(subdir))/$(Base.shell_escape_posixly(folder))"
         @info "Making directory \$HOME/$subdir/$folder"
-        read(`ssh $host "mkdir -p \$HOME/$subdir/$folder"`)
+        read(`ssh $host mkdir -p $dir`)
         @info "Transferring file..."
-        read(`scp $script $host:\~/$subdir/$folder`)
+        scpres = "~/" * Base.shell_escape_posixly(subdir) * "/" * Base.shell_escape_posixly(folder)
+        read(`scp $script $host:$scpres`)
         @info "Running Luna script on remote host $host"
-        read(`ssh $host julia \$HOME/$subdir/$folder/$scriptfile`, String)
+        scriptres = dir * "/" * Base.shell_escape_posixly(scriptfile)
+        read(`ssh $host julia $scriptres`, String)
     end
 end
 
