@@ -164,3 +164,40 @@ impl ChebyshevDispersion {
         (val, dy_dω, d2y_dω2)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sellmeier_gas_dispersion() {
+        let gas = SellmeierGas {
+            b1: 0.5,
+            c1: 4.0,
+        };
+        let w = 1.0;
+
+        // den = c1 - w*w = 4.0 - 1.0 = 3.0
+        // n2 = 1.0 + (b1 * c1) / den = 1.0 + (0.5 * 4.0) / 3.0 = 1.0 + 2.0/3.0 = 5.0/3.0
+        let expected_n = (5.0 / 3.0_f64).sqrt();
+        let n = gas.refractive_index(w);
+        assert!((n - expected_n).abs() < 1e-12);
+
+        // dn_dω:
+        // d_n2 = (2.0 * b1 * c1 * w) / (den * den) = (2.0 * 0.5 * 4.0 * 1.0) / (9.0) = 4.0 / 9.0
+        // dn_dω = d_n2 / (2.0 * n)
+        let expected_dn = (4.0 / 9.0) / (2.0 * expected_n);
+        let dn = gas.dn_dω(w);
+        assert!((dn - expected_dn).abs() < 1e-12);
+
+        // d2n_dω2:
+        // d2_n2 = (2.0 * b1 * c1 * (c1 + 3.0 * w * w)) / (den^3)
+        //       = (2.0 * 0.5 * 4.0 * (4.0 + 3.0 * 1.0)) / 27.0 = 28.0 / 27.0
+        // d2n_dω2 = (d2_n2 * n - d_n2 * dn) / (2.0 * n^2)
+        let d_n2 = 4.0 / 9.0;
+        let d2_n2 = 28.0 / 27.0;
+        let expected_d2n = (d2_n2 * expected_n - d_n2 * expected_dn) / (2.0 * (5.0 / 3.0));
+        let d2n = gas.d2n_dω2(w);
+        assert!((d2n - expected_d2n).abs() < 1e-12);
+    }
+}
