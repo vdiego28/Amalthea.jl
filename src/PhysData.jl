@@ -10,6 +10,10 @@ import Luna: Maths, Utils
 
 include("data/lookup_tables.jl")
 
+_safe_n(n2::Real) = n2 < 1 ? one(n2) : sqrt(n2)
+_safe_n(n2::Number) = sqrt(n2)
+
+
 "Speed of light"
 const c = ustrip(CODATA2014.SpeedOfLightInVacuum)
 "Pressure in Pascal at standard conditions (atmospheric pressure)"
@@ -314,94 +318,94 @@ function sellmeier_glass(material::Symbol)
             for (b, c) in zip(mat.B, mat.C)
                 n2 += b * λ_μm^2 / (λ_μm^2 - c)
             end
-            return sqrt(max(n2, 1.0))
+            return _safe_n(n2)
         end
     end
     if material == :SiO2
         #  J. Opt. Soc. Am. 55, 1205-1208 (1965)
         # TODO: Deal with sqrt of negative values better (somehow...)
-        return μm -> sqrt(complex(1
+        return μm -> _safe_n(1
              + 0.6961663/(1-(0.0684043/μm)^2)
              + 0.4079426/(1-(0.1162414/μm)^2)
              + 0.8974794/(1-(9.896161/μm)^2)
-             ))
+             )
     elseif material == :BK7
         # ref index info (SCHOTT catalogue)
-        return μm -> sqrt(complex(1
+        return μm -> _safe_n(1
              + 1.03961212/(1-0.00600069867/μm^2)
              + 0.231792344 / (1-0.0200179144/μm^2)
              + 1.01046945/(1-103.560653/μm^2)
-             ))
+             )
     elseif material == :CaF2
         # Appl. Opt. 41, 5275-5281 (2002)
-        return μm -> sqrt(complex(1
+        return μm -> _safe_n(1
              + 0.443749998/(1-0.00178027854/μm^2)
              + 0.444930066/(1-0.00788536061/μm^2)
              + 0.150133991/(1-0.0124119491/μm^2)
              + 8.85319946/(1-2752.28175/μm^2)
-             ))
+             )
     elseif material == :KBr
         # J. Phys. Chem. Ref. Data 5, 329-528 (1976)
-        return μm -> sqrt(complex(1
+        return μm -> _safe_n(1
              + 0.39408
              + 0.79221/(1-(0.146/μm)^2)
              + 0.01981/(1-(0.173/μm)^2)
              + 0.15587/(1-(0.187/μm)^2)
              + 0.17673/(1-(60.61/μm)^2)
              + 2.06217/(1-(87.72/μm)^2)
-             ))
+             )
     elseif material == :BaF2
         # J. Phys. Chem. Ref. Data 9, 161-289 (1980)
-        return μm -> sqrt(complex(1
+        return μm -> _safe_n(1
              + 0.33973
              + 0.81070/(1-(0.10065/μm)^2)
              + 0.19652/(1-(29.87/μm)^2)
              + 4.52469/(1-(53.82/μm)^2)
-             ))
+             )
     elseif material == :Si
         # J. Opt. Soc. Am., 47, 244-246 (1957)
-        return μm -> sqrt(complex(1
+        return μm -> _safe_n(1
              + 10.6684293/(1-(0.301516485/μm)^2)
              + 0.0030434748/(1-(1.13475115/μm)^2)
              + 1.54133408/(1-(1104/μm)^2)
-             ))
+             )
     elseif material == :MgF2
-        return μm -> @. sqrt(complex(1
+        return μm -> @. _safe_n(1
             + 0.27620
             + 0.60967/(1-(0.08636/μm)^2)
             + 0.0080/(1-(18.0/μm)^2)
             + 2.14973/(1-(25.0/μm)^2)
-            ))
+            )
     elseif material == :CaCO3
-        return μm -> @. sqrt(complex(1
+        return μm -> @. _safe_n(1
             + 0.73358749
             + 0.96464345/(1-1.94325203e-2/μm^2)
             + 1.82831454/(1-120/μm^2)
-            ))
+            )
     elseif material == :ADPo
-        return μm -> @. sqrt(complex(
+        return μm -> @. _safe_n(
             2.302842
             + 15.102464*μm^2/(μm^2-400)
             + 0.011125165/(μm^2-0.01325366)
-        ))
+        )
     elseif material == :ADPe
-        return μm -> @. sqrt(complex(
+        return μm -> @. _safe_n(
             2.163510
             + 5.919896*μm^2/(μm^2-400)
             + 0.009616676/(μm^2-0.01298912)
-        ))
+        )
     elseif material == :KDPo
-        return μm -> @. sqrt(complex(
+        return μm -> @. _safe_n(
             2.259276
             + 13.00522*μm^2/(μm^2-400)
             + 0.01008956/(μm^2-0.0129426)
-        ))
+        )
     elseif material == :KDPe
-        return μm -> @. sqrt(complex(
+        return μm -> @. _safe_n(
             2.132668
             + 3.2279924*μm^2/(μm^2-400)
             + 0.008637494/(μm^2-0.0122810)
-        ))
+        )
     else
         throw(DomainError(material, "Unknown glass $material"))
     end
@@ -416,17 +420,17 @@ refractive index directly. Possible values for `axis` depend on the type of crys
 function sellmeier_crystal(material, axis)
     if material == :BBO
         if axis == :o
-            return μm -> sqrt(complex(1
+            return μm -> _safe_n(1
                 + 0.90291/(1-0.003926/μm^2)
                 + 0.83155/(1-0.018786/μm^2)
                 + 0.76536/(1-60.01/μm^2)
-                ))
+                )
         elseif axis == :e
-            return μm -> sqrt(complex(1
+            return μm -> _safe_n(1
                 + 1.151075/(1-0.007142/μm^2)
                 + 0.21803/(1-0.02259/μm^2)
                 + 0.656/(1-263/μm^2)
-                ))
+                )
         else
             throw(DomainError(axis, "Unknown BBO axis $axis"))
         end
@@ -434,23 +438,23 @@ function sellmeier_crystal(material, axis)
         # C Chen et al., J Opt. Soc. Am. 6, 616-621 (1989)
         # F. Hanson and D. Dick., Opt. Lett. 16, 205-207 (1991).
         if axis == :x
-            return μm -> sqrt(complex(
+            return μm -> _safe_n(
                 2.45768
                 + 0.0098877/(μm^2-0.026095)
                 - 0.013847*μm^2
-            ))
+            )
         elseif axis == :y
-            return μm -> sqrt(complex(
+            return μm -> _safe_n(
                 2.52500
                 + 0.017123/(μm^2+0.0060517)
                 - 0.0087838*μm^2
-            ))
+            )
         elseif axis == :z
-            return μm -> sqrt(complex(
+            return μm -> _safe_n(
                 2.58488
                 + 0.012737/(μm^2-0.021414)
                 - 0.016293*μm^2
-            ))
+            )
         else
             throw(DomainError(axis, "Unknown LBO axis $axis"))
         end
