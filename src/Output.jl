@@ -716,7 +716,7 @@ function scansave(scan, scanidx; stats=nothing, fpath=nothing,
         end
     end
     HDF5.h5open(fpath, "r+") do file
-        scanshape = Tuple([length(ai) for ai in scan.arrays])
+        scanshape = Tuple(length(ai) for ai in scan.arrays)
         cidcs = CartesianIndices(scanshape)
         scanidcs = Tuple(cidcs[scanidx])
         if !isnothing(stats)
