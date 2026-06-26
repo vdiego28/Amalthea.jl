@@ -14,7 +14,7 @@ pub mod scans;
 #[cfg(test)]
 mod tests {
     use super::ffi::process_field_inplace;
-    use super::dispersion::ChebyshevDispersion;
+    use super::dispersion::{ChebyshevDispersion, SellmeierGas};
     use super::diffraction::Qdht;
     use super::ionization::PptIonizationRate;
     use super::raman::{RamanOscillator, TimeDomainRamanSolver};
@@ -42,6 +42,33 @@ mod tests {
         
         assert_eq!(data[0], Complex::new(2.0, 4.0));
         assert_eq!(data[1], Complex::new(6.0, 8.0));
+    }
+
+    #[test]
+    fn test_sellmeier_gas_derivatives() {
+        // Dummy parameters for a Sellmeier gas
+        let gas = SellmeierGas {
+            b1: 0.1,
+            c1: 100.0,
+        };
+
+        let ω = 2.0; // test frequency
+        let h = 1e-5; // finite difference step
+
+        let n = gas.refractive_index(ω);
+        let dn_exact = gas.dn_dω(ω);
+        let d2n_exact = gas.d2n_dω2(ω);
+
+        let n_plus = gas.refractive_index(ω + h);
+        let n_minus = gas.refractive_index(ω - h);
+
+        // Finite difference approximations
+        let dn_fd = (n_plus - n_minus) / (2.0 * h);
+        let d2n_fd = (n_plus - 2.0 * n + n_minus) / (h * h);
+
+        // Assert exact matches finite difference up to some numerical tolerance
+        assert!((dn_exact - dn_fd).abs() < 1e-8, "First derivative mismatch: exact {}, fd {}", dn_exact, dn_fd);
+        assert!((d2n_exact - d2n_fd).abs() < 1e-5, "Second derivative mismatch: exact {}, fd {}", d2n_exact, d2n_fd);
     }
 
     #[test]
