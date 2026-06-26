@@ -31,3 +31,6 @@ harness = false
 name = "dispersion_bench"
 harness = false
 
+[[bench]]
+name = "qdht_new_bench"
+harness = false
