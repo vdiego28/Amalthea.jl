@@ -24,6 +24,10 @@ impl FlockLock {
         }
         #[cfg(not(unix))]
         {
+            // WARNING: On non-Unix targets (Windows) this is a no-op — `lock()` and
+            // `unlock()` below do nothing, so concurrent parameter scans are NOT
+            // process-safe and may race on the shared HDF5 queue file.
+            // TODO: implement real locking via Windows LockFileEx / UnlockFileEx.
             let _ = lock_path;
             Ok(Self {})
         }

@@ -38,6 +38,7 @@ The Rust migration replaces several numerical approximations from the original J
 ### 6. Dynamic HDF5 I/O & Queue Serialization (`io.rs`, `scans.rs`)
 *   **Original (Julia)**: Depended on `HDF5.jl` package configurations to write formatted datasets and handle file locking via Julia's standard library pidlocks.
 *   **Proposed (Rust)**: Avoids compile-time linking requirements by dynamically locating and loading `libhdf5.so` at runtime from the system or Julia's artifact cache. File locking for queued sweeps is implemented via lightweight `libc::flock` system calls, enabling process-safe parameter scans without external dependencies.
+    > **Platform caveat:** `flock`-based locking is **Unix only** (Linux/macOS). On Windows the lock is currently a no-op, so concurrent parameter scans are not yet process-safe there (see the `TODO` in `scans.rs`; a Windows `LockFileEx` implementation is still pending).
 
 ---
 

@@ -18,3 +18,18 @@ __pycache__/
 *.pyc
 *.egg-info/
 target/
+
+# Rust
+*.rs.bk
+
+# Python build / test artifacts
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE / editor
+.idea/
+*.swp
+*~
