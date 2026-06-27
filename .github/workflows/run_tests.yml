@@ -2,6 +2,10 @@ name: Run tests
 
 on: [push, pull_request]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Test (${{ matrix.group }} - ${{ matrix.os }} - Julia ${{ matrix.julia-version }})

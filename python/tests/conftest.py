@@ -30,8 +30,7 @@ def mock_julia_backend(monkeypatch):
     import luna_rust
     monkeypatch.setattr(luna_rust._julia, "get_julia", mock_get_julia)
     monkeypatch.setattr(luna_rust, "get_julia", mock_get_julia)
-    if hasattr(luna_rust._kwargs, "get_julia"):
-        monkeypatch.setattr(luna_rust._kwargs, "get_julia", mock_get_julia)
+    monkeypatch.setattr(luna_rust._kwargs, "get_julia", mock_get_julia)
     monkeypatch.setattr(luna_rust, "LunaOutput", MockLunaOutput)
 
     # In some module setups, patching `sys.modules` is the only way to intercept nested intra-package imports

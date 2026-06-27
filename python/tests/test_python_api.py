@@ -1,25 +1,9 @@
 import pytest
 import numpy as np
 
-# We must mock `get_julia` before `luna_rust` initializes.
-# However, because `__init__.py` imports `get_julia` locally, mocking it via patch can be tricky.
-# We'll just patch the internal module.
-from unittest import mock
-import sys
-
-# Creating a mock module
-mock_julia = mock.MagicMock()
-mock_jl = mock.MagicMock()
-mock_luna = mock.MagicMock()
-mock_julia.get_julia.return_value = (mock_jl, mock_luna)
-
-sys.modules['luna_rust._julia'] = mock_julia
-
 import luna_rust
 
-@mock.patch("luna_rust.LunaOutput")
-def test_prop_capillary_ascii_kwargs(mock_luna_output):
-    mock_luna_output.return_value = {"Eω": np.array([[1.0, 2.0], [3.0, 4.0]])}
+def test_prop_capillary_ascii_kwargs():
 
     o = luna_rust.prop_capillary(
         100e-6, 0.1, "He", 1.0,
@@ -30,9 +14,7 @@ def test_prop_capillary_ascii_kwargs(mock_luna_output):
     assert o["Eω"].ndim == 2
     assert o["Eω"].shape[1] > 0
 
-@mock.patch("luna_rust.LunaOutput")
-def test_prop_capillary_unicode_kwargs(mock_luna_output):
-    mock_luna_output.return_value = {"Eω": np.array([[1.0, 2.0], [3.0, 4.0]])}
+def test_prop_capillary_unicode_kwargs():
 
     o = luna_rust.prop_capillary(
         100e-6, 0.1, "He", 1.0,
@@ -42,8 +24,7 @@ def test_prop_capillary_unicode_kwargs(mock_luna_output):
     assert "Eω" in o
     assert o["Eω"].ndim == 2
 
-@mock.patch("luna_rust.LunaOutput")
-def test_duplicate_kwargs(mock_luna_output):
+def test_duplicate_kwargs():
     with pytest.raises(ValueError):
         luna_rust.prop_capillary(
             100e-6, 0.1, "He", 1.0,
@@ -51,9 +32,7 @@ def test_duplicate_kwargs(mock_luna_output):
             lambda_lims=(200e-9, 4e-6), trange=400e-15, shotnoise=False
         )
 
-@mock.patch("luna_rust.LunaOutput")
-def test_gnlse_ascii(mock_luna_output):
-    mock_luna_output.return_value = {"Eω": np.array([[1.0, 2.0], [3.0, 4.0]])}
+def test_gnlse_ascii():
 
     gamma = 0.1
     flength = 0.001
