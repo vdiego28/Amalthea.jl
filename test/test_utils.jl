@@ -20,6 +20,17 @@ isfile(fpath) && rm(fpath)
 isdir(dirname(fpath)) || mkpath(dirname(fpath))
 Utils.save_dict_h5(fpath, d)
 @test_throws ErrorException Utils.save_dict_h5(fpath, d, force=false)
+
+# Test explicitly the error paths for Nothing and BitArray types
+# We must use a separate file (or remove the existing one) and populate it with the keys we want to test
+fpath_err = joinpath(Utils.cachedir(), "output_test", "test_err.h5")
+isfile(fpath_err) && rm(fpath_err)
+d_err = Dict{String, Any}("nothing" => nothing, "bitarray" => BitArray([true, false]))
+Utils.save_dict_h5(fpath_err, d_err)
+@test_throws ErrorException Utils.save_dict_h5(fpath_err, Dict("nothing" => nothing), force=false)
+@test_throws ErrorException Utils.save_dict_h5(fpath_err, Dict("bitarray" => BitArray([true, false])), force=false)
+rm(fpath_err)
+
 HDF5.h5open(fpath) do file
     for k in ["float", "float[]", "string"]
         @test d[k] == read(file[k])
