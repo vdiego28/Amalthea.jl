@@ -189,3 +189,53 @@ pub unsafe extern "C" fn mark_completed(queue: *mut ScanQueue, idx: usize, succe
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_flock_lock_new() {
+        let mut temp_path = std::env::temp_dir();
+        temp_path.push(format!("luna_test_flock_lock_new_{}", std::process::id()));
+        let lock_path = temp_path.to_str().unwrap();
+
+        // Ensure the file does not exist before we start
+        if temp_path.exists() {
+            let _ = std::fs::remove_file(&temp_path);
+        }
+
+        // Test creating the lock file
+        let lock = FlockLock::new(lock_path);
+        assert!(lock.is_ok(), "FlockLock::new should succeed");
+
+        #[cfg(unix)]
+        {
+            assert!(temp_path.exists(), "FlockLock::new should create the file on Unix");
+        }
+
+        // Test opening an existing lock file
+        let lock2 = FlockLock::new(lock_path);
+        assert!(lock2.is_ok(), "FlockLock::new should succeed even if file already exists");
+
+        // Clean up
+        if temp_path.exists() {
+            let _ = std::fs::remove_file(&temp_path);
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_flock_lock_new_error() {
+        let mut temp_path = std::env::temp_dir();
+        temp_path.push(format!("luna_test_nonexistent_dir_{}", std::process::id()));
+        temp_path.push("lock_file");
+        let lock_path = temp_path.to_str().unwrap();
+
+        let lock = FlockLock::new(lock_path);
+        assert!(lock.is_err(), "FlockLock::new should fail when directory does not exist");
+        if let Err(msg) = lock {
+            assert!(msg.starts_with("Failed to open lock file:"), "Unexpected error message: {}", msg);
+        }
+    }
+}
