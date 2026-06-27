@@ -10,7 +10,6 @@ Sys.iswindows() && (ENV["HDF5_USE_FILE_LOCKING"] = "FALSE")
     # properly. The `H5Fclose` and the GC inside Julia don't play well when
     # combined across the FFI. We use a randomly named file per test to avoid collision.
     qfile = "julia_test_queue_" * string(rand(UInt32)) * ".h5"
-
     # Resolve the platform-correct shared library extension
     _LIB_EXT = Sys.iswindows() ? "dll" : Sys.isapple() ? "dylib" : "so"
     LIB_PATH = if Sys.iswindows()
@@ -18,6 +17,12 @@ Sys.iswindows() && (ENV["HDF5_USE_FILE_LOCKING"] = "FALSE")
     else
         joinpath(@__DIR__, "../target/release/libluna_rust.$_LIB_EXT")
     end
+
+    # Explicitly load `libsz` and other dependent libraries implicitly needed by `HDF5.API.libhdf5` before calling Rust.
+    # When `dlopen` is called from Rust on `libhdf5.so`, it frequently fails due to missing transitive
+    # dependencies that are normally resolved by Julia's package manager when `using HDF5` is done at the module level.
+    # By forcing Julia to fully materialize HDF5 bindings *before* Rust tries to load it, we sidestep the dlopen error.
+    HDF5.h5open
 
     # Pass HDF5 path to Rust side so it doesn't have to guess or search for it
     ENV["LUNA_HDF5_LIB"] = HDF5.API.libhdf5
