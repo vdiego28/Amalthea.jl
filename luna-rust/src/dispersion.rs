@@ -164,10 +164,7 @@ impl ChebyshevDispersion {
         (val, dy_dω, d2y_dω2)
     }
 }
-<<<<<<< HEAD
-=======
 
->>>>>>> origin/add-sellmeier-gas-tests-14647100234519760049
 #[cfg(test)]
 mod tests {
     use super::*;
