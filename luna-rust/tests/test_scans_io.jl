@@ -134,8 +134,16 @@ Sys.iswindows() && (ENV["HDF5_USE_FILE_LOCKING"] = "FALSE")
     end
 
     # Clean up test artifacts explicitly after validation.
-    rm(qfile, force=true)
-    rm(lock_file, force=true)
+    try
+        rm(qfile, force=true)
+    catch e
+        @info "Could not delete qfile: " e
+    end
+    try
+        rm(lock_file, force=true)
+    catch e
+        @info "Could not delete lock_file: " e
+    end
 
     println("Successfully validated Phase 4 Scans & I/O FFI bindings between Julia and Rust.")
 end
