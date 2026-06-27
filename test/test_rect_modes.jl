@@ -93,4 +93,38 @@ m = RectModes.RectMode(a, b, :Ar, 0.0, :Ag)
     @test Modes.Aeff(m, z=L) ≈ Modes.Aeff(m, z=0)/4
 end
 
+@testset "other methods" begin
+        m_x = RectModes.RectMode(a, b, :Ar, 0.0, :Ag)
+
+        # Test modeinfo
+        info = Modes.modeinfo(m_x)
+        @test info[:a] == a
+        @test info[:b] == b
+        @test info[:n] == 1
+        @test info[:m] == 1
+
+        # Test show
+        s = sprint(show, m_x)
+        @test occursin("RectMode", s)
+        @test occursin("pol=x", s)
+
+        # Test field polarizations
+        f_x = Modes.field(m_x, (0.0, 0.0))
+        @test f_x[1] > 0
+        @test f_x[2] == 0.0
+
+        m_y = RectModes.RectMode(a, b, :Ar, 0.0, :Ag, pol=:y)
+        f_y = Modes.field(m_y, (0.0, 0.0))
+        @test f_y[1] == 0.0
+        @test f_y[2] > 0
+
+        # Test invalid polarization error
+        @test_throws ErrorException Modes.neff(RectModes.RectMode(a, b, :Ar, 0.0, :Ag, pol=:invalid), wlfreq(800e-9))
+
+        # Test coren and clad constructors
+        coren = (ω; z) -> 1.0
+        m_coren = RectModes.RectMode(a, b, coren, :Ag)
+        @test Modes.modeinfo(m_coren)[:a] == a
+    end
+
 end
