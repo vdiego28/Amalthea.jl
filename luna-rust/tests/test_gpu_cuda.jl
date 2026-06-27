@@ -28,9 +28,7 @@ using TestItems
     )
     
     # Since CUDA is present and tested, it must return exactly 5 (GpuCuda)
-    # If CUDA is not available, engine falls back to CPU (e.g. 1) or other paths.
-    # We test that active_path is not 0 (none/invalid)
-    @test active_path > 0
+    @test active_path == 5
     println("Active hardware path returned from Rust engine: ", active_path)
     
     # Free the engine
