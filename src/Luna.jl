@@ -105,7 +105,7 @@ function doinput_sm(grid, inputs::Fields.TimeField, FT)
 end
 
 function doinput_sm(grid, inputs::Tuple{Vararg{T} where T <: NamedTuple{<:Any, <:Tuple{Vararg{Any}}}}, FT)
-    if any([i.mode ≠ 1 for i in inputs])
+    if any(i.mode ≠ 1 for i in inputs)
         error("For mode-averaged propagation, all inputs must be in 1st mode.")
     end
     inputs_flat = Tuple(Iterators.flatten([i.fields for i in inputs]))
