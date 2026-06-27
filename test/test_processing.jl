@@ -152,6 +152,8 @@ for res in (1e12, 5e12, 10e12)
     Fg, Pf = Processing.getIω(ωp, Eωp, :f, resolution=res)
     @test isapprox(Maths.fwhm(Fg, Pf), res, rtol=1e-2)
 end
+
+@test_throws ErrorException("`specaxis` must be one of `:λ` or `:f`") Processing.getIω(ωp, Eωp, :invalid, resolution=1e12)
 end
 
 @testset "intensity autocorrelation" begin
