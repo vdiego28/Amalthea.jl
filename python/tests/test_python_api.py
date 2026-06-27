@@ -1,6 +1,44 @@
 import pytest
+import sys
 import numpy as np
-import luna_rust
+
+import unittest.mock
+
+# We must mock BEFORE importing luna_rust or any juliacall module
+mock_julia = unittest.mock.Mock()
+mock_luna = unittest.mock.Mock()
+
+def mock_get_julia():
+    return mock_julia, mock_luna
+
+class MockLunaOutput:
+    def __init__(self, result):
+        self.data = {"Eω": np.ones((10, 10))}
+
+    def __getitem__(self, key):
+        return self.data[key]
+
+    def __contains__(self, key):
+        return key in self.data
+
+sys.modules['juliacall'] = unittest.mock.Mock()
+sys.modules['juliapkg'] = unittest.mock.Mock()
+
+with unittest.mock.patch('luna_rust._julia.get_julia', side_effect=mock_get_julia):
+    with unittest.mock.patch('luna_rust.LunaOutput', MockLunaOutput):
+        import luna_rust
+        # Overwrite the actual module attributes manually because monkeypatch does not persist through tests
+        # when re-importing, and the monkeypatch below will throw an error since _julia might not be in the module
+        # tree properly if patched dynamically via context manager.
+        import luna_rust._julia
+        luna_rust._julia.get_julia = mock_get_julia
+        luna_rust.LunaOutput = MockLunaOutput
+
+@pytest.fixture(autouse=True)
+def apply_mocks(monkeypatch):
+    monkeypatch.setattr("luna_rust._julia.get_julia", mock_get_julia)
+    monkeypatch.setattr("luna_rust.LunaOutput", MockLunaOutput)
+    monkeypatch.setattr("luna_rust._kwargs._to_julia_type", lambda k, v: v) # prevent julia symbol conversion
 
 def test_prop_capillary_ascii_kwargs():
     o = luna_rust.prop_capillary(
