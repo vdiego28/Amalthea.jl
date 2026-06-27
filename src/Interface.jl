@@ -770,7 +770,7 @@ function makeinputs(mode_s, λ0, pulse::Pulses.AbstractPulse)
 end
 
 function makeinputs(mode_s, λ0, pulses::AbstractVector)
-    i = Tuple(collect(Iterators.flatten([makeinputs(mode_s, λ0, pii) for pii in pulses])))
+    i = Tuple(collect(Iterators.flatten(makeinputs(mode_s, λ0, pii) for pii in pulses)))
     @debug join(string.(i), "\n")
     return i
 end
