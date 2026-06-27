@@ -20,8 +20,8 @@ Sys.iswindows() && (ENV["HDF5_USE_FILE_LOCKING"] = "FALSE")
     
     @test isfile(LIB_PATH)
     
-    qfile = "julia_test_queue.h5"
-    lock_file = qfile * "_lock"
+    qfile = joinpath(@__DIR__, "julia_test_queue.h5")
+    lock_file = joinpath(@__DIR__, "julia_test_queue.h5_lock")
     
     # Ensure clean state
     rm(qfile, force=true)
