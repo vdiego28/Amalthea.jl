@@ -105,6 +105,9 @@ Eω = FFTW.fft(Et, 1)
 @test isapprox(Processing.arrivaltime(grid, Eω, bandpass=(600e-9, 1000e-9))[2], -5e-15, rtol=1e-8)
 @test isapprox(Processing.arrivaltime(grid, Eω, bandpass=(300e-9, 500e-9))[1], -5e-15, rtol=1e-8)
 @test isapprox(Processing.arrivaltime(grid, Eω, bandpass=(300e-9, 500e-9))[2], 5e-15, rtol=1e-8)
+
+@test_throws ErrorException Processing.arrivaltime(grid, Eω; method=:unknown_method)
+@test_throws ErrorException Processing.arrivaltime(grid, Eω[:, 1]; method=:unknown_method)
 end
 
 @testset "specres" begin
