@@ -12,9 +12,9 @@ Sys.iswindows() && (ENV["HDF5_USE_FILE_LOCKING"] = "FALSE")
     # Resolve the platform-correct shared library extension
     _LIB_EXT = Sys.iswindows() ? "dll" : Sys.isapple() ? "dylib" : "so"
     LIB_PATH = if Sys.iswindows()
-        joinpath(@__DIR__, "../../target/release/luna_rust.dll")
+        joinpath(@__DIR__, "../target/release/luna_rust.dll")
     else
-        joinpath(@__DIR__, "../../target/release/libluna_rust.$_LIB_EXT")
+        joinpath(@__DIR__, "../target/release/libluna_rust.$_LIB_EXT")
     end
 
     # Explicitly load `libsz` and other dependent libraries implicitly needed by `HDF5.API.libhdf5` before calling Rust.
