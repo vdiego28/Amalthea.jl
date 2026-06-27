@@ -75,7 +75,22 @@ impl ScanQueue {
         lock.lock()?;
         
         let result = (|| -> Result<Option<usize>, String> {
-            let writer = Hdf5Writer::open_existing(&self.qfile)?;
+            // First check if the file is accessible
+            if !std::path::Path::new(&self.qfile).exists() {
+                return Err(format!("File does not exist: {}", self.qfile));
+            }
+
+            // Allow multiple retry attempts to open in case it's temporarily locked
+            let mut writer_opt = None;
+            for _ in 0..5 {
+                if let Ok(w) = Hdf5Writer::open_existing(&self.qfile) {
+                    writer_opt = Some(w);
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+
+            let writer = writer_opt.ok_or_else(|| format!("Failed to open queue file: {}", self.qfile))?;
             let mut qdata = vec![0; self.total_points];
 
             let found_idx = writer.with_existing_int_dataset_2d("qdata", &mut qdata, |writer, dset_id, qdata| {
@@ -106,7 +121,18 @@ impl ScanQueue {
             if !std::path::Path::new(&self.qfile).exists() {
                 return Ok(());
             }
-            let writer = Hdf5Writer::open_existing(&self.qfile)?;
+
+            // Allow multiple retry attempts to open in case it's temporarily locked
+            let mut writer_opt = None;
+            for _ in 0..5 {
+                if let Ok(w) = Hdf5Writer::open_existing(&self.qfile) {
+                    writer_opt = Some(w);
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+
+            let writer = writer_opt.ok_or_else(|| format!("Failed to open queue file: {}", self.qfile))?;
             let mut qdata = vec![0; self.total_points];
 
             writer.with_existing_int_dataset_2d("qdata", &mut qdata, |writer, dset_id, qdata| {
