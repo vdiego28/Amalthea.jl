@@ -66,13 +66,13 @@ function (o::MemoryOutput)(y, t, dt, yfun)
     save, ts = o.save_cond(y, t, dt, o.saved)
     append_stats!(o, o.statsfun(y, t, dt))
     !haskey(o.data, o.yname) && initialise(o, y)
+    idcs = fill(:, ndims(y))
     while save
         s = size(o.data[o.yname])
         if s[end] < o.saved+1
             o.data[o.yname] = fastcat(o.data[o.yname], yfun(ts))
             push!(o.data[o.tname], ts)
         else
-            idcs = fill(:, ndims(y))
             o.data[o.yname][idcs..., o.saved+1] = yfun(ts)
             o.data[o.tname][o.saved+1] = ts
         end
@@ -329,9 +329,9 @@ function (o::HDF5Output)(y, t, dt, yfun)
             cachehash = hash((statsnames, size(y)))
             cachehash == o.cachehash || error(
                 "the hash for this propagation does not agree with cache in file")
+            idcs = fill(:, ndims(file[o.yname])-1)
             while save
                 s = collect(size(file[o.yname]))
-                idcs = fill(:, length(s)-1)
                 if s[end] < o.saved+1
                     s[end] += 1
                     HDF5.set_extent_dims(file[o.yname], Tuple(s))
