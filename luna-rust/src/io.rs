@@ -7,8 +7,8 @@ use std::sync::OnceLock;
 pub const H5F_ACC_RDONLY: libc::c_uint = 0x0000;
 pub const H5F_ACC_RDWR: libc::c_uint = 0x0001;
 pub const H5F_ACC_TRUNC: libc::c_uint = 0x0002;
-pub const H5P_DEFAULT: libc::c_long = 0;
-pub const H5S_ALL: libc::c_long = 0;
+pub const H5P_DEFAULT: i64 = 0;
+pub const H5S_ALL: i64 = 0;
 pub const H5S_UNLIMITED: u64 = u64::MAX;
 pub const H5T_COMPOUND: libc::c_int = 3;
 
@@ -17,30 +17,30 @@ pub const H5T_COMPOUND: libc::c_int = 3;
 pub struct Hdf5Api {
     pub H5open: unsafe extern "C" fn() -> libc::c_int,
     pub H5close: unsafe extern "C" fn() -> libc::c_int,
-    pub H5Fopen: unsafe extern "C" fn(*const libc::c_char, libc::c_uint, libc::c_long) -> libc::c_long,
-    pub H5Fcreate: unsafe extern "C" fn(*const libc::c_char, libc::c_uint, libc::c_long, libc::c_long) -> libc::c_long,
-    pub H5Fclose: unsafe extern "C" fn(libc::c_long) -> libc::c_int,
-    pub H5Gcreate2: unsafe extern "C" fn(libc::c_long, *const libc::c_char, libc::c_long, libc::c_long, libc::c_long) -> libc::c_long,
-    pub H5Gopen2: unsafe extern "C" fn(libc::c_long, *const libc::c_char, libc::c_long) -> libc::c_long,
-    pub H5Gclose: unsafe extern "C" fn(libc::c_long) -> libc::c_int,
-    pub H5Dcreate2: unsafe extern "C" fn(libc::c_long, *const libc::c_char, libc::c_long, libc::c_long, libc::c_long, libc::c_long, libc::c_long) -> libc::c_long,
-    pub H5Dopen2: unsafe extern "C" fn(libc::c_long, *const libc::c_char, libc::c_long) -> libc::c_long,
-    pub H5Dwrite: unsafe extern "C" fn(libc::c_long, libc::c_long, libc::c_long, libc::c_long, libc::c_long, *const libc::c_void) -> libc::c_int,
-    pub H5Dread: unsafe extern "C" fn(libc::c_long, libc::c_long, libc::c_long, libc::c_long, libc::c_long, *mut libc::c_void) -> libc::c_int,
-    pub H5Dclose: unsafe extern "C" fn(libc::c_long) -> libc::c_int,
-    pub H5Screate_simple: unsafe extern "C" fn(libc::c_int, *const u64, *const u64) -> libc::c_long,
-    pub H5Sclose: unsafe extern "C" fn(libc::c_long) -> libc::c_int,
-    pub H5Tcopy: unsafe extern "C" fn(libc::c_long) -> libc::c_long,
-    pub H5Tclose: unsafe extern "C" fn(libc::c_long) -> libc::c_int,
-    pub H5Tcreate: unsafe extern "C" fn(libc::c_int, libc::size_t) -> libc::c_long,
-    pub H5Tinsert: unsafe extern "C" fn(libc::c_long, *const libc::c_char, libc::size_t, libc::c_long) -> libc::c_int,
-    pub H5Dset_extent: unsafe extern "C" fn(libc::c_long, *const u64) -> libc::c_int,
-    pub H5Lexists: unsafe extern "C" fn(libc::c_long, *const libc::c_char, libc::c_long) -> libc::c_int,
+    pub H5Fopen: unsafe extern "C" fn(*const libc::c_char, libc::c_uint, i64) -> i64,
+    pub H5Fcreate: unsafe extern "C" fn(*const libc::c_char, libc::c_uint, i64, i64) -> i64,
+    pub H5Fclose: unsafe extern "C" fn(i64) -> libc::c_int,
+    pub H5Gcreate2: unsafe extern "C" fn(i64, *const libc::c_char, i64, i64, i64) -> i64,
+    pub H5Gopen2: unsafe extern "C" fn(i64, *const libc::c_char, i64) -> i64,
+    pub H5Gclose: unsafe extern "C" fn(i64) -> libc::c_int,
+    pub H5Dcreate2: unsafe extern "C" fn(i64, *const libc::c_char, i64, i64, i64, i64, i64) -> i64,
+    pub H5Dopen2: unsafe extern "C" fn(i64, *const libc::c_char, i64) -> i64,
+    pub H5Dwrite: unsafe extern "C" fn(i64, i64, i64, i64, i64, *const libc::c_void) -> libc::c_int,
+    pub H5Dread: unsafe extern "C" fn(i64, i64, i64, i64, i64, *mut libc::c_void) -> libc::c_int,
+    pub H5Dclose: unsafe extern "C" fn(i64) -> libc::c_int,
+    pub H5Screate_simple: unsafe extern "C" fn(libc::c_int, *const u64, *const u64) -> i64,
+    pub H5Sclose: unsafe extern "C" fn(i64) -> libc::c_int,
+    pub H5Tcopy: unsafe extern "C" fn(i64) -> i64,
+    pub H5Tclose: unsafe extern "C" fn(i64) -> libc::c_int,
+    pub H5Tcreate: unsafe extern "C" fn(libc::c_int, libc::size_t) -> i64,
+    pub H5Tinsert: unsafe extern "C" fn(i64, *const libc::c_char, libc::size_t, i64) -> libc::c_int,
+    pub H5Dset_extent: unsafe extern "C" fn(i64, *const u64) -> libc::c_int,
+    pub H5Lexists: unsafe extern "C" fn(i64, *const libc::c_char, i64) -> libc::c_int,
     
     // Datatype cache
-    pub h5t_native_double: libc::c_long,
-    pub h5t_native_int: libc::c_long,
-    pub h5t_complex: libc::c_long,
+    pub h5t_native_double: i64,
+    pub h5t_native_int: i64,
+    pub h5t_complex: i64,
 }
 
 struct Library {
@@ -249,28 +249,28 @@ pub fn get_hdf5_api() -> Result<&'static Hdf5Api, String> {
             
             let H5open = load_sym!("H5open", unsafe extern "C" fn() -> libc::c_int);
             let H5close = load_sym!("H5close", unsafe extern "C" fn() -> libc::c_int);
-            let H5Fopen = load_sym!("H5Fopen", unsafe extern "C" fn(*const libc::c_char, libc::c_uint, libc::c_long) -> libc::c_long);
-            let H5Fcreate = load_sym!("H5Fcreate", unsafe extern "C" fn(*const libc::c_char, libc::c_uint, libc::c_long, libc::c_long) -> libc::c_long);
-            let H5Fclose = load_sym!("H5Fclose", unsafe extern "C" fn(libc::c_long) -> libc::c_int);
-            let H5Gcreate2 = load_sym!("H5Gcreate2", unsafe extern "C" fn(libc::c_long, *const libc::c_char, libc::c_long, libc::c_long, libc::c_long) -> libc::c_long);
-            let H5Gopen2 = load_sym!("H5Gopen2", unsafe extern "C" fn(libc::c_long, *const libc::c_char, libc::c_long) -> libc::c_long);
-            let H5Gclose = load_sym!("H5Gclose", unsafe extern "C" fn(libc::c_long) -> libc::c_int);
-            let H5Dcreate2 = load_sym!("H5Dcreate2", unsafe extern "C" fn(libc::c_long, *const libc::c_char, libc::c_long, libc::c_long, libc::c_long, libc::c_long, libc::c_long) -> libc::c_long);
-            let H5Dopen2 = load_sym!("H5Dopen2", unsafe extern "C" fn(libc::c_long, *const libc::c_char, libc::c_long) -> libc::c_long);
-            let H5Dwrite = load_sym!("H5Dwrite", unsafe extern "C" fn(libc::c_long, libc::c_long, libc::c_long, libc::c_long, libc::c_long, *const libc::c_void) -> libc::c_int);
-            let H5Dread = load_sym!("H5Dread", unsafe extern "C" fn(libc::c_long, libc::c_long, libc::c_long, libc::c_long, libc::c_long, *mut libc::c_void) -> libc::c_int);
-            let H5Dclose = load_sym!("H5Dclose", unsafe extern "C" fn(libc::c_long) -> libc::c_int);
-            let H5Screate_simple = load_sym!("H5Screate_simple", unsafe extern "C" fn(libc::c_int, *const u64, *const u64) -> libc::c_long);
-            let H5Sclose = load_sym!("H5Sclose", unsafe extern "C" fn(libc::c_long) -> libc::c_int);
-            let H5Tcopy = load_sym!("H5Tcopy", unsafe extern "C" fn(libc::c_long) -> libc::c_long);
-            let H5Tclose = load_sym!("H5Tclose", unsafe extern "C" fn(libc::c_long) -> libc::c_int);
-            let H5Tcreate = load_sym!("H5Tcreate", unsafe extern "C" fn(libc::c_int, libc::size_t) -> libc::c_long);
-            let H5Tinsert = load_sym!("H5Tinsert", unsafe extern "C" fn(libc::c_long, *const libc::c_char, libc::size_t, libc::c_long) -> libc::c_int);
-            let H5Dset_extent = load_sym!("H5Dset_extent", unsafe extern "C" fn(libc::c_long, *const u64) -> libc::c_int);
-            let H5Lexists = load_sym!("H5Lexists", unsafe extern "C" fn(libc::c_long, *const libc::c_char, libc::c_long) -> libc::c_int);
+            let H5Fopen = load_sym!("H5Fopen", unsafe extern "C" fn(*const libc::c_char, libc::c_uint, i64) -> i64);
+            let H5Fcreate = load_sym!("H5Fcreate", unsafe extern "C" fn(*const libc::c_char, libc::c_uint, i64, i64) -> i64);
+            let H5Fclose = load_sym!("H5Fclose", unsafe extern "C" fn(i64) -> libc::c_int);
+            let H5Gcreate2 = load_sym!("H5Gcreate2", unsafe extern "C" fn(i64, *const libc::c_char, i64, i64, i64) -> i64);
+            let H5Gopen2 = load_sym!("H5Gopen2", unsafe extern "C" fn(i64, *const libc::c_char, i64) -> i64);
+            let H5Gclose = load_sym!("H5Gclose", unsafe extern "C" fn(i64) -> libc::c_int);
+            let H5Dcreate2 = load_sym!("H5Dcreate2", unsafe extern "C" fn(i64, *const libc::c_char, i64, i64, i64, i64, i64) -> i64);
+            let H5Dopen2 = load_sym!("H5Dopen2", unsafe extern "C" fn(i64, *const libc::c_char, i64) -> i64);
+            let H5Dwrite = load_sym!("H5Dwrite", unsafe extern "C" fn(i64, i64, i64, i64, i64, *const libc::c_void) -> libc::c_int);
+            let H5Dread = load_sym!("H5Dread", unsafe extern "C" fn(i64, i64, i64, i64, i64, *mut libc::c_void) -> libc::c_int);
+            let H5Dclose = load_sym!("H5Dclose", unsafe extern "C" fn(i64) -> libc::c_int);
+            let H5Screate_simple = load_sym!("H5Screate_simple", unsafe extern "C" fn(libc::c_int, *const u64, *const u64) -> i64);
+            let H5Sclose = load_sym!("H5Sclose", unsafe extern "C" fn(i64) -> libc::c_int);
+            let H5Tcopy = load_sym!("H5Tcopy", unsafe extern "C" fn(i64) -> i64);
+            let H5Tclose = load_sym!("H5Tclose", unsafe extern "C" fn(i64) -> libc::c_int);
+            let H5Tcreate = load_sym!("H5Tcreate", unsafe extern "C" fn(libc::c_int, libc::size_t) -> i64);
+            let H5Tinsert = load_sym!("H5Tinsert", unsafe extern "C" fn(i64, *const libc::c_char, libc::size_t, i64) -> libc::c_int);
+            let H5Dset_extent = load_sym!("H5Dset_extent", unsafe extern "C" fn(i64, *const u64) -> libc::c_int);
+            let H5Lexists = load_sym!("H5Lexists", unsafe extern "C" fn(i64, *const libc::c_char, i64) -> libc::c_int);
             
-            let h5t_native_double_ptr = load_sym!("H5T_NATIVE_DOUBLE_g", *const libc::c_long);
-            let h5t_native_int_ptr = load_sym!("H5T_NATIVE_INT_g", *const libc::c_long);
+            let h5t_native_double_ptr = load_sym!("H5T_NATIVE_DOUBLE_g", *const i64);
+            let h5t_native_int_ptr = load_sym!("H5T_NATIVE_INT_g", *const i64);
             
             let h5t_native_double = *h5t_native_double_ptr;
             let h5t_native_int = *h5t_native_int_ptr;
@@ -316,7 +316,7 @@ pub fn get_hdf5_api() -> Result<&'static Hdf5Api, String> {
 }
 
 pub struct Hdf5Writer {
-    pub file_id: libc::c_long,
+    pub file_id: i64,
     api: &'static Hdf5Api,
 }
 
@@ -349,7 +349,7 @@ impl Hdf5Writer {
         }
     }
 
-    pub fn create_group(&self, name: &str) -> Result<libc::c_long, String> {
+    pub fn create_group(&self, name: &str) -> Result<i64, String> {
         let c_name = CString::new(name).map_err(|_| "Invalid group name".to_string())?;
         unsafe {
             let exists = (self.api.H5Lexists)(self.file_id, c_name.as_ptr(), H5P_DEFAULT);
@@ -367,7 +367,7 @@ impl Hdf5Writer {
         }
     }
 
-    pub fn create_dataset_2d(&self, loc_id: libc::c_long, name: &str, dtype: libc::c_long, dims: &[u64], maxdims: &[u64]) -> Result<libc::c_long, String> {
+    pub fn create_dataset_2d(&self, loc_id: i64, name: &str, dtype: i64, dims: &[u64], maxdims: &[u64]) -> Result<i64, String> {
         let c_name = CString::new(name).map_err(|_| "Invalid dataset name".to_string())?;
         unsafe {
             let exists = (self.api.H5Lexists)(loc_id, c_name.as_ptr(), H5P_DEFAULT);
@@ -390,7 +390,7 @@ impl Hdf5Writer {
         }
     }
 
-    pub fn open_dataset_2d(&self, loc_id: libc::c_long, name: &str) -> Result<libc::c_long, String> {
+    pub fn open_dataset_2d(&self, loc_id: i64, name: &str) -> Result<i64, String> {
         let c_name = CString::new(name).map_err(|_| "Invalid dataset name".to_string())?;
         unsafe {
             let exists = (self.api.H5Lexists)(loc_id, c_name.as_ptr(), H5P_DEFAULT);
@@ -407,7 +407,7 @@ impl Hdf5Writer {
 
     pub fn with_existing_int_dataset_2d<T, F>(&self, name: &str, data: &mut [i32], mut op: F) -> Result<T, String>
     where
-        F: FnMut(&Self, libc::c_long, &mut [i32]) -> Result<T, String>,
+        F: FnMut(&Self, i64, &mut [i32]) -> Result<T, String>,
     {
         let dset_id = self.open_dataset_2d(self.file_id, name)?;
         let result = op(self, dset_id, data);
@@ -415,7 +415,7 @@ impl Hdf5Writer {
         result
     }
 
-    pub fn write_dataset_f64(&self, dset_id: libc::c_long, data: &[f64]) -> Result<(), String> {
+    pub fn write_dataset_f64(&self, dset_id: i64, data: &[f64]) -> Result<(), String> {
         unsafe {
             let res = (self.api.H5Dwrite)(dset_id, self.api.h5t_native_double, H5S_ALL, H5S_ALL, H5P_DEFAULT, data.as_ptr() as *const libc::c_void);
             if res < 0 {
@@ -425,7 +425,7 @@ impl Hdf5Writer {
         }
     }
 
-    pub fn write_dataset_complex(&self, dset_id: libc::c_long, data: &[Complex<f64>]) -> Result<(), String> {
+    pub fn write_dataset_complex(&self, dset_id: i64, data: &[Complex<f64>]) -> Result<(), String> {
         unsafe {
             let res = (self.api.H5Dwrite)(dset_id, self.api.h5t_complex, H5S_ALL, H5S_ALL, H5P_DEFAULT, data.as_ptr() as *const libc::c_void);
             if res < 0 {
@@ -435,7 +435,7 @@ impl Hdf5Writer {
         }
     }
 
-    pub fn write_dataset_int(&self, dset_id: libc::c_long, data: &[i32]) -> Result<(), String> {
+    pub fn write_dataset_int(&self, dset_id: i64, data: &[i32]) -> Result<(), String> {
         unsafe {
             let res = (self.api.H5Dwrite)(dset_id, self.api.h5t_native_int, H5S_ALL, H5S_ALL, H5P_DEFAULT, data.as_ptr() as *const libc::c_void);
             if res < 0 {
@@ -445,7 +445,7 @@ impl Hdf5Writer {
         }
     }
 
-    pub fn read_dataset_int(&self, dset_id: libc::c_long, data: &mut [i32]) -> Result<(), String> {
+    pub fn read_dataset_int(&self, dset_id: i64, data: &mut [i32]) -> Result<(), String> {
         unsafe {
             let res = (self.api.H5Dread)(dset_id, self.api.h5t_native_int, H5S_ALL, H5S_ALL, H5P_DEFAULT, data.as_mut_ptr() as *mut libc::c_void);
             if res < 0 {
@@ -455,7 +455,7 @@ impl Hdf5Writer {
         }
     }
 
-    pub fn set_dataset_extent(&self, dset_id: libc::c_long, size: &[u64]) -> Result<(), String> {
+    pub fn set_dataset_extent(&self, dset_id: i64, size: &[u64]) -> Result<(), String> {
         unsafe {
             let res = (self.api.H5Dset_extent)(dset_id, size.as_ptr());
             if res < 0 {
@@ -465,13 +465,13 @@ impl Hdf5Writer {
         }
     }
 
-    pub fn close_dataset(&self, dset_id: libc::c_long) {
+    pub fn close_dataset(&self, dset_id: i64) {
         unsafe {
             (self.api.H5Dclose)(dset_id);
         }
     }
 
-    pub fn close_group(&self, group_id: libc::c_long) {
+    pub fn close_group(&self, group_id: i64) {
         unsafe {
             (self.api.H5Gclose)(group_id);
         }
