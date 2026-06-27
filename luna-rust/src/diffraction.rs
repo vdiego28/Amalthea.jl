@@ -153,10 +153,18 @@ impl Qdht {
         // Populate symmetric transform matrix T_ij of size n_grid x n_grid
         let mut t_matrix = vec![0.0; n_grid * n_grid];
         for i in 0..n_grid {
-            for j in 0..n_grid {
-                let num = 2.0 * j0((zeros[i] * zeros[j]) / s);
-                let den = s * j1_zeros[i] * j1_zeros[j];
-                t_matrix[i * n_grid + j] = num / den;
+            let zero_i_over_s = zeros[i] / s;
+            let den_i = s * j1_zeros[i];
+
+            for j in i..n_grid {
+                let num = 2.0 * j0(zero_i_over_s * zeros[j]);
+                let den = den_i * j1_zeros[j];
+                let val = num / den;
+
+                t_matrix[i * n_grid + j] = val;
+                if i != j {
+                    t_matrix[j * n_grid + i] = val;
+                }
             }
         }
         
