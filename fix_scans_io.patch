@@ -1,0 +1,9 @@
+--- luna-rust/tests/test_scans_io.jl
++++ luna-rust/tests/test_scans_io.jl
+@@ -1,5 +1,6 @@
+ using TestItems
+
+ @testitem "Julia-Rust Phase 4 Integration (Scans & I/O)" tags=[:rust] begin
++    using HDF5
+     _LIB_EXT = Sys.iswindows() ? "dll" : Sys.isapple() ? "dylib" : "so"
+     LIB_PATH = if Sys.iswindows()

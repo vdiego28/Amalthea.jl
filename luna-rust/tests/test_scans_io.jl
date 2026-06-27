@@ -5,6 +5,7 @@ Sys.iswindows() && (ENV["HDF5_USE_FILE_LOCKING"] = "FALSE")
 
 @testitem "Julia-Rust Phase 4 Integration (Scans & I/O)" tags=[:rust] begin
     import HDF5
+    using HDF5
 
 
     # Resolve the platform-correct shared library extension
