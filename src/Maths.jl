@@ -138,7 +138,7 @@ function fwhm(x, y::AbstractArray; dim=1, kwargs...)
     out = zeros(eltype(y), Tuple(outshape))
     for hi in idxhi
         for lo in idxlo
-            out[lo, 1, hi] = fwhm(x, y[lo, :, hi]; kwargs...)
+            out[lo, 1, hi] = @views fwhm(x, y[lo, :, hi]; kwargs...)
         end
     end
     out
@@ -222,7 +222,7 @@ function level_xings(x, y::AbstractArray; dim=1, kwargs...)
     right = zeros(eltype(y), Tuple(outshape))
     for hi in idxhi
         for lo in idxlo
-            l, r = level_xings(x, y[lo, :, hi]; kwargs...)
+            l, r = @views level_xings(x, y[lo, :, hi]; kwargs...)
             left[lo, 1, hi] = l
             right[lo, 1, hi] = r
         end

@@ -5,7 +5,6 @@ Sys.iswindows() && (ENV["HDF5_USE_FILE_LOCKING"] = "FALSE")
 
 @testitem "Julia-Rust Phase 4 Integration (Scans & I/O)" tags=[:rust] begin
     import HDF5
-
     # On Windows, HDF5 doesn't fully flush handles even after closing the dataset
     # properly. The `H5Fclose` and the GC inside Julia don't play well when
     # combined across the FFI. We use a randomly named file per test to avoid collision.
