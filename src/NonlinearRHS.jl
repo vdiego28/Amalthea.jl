@@ -265,8 +265,7 @@ function reset!(t::TransModal, Emω::Array{ComplexF64,2}, z::Float64)
 end
 
 function pointcalc!(fval, xs, t::TransModal)
-    # TODO: parallelize this in Julia 1.3
-    for i in 1:size(xs, 2)
+    Threads.@threads for i in 1:size(xs, 2)
         x1 = xs[1, i]
         # on or outside boundaries are zero
         if x1 <= t.dimlimits[2][1] || x1 >= t.dimlimits[3][1]
