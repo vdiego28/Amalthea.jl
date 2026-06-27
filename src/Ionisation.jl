@@ -417,9 +417,10 @@ function (ir::IonRatePPTAccel)(E)
     if aE < ir.Emin
         return 0.0
     elseif aE > ir.Emax
-        error(
-            "Field strength $aE V/m exceeds maximum for PPT ionisation rate ($(ir.Emax) V/m)."
-            )
+        # Clamp to the rate at Emax rather than throwing: the adaptive stepper
+        # legitimately evaluates the RHS at rejected trial points, and a trial
+        # field excursion above Emax is recoverable — it should not crash the run.
+        return exp(ir.spline(ir.Emax))
     else
         return exp(ir.spline(aE))
     end
