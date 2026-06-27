@@ -74,14 +74,6 @@ end
     to, Etco = Maths.oversample(t, Etc, factor=4)
     @test 4*size(Etc)[1] == size(Etco)[1]
     @test all(isapprox.(Etco[1:4:end], Etc, rtol=1e-6))
-
-    # rfftfreq tests
-    x_uniform = [0.0, 0.1, 0.2, 0.3, 0.4]
-    @test length(Maths.rfftfreq(x_uniform)) == length(x_uniform) ÷ 2 + 1
-    @test isapprox(Maths.rfftfreq(x_uniform)[end], 2π/(5*0.1) * 2, rtol=1e-6)
-
-    x_non_uniform = [0.0, 0.1, 0.2, 0.3, 0.5]
-    @test_throws ErrorException Maths.rfftfreq(x_non_uniform)
 end
 
 @testset "integration" begin

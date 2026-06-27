@@ -24,8 +24,20 @@ Sys.iswindows() && (ENV["HDF5_USE_FILE_LOCKING"] = "FALSE")
     lock_file = qfile * "_lock"
     
     # Ensure clean state
-    rm(qfile, force=true)
-    rm(lock_file, force=true)
+    try
+        rm(qfile, force=true)
+    catch e
+        if !Sys.iswindows()
+            rethrow(e)
+        end
+    end
+    try
+        rm(lock_file, force=true)
+    catch e
+        if !Sys.iswindows()
+            rethrow(e)
+        end
+    end
     
     total_points = 3
     
@@ -132,8 +144,20 @@ Sys.iswindows() && (ENV["HDF5_USE_FILE_LOCKING"] = "FALSE")
     end
 
     # Clean up test artifacts explicitly after validation.
-    rm(qfile, force=true)
-    rm(lock_file, force=true)
+    try
+        rm(qfile, force=true)
+    catch e
+        if !Sys.iswindows()
+            rethrow(e)
+        end
+    end
+    try
+        rm(lock_file, force=true)
+    catch e
+        if !Sys.iswindows()
+            rethrow(e)
+        end
+    end
 
     println("Successfully validated Phase 4 Scans & I/O FFI bindings between Julia and Rust.")
 end
