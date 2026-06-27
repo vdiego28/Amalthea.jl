@@ -323,12 +323,12 @@ function sellmeier_glass(material::Symbol)
     end
     if material == :SiO2
         #  J. Opt. Soc. Am. 55, 1205-1208 (1965)
-        # TODO: Deal with sqrt of negative values better (somehow...)
-        return μm -> _safe_n(1
-             + 0.6961663/(1-(0.0684043/μm)^2)
-             + 0.4079426/(1-(0.1162414/μm)^2)
-             + 0.8974794/(1-(9.896161/μm)^2)
-             )
+        return function(μm)
+            n2 = (1 + 0.6961663/(1-(0.0684043/μm)^2)
+                    + 0.4079426/(1-(0.1162414/μm)^2)
+                    + 0.8974794/(1-(9.896161/μm)^2))
+            return real(n2) < 0 ? sqrt(complex(n2) + 1e-10im) : sqrt(complex(n2))
+        end
     elseif material == :BK7
         # ref index info (SCHOTT catalogue)
         return μm -> _safe_n(1
