@@ -27,8 +27,8 @@ using TestItems
         engine_ptr
     )
     
-    # Since CUDA is present and tested, it must return exactly 5 (GpuCuda)
-    @test active_path >= 1 && active_path <= 6
+    # Allow fallback hardware paths if CUDA/Vulkan are not available in CI
+    @test active_path in (1, 2, 3, 4, 5, 6)
     println("Active hardware path returned from Rust engine: ", active_path)
     
     # Free the engine

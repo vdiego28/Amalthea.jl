@@ -6,6 +6,10 @@ Sys.iswindows() && (ENV["HDF5_USE_FILE_LOCKING"] = "FALSE")
 @testitem "Julia-Rust Phase 4 Integration (Scans & I/O)" tags=[:rust] begin
     import HDF5
 
+    # On Windows, HDF5 doesn't fully flush handles even after closing the dataset
+    # properly. The `H5Fclose` and the GC inside Julia don't play well when
+    # combined across the FFI. We use a randomly named file per test to avoid collision.
+    qfile = "julia_test_queue_" * string(rand(UInt32)) * ".h5"
 
     # Resolve the platform-correct shared library extension
     _LIB_EXT = Sys.iswindows() ? "dll" : Sys.isapple() ? "dylib" : "so"
@@ -20,7 +24,6 @@ Sys.iswindows() && (ENV["HDF5_USE_FILE_LOCKING"] = "FALSE")
     
     @test isfile(LIB_PATH)
     
-    qfile = "julia_test_queue.h5"
     lock_file = qfile * "_lock"
     
     # Ensure clean state
