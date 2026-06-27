@@ -87,7 +87,7 @@ jobs:
         run: cargo test
         working-directory: luna-rust
         env:
-          CARGO_BUILD_RUSTFLAGS: "" # neutralize target-cpu=native from .cargo/config.toml
+          RUSTFLAGS: "" # neutralize target-cpu=native from .cargo/config.toml
 
       # Build the release shared library so the Julia FFI tests can load it.
       # Must happen after `cargo test` (which builds debug) and before Julia runs.
@@ -96,7 +96,7 @@ jobs:
         run: cargo build --release
         working-directory: luna-rust
         env:
-          CARGO_BUILD_RUSTFLAGS: "" # neutralize target-cpu=native from .cargo/config.toml
+          RUSTFLAGS: "" # neutralize target-cpu=native from .cargo/config.toml
 
       - uses: julia-actions/setup-julia@v3
         with:
@@ -114,7 +114,7 @@ jobs:
           ignore-no-cache: true
 
       - name: Add Julia HDF5 artifacts to PATH (Windows)
-        if: matrix.group == 'rust' && runner.os == 'Windows'
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $hdf5path = julia --project -e "using HDF5; print(HDF5.API.libhdf5)"
@@ -144,7 +144,7 @@ jobs:
         run: cargo build --release
         working-directory: luna-rust
         env:
-          CARGO_BUILD_RUSTFLAGS: ""
+          RUSTFLAGS: ""
 
       - uses: julia-actions/setup-julia@v3
         with:
