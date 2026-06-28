@@ -34,6 +34,11 @@ function _libluna_rust_path()
     joinpath(Utils.lunadir(), "luna-rust", "target", "release", libname)
 end
 
+# Global constant evaluated once at module load time.
+# Julia's ccall requires library paths to be literal strings or global constants
+# (not struct field accesses or arbitrary local expressions).
+const _LIBLUNA_RUST = _libluna_rust_path()
+
 """
 Mutable wrapper around a heap-allocated `PptIonizationRate` in the Rust shared
 library.  A GC finalizer calls `free_ppt_ionization_lut` when the handle is
@@ -41,12 +46,11 @@ no longer reachable, so the Rust heap allocation is always reclaimed.
 """
 mutable struct RustIonizationHandle
     ptr::Ptr{Cvoid}
-    libpath::String
-    function RustIonizationHandle(ptr::Ptr{Cvoid}, libpath::String)
-        h = new(ptr, libpath)
+    function RustIonizationHandle(ptr::Ptr{Cvoid})
+        h = new(ptr)
         finalizer(h) do self
             if self.ptr != C_NULL
-                ccall((:free_ppt_ionization_lut, self.libpath),
+                ccall((:free_ppt_ionization_lut, _LIBLUNA_RUST),
                       Cvoid, (Ptr{Cvoid},), self.ptr)
                 self.ptr = C_NULL
             end
@@ -66,9 +70,8 @@ so the pure-Julia path is taken — no behaviour change unless the toggle is on.
 function _make_rust_ionization_handle(E::AbstractVector, rate::AbstractVector,
                                        Emin::Float64, Emax::Float64)
     get(ENV, "LUNA_USE_RUST_IONISATION", "0") == "1" || return nothing
-    libpath = _libluna_rust_path()
-    if !isfile(libpath)
-        @warn "LUNA_USE_RUST_IONISATION=1 but Rust lib not found at $libpath — " *
+    if !isfile(_LIBLUNA_RUST)
+        @warn "LUNA_USE_RUST_IONISATION=1 but Rust lib not found at $_LIBLUNA_RUST — " *
               "falling back to Julia.  Build it with `cargo build --release` in luna-rust/."
         return nothing
     end
@@ -76,7 +79,7 @@ function _make_rust_ionization_handle(E::AbstractVector, rate::AbstractVector,
     E_f64    = E isa Vector{Float64} ? E : collect(Float64, E)
     rate_f64 = rate isa Vector{Float64} ? rate : collect(Float64, rate)
     ptr = GC.@preserve E_f64 rate_f64 begin
-        ccall((:init_ppt_ionization_lut, libpath),
+        ccall((:init_ppt_ionization_lut, _LIBLUNA_RUST),
               Ptr{Cvoid},
               (Float64, Float64, Csize_t, Ptr{Float64}, Ptr{Float64}),
               Emin, Emax, length(E_f64), pointer(E_f64), pointer(rate_f64))
@@ -85,7 +88,7 @@ function _make_rust_ionization_handle(E::AbstractVector, rate::AbstractVector,
         @warn "init_ppt_ionization_lut returned null — falling back to Julia ionization."
         return nothing
     end
-    return RustIonizationHandle(ptr, libpath)
+    return RustIonizationHandle(ptr)
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -518,7 +521,7 @@ function (ir::IonRatePPTAccel)(out::AbstractArray, E::AbstractArray)
         rh = ir.rust_handle
         if E isa Vector{Float64} && out isa Vector{Float64}
             ret = GC.@preserve E out begin
-                ccall((:ppt_ionization_rate_vector, rh.libpath),
+                ccall((:ppt_ionization_rate_vector, _LIBLUNA_RUST),
                       Cint,
                       (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Csize_t),
                       rh.ptr, pointer(E), pointer(out), length(E))
