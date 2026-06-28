@@ -83,7 +83,18 @@ fn is_vulkan_available() -> bool {
         }
         false
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    {
+        unsafe {
+            let vulkan_dll = b"vulkan-1.dll\0";
+            let handle = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(vulkan_dll.as_ptr());
+            if handle != 0 {
+                return true;
+            }
+        }
+        false
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         false
     }
@@ -210,7 +221,7 @@ impl SimulationEngine {
                     #[cfg(target_arch = "x86_64")]
                     return Self::initialize(HardwarePath::CpuX86AVX512);
                     #[cfg(target_arch = "aarch64")]
-                    return Self::initialize(HardwarePath::CpuArmNeon);
+                    return Self::initialize(HardwarePath::CpuArmAMX);
                     #[allow(unreachable_code)]
                     Self::initialize(HardwarePath::CpuPortable)
                 })

@@ -135,6 +135,87 @@ mod tests {
         }
     }
 
+    /// Verify that `PptIonizationRate::from_samples` + `rate_vector` round-trips
+    /// correctly and that the FFI-level functions behave identically to the
+    /// closure-based `new` constructor for the same underlying data.
+    #[test]
+    fn test_ppt_from_samples_ffi() {
+        use super::ffi::{init_ppt_ionization_lut, free_ppt_ionization_lut, ppt_ionization_rate_vector};
+
+        let e_min    = 1.0e8_f64;
+        let e_max    = 5.0e9_f64;
+        let n_points = 64_usize;
+        let rate_fn  = |e: f64| 1.2_f64 * (e / 1.0e9).exp();
+
+        // Build reference via closure constructor
+        let reference = PptIonizationRate::new(e_min, e_max, n_points, rate_fn);
+
+        // Build the same LUT via from_samples — simulates what Julia will pass
+        let h = (e_max - e_min) / ((n_points - 1) as f64);
+        let e_vals: Vec<f64>    = (0..n_points).map(|i| e_min + i as f64 * h).collect();
+        let rate_vals: Vec<f64> = e_vals.iter().map(|&e| rate_fn(e)).collect();
+
+        let lut = PptIonizationRate::from_samples(e_min, e_max, &e_vals, &rate_vals);
+
+        // Both should agree at mid-range points
+        let test_fields: Vec<f64> = (0..20)
+            .map(|i| e_min + (i as f64 + 0.5) * (e_max - e_min) / 20.0)
+            .collect();
+        for &ef in &test_fields {
+            let r_ref = reference.rate(ef).unwrap();
+            let r_new = lut.rate(ef).unwrap();
+            let rel_err = (r_ref - r_new).abs() / r_ref;
+            assert!(rel_err < 1e-4,
+                "from_samples vs new mismatch at E={:.2e}: ref={:.6e} new={:.6e} rel_err={:.2e}",
+                ef, r_ref, r_new, rel_err);
+        }
+
+        // --- Test FFI entry points ---
+        let ptr = unsafe {
+            init_ppt_ionization_lut(
+                e_min, e_max, n_points,
+                e_vals.as_ptr(), rate_vals.as_ptr(),
+            )
+        };
+        assert!(!ptr.is_null(), "init_ppt_ionization_lut returned null");
+
+        let mut out_rates = vec![0.0_f64; test_fields.len()];
+        let ret = unsafe {
+            ppt_ionization_rate_vector(
+                ptr as *const _,
+                test_fields.as_ptr(),
+                out_rates.as_mut_ptr(),
+                test_fields.len(),
+            )
+        };
+        assert_eq!(ret, 0, "ppt_ionization_rate_vector returned error {}", ret);
+
+        for (i, (&ef, &r_ffi)) in test_fields.iter().zip(out_rates.iter()).enumerate() {
+            let r_ref = reference.rate(ef).unwrap();
+            let rel_err = (r_ffi - r_ref).abs() / r_ref;
+            assert!(rel_err < 1e-4,
+                "FFI rate mismatch at index {} E={:.2e}: ref={:.6e} ffi={:.6e}",
+                i, ef, r_ref, r_ffi);
+        }
+
+        // Below-cutoff must return 0.0
+        let low_field = vec![e_min * 0.1];
+        let mut low_out = vec![-1.0_f64];
+        let ret2 = unsafe {
+            ppt_ionization_rate_vector(ptr as *const _, low_field.as_ptr(), low_out.as_mut_ptr(), 1)
+        };
+        assert_eq!(ret2, 0);
+        assert_eq!(low_out[0], 0.0, "Below-cutoff rate must be exactly 0.0");
+
+        // Null-pointer guard must return -1
+        let ret3 = unsafe {
+            ppt_ionization_rate_vector(std::ptr::null(), test_fields.as_ptr(), out_rates.as_mut_ptr(), 1)
+        };
+        assert_eq!(ret3, -1);
+
+        unsafe { free_ppt_ionization_lut(ptr); }
+    }
+
     #[test]
     fn test_ppt_ionization_cutoff() {
         let e_min = 1.0e8; // 100 MV/m

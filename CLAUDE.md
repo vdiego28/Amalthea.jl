@@ -96,6 +96,16 @@ The main `Luna.run(Eω, grid, linop, transform, FT, output)` ties everything tog
 
 Julia calls Rust kernels via `ccall` to the `libluna_rust` shared library. The library is built by `deps/build.jl` (via `cargo build --release`) and loaded at Julia package init time. The canonical zero-copy FFI smoke test is `test/test_rust_ffi.jl` (CI group `rust`); additional cross-language integration scripts (stepper/dispatch, scans/HDF5 I/O, GPU) live in `luna-rust/tests/*.jl`. Keep these green — they are the safety net guarding the FFI surface.
 
+#### Kernel wiring pattern (established with PPT ionization)
+
+Each Rust kernel follows this pattern for progressive migration:
+
+1. **Rust side (`ffi.rs`):** export three `#[unsafe(no_mangle)] pub unsafe extern "C"` functions — `init_<kernel>`, `free_<kernel>`, and `<kernel>_evaluate` — using the opaque-handle lifecycle pattern from `init_scan_queue` / `init_simulation_engine`.
+2. **Julia side (`src/*.jl`):** add a `mutable struct Rust<Kernel>Handle` with a GC finalizer that calls `free_<kernel>`. The parent struct stores this as a type parameter `RH` (either `Nothing` for Julia path or `Rust<Kernel>Handle` for Rust path). An env-var toggle (`LUNA_USE_RUST_<KERNEL>`) gates construction at runtime — Julia path is always the default.
+3. **Test (`test/test_<kernel>_rust.jl`):** `@testitem tags=[:rust]` with a skip-guard (mirrors `test_rust_ffi.jl`). Asserts relative agreement within spline-interpolation precision (~1e-8), not machine epsilon, and asserts exact boundary conditions (below-cutoff → 0.0).
+
+**Current wiring status:** PPT ionization (`LUNA_USE_RUST_IONISATION=1`). See `BACKLOG.md` for remaining kernels.
+
 ## Math & Advancements
 
 The `luna-rust` crate replaces several numerical approximations from the original Julia codebase with exact analytical forms and allocation-free solvers. **`luna-rust/README.md` is the authoritative math reference** (with full equations); the summary below is a map:

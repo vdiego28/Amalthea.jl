@@ -10,6 +10,86 @@ import Luna.PhysData: ionisation_potential, quantum_numbers
 import Luna: Maths, Utils
 import Printf: @sprintf
 
+# ─── Rust FFI helpers ────────────────────────────────────────────────────────
+#
+# The PPT ionization rate can be evaluated by the Rust backend (using the same
+# cubic B-spline LUT as the Julia path) when LUNA_USE_RUST_IONISATION=1.
+# The pattern established here (opaque handle + opt-in env toggle) is the
+# template for subsequent kernel migrations (Raman → dispersion → QDHT → stepper).
+
+"""
+    _libluna_rust_path() -> String
+
+Return the platform-appropriate path to the `libluna_rust` shared library
+(built with `cargo build --release` in `luna-rust/`).
+"""
+function _libluna_rust_path()
+    libname = if Sys.iswindows()
+        "luna_rust.dll"
+    elseif Sys.isapple()
+        "libluna_rust.dylib"
+    else
+        "libluna_rust.so"
+    end
+    joinpath(Utils.lunadir(), "luna-rust", "target", "release", libname)
+end
+
+"""
+Mutable wrapper around a heap-allocated `PptIonizationRate` in the Rust shared
+library.  A GC finalizer calls `free_ppt_ionization_lut` when the handle is
+no longer reachable, so the Rust heap allocation is always reclaimed.
+"""
+mutable struct RustIonizationHandle
+    ptr::Ptr{Cvoid}
+    libpath::String
+    function RustIonizationHandle(ptr::Ptr{Cvoid}, libpath::String)
+        h = new(ptr, libpath)
+        finalizer(h) do self
+            if self.ptr != C_NULL
+                ccall((:free_ppt_ionization_lut, self.libpath),
+                      Cvoid, (Ptr{Cvoid},), self.ptr)
+                self.ptr = C_NULL
+            end
+        end
+        return h
+    end
+end
+
+"""
+    _make_rust_ionization_handle(E, rate, Emin, Emax) -> Union{Nothing, RustIonizationHandle}
+
+When `LUNA_USE_RUST_IONISATION=1` and the Rust shared library is present,
+build a Rust-side PPT ionization LUT from the already-filtered (E, rate)
+data (the same knots the Julia `CSpline` uses).  Returns `nothing` otherwise
+so the pure-Julia path is taken — no behaviour change unless the toggle is on.
+"""
+function _make_rust_ionization_handle(E::AbstractVector, rate::AbstractVector,
+                                       Emin::Float64, Emax::Float64)
+    get(ENV, "LUNA_USE_RUST_IONISATION", "0") == "1" || return nothing
+    libpath = _libluna_rust_path()
+    if !isfile(libpath)
+        @warn "LUNA_USE_RUST_IONISATION=1 but Rust lib not found at $libpath — " *
+              "falling back to Julia.  Build it with `cargo build --release` in luna-rust/."
+        return nothing
+    end
+    # Ensure contiguous Float64 (sub-arrays or other eltypes are collected first)
+    E_f64    = E isa Vector{Float64} ? E : collect(Float64, E)
+    rate_f64 = rate isa Vector{Float64} ? rate : collect(Float64, rate)
+    ptr = GC.@preserve E_f64 rate_f64 begin
+        ccall((:init_ppt_ionization_lut, libpath),
+              Ptr{Cvoid},
+              (Float64, Float64, Csize_t, Ptr{Float64}, Ptr{Float64}),
+              Emin, Emax, length(E_f64), pointer(E_f64), pointer(rate_f64))
+    end
+    if ptr == C_NULL
+        @warn "init_ppt_ionization_lut returned null — falling back to Julia ionization."
+        return nothing
+    end
+    return RustIonizationHandle(ptr, libpath)
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 abstract type AbstractIonRate end
 
 """
@@ -323,10 +403,11 @@ function ionrate_PPT(material::Symbol, λ0, E;
     return ionrate_PPT(ip, λ0, Z, l, E; Δα, α_ion, kwargs...)
 end
 
-struct IonRatePPTAccel{ST} <: AbstractIonRate
-    spline::ST # spline interpolant
-    Emin::Float64 # minimum electric field strength
-    Emax::Float64 # maximum electric field strength
+struct IonRatePPTAccel{ST, RH} <: AbstractIonRate
+    spline::ST      # Julia CSpline fallback — always present for scalar calls
+    Emin::Float64   # minimum electric field strength (lower cutoff)
+    Emax::Float64   # maximum electric field strength (upper bound)
+    rust_handle::RH # Nothing (Julia path) or RustIonizationHandle (Rust path)
 end
 
 """
@@ -356,7 +437,10 @@ function IonRatePPTAccel(E, rate)
     cspl = Maths.CSpline(E, log.(rate); bounds_error=true)
     Emin = minimum(E)
     Emax = maximum(E)
-    IonRatePPTAccel(cspl, Emin, Emax)
+    # Optionally build a Rust-backed LUT from the same knot data.
+    # Returns nothing when LUNA_USE_RUST_IONISATION is unset (pure-Julia default).
+    rust_handle = _make_rust_ionization_handle(E, rate, Emin, Emax)
+    IonRatePPTAccel(cspl, Emin, Emax, rust_handle)
 end
 
 function IonRatePPTAccel(material::Symbol, λ0; stark_shift=true, dipole_corr=true, kwargs...)
@@ -427,6 +511,22 @@ function (ir::IonRatePPTAccel)(E)
 end
 
 function (ir::IonRatePPTAccel)(out::AbstractArray, E::AbstractArray)
+    # Fast path: zero-copy ccall into the Rust LUT when the handle is active.
+    # Requires contiguous Float64 arrays (the hot loop in Nonlinear.jl always
+    # passes Vector{Float64}); falls through to Julia on any other type or error.
+    if ir.rust_handle !== nothing
+        rh = ir.rust_handle
+        if E isa Vector{Float64} && out isa Vector{Float64}
+            ret = GC.@preserve E out begin
+                ccall((:ppt_ionization_rate_vector, rh.libpath),
+                      Cint,
+                      (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Csize_t),
+                      rh.ptr, pointer(E), pointer(out), length(E))
+            end
+            ret == 0 && return
+            @warn "Rust ppt_ionization_rate_vector returned $ret — falling back to Julia"
+        end
+    end
     out .= ir.(E)
 end
 

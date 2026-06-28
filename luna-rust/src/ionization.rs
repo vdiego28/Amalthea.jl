@@ -73,6 +73,76 @@ impl CubicSplineLUT {
         Self { segments, x_min, x_max }
     }
 
+    /// Build a natural cubic spline from pre-sampled (x, y) pairs.
+    ///
+    /// Supports non-uniform x grids (e.g. after filtering zero-rate points on
+    /// the Julia side).  Uses the standard natural-spline tridiagonal solve:
+    /// second derivatives at both endpoints are forced to zero.
+    ///
+    /// # Panics
+    /// Panics if `x_values.len() < 3` or if lengths differ.
+    pub fn from_samples(x_values: &[f64], y_values: &[f64]) -> Self {
+        let n = x_values.len();
+        assert!(n >= 3, "CubicSplineLUT requires at least 3 points");
+        assert_eq!(n, y_values.len(), "x and y must have the same length");
+
+        // Precompute per-segment widths
+        let mut h = vec![0.0f64; n - 1];
+        for i in 0..(n - 1) {
+            h[i] = x_values[i + 1] - x_values[i];
+            assert!(h[i] > 0.0, "x_values must be strictly increasing");
+        }
+
+        let a = y_values.to_vec();
+
+        // Forward sweep of the Thomas algorithm for natural cubic spline
+        let mut alpha = vec![0.0f64; n];
+        for i in 1..(n - 1) {
+            alpha[i] = (3.0 / h[i]) * (a[i + 1] - a[i])
+                - (3.0 / h[i - 1]) * (a[i] - a[i - 1]);
+        }
+
+        let mut l  = vec![1.0f64; n];
+        let mut mu = vec![0.0f64; n];
+        let mut z  = vec![0.0f64; n];
+
+        for i in 1..(n - 1) {
+            l[i]  = 2.0 * (h[i - 1] + h[i]) - h[i - 1] * mu[i - 1];
+            mu[i] = h[i] / l[i];
+            z[i]  = (alpha[i] - h[i - 1] * z[i - 1]) / l[i];
+        }
+        // l[n-1] = 1, z[n-1] = 0 (natural BC: c[n-1] = 0)
+
+        // Back-substitution
+        let mut c = vec![0.0f64; n];
+        let mut b = vec![0.0f64; n - 1];
+        let mut d = vec![0.0f64; n - 1];
+
+        for j in (0..(n - 1)).rev() {
+            c[j] = z[j] - mu[j] * c[j + 1];
+            b[j] = (a[j + 1] - a[j]) / h[j]
+                - h[j] * (c[j + 1] + 2.0 * c[j]) / 3.0;
+            d[j] = (c[j + 1] - c[j]) / (3.0 * h[j]);
+        }
+
+        let mut segments = Vec::with_capacity(n - 1);
+        for i in 0..(n - 1) {
+            segments.push(SplineSegment {
+                x: x_values[i],
+                a: a[i],
+                b: b[i],
+                c: c[i],
+                d: d[i],
+            });
+        }
+
+        Self {
+            segments,
+            x_min: x_values[0],
+            x_max: *x_values.last().unwrap(),
+        }
+    }
+
     /// Evaluates the spline at x. Returns None if x lies outside [x_min, x_max]
     pub fn evaluate(&self, x: f64) -> Option<f64> {
         if x < self.x_min || x > self.x_max {
@@ -119,6 +189,24 @@ impl PptIonizationRate {
             if rate > 0.0 { rate.ln() } else { -100.0 } // clamp minimum log-rate
         });
         
+        Self { spline_lut, e_min, e_max }
+    }
+
+    /// Create from pre-sampled (E, rate) pairs supplied by the caller (e.g. Julia).
+    ///
+    /// `e_values` and `rate_values` must be the same length and `e_values` must
+    /// be strictly increasing.  Rates that are zero or negative are mapped to
+    /// `ln(-100)` so the spline stays well-conditioned — they will never be
+    /// returned because `e_min` acts as a lower cutoff.
+    ///
+    /// This constructor is used by the Julia FFI bridge so Julia can pass the
+    /// same pre-computed knot data that its own `CSpline` uses, ensuring both
+    /// paths interpolate the *same* underlying rate table.
+    pub fn from_samples(e_min: f64, e_max: f64, e_values: &[f64], rate_values: &[f64]) -> Self {
+        let ln_rates: Vec<f64> = rate_values.iter().map(|&r| {
+            if r > 0.0 { r.ln() } else { -100.0 }
+        }).collect();
+        let spline_lut = CubicSplineLUT::from_samples(e_values, &ln_rates);
         Self { spline_lut, e_min, e_max }
     }
 

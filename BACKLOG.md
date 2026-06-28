@@ -4,15 +4,28 @@ Deferred work and known issues for Luna-Rust.jl. Severity: 🔴 correctness · �
 
 ## Open items
 
-### 🔴 Wire the Rust backend into the Julia pipeline
-The `luna-rust` crate builds and its FFI surface is fully tested, but `src/*.jl`
-contains **zero `ccall`s** — `prop_capillary` / `prop_gnlse` / `RK45` currently run in
-pure Julia. The README and `CLAUDE.md` describe the Rust-accelerated architecture as the
-design goal; the actual kernel routing is not connected yet.
-- **Scope:** large. Decide per-kernel rollout order (e.g. dispersion → QDHT → Raman →
-  stepper) and add `ccall` wrappers on the Julia side guarded by the existing FFI tests.
-- **Safety net already in place:** `test/test_rust_ffi.jl` and `luna-rust/tests/*.jl`
-  (`@testitem tags=[:rust]`, discovered recursively by `@run_package_tests`).
+### 🟡 Wire remaining Rust kernels into the Julia pipeline
+PPT ionization is now wired (opt-in via `LUNA_USE_RUST_IONISATION=1`).
+The pattern: Rust exports an opaque handle lifecycle + a vector-eval FFI function;
+Julia stores the handle in the struct and routes the in-place vector call through
+`ccall`; a `@testitem tags=[:rust]` equivalence test guards the boundary.
+
+Remaining kernels to wire (same pattern, in this order):
+1. ✅ **PPT ionization** (`IonRatePPTAccel`) — `LUNA_USE_RUST_IONISATION` toggle —
+   `test/test_ionisation_rust.jl`
+2. ⬜ **Time-domain Raman** (`raman.rs` `TimeDomainRamanSolver`) — toggle
+   `LUNA_USE_RUST_RAMAN`, export `init_raman_solver` / `free_raman_solver` /
+   `raman_solve_step`, wire into `Raman.jl` or `NonlinearRHS.jl`.
+3. ⬜ **Waveguide dispersion** (`dispersion.rs` `ChebyshevDispersion`) — toggle
+   `LUNA_USE_RUST_DISPERSION`, export `init_chebyshev_dispersion` / `eval_dispersion`,
+   wire into `LinearOps.jl` or `Capillary.jl` setup path.
+4. ⬜ **QDHT** (`diffraction.rs` `Qdht`) — toggle `LUNA_USE_RUST_QDHT`, wire into
+   `NonlinearRHS.jl` (`TransRadial`/`TransFree`).
+5. ⬜ **RK45 stepper** (`stepper.rs` `Dopri5Stepper`) — largest scope; requires exporting
+   a callback-based or fixed-array step loop through FFI.
+
+- **Safety net:** `test/test_rust_ffi.jl`, `test/test_ionisation_rust.jl`, and
+  `luna-rust/tests/*.jl` (`@testitem tags=[:rust]`, auto-discovered).
 
 ### 🔴 Real file locking for parameter scans on Windows
 `luna-rust/src/scans.rs` `FlockLock` is a **no-op on non-Unix targets** (`#[cfg(not(unix))]`
