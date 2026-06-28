@@ -1,36 +1,25 @@
 use super::io::{Hdf5Writer, get_hdf5_api};
 
-#[cfg(unix)]
 use std::fs::File;
+
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
+#[cfg(not(unix))]
+use std::os::windows::io::AsRawHandle;
 
 pub struct FlockLock {
-    #[cfg(unix)]
     file: File,
 }
 
 impl FlockLock {
     pub fn new(lock_path: &str) -> Result<Self, String> {
-        #[cfg(unix)]
-        {
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .open(lock_path)
-                .map_err(|e| format!("Failed to open lock file: {}", e))?;
-            Ok(Self { file })
-        }
-        #[cfg(not(unix))]
-        {
-            // WARNING: On non-Unix targets (Windows) this is a no-op — `lock()` and
-            // `unlock()` below do nothing, so concurrent parameter scans are NOT
-            // process-safe and may race on the shared HDF5 queue file.
-            // TODO: implement real locking via Windows LockFileEx / UnlockFileEx.
-            let _ = lock_path;
-            Ok(Self {})
-        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(lock_path)
+            .map_err(|e| format!("Failed to open lock file: {}", e))?;
+        Ok(Self { file })
     }
 
     pub fn lock(&self) -> Result<(), String> {
@@ -40,6 +29,23 @@ impl FlockLock {
             let res = libc::flock(fd, libc::LOCK_EX);
             if res != 0 {
                 return Err("Failed to acquire flock".to_string());
+            }
+        }
+        #[cfg(not(unix))]
+        unsafe {
+            let handle = self.file.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+            let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED = std::mem::zeroed();
+            // LOCKFILE_EXCLUSIVE_LOCK = 2
+            let res = windows_sys::Win32::Storage::FileSystem::LockFileEx(
+                handle,
+                2,
+                0,
+                !0,
+                !0,
+                &mut overlapped,
+            );
+            if res == 0 {
+                return Err("Failed to acquire LockFileEx".to_string());
             }
         }
         Ok(())
@@ -52,6 +58,21 @@ impl FlockLock {
             let res = libc::flock(fd, libc::LOCK_UN);
             if res != 0 {
                 return Err("Failed to release flock".to_string());
+            }
+        }
+        #[cfg(not(unix))]
+        unsafe {
+            let handle = self.file.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+            let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED = std::mem::zeroed();
+            let res = windows_sys::Win32::Storage::FileSystem::UnlockFileEx(
+                handle,
+                0,
+                !0,
+                !0,
+                &mut overlapped,
+            );
+            if res == 0 {
+                return Err("Failed to release UnlockFileEx".to_string());
             }
         }
         Ok(())
@@ -239,10 +260,7 @@ mod tests {
         let lock = FlockLock::new(lock_path);
         assert!(lock.is_ok(), "FlockLock::new should succeed");
 
-        #[cfg(unix)]
-        {
-            assert!(temp_path.exists(), "FlockLock::new should create the file on Unix");
-        }
+        assert!(temp_path.exists(), "FlockLock::new should create the file");
 
         // Test opening an existing lock file
         let lock2 = FlockLock::new(lock_path);
@@ -255,7 +273,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn test_flock_lock_new_error() {
         let mut temp_path = std::env::temp_dir();
         temp_path.push(format!("luna_test_nonexistent_dir_{}", std::process::id()));
