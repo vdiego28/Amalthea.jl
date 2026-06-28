@@ -23,6 +23,14 @@ import FFTW
     @test isapprox(Maths.derivative(x -> exp.(2x), 1, 1), 2*exp(2))
     @test isapprox(Maths.derivative(x -> exp.(2x), 1, 2), 4*exp(2))
     @test isapprox(Maths.derivative(x -> exp.(-x.^2), 0, 1), 0, atol=1e-14)
+
+@testset "level_xings error paths" begin
+    x = collect(range(-1, stop=1, length=100))
+    y = Maths.gauss.(x, fwhm=0.2)
+
+    @test_throws ErrorException Maths.level_xings(x, y; minmax=:invalid)
+    @test_throws ErrorException Maths.level_xings(x, y; method=:invalid)
+end
 end
 
 @testset "Moments" begin
@@ -130,6 +138,9 @@ end
     @test Maths.fwhm(x, y, method=:spline) == Maths.fwhm(x, y, method=:spline, minmax=:max)
     @test abs(Maths.fwhm(x, y, method=:nearest) - fw) < δx
 
+    @test_throws "Unknown FWHM method unknown" Maths.fwhm(x, y, method=:unknown)
+    @test_throws "minmax has to be :min or :max" Maths.fwhm(x, y, minmax=:unknown)
+
     fw = 0.1
     sep = 0.5
     y = Maths.gauss.(x, fwhm=fw, x0=-sep/2) + Maths.gauss.(x, fwhm=fw, x0=sep/2)
@@ -175,9 +186,9 @@ end
                 x0 >= spl.x[end] ? length(spl.x) :
                 findfirst(x -> x>x0, spl.x)
     ff = Maths.FastFinder(x)
-    @test_throws ErrorException Maths.FastFinder(x[end:-1:1])
-    @test_throws ErrorException Maths.FastFinder(shuffle(x))
-    @test_throws ErrorException Maths.FastFinder(vcat(x[1], x))
+    @test_throws "Input array for FastFinder must be sorted in ascending order." Maths.FastFinder(x[end:-1:1])
+    @test_throws "Input array for FastFinder must be sorted in ascending order." Maths.FastFinder(shuffle(x))
+    @test_throws "Entries in input array for FastFinder must be unique." Maths.FastFinder(vcat(x[1], x))
     @test all(abs.(spl.(x) .- y) .< 5e-18)
     x2 = range(0.0, 2π, length=300)
     idcs = spl.ifun.(x2)
