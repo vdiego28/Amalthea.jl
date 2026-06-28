@@ -14,6 +14,7 @@ d["float"] = 1.0
 d["float[]"] = [1.0, 2.0, 3.0]
 d["string"] = "foo"
 d["nothing"] = nothing
+d["bitarray"] = BitArray([true, false, true])
 d["dict"] = Dict("foo"=>5, "bar"=>[1, 2, 3], "baz"=>Dict("complex"=>5.0+2.0im))
 fpath = joinpath(Utils.cachedir(), "output_test", "test.h5")
 isfile(fpath) && rm(fpath)
