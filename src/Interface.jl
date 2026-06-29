@@ -568,6 +568,31 @@ function makedensity(flength, gas, pressure, temperature)
     density
 end
 
+"""
+    _make_rust_raman_handle_from_response(r, dt) -> Union{Nothing, Nonlinear.RustRamanHandle}
+
+Extract oscillator parameters from a Raman response object and build a Rust-side
+`TimeDomainRamanSolver` when eligible.  Eligible means:
+  - `r` is a `CombinedRamanResponse` whose `Rs` list contains only `RamanRespSingleDampedOscillator`s
+  - All τ2 are density-independent (τ2ρ(1.0) ≈ τ2ρ(2.0))
+  - `LUNA_USE_RUST_RAMAN=1` and the Rust lib is present (checked inside `_make_rust_raman_handle`)
+Intermediate-broadening responses (Gaussian damping) are ineligible and stay on the Julia FFT path.
+"""
+function _make_rust_raman_handle_from_response(r, dt)
+    r isa Raman.CombinedRamanResponse || return nothing
+    all(ri isa Raman.RamanRespSingleDampedOscillator for ri in r.Rs) || return nothing
+    # Density-independent τ2 check: compare τ2ρ at two different densities
+    for ri in r.Rs
+        τ2_1 = ri.τ2ρ(1.0)
+        τ2_2 = ri.τ2ρ(2.0)
+        abs(τ2_1 - τ2_2) < 1e-10 * abs(τ2_1) || return nothing
+    end
+    omegas    = Float64[ri.Ω          for ri in r.Rs]
+    gammas    = Float64[1.0/ri.τ2ρ(1.0) for ri in r.Rs]
+    couplings = Float64[ri.K          for ri in r.Rs]
+    Nonlinear._make_rust_raman_handle(omegas, gammas, couplings, dt)
+end
+
 function makeresponse(grid::Grid.RealGrid, gas, raman, kerr, plasma, thg, pol,
                       rotation, vibration, PPT_options, preionfrac, temperature)
     out = Any[]
@@ -586,10 +611,11 @@ function makeresponse(grid::Grid.RealGrid, gas, raman, kerr, plasma, thg, pol,
         @info("Including the Raman response (due to molecular gas choice).")
         rr = Raman.raman_response(grid.to, gas;
             rotation, vibration, temp=temperature)
+        rust_h = _make_rust_raman_handle_from_response(rr, grid.to[2] - grid.to[1])
         if thg
-            push!(out, Nonlinear.RamanPolarField(grid.to, rr))
+            push!(out, Nonlinear.RamanPolarField(grid.to, rr; rust_handle=rust_h))
         else
-            push!(out, Nonlinear.RamanPolarField(grid.to, rr, thg=false))
+            push!(out, Nonlinear.RamanPolarField(grid.to, rr; thg=false, rust_handle=rust_h))
         end
     end
     Tuple(out)

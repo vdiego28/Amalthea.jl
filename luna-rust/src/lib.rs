@@ -271,6 +271,67 @@ mod tests {
     }
 
     #[test]
+    fn test_raman_solver_ffi() {
+        use super::ffi::{init_raman_solver, free_raman_solver, raman_solve};
+
+        let omega    = 1e13_f64; // 10 THz oscillator
+        let gamma    = 1e12_f64; // 1 THz damping (τ2 = 1 ps)
+        let coupling = 1.0_f64;
+        let dt       = 1e-14_f64; // 10 fs time step
+        let n_t      = 256_usize;
+
+        // n_osc=0 must return null
+        let ptr_zero = unsafe { init_raman_solver(&omega, &gamma, &coupling, 0, dt) };
+        assert!(ptr_zero.is_null(), "n_osc=0 should return null");
+
+        // null omega must return null
+        let ptr_null = unsafe { init_raman_solver(std::ptr::null(), &gamma, &coupling, 1, dt) };
+        assert!(ptr_null.is_null(), "null omega should return null");
+
+        // Normal init
+        let ptr = unsafe { init_raman_solver(&omega, &gamma, &coupling, 1, dt) };
+        assert!(!ptr.is_null(), "init_raman_solver returned null");
+
+        // Null ptr to raman_solve → -1
+        let mut dummy_out = [0.0_f64; 1];
+        let dummy_in = [0.0_f64; 1];
+        let ret_null = unsafe {
+            raman_solve(std::ptr::null_mut(), dummy_in.as_ptr(), dummy_out.as_mut_ptr(), 1)
+        };
+        assert_eq!(ret_null, -1, "null ptr should return -1");
+
+        // Zero intensity → zero polarization (solver resets state each call)
+        let intensity_zero = vec![0.0_f64; n_t];
+        let mut polar = vec![9.9_f64; n_t]; // pre-fill non-zero
+        let ret = unsafe {
+            raman_solve(ptr, intensity_zero.as_ptr(), polar.as_mut_ptr(), n_t)
+        };
+        assert_eq!(ret, 0);
+        assert!(polar.iter().all(|&x| x == 0.0), "zero intensity must give zero polarization");
+
+        // Non-zero intensity → non-zero polarization
+        let intensity_step: Vec<f64> = vec![1e14_f64; n_t];
+        let mut polar_step = vec![0.0_f64; n_t];
+        let ret2 = unsafe {
+            raman_solve(ptr, intensity_step.as_ptr(), polar_step.as_mut_ptr(), n_t)
+        };
+        assert_eq!(ret2, 0);
+        assert!(polar_step.iter().any(|&x| x.abs() > 0.0), "non-zero drive must yield non-zero response");
+
+        // FFI output must exactly match a direct TimeDomainRamanSolver::solve call
+        let oscs = vec![RamanOscillator { omega, gamma, coupling }];
+        let mut ref_solver = TimeDomainRamanSolver::new(oscs, dt);
+        let mut ref_polar = vec![0.0_f64; n_t];
+        ref_solver.solve(&intensity_step, &mut ref_polar);
+        for i in 0..n_t {
+            assert_eq!(polar_step[i], ref_polar[i],
+                "FFI vs direct mismatch at step {}: {} vs {}", i, polar_step[i], ref_polar[i]);
+        }
+
+        unsafe { free_raman_solver(ptr); }
+    }
+
+    #[test]
     fn test_integrating_factor_quadrature() {
         let z_n = 0.0;
         let h = 2.0;

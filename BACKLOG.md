@@ -13,9 +13,15 @@ Julia stores the handle in the struct and routes the in-place vector call throug
 Remaining kernels to wire (same pattern, in this order):
 1. ✅ **PPT ionization** (`IonRatePPTAccel`) — `LUNA_USE_RUST_IONISATION` toggle —
    `test/test_ionisation_rust.jl`
-2. ⬜ **Time-domain Raman** (`raman.rs` `TimeDomainRamanSolver`) — toggle
-   `LUNA_USE_RUST_RAMAN`, export `init_raman_solver` / `free_raman_solver` /
-   `raman_solve_step`, wire into `Raman.jl` or `NonlinearRHS.jl`.
+2. ✅ **Time-domain Raman** (`raman.rs` `TimeDomainRamanSolver`) — toggle
+   `LUNA_USE_RUST_RAMAN`, `init_raman_solver` / `free_raman_solver` / `raman_solve`
+   exported, wired into `Nonlinear.jl` hot loop for carrier-field SDO responses
+   (`CombinedRamanResponse` with all-SDO `Rs`, density-independent τ2) —
+   `test/test_raman_rust.jl`. Follow-ups: rotational multi-oscillator (FFI already
+   supports n_osc>1; needs Julia-side extraction of per-J Ω/K arrays);
+   density-dependent τ2 (add `raman_update_coeffs` FFI entry); intermediate-broadening
+   (Gaussian damping — stays Julia indefinitely); envelope (`RamanPolarEnv`) Rust path
+   (needs real-buffer copy for complex→real conversion).
 3. ⬜ **Waveguide dispersion** (`dispersion.rs` `ChebyshevDispersion`) — toggle
    `LUNA_USE_RUST_DISPERSION`, export `init_chebyshev_dispersion` / `eval_dispersion`,
    wire into `LinearOps.jl` or `Capillary.jl` setup path.
@@ -24,8 +30,9 @@ Remaining kernels to wire (same pattern, in this order):
 5. ⬜ **RK45 stepper** (`stepper.rs` `Dopri5Stepper`) — largest scope; requires exporting
    a callback-based or fixed-array step loop through FFI.
 
-- **Safety net:** `test/test_rust_ffi.jl`, `test/test_ionisation_rust.jl`, and
-  `luna-rust/tests/*.jl` (`@testitem tags=[:rust]`, auto-discovered).
+- **Safety net:** `test/test_rust_ffi.jl`, `test/test_ionisation_rust.jl`,
+  `test/test_raman_rust.jl`, and `luna-rust/tests/*.jl` (`@testitem tags=[:rust]`,
+  auto-discovered).
 
 ### 🔴 Real file locking for parameter scans on Windows
 `luna-rust/src/scans.rs` `FlockLock` is a **no-op on non-Unix targets** (`#[cfg(not(unix))]`

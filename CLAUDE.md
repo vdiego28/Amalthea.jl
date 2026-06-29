@@ -104,7 +104,17 @@ Each Rust kernel follows this pattern for progressive migration:
 2. **Julia side (`src/*.jl`):** add a `mutable struct Rust<Kernel>Handle` with a GC finalizer that calls `free_<kernel>`. The parent struct stores this as a type parameter `RH` (either `Nothing` for Julia path or `Rust<Kernel>Handle` for Rust path). An env-var toggle (`LUNA_USE_RUST_<KERNEL>`) gates construction at runtime — Julia path is always the default.
 3. **Test (`test/test_<kernel>_rust.jl`):** `@testitem tags=[:rust]` with a skip-guard (mirrors `test_rust_ffi.jl`). Asserts relative agreement within spline-interpolation precision (~1e-8), not machine epsilon, and asserts exact boundary conditions (below-cutoff → 0.0).
 
-**Current wiring status:** PPT ionization (`LUNA_USE_RUST_IONISATION=1`). See `BACKLOG.md` for remaining kernels.
+**Current wiring status:**
+- PPT ionization (`LUNA_USE_RUST_IONISATION=1`) — `src/Ionisation.jl`, `test/test_ionisation_rust.jl`.
+- Time-domain Raman (`LUNA_USE_RUST_RAMAN=1`) — `src/Nonlinear.jl` + `src/Interface.jl`,
+  `test/test_raman_rust.jl`. Two wrinkles vs ionization: (a) eligibility check lives in
+  `Interface.jl` (included after `Raman.jl`; `Nonlinear.jl` sees no Raman types); (b)
+  equivalence tolerance is ~1e-4 (method difference: FFT convolution vs exponential integrator),
+  not 1e-8. Only `RamanPolarField` (carrier field) is wired; `RamanPolarEnv` (envelope)
+  always uses Julia in this slice. Eligibility: `CombinedRamanResponse` with all-SDO `Rs`
+  and density-independent τ2 — `Interface._make_rust_raman_handle_from_response`.
+
+See `BACKLOG.md` for remaining kernels and Raman follow-ups.
 
 ## Math & Advancements
 

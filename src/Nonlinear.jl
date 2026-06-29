@@ -5,6 +5,79 @@ import Luna: Maths, Utils
 import FFTW
 import LinearAlgebra: mul!, ldiv!
 
+# ─── Rust FFI helpers for Raman ──────────────────────────────────────────────
+#
+# The time-domain Raman solver in luna-rust computes the SDO ADE response in
+# O(Nt) via an exponential integrator, replacing the O(Nt log Nt) FFT convolution
+# when LUNA_USE_RUST_RAMAN=1.  Eligibility check (CombinedRamanResponse with all-SDO
+# components and density-independent τ2) lives in Interface.jl where Raman types are
+# visible; this module only provides the ccall wrappers, which require a module-level
+# const for the library path (Julia's ccall lowering constraint — see ec76fd2).
+
+function _libluna_rust_path()
+    libname = if Sys.iswindows()
+        "luna_rust.dll"
+    elseif Sys.isapple()
+        "libluna_rust.dylib"
+    else
+        "libluna_rust.so"
+    end
+    joinpath(Utils.lunadir(), "luna-rust", "target", "release", libname)
+end
+
+const _LIBLUNA_RUST = _libluna_rust_path()
+
+"""
+Mutable wrapper around a heap-allocated `TimeDomainRamanSolver` in the Rust shared
+library.  A GC finalizer calls `free_raman_solver` when the handle is no longer
+reachable, so the Rust heap allocation is always reclaimed.
+"""
+mutable struct RustRamanHandle
+    ptr::Ptr{Cvoid}
+    function RustRamanHandle(ptr::Ptr{Cvoid})
+        h = new(ptr)
+        finalizer(h) do self
+            if self.ptr != C_NULL
+                ccall((:free_raman_solver, _LIBLUNA_RUST),
+                      Cvoid, (Ptr{Cvoid},), self.ptr)
+                self.ptr = C_NULL
+            end
+        end
+        return h
+    end
+end
+
+"""
+    _make_rust_raman_handle(omegas, gammas, couplings, dt) -> Union{Nothing, RustRamanHandle}
+
+Build a Rust-side `TimeDomainRamanSolver` from already-extracted oscillator parameters.
+Called from Interface.jl (which can see Raman types) after eligibility has been verified.
+Returns `nothing` when the toggle is off, the lib is missing, or init fails.
+"""
+function _make_rust_raman_handle(omegas::Vector{Float64}, gammas::Vector{Float64},
+                                  couplings::Vector{Float64}, dt::Float64)
+    get(ENV, "LUNA_USE_RUST_RAMAN", "0") == "1" || return nothing
+    if !isfile(_LIBLUNA_RUST)
+        @warn "LUNA_USE_RUST_RAMAN=1 but Rust lib not found at $_LIBLUNA_RUST — " *
+              "falling back to Julia. Build with `cargo build --release` in luna-rust/."
+        return nothing
+    end
+    isempty(omegas) && return nothing
+    ptr = GC.@preserve omegas gammas couplings begin
+        ccall((:init_raman_solver, _LIBLUNA_RUST),
+              Ptr{Cvoid},
+              (Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Csize_t, Float64),
+              pointer(omegas), pointer(gammas), pointer(couplings), Csize_t(length(omegas)), dt)
+    end
+    if ptr == C_NULL
+        @warn "init_raman_solver returned null — falling back to Julia Raman."
+        return nothing
+    end
+    RustRamanHandle(ptr)
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 function KerrScalar!(out, E, fac)
     @. out += fac*E^3
 end
@@ -180,9 +253,9 @@ end
 abstract type RamanPolar end
 
 "Raman polarisation response type for a carrier resolved field"
-struct RamanPolarField{TR, Tt, Thv, Tω, Tv, FTt, HTt} <: RamanPolar
+struct RamanPolarField{TR, Tt, Thv, Tω, Tv, FTt, HTt, RH} <: RamanPolar
     r::TR # Raman response
-    h::Tt # doubled buffer to hold response + padding 
+    h::Tt # doubled buffer to hold response + padding
     ht::Thv # buffer to hold time domain response
     hω::Tω # the frequency domain Raman response function
     Eω2::Tω # buffer to hold the Fourier transform of E^2
@@ -195,12 +268,13 @@ struct RamanPolarField{TR, Tt, Thv, Tω, Tv, FTt, HTt} <: RamanPolar
     HT::HTt # Hilbert transform
     thg::Bool # do we include third harmonic generation
     dt::Float64 # time step for scaling
+    rust_handle::RH # Nothing (Julia FFT path) or RustRamanHandle (Rust ADE path)
 end
 
 "Raman polarisation response type for an envelope"
-struct RamanPolarEnv{TR, Tt, Thv, Tω, Tv, FTt} <: RamanPolar
+struct RamanPolarEnv{TR, Tt, Thv, Tω, Tv, FTt, RH} <: RamanPolar
     r::TR # Raman response
-    h::Tt # doubled buffer to hold response + padding 
+    h::Tt # doubled buffer to hold response + padding
     ht::Thv # buffer to hold time domain response
     hω::Tω # the frequency domain Raman response function
     Eω2::Tω # buffer to hold the Fourier transform of E^2
@@ -211,6 +285,7 @@ struct RamanPolarEnv{TR, Tt, Thv, Tω, Tv, FTt} <: RamanPolar
     Pout::Tω # buffer to hold the output portion of the time domain polarisation
     FT::FTt # Fourier transform plan
     dt::Float64 # time step for scaling
+    rust_handle::RH # always Nothing in this slice (envelope Rust path is a follow-up)
 end
 
 """
@@ -220,7 +295,7 @@ Construct Raman polarisation response for a field on time grid `t`
 using response function `r`. If `thg=false` then exclude the third
 harmonic generation component of the response.
 """
-function RamanPolarField(t, r; thg=true)
+function RamanPolarField(t, r; thg=true, rust_handle=nothing)
     h = zeros(length(t)*2) # note double grid size, see explanation below
     ht = view(h, 1:length(t))
     Utils.loadFFTwisdom()
@@ -236,7 +311,7 @@ function RamanPolarField(t, r; thg=true)
     Pout = similar(t)
     HT = Maths.plan_hilbert(Pout)
     fill!(E2, 0.0)
-    RamanPolarField(r, h, ht, hω, Eω2, Pω, E2, E2v, P, Pout, FT, HT, thg, t[2] - t[1])
+    RamanPolarField(r, h, ht, hω, Eω2, Pω, E2, E2v, P, Pout, FT, HT, thg, t[2] - t[1], rust_handle)
 end
 
 """
@@ -260,7 +335,7 @@ function RamanPolarEnv(t, r)
     Pout = Array{ComplexF64,}(undef,size(t))
     E2v = view(E2, 1:length(t))
     fill!(E2, 0.0)
-    RamanPolarEnv(r, h, ht, hω, Eω2, Pω, E2, E2v, P, Pout, FT, t[2] - t[1])
+    RamanPolarEnv(r, h, ht, hω, Eω2, Pω, E2, E2v, P, Pout, FT, t[2] - t[1], nothing)
 end
 
 "Square the field or envelope"
@@ -297,33 +372,56 @@ function (R::RamanPolar)(out, Et, ρ)
     # corresponding to the field/envelope grid size
     sqr!(R, E)
 
-    # update frequency domain response function `hω`.
-    # we fill only up to the first half of h (using the view ht)
-    # i.e. only the part corresponding to the original time grid
-    # note that the response function time 0 is put into the first element of the response array
-    # this ensures that causality is maintained, and no artificial delay between the field and
-    # the start of the response function occurs, at each convolution point.  
-    R.r(R.ht, ρ)
-    R.hω .= R.FT * R.h
+    # Rust fast path: zero-copy O(Nt) time-domain ADE (carrier field only).
+    # E2v is real Float64 for RamanPolarField; envelope always has rust_handle===nothing.
+    # The ADE integrator resets state internally on each solve call (stateless from Julia).
+    rust_done = false
+    if R.rust_handle !== nothing
+        rh = R.rust_handle
+        e2_arr = R.E2  # preserve the backing array of E2v (GC.@preserve requires symbols)
+        p_arr  = R.P
+        ret = GC.@preserve e2_arr p_arr begin
+            ccall((:raman_solve, _LIBLUNA_RUST), Cint,
+                  (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Csize_t),
+                  rh.ptr, pointer(R.E2v), pointer(R.P), Csize_t(length(R.E2v)))
+        end
+        if ret == 0
+            rust_done = true
+        else
+            @warn "Rust raman_solve returned $ret — falling back to Julia FFT path"
+        end
+    end
 
-    # convolution by multiplication in frequency domain
-    # The double grid gives us accurate full convolution between the full field grid
-    # and full response function. It is unnecessary for highly damped responses, like
-    # in glass. But for gases with very long decay times it prevents artefacts due to
-    # truncation of the response function. There is likely a more efficient way. But
-    # this is safe, until we come up with one.
-    # we scale to correct for missing dt*dt*df from IFFT(FFT*FFT)
-    # the ifft already scales by 1/n = dt*df, so we need an additional dt
-    R.Eω2 .= R.FT * R.E2
-    @. R.Pω = R.hω * R.Eω2 * R.dt
-    R.P .= R.FT \ R.Pω
+    if !rust_done
+        # Julia FFT convolution path (default).
+        # update frequency domain response function `hω`.
+        # we fill only up to the first half of h (using the view ht)
+        # i.e. only the part corresponding to the original time grid
+        # note that the response function time 0 is put into the first element of the response array
+        # this ensures that causality is maintained, and no artificial delay between the field and
+        # the start of the response function occurs, at each convolution point.
+        R.r(R.ht, ρ)
+        R.hω .= R.FT * R.h
+
+        # convolution by multiplication in frequency domain
+        # The double grid gives us accurate full convolution between the full field grid
+        # and full response function. It is unnecessary for highly damped responses, like
+        # in glass. But for gases with very long decay times it prevents artefacts due to
+        # truncation of the response function. There is likely a more efficient way. But
+        # this is safe, until we come up with one.
+        # we scale to correct for missing dt*dt*df from IFFT(FFT*FFT)
+        # the ifft already scales by 1/n = dt*df, so we need an additional dt
+        R.Eω2 .= R.FT * R.E2
+        @. R.Pω = R.hω * R.Eω2 * R.dt
+        R.P .= R.FT \ R.Pω
+    end
 
     # calculate full polarisation, extracting only the valid
     # grid region, which is the first length(E) part.
     for i = 1:length(E)
         R.Pout[i] = ρ*E[i]*R.P[i]
     end
-    
+
     # copy to output in dimensions requested
     if ndims(Et) > 1
         out .+= reshape(R.Pout, size(Et))
