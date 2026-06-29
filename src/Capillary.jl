@@ -10,7 +10,8 @@ import Luna.PhysData: c, ε_0, μ_0, ref_index_fun, roomtemp, densityspline, sel
 import Luna.Modes: AbstractMode, dimlimits, neff, field, Aeff, N, modeinfo
 import Luna.LinearOps: make_linop, conj_clamp, neff_grid, neff_β_grid
 import Luna.PhysData: wlfreq, roomtemp
-import Luna.Utils: subscript
+import Luna.Utils: subscript, lunadir
+import Logging: @warn
 import Base: show
 
 export MarcatiliMode, dimlimits, neff, field, N, Aeff
@@ -339,24 +340,143 @@ function gradient(gas, Z, P; T=roomtemp)
     return coren, dens
 end
 
-#= Avoid repeated calculation of the waveguide part of the effective index for modes with
-    constant core radius.
-    This is used by LinearOps.make_linop =#
+# ─── Rust FFI scaffolding for MarcatiliMode dispersion ───────────────────────
+#
+# When LUNA_USE_RUST_DISPERSION=1 the per-step batch neff evaluation in
+# neff_β_grid for constant-core-radius MarcatiliMode is offloaded to luna-rust.
+# The precomputed nwg(ω) (cladding-dependent, z-independent) is stored in a
+# Rust-side handle at setup time.  Per step only nco(ω; z) changes and is
+# passed as a packed array; Rust returns neff_re/neff_im in-place.
+#
+# ccall library-path argument MUST be a module-level const (Julia constraint).
+
+function _libluna_rust_path_cap()
+    libname = if Sys.iswindows()
+        "luna_rust.dll"
+    elseif Sys.isapple()
+        "libluna_rust.dylib"
+    else
+        "libluna_rust.so"
+    end
+    joinpath(lunadir(), "luna-rust", "target", "release", libname)
+end
+
+const _LIBLUNA_RUST_CAP = _libluna_rust_path_cap()
+
+mutable struct RustMarcatiliHandle
+    ptr::Ptr{Cvoid}
+    function RustMarcatiliHandle(ptr::Ptr{Cvoid})
+        h = new(ptr)
+        finalizer(h) do self
+            if self.ptr != C_NULL
+                ccall((:free_marcatili_neff, _LIBLUNA_RUST_CAP),
+                      Cvoid, (Ptr{Cvoid},), self.ptr)
+                self.ptr = C_NULL
+            end
+        end
+        return h
+    end
+end
+
+function _make_rust_marcatili_handle(nwg_re_s, nwg_im_s, model_code::Cuint, loss_on::Cuint)
+    get(ENV, "LUNA_USE_RUST_DISPERSION", "0") == "1" || return nothing
+    if !isfile(_LIBLUNA_RUST_CAP)
+        @warn "luna-rust library not found at $(_LIBLUNA_RUST_CAP) — MarcatiliMode neff_β_grid using Julia."
+        return nothing
+    end
+    n = length(nwg_re_s)
+    nwg_re = nwg_re_s; nwg_im = nwg_im_s
+    ptr = GC.@preserve nwg_re nwg_im begin
+        ccall((:init_marcatili_neff, _LIBLUNA_RUST_CAP), Ptr{Cvoid},
+              (Ptr{Float64}, Ptr{Float64}, Csize_t, Cuint, Cuint),
+              pointer(nwg_re), pointer(nwg_im), Csize_t(n), model_code, loss_on)
+    end
+    if ptr == C_NULL
+        @warn "init_marcatili_neff returned NULL — MarcatiliMode neff_β_grid using Julia."
+        return nothing
+    end
+    RustMarcatiliHandle(ptr)
+end
+
+#= Avoid repeated calculation of the waveguide part of the effective index for
+   modes with constant core radius.  Extended from the original single-closure
+   form to add:
+     1. z-level memoization — the first closure call at a new z fills the full
+        neff_cache for all sidcs; subsequent calls at the same z are O(1) lookups.
+     2. Optional Rust batch path (LUNA_USE_RUST_DISPERSION=1) — nwg is passed
+        to the Rust handle at setup; only nco(ω; z) is supplied per step.
+   This is used by LinearOps.make_linop. =#
 function neff_β_grid(grid,
                    mode::MarcatiliMode{<:Number, Tco, Tcl, LT} where {Tco, Tcl, LT},
                    λ0)
+    sidcs  = (1:length(grid.ω))[grid.sidx]
+    n_side = length(sidcs)
+
+    # Precompute nwg once (z=0, constant radius → same at all z)
     nwg = complex(zero(grid.ω))
-    sidcs = (1:length(grid.ω))[grid.sidx]
     for iω in sidcs
         nwg[iω] = neff_wg(mode, grid.ω[iω]; z=0)
     end
-    _neff = let nwg=nwg, ω=grid.ω, mode=mode
-        _neff(iω; z) = neff(mode, mode.coren(ω[iω], z=z)^2, nwg[iω])
+
+    # Packed arrays for the Rust handle (one entry per sidcs element)
+    nwg_re_s = Float64[real(nwg[iω]) for iω in sidcs]
+    nwg_im_s = Float64[imag(nwg[iω]) for iω in sidcs]
+    model_code = mode.model == :full ? Cuint(0) : Cuint(1)
+    loss_on    = mode.loss isa Val{true} ? Cuint(1) : Cuint(0)
+    rh = _make_rust_marcatili_handle(nwg_re_s, nwg_im_s, model_code, loss_on)
+
+    # Per-step scratch buffers (reused across calls)
+    nco_re_s   = zeros(Float64, n_side)
+    nco_im_s   = zeros(Float64, n_side)
+    neff_re_s  = zeros(Float64, n_side)
+    neff_im_s  = zeros(Float64, n_side)
+    neff_cache = complex(zero(grid.ω))
+    cache_z    = Ref(NaN)
+
+    function _ensure!(z)
+        cache_z[] == z && return
+        # Fill nco(ω; z) for every packed grid point
+        for (k, iω) in enumerate(sidcs)
+            nc = mode.coren(grid.ω[iω], z=z)
+            nco_re_s[k] = real(nc)
+            nco_im_s[k] = imag(nc)
+        end
+        rust_done = false
+        if rh !== nothing
+            rh_ptr = rh.ptr
+            nco_re = nco_re_s; nco_im = nco_im_s
+            neff_re = neff_re_s; neff_im = neff_im_s
+            ret = GC.@preserve nco_re nco_im neff_re neff_im begin
+                ccall((:marcatili_neff_vector, _LIBLUNA_RUST_CAP), Cint,
+                      (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Csize_t),
+                      rh_ptr, pointer(nco_re), pointer(nco_im),
+                      pointer(neff_re), pointer(neff_im), Csize_t(n_side))
+            end
+            if ret == 0
+                for (k, iω) in enumerate(sidcs)
+                    neff_cache[iω] = complex(neff_re_s[k], neff_im_s[k])
+                end
+                rust_done = true
+            else
+                @warn "marcatili_neff_vector returned $ret — falling back to Julia."
+            end
+        end
+        if !rust_done
+            for (k, iω) in enumerate(sidcs)
+                nc = complex(nco_re_s[k], nco_im_s[k])
+                neff_cache[iω] = neff(mode, nc^2, nwg[iω])
+            end
+        end
+        cache_z[] = z
     end
-    _β = let nwg=nwg, ω=grid.ω, _neff=_neff
-        _β(iω; z) = ω[iω]/c*real(_neff(iω; z=z))
+
+    _neff_cl = let
+        (iω; z) -> (_ensure!(z); neff_cache[iω])
     end
-    _neff, _β
+    _β_cl = let ω=grid.ω
+        (iω; z) -> (_ensure!(z); ω[iω]/c * real(neff_cache[iω]))
+    end
+    _neff_cl, _β_cl
 end
 
 # Collection of modes with fixed core radius

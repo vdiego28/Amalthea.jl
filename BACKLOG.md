@@ -22,7 +22,7 @@ Remaining kernels to wire (same pattern, in this order):
    density-dependent τ2 (add `raman_update_coeffs` FFI entry); intermediate-broadening
    (Gaussian damping — stays Julia indefinitely); envelope (`RamanPolarEnv`) Rust path
    (needs real-buffer copy for complex→real conversion).
-3. ✅ **Waveguide dispersion** (`dispersion.rs` `ZeisbergerNeff`) — toggle
+3. ✅ **Waveguide dispersion — Zeisberger** (`dispersion.rs` `ZeisbergerNeff`) — toggle
    `LUNA_USE_RUST_DISPERSION`, `init_zeisberger_neff` / `free_zeisberger_neff` /
    `zeisberger_neff_vector` exported, wired into `Antiresonant.jl` via a specialised
    `neff_β_grid(grid, ::ZeisbergerMode, λ0)` that batch-evaluates neff over the
@@ -31,8 +31,18 @@ Remaining kernels to wire (same pattern, in this order):
    phase, σ⁴ real (C) and imaginary (D·loss_scale) terms. Equivalence at ~1e-12
    (same formula + Julia-supplied nco/ncl → only float-reassociation differences).
    Follow-ups: Rust-side multi-term Sellmeier (offload nco/ncl computation too);
-   MarcatiliMode / Chebyshev-β dispersion path; const-linop one-time setup path
-   (negligible cost, left on Julia indefinitely).
+   const-linop one-time setup path (negligible cost, left on Julia indefinitely).
+
+3a. ✅ **Waveguide dispersion — MarcatiliMode** (`dispersion.rs` `MarcatiliNeff`) — same
+    `LUNA_USE_RUST_DISPERSION` toggle; `init_marcatili_neff` / `free_marcatili_neff` /
+    `marcatili_neff_vector` exported. Wired into the constant-radius specialisation
+    `neff_β_grid(grid, ::MarcatiliMode{<:Number}, λ0)` in `Capillary.jl`. Nwg(ω)
+    precomputed ONCE at setup (cladding-dependent, z-independent) and stored in the
+    Rust handle; per step only nco(ω; z) is passed. Also adds z-level memoization
+    even on the Julia-only fallback path (batching all sidcs before returning cached
+    values). Equivalence is bitwise (0.0 rel error) — same IEEE 754 formula + same
+    Float64 inputs. Model `:full` (`sqrt(εco-nwg)`) and `:reduced` (`1+(εco-1)/2-nwg`)
+    both wired. Tests: `test/test_dispersion_rust.jl` (second `@testitem`).
 4. ⬜ **QDHT** (`diffraction.rs` `Qdht`) — toggle `LUNA_USE_RUST_QDHT`, wire into
    `NonlinearRHS.jl` (`TransRadial`/`TransFree`).
 5. ⬜ **RK45 stepper** (`stepper.rs` `Dopri5Stepper`) — largest scope; requires exporting

@@ -702,6 +702,117 @@ mod tests {
     }
 
     #[test]
+    fn test_marcatili_neff_ffi() {
+        use super::ffi::{init_marcatili_neff, free_marcatili_neff, marcatili_neff_vector};
+        use super::dispersion::MarcatiliNeff;
+
+        // Physically realistic parameters for a hollow capillary
+        let unm_he11 = 2.404_825_56_f64;  // first zero of J0
+        let radius   = 150e-6_f64;        // 150 µm core radius
+
+        // Precomputed nwg from SiO2 cladding at a few representative frequencies.
+        // nwg = (unm/(k*a))^2 * (1 − i*vn/(k*a))^2 (full model, HE11)
+        // For the test we just use plausible small complex values.
+        let n = 4_usize;
+        let nwg_re: Vec<f64> = vec![1.2e-5, 1.3e-5, 1.4e-5, 1.5e-5];
+        let nwg_im: Vec<f64> = vec![2.0e-9, 2.1e-9, 2.2e-9, 2.3e-9];
+
+        // Gas refractive index (He at 1 bar, nearly 1.0 at optical frequencies)
+        let nco_re: Vec<f64> = vec![1.000_035_f64; n];
+        let nco_im: Vec<f64> = vec![0.0_f64; n];
+
+        // ── helper: run FFI and compare with MarcatiliNeff::neff_vector directly ──
+        let run_case = |model: u32, loss_on: u32| {
+            let ptr = unsafe {
+                init_marcatili_neff(
+                    nwg_re.as_ptr(), nwg_im.as_ptr(), n,
+                    model, loss_on,
+                )
+            };
+            assert!(!ptr.is_null(), "init_marcatili_neff returned null (model={}, loss_on={})", model, loss_on);
+
+            let mut re_out = vec![0.0_f64; n];
+            let mut im_out = vec![0.0_f64; n];
+            let ret = unsafe {
+                marcatili_neff_vector(
+                    ptr as *const _,
+                    nco_re.as_ptr(), nco_im.as_ptr(),
+                    re_out.as_mut_ptr(), im_out.as_mut_ptr(),
+                    n,
+                )
+            };
+            assert_eq!(ret, 0, "marcatili_neff_vector returned {} (model={}, loss_on={})", ret, model, loss_on);
+
+            // Compare against direct in-process call
+            let handle = MarcatiliNeff::new(
+                nwg_re.clone(), nwg_im.clone(), model as u8, loss_on != 0,
+            );
+            let mut ref_re = vec![0.0_f64; n];
+            let mut ref_im = vec![0.0_f64; n];
+            handle.neff_vector(&nco_re, &nco_im, &mut ref_re, &mut ref_im);
+
+            for i in 0..n {
+                let diff_re = (re_out[i] - ref_re[i]).abs();
+                let diff_im = (im_out[i] - ref_im[i]).abs();
+                assert!(diff_re < 1e-15,
+                    "Re(neff) FFI vs direct at i={}: FFI={} ref={} diff={}", i, re_out[i], ref_re[i], diff_re);
+                assert!(diff_im < 1e-15,
+                    "Im(neff) FFI vs direct at i={}: FFI={} ref={} diff={}", i, im_out[i], ref_im[i], diff_im);
+            }
+
+            unsafe { free_marcatili_neff(ptr); }
+        };
+
+        // :full model (0), loss_on=1 (Val{true})
+        run_case(0, 1);
+        // :full model (0), loss_on=0 (Val{false}) — Im(neff) must be zero
+        run_case(0, 0);
+        // :reduced model (1), loss_on=1
+        run_case(1, 1);
+        // :reduced model (1), loss_on=0
+        run_case(1, 0);
+
+        // loss_on=0 must zero out imaginary part
+        let ptr = unsafe { init_marcatili_neff(nwg_re.as_ptr(), nwg_im.as_ptr(), n, 0, 0) };
+        assert!(!ptr.is_null());
+        let mut re_out = vec![0.0_f64; n];
+        let mut im_out = vec![0.0_f64; n];
+        let ret = unsafe {
+            marcatili_neff_vector(ptr as *const _, nco_re.as_ptr(), nco_im.as_ptr(),
+                                  re_out.as_mut_ptr(), im_out.as_mut_ptr(), n)
+        };
+        assert_eq!(ret, 0);
+        for i in 0..n {
+            assert_eq!(im_out[i], 0.0, "Im(neff) must be 0 when loss_on=0 at i={}", i);
+        }
+        unsafe { free_marcatili_neff(ptr); }
+
+        // null-pointer guard: init with null nwg → null return
+        let null_ptr = unsafe { init_marcatili_neff(std::ptr::null(), nwg_im.as_ptr(), n, 0, 1) };
+        assert!(null_ptr.is_null(), "init with null nwg_re must return null");
+
+        // n=0 → null
+        let zero_ptr = unsafe { init_marcatili_neff(nwg_re.as_ptr(), nwg_im.as_ptr(), 0, 0, 1) };
+        assert!(zero_ptr.is_null(), "init with n=0 must return null");
+
+        // null ptr to vector → -1
+        let mut re_d = [0.0_f64; 1]; let mut im_d = [0.0_f64; 1];
+        let nc_r = [1.0_f64]; let nc_i = [0.0_f64];
+        let ret_null = unsafe {
+            marcatili_neff_vector(
+                std::ptr::null(), nc_r.as_ptr(), nc_i.as_ptr(),
+                re_d.as_mut_ptr(), im_d.as_mut_ptr(), 1,
+            )
+        };
+        assert_eq!(ret_null, -1, "null handle ptr should return -1");
+
+        // free(null) is a no-op (must not crash)
+        unsafe { free_marcatili_neff(std::ptr::null_mut()); }
+
+        let _ = (unm_he11, radius); // suppress unused-variable warnings
+    }
+
+    #[test]
     fn test_gpu_ionization_numerical_equivalence() {
         if let Err(err) = crate::cuda::init_gpu_context() {
             println!("Skipping GPU Ionization test: GPU context not available: {}", err);

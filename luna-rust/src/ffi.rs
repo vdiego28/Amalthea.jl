@@ -2,7 +2,7 @@ use num_complex::Complex;
 use libc::{c_double, c_int, c_uint, size_t};
 use crate::ionization::PptIonizationRate;
 use crate::raman::{RamanOscillator, TimeDomainRamanSolver};
-use crate::dispersion::ZeisbergerNeff;
+use crate::dispersion::{ZeisbergerNeff, MarcatiliNeff};
 
 /// In-place scales a complex double-precision array by a real factor.
 /// This verifies zero-copy FFI communication between Julia and Rust.
@@ -330,6 +330,106 @@ pub unsafe extern "C" fn zeisberger_neff_vector(
         Ok(()) => 0,
         Err(e) => {
             eprintln!("zeisberger_neff_vector: panic: {:?}", e);
+            -2
+        }
+    }
+}
+
+/// Initialise a [`MarcatiliNeff`] handle for hollow-capillary mode dispersion.
+///
+/// The `nwg_re`/`nwg_im` arrays hold the precomputed waveguide factor `nwg(ω)`
+/// for each positive-frequency grid point (length `n`).  They are computed once
+/// per propagation setup in Julia (using its multi-term Sellmeier for the cladding
+/// material) and then stored in the handle.  Per propagation step only the
+/// gas refractive index `nco(ω; z)` changes and is passed to
+/// [`marcatili_neff_vector`].
+///
+/// # Arguments
+/// * `nwg_re`    – real part of precomputed waveguide factor (`f64[n]`, read-only)
+/// * `nwg_im`    – imaginary part of precomputed waveguide factor (`f64[n]`, read-only)
+/// * `n`         – number of frequency points
+/// * `model`     – `0` → `:full` model `sqrt(εco − nwg)`;  `1` → `:reduced`
+/// * `loss_on`   – `0` → force `Im(neff) = 0`; non-zero → return full complex neff
+///
+/// # Returns
+/// Heap-allocated `*mut MarcatiliNeff`, or `null` on error (null inputs, `n == 0`, panic).
+/// Free with [`free_marcatili_neff`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn init_marcatili_neff(
+    nwg_re:  *const c_double,
+    nwg_im:  *const c_double,
+    n:       size_t,
+    model:   c_uint,
+    loss_on: c_uint,
+) -> *mut MarcatiliNeff {
+    if nwg_re.is_null() || nwg_im.is_null() || n == 0 {
+        return std::ptr::null_mut();
+    }
+    let re_sl = unsafe { std::slice::from_raw_parts(nwg_re, n) };
+    let im_sl = unsafe { std::slice::from_raw_parts(nwg_im, n) };
+    let result = std::panic::catch_unwind(|| {
+        MarcatiliNeff::new(re_sl.to_vec(), im_sl.to_vec(), model as u8, loss_on != 0)
+    });
+    match result {
+        Ok(h) => Box::into_raw(Box::new(h)),
+        Err(e) => {
+            eprintln!("init_marcatili_neff: panic: {:?}", e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Free a [`MarcatiliNeff`] handle.  A null pointer is a safe no-op.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn free_marcatili_neff(ptr: *mut MarcatiliNeff) {
+    if !ptr.is_null() {
+        unsafe { drop(Box::from_raw(ptr)); }
+    }
+}
+
+/// Batch-evaluate Marcatili neff for the current propagation step.
+///
+/// # Arguments
+/// * `ptr`          – handle from [`init_marcatili_neff`] (must not be null)
+/// * `nco_re`       – real part of gas refractive index `nco(ω; z)` (`f64[n]`)
+/// * `nco_im`       – imaginary part of `nco(ω; z)` (`f64[n]`)
+/// * `neff_re_out`  – real part of `neff` output (`f64[n]`, overwritten)
+/// * `neff_im_out`  – imaginary part of `neff` output (`f64[n]`, overwritten)
+/// * `n`            – number of frequency points (must match handle)
+///
+/// # Returns
+/// * `0`  on success.
+/// * `-1` if any pointer is null.
+/// * `-2` on internal panic.
+///
+/// # Safety
+/// All pointers must be non-null, aligned, and valid for `n` `f64` elements.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn marcatili_neff_vector(
+    ptr:         *const MarcatiliNeff,
+    nco_re:      *const c_double,
+    nco_im:      *const c_double,
+    neff_re_out: *mut c_double,
+    neff_im_out: *mut c_double,
+    n:           size_t,
+) -> c_int {
+    if ptr.is_null() || nco_re.is_null() || nco_im.is_null()
+       || neff_re_out.is_null() || neff_im_out.is_null()
+    {
+        return -1;
+    }
+    let handle       = unsafe { &*ptr };
+    let nco_re_sl    = unsafe { std::slice::from_raw_parts(nco_re, n) };
+    let nco_im_sl    = unsafe { std::slice::from_raw_parts(nco_im, n) };
+    let neff_re_sl   = unsafe { std::slice::from_raw_parts_mut(neff_re_out, n) };
+    let neff_im_sl   = unsafe { std::slice::from_raw_parts_mut(neff_im_out, n) };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        handle.neff_vector(nco_re_sl, nco_im_sl, neff_re_sl, neff_im_sl);
+    }));
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("marcatili_neff_vector: panic: {:?}", e);
             -2
         }
     }

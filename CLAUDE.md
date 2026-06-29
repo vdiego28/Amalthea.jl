@@ -123,6 +123,15 @@ Each Rust kernel follows this pattern for progressive migration:
   intentionally left on Julia (negligible cost); (d) `_make_rust_zeisberger_handle` must be
   defined AFTER `struct ZeisbergerMode` in the source file (Julia evaluates top-to-bottom).
   Full parity: HE/EH/TE/TM branches, ϕ wall-thickness phase, σ⁴ real + imaginary loss terms.
+- MarcatiliMode hollow-capillary dispersion (`LUNA_USE_RUST_DISPERSION=1`) — `src/Capillary.jl`,
+  same test file (second `@testitem`). Wrinkles: (a) nwg(ω) precomputed ONCE in Julia (cladding
+  Sellmeier) and stored in the `MarcatiliNeff` Rust handle; per step only nco(ω; z) is passed;
+  (b) the new `neff_β_grid` also adds z-level memoization to the Julia fallback path (caches
+  all sidcs before returning, eliminating per-call Sellmeier redundancy); (c) the two-argument
+  Julia `neff(mode, εco, nwg)` overload used by the specialization has NO clamping (unlike the
+  per-ω `neff(mode, ω, ...)` overload) — the Rust implementation must match this; (d) equivalence
+  is bitwise (exact IEEE 754 match, 0.0 relative error) since both paths use identical Float64
+  inputs for the same `sqrt(εco-nwg)` formula. Model codes: 0→`:full`, 1→`:reduced`.
 
 See `BACKLOG.md` for remaining kernels and follow-ups.
 

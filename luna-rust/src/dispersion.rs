@@ -334,6 +334,83 @@ impl ZeisbergerNeff {
     }
 }
 
+// ─── Marcatili hollow-waveguide neff ─────────────────────────────────────────
+
+/// Batch-evaluates the Marcatili hollow-waveguide effective index
+/// `neff = sqrt(εco − nwg)` (`:full` model) or `1 + (εco−1)/2 − nwg` (`:reduced` model)
+/// over a packed frequency grid, given per-step gas-index arrays from Julia.
+///
+/// The waveguide factor `nwg(ω)` depends on the glass index, Bessel root, and
+/// core radius, but NOT on the gas filling. For a constant-core-radius mode it
+/// is precomputed once at setup time and stored here; Julia only needs to supply
+/// `nco(ω; z)` per propagation step (evaluated by its own multi-term Sellmeier).
+///
+/// Mirrors `Capillary.neff(m::MarcatiliMode, εco, nwg)` with the same clamping
+/// (`n.re < 1e-3 → 1e-3`) and loss-flag semantics.
+///
+/// # Model encoding
+/// - `model = 0` → `:full`    model: `neff = sqrt(complex(εco − nwg))`
+/// - `model = 1` → `:reduced` model: `neff = 1 + (εco−1)/2 − nwg`
+///
+/// # Loss encoding
+/// - `loss_on = true`  → return complex neff (imaginary part from `nwg`)
+/// - `loss_on = false` → force imaginary part to zero
+#[derive(Debug, Clone)]
+pub struct MarcatiliNeff {
+    /// Precomputed `nwg_re[i]` for frequency point `i` in the packed sidcs grid
+    nwg_re: Vec<f64>,
+    /// Precomputed `nwg_im[i]` for frequency point `i` in the packed sidcs grid
+    nwg_im: Vec<f64>,
+    model: u8,
+    loss_on: bool,
+}
+
+impl MarcatiliNeff {
+    /// Construct a new handle, taking ownership of the packed `nwg` vectors.
+    pub fn new(nwg_re: Vec<f64>, nwg_im: Vec<f64>, model: u8, loss_on: bool) -> Self {
+        debug_assert_eq!(nwg_re.len(), nwg_im.len(), "nwg_re and nwg_im must have the same length");
+        Self { nwg_re, nwg_im, model, loss_on }
+    }
+
+    /// In-place batch evaluation.  `nco_re[i]` / `nco_im[i]` are the gas refractive
+    /// index at the current propagation position `z` (supplied by Julia Sellmeier).
+    /// All four slices must have length `self.nwg_re.len()`.
+    pub fn neff_vector(
+        &self,
+        nco_re:      &[f64],
+        nco_im:      &[f64],
+        neff_re_out: &mut [f64],
+        neff_im_out: &mut [f64],
+    ) {
+        let n = self.nwg_re.len();
+        for i in 0..n {
+            let nco  = C64::new(nco_re[i], nco_im[i]);
+            let nwg  = C64::new(self.nwg_re[i], self.nwg_im[i]);
+            let eps  = nco * nco;   // εco = nco²
+
+            // No clamping here — mirrors Julia's neff(m, εco, nwg) two-argument overload
+            // (Capillary.jl:216-234) which returns the bare sqrt/linear expression.
+            // Clamping only appears in the per-step neff(m, ω, εco, vn, a) overload.
+            let ne: C64 = match self.model {
+                0 => {
+                    // :full — neff = sqrt(complex(εco − nwg))
+                    let raw = (eps - nwg).sqrt();
+                    if self.loss_on { raw } else { C64::new(raw.re, 0.0) }
+                },
+                _ => {
+                    // :reduced — neff = 1 + (εco−1)/2 − nwg
+                    let one = C64::new(1.0, 0.0);
+                    let raw = one + (eps - one) / 2.0 - nwg;
+                    if self.loss_on { raw } else { C64::new(raw.re, 0.0) }
+                },
+            };
+
+            neff_re_out[i] = ne.re;
+            neff_im_out[i] = ne.im;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
