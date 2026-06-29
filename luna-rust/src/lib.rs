@@ -14,7 +14,7 @@ pub mod scans;
 #[cfg(test)]
 mod tests {
     use super::ffi::process_field_inplace;
-    use super::dispersion::{ChebyshevDispersion, SellmeierGas};
+    use super::dispersion::{ChebyshevDispersion, SellmeierGas, ZeisbergerNeff};
     use super::diffraction::Qdht;
     use super::ionization::PptIonizationRate;
     use super::raman::{RamanOscillator, TimeDomainRamanSolver};
@@ -545,6 +545,160 @@ mod tests {
         for i in 0..100 {
             assert!((gpu_pol[i] - cpu_pol[i]).abs() < 1e-12);
         }
+    }
+
+    /// Verify that the Zeisberger FFI trio (`init_zeisberger_neff` /
+    /// `free_zeisberger_neff` / `zeisberger_neff_vector`) produces results that
+    /// match a direct `ZeisbergerNeff::neff_one` call to within ~1e-13.
+    ///
+    /// Covers all four kind codes (0=HE, 1=EH, 2=TE, 3=TM) and all three loss
+    /// encodings (Val{true}, Val{false}, Number).
+    #[test]
+    fn test_zeisberger_neff_ffi() {
+        use super::ffi::{init_zeisberger_neff, free_zeisberger_neff, zeisberger_neff_vector};
+        use num_complex::Complex;
+
+        // Physically realistic hollow-core fibre parameters
+        let radius        = 150e-6_f64;   // 150 µm core radius
+        let wallthickness = 550e-9_f64;   // 550 nm strut thickness
+        let unm_he11      = 2.404_825_56_f64; // first zero of J0
+
+        // Sellmeier-like gas (He): nco ≈ 1 + tiny correction
+        let nco_re_val = 1.000_035_f64;
+        let nco_im_val = 0.0_f64;
+        // SiO2 glass cladding at ~800 nm: ncl ≈ 1.453
+        let ncl_re_val = 1.453_f64;
+        let ncl_im_val = 0.0_f64;
+
+        // Test grid: a few representative frequencies
+        let omegas: Vec<f64> = vec![
+            2.0e15, 2.35e15, 2.7e15, 3.0e15,
+        ];
+        let n = omegas.len();
+        let nco_re: Vec<f64> = vec![nco_re_val; n];
+        let nco_im: Vec<f64> = vec![nco_im_val; n];
+        let ncl_re: Vec<f64> = vec![ncl_re_val; n];
+        let ncl_im: Vec<f64> = vec![ncl_im_val; n];
+
+        // ── helper to run one (kind, loss_on, loss_scale) combination ──────────
+        let run_case = |kind: u32, loss_on: u32, loss_scale: f64, m_az: f64| {
+            let ptr = unsafe {
+                init_zeisberger_neff(
+                    unm_he11, m_az, kind, wallthickness, loss_on, loss_scale,
+                )
+            };
+            assert!(!ptr.is_null(), "init_zeisberger_neff returned null for kind={}", kind);
+
+            let mut re_out = vec![0.0_f64; n];
+            let mut im_out = vec![0.0_f64; n];
+            let ret = unsafe {
+                zeisberger_neff_vector(
+                    ptr as *const _,
+                    omegas.as_ptr(), nco_re.as_ptr(), nco_im.as_ptr(),
+                    ncl_re.as_ptr(), ncl_im.as_ptr(),
+                    radius,
+                    re_out.as_mut_ptr(), im_out.as_mut_ptr(),
+                    n,
+                )
+            };
+            assert_eq!(ret, 0, "zeisberger_neff_vector returned {} for kind={}", ret, kind);
+
+            // Compare FFI output against direct ZeisbergerNeff::neff_one
+            let handle = ZeisbergerNeff::new(
+                unm_he11, m_az, kind as u8, wallthickness, loss_on != 0, loss_scale,
+            );
+            for i in 0..n {
+                let nco = Complex::new(nco_re[i], nco_im[i]);
+                let ncl = Complex::new(ncl_re[i], ncl_im[i]);
+                let ref_ne = handle.neff_one(omegas[i], nco, ncl, radius);
+                let diff_re = (re_out[i] - ref_ne.re).abs();
+                let diff_im = (im_out[i] - ref_ne.im).abs();
+                assert!(
+                    diff_re < 1e-13,
+                    "Re(neff) FFI vs direct mismatch at i={}: FFI={} ref={} diff={}",
+                    i, re_out[i], ref_ne.re, diff_re
+                );
+                assert!(
+                    diff_im < 1e-13,
+                    "Im(neff) FFI vs direct mismatch at i={}: FFI={} ref={} diff={}",
+                    i, im_out[i], ref_ne.im, diff_im
+                );
+            }
+
+            unsafe { free_zeisberger_neff(ptr); }
+        };
+
+        // ── HE11 (kind=0), all three loss modes ───────────────────────────────
+        run_case(0, 1, 1.0, 1.0);   // Val{true}
+        run_case(0, 0, 0.0, 1.0);   // Val{false}
+        run_case(0, 1, 0.5, 1.0);   // Number(0.5)
+
+        // ── EH11 (kind=1) ─────────────────────────────────────────────────────
+        let unm_eh11 = 3.831_705_97_f64; // first zero of J1'
+        let run_eh = |loss_on: u32, loss_scale: f64| {
+            let ptr = unsafe {
+                init_zeisberger_neff(unm_eh11, 1.0, 1, wallthickness, loss_on, loss_scale)
+            };
+            assert!(!ptr.is_null());
+            let mut re_out = vec![0.0_f64; n];
+            let mut im_out = vec![0.0_f64; n];
+            let ret = unsafe {
+                zeisberger_neff_vector(
+                    ptr as *const _, omegas.as_ptr(),
+                    nco_re.as_ptr(), nco_im.as_ptr(),
+                    ncl_re.as_ptr(), ncl_im.as_ptr(),
+                    radius, re_out.as_mut_ptr(), im_out.as_mut_ptr(), n,
+                )
+            };
+            assert_eq!(ret, 0);
+            let handle = ZeisbergerNeff::new(unm_eh11, 1.0, 1, wallthickness, loss_on != 0, loss_scale);
+            for i in 0..n {
+                let nco = Complex::new(nco_re[i], nco_im[i]);
+                let ncl = Complex::new(ncl_re[i], ncl_im[i]);
+                let ref_ne = handle.neff_one(omegas[i], nco, ncl, radius);
+                assert!((re_out[i] - ref_ne.re).abs() < 1e-13);
+                assert!((im_out[i] - ref_ne.im).abs() < 1e-13);
+            }
+            unsafe { free_zeisberger_neff(ptr); }
+        };
+        run_eh(1, 1.0);
+        run_eh(0, 0.0);
+
+        // ── TE01 (kind=2, m_az irrelevant) ────────────────────────────────────
+        let unm_te01 = 3.831_705_97_f64;
+        run_case(2, 1, 1.0, 0.0); // m_az=0 ok for TE/TM
+        run_case(2, 0, 0.0, 0.0);
+
+        // ── TM01 (kind=3) ─────────────────────────────────────────────────────
+        run_case(3, 1, 1.0, 0.0);
+        let _ = unm_te01; // silence unused warning
+
+        // ── Null-pointer guards ────────────────────────────────────────────────
+        let ptr = unsafe {
+            init_zeisberger_neff(unm_he11, 1.0, 0, wallthickness, 1, 1.0)
+        };
+        assert!(!ptr.is_null());
+
+        // null ptr → -1
+        let mut re_dummy = [0.0_f64; 1];
+        let mut im_dummy = [0.0_f64; 1];
+        let omega_dummy = [2.0e15_f64];
+        let nco_re_d = [1.0_f64]; let nco_im_d = [0.0_f64];
+        let ncl_re_d = [1.45_f64]; let ncl_im_d = [0.0_f64];
+        let ret_null = unsafe {
+            zeisberger_neff_vector(
+                std::ptr::null(),
+                omega_dummy.as_ptr(), nco_re_d.as_ptr(), nco_im_d.as_ptr(),
+                ncl_re_d.as_ptr(), ncl_im_d.as_ptr(),
+                radius, re_dummy.as_mut_ptr(), im_dummy.as_mut_ptr(), 1,
+            )
+        };
+        assert_eq!(ret_null, -1, "null ptr should return -1");
+
+        unsafe { free_zeisberger_neff(ptr); }
+
+        // null free is a no-op (must not crash)
+        unsafe { free_zeisberger_neff(std::ptr::null_mut()); }
     }
 
     #[test]

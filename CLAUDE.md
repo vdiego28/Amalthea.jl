@@ -113,8 +113,18 @@ Each Rust kernel follows this pattern for progressive migration:
   not 1e-8. Only `RamanPolarField` (carrier field) is wired; `RamanPolarEnv` (envelope)
   always uses Julia in this slice. Eligibility: `CombinedRamanResponse` with all-SDO `Rs`
   and density-independent τ2 — `Interface._make_rust_raman_handle_from_response`.
+- Zeisberger anti-resonant dispersion (`LUNA_USE_RUST_DISPERSION=1`) — `src/Antiresonant.jl`,
+  `test/test_dispersion_rust.jl`. New wrinkles vs Raman: (a) the acceleration seam is
+  `neff_β_grid(grid, ::ZeisbergerMode, λ0)` — a per-step batch over all positive-frequency
+  grid points (not a per-call transform); (b) Julia still evaluates `nco(ω)`/`ncl(ω)` via
+  its own multi-term Sellmeier, then passes the arrays to Rust which runs only the Zeisberger
+  geometry (eq. 15) — so equivalence is near machine epsilon (~1e-12), not a method-difference
+  tolerance; (c) the const-linop setup path (`make_const_linop`, one-time at init) is
+  intentionally left on Julia (negligible cost); (d) `_make_rust_zeisberger_handle` must be
+  defined AFTER `struct ZeisbergerMode` in the source file (Julia evaluates top-to-bottom).
+  Full parity: HE/EH/TE/TM branches, ϕ wall-thickness phase, σ⁴ real + imaginary loss terms.
 
-See `BACKLOG.md` for remaining kernels and Raman follow-ups.
+See `BACKLOG.md` for remaining kernels and follow-ups.
 
 ## Math & Advancements
 

@@ -1,7 +1,8 @@
 use num_complex::Complex;
-use libc::{c_double, c_int, size_t};
+use libc::{c_double, c_int, c_uint, size_t};
 use crate::ionization::PptIonizationRate;
 use crate::raman::{RamanOscillator, TimeDomainRamanSolver};
+use crate::dispersion::ZeisbergerNeff;
 
 /// In-place scales a complex double-precision array by a real factor.
 /// This verifies zero-copy FFI communication between Julia and Rust.
@@ -197,6 +198,138 @@ pub unsafe extern "C" fn raman_solve(
         Ok(()) => 0,
         Err(e) => {
             eprintln!("raman_solve: panic: {:?}", e);
+            -2
+        }
+    }
+}
+
+// ─── Zeisberger neff dispersion lifecycle ────────────────────────────────────
+
+/// Create a `ZeisbergerNeff` geometry handle from mode parameters.
+///
+/// The handle contains only the *geometric* information (Bessel root, kind, wall
+/// thickness, loss); the refractive indices `nco`/`ncl` are supplied at each
+/// call to [`zeisberger_neff_vector`] by Julia (using its multi-term Sellmeier).
+///
+/// # Arguments
+/// * `unm`           – Bessel root `u_nm` (e.g. 2.4048 for HE11)
+/// * `m_az`          – azimuthal order `m` (used in C-coefficient for HE/EH modes)
+/// * `kind`          – 0=HE, 1=EH, 2=TE, 3=TM
+/// * `wallthickness` – anti-resonant strut wall thickness (m)
+/// * `loss_on`       – 0 → `Val{false}` (force real neff); non-zero → include imaginary term
+/// * `loss_scale`    – scale factor applied to D·σ⁴ imaginary term (1.0 for `Val{true}`)
+///
+/// Returns a heap-allocated `*mut ZeisbergerNeff` (opaque to Julia).
+/// Free with [`free_zeisberger_neff`].  Returns `null` on any panic.
+///
+/// # Safety
+/// All arguments are plain scalars; this function is always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn init_zeisberger_neff(
+    unm:           c_double,
+    m_az:          c_double,
+    kind:          c_uint,
+    wallthickness: c_double,
+    loss_on:       c_uint,
+    loss_scale:    c_double,
+) -> *mut ZeisbergerNeff {
+    let result = std::panic::catch_unwind(|| {
+        ZeisbergerNeff::new(
+            unm,
+            m_az,
+            kind as u8,
+            wallthickness,
+            loss_on != 0,
+            loss_scale,
+        )
+    });
+    match result {
+        Ok(handle) => Box::into_raw(Box::new(handle)),
+        Err(e) => {
+            eprintln!("init_zeisberger_neff: panic: {:?}", e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Free a `ZeisbergerNeff` handle previously returned by [`init_zeisberger_neff`].
+///
+/// Passing `null` is a no-op.
+///
+/// # Safety
+/// `ptr` must be a valid, non-aliased pointer from [`init_zeisberger_neff`]
+/// that has not already been freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn free_zeisberger_neff(ptr: *mut ZeisbergerNeff) {
+    if !ptr.is_null() {
+        unsafe { drop(Box::from_raw(ptr)); }
+    }
+}
+
+/// Evaluate complex effective index over a frequency grid.
+///
+/// Julia calls this once per propagation step (z-value), passing the per-ω
+/// core and cladding refractive indices from its own Sellmeier model. Rust
+/// applies the full Zeisberger eq.(15) geometry and writes the complex
+/// `neff(ω)` into the output arrays.
+///
+/// # Arguments
+/// * `ptr`          – handle from [`init_zeisberger_neff`] (must not be null)
+/// * `omegas`       – `f64[n]` angular frequencies (rad/s)
+/// * `nco_re`       – `f64[n]` real parts of core refractive index
+/// * `nco_im`       – `f64[n]` imaginary parts of core refractive index
+/// * `ncl_re`       – `f64[n]` real parts of cladding refractive index
+/// * `ncl_im`       – `f64[n]` imaginary parts of cladding refractive index
+/// * `radius`       – core radius (m) at the current z position
+/// * `neff_re_out`  – `f64[n]` output: real parts of neff
+/// * `neff_im_out`  – `f64[n]` output: imaginary parts of neff
+/// * `n`            – number of frequency points
+///
+/// # Returns
+/// * `0`  on success
+/// * `-1` if any pointer is null
+/// * `-2` on internal panic
+///
+/// # Safety
+/// All array pointers must be non-null, aligned, valid for `n` elements, and live
+/// for the duration of this call.  `neff_re_out` and `neff_im_out` are written.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zeisberger_neff_vector(
+    ptr:         *const ZeisbergerNeff,
+    omegas:      *const c_double,
+    nco_re:      *const c_double,
+    nco_im:      *const c_double,
+    ncl_re:      *const c_double,
+    ncl_im:      *const c_double,
+    radius:      c_double,
+    neff_re_out: *mut c_double,
+    neff_im_out: *mut c_double,
+    n:           size_t,
+) -> c_int {
+    if ptr.is_null() || omegas.is_null() || nco_re.is_null() || nco_im.is_null()
+        || ncl_re.is_null() || ncl_im.is_null() || neff_re_out.is_null() || neff_im_out.is_null()
+    {
+        return -1;
+    }
+    let handle      = unsafe { &*ptr };
+    let omegas_sl   = unsafe { std::slice::from_raw_parts(omegas,      n) };
+    let nco_re_sl   = unsafe { std::slice::from_raw_parts(nco_re,      n) };
+    let nco_im_sl   = unsafe { std::slice::from_raw_parts(nco_im,      n) };
+    let ncl_re_sl   = unsafe { std::slice::from_raw_parts(ncl_re,      n) };
+    let ncl_im_sl   = unsafe { std::slice::from_raw_parts(ncl_im,      n) };
+    let neff_re_sl  = unsafe { std::slice::from_raw_parts_mut(neff_re_out, n) };
+    let neff_im_sl  = unsafe { std::slice::from_raw_parts_mut(neff_im_out, n) };
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        handle.neff_vector(
+            omegas_sl, nco_re_sl, nco_im_sl, ncl_re_sl, ncl_im_sl,
+            radius, neff_re_sl, neff_im_sl,
+        );
+    }));
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("zeisberger_neff_vector: panic: {:?}", e);
             -2
         }
     }

@@ -2,10 +2,85 @@ module Antiresonant
 using Reexport
 import Logging: @warn
 import Printf: @sprintf
-import Luna: Capillary
+import Luna: Capillary, Utils
 import Luna.PhysData: c, wlfreq, ref_index_fun
+import Luna.LinearOps: neff_β_grid
 @reexport using Luna.Modes
 import Luna.Modes: AbstractMode, dimlimits, neff, field, Aeff, N, α, chkzkwarg
+
+# ─── Rust FFI helpers for Zeisberger dispersion ──────────────────────────────
+#
+# When LUNA_USE_RUST_DISPERSION=1 the per-step neff_β_grid computation for
+# ZeisbergerMode is offloaded to luna-rust.  Julia still evaluates nco(ω) and
+# ncl(ω) via its own multi-term Sellmeier (ref_index_fun), then passes the
+# resulting arrays to Rust which applies only the Zeisberger geometry (eq. 15).
+# This guarantees near-machine-epsilon equivalence (same formula + same inputs).
+#
+# The ccall library-path argument MUST be a module-level const — not a struct
+# field or local variable (Julia constraint, fixed in ec76fd2 / 1262e5b).
+
+function _libluna_rust_path()
+    libname = if Sys.iswindows()
+        "luna_rust.dll"
+    elseif Sys.isapple()
+        "libluna_rust.dylib"
+    else
+        "libluna_rust.so"
+    end
+    joinpath(Utils.lunadir(), "luna-rust", "target", "release", libname)
+end
+
+const _LIBLUNA_RUST = _libluna_rust_path()
+
+"""
+Mutable wrapper around a heap-allocated `ZeisbergerNeff` in the Rust shared
+library.  A GC finalizer calls `free_zeisberger_neff` when the handle is no
+longer reachable, so the Rust heap allocation is always reclaimed.
+"""
+mutable struct RustZeisbergerHandle
+    ptr::Ptr{Cvoid}
+    function RustZeisbergerHandle(ptr::Ptr{Cvoid})
+        h = new(ptr)
+        finalizer(h) do self
+            if self.ptr != C_NULL
+                ccall((:free_zeisberger_neff, _LIBLUNA_RUST),
+                      Cvoid, (Ptr{Cvoid},), self.ptr)
+                self.ptr = C_NULL
+            end
+        end
+        return h
+    end
+end
+
+"""
+    _kind_code(kind::Symbol) -> Cuint
+
+Map a Julia mode-kind symbol to the integer code expected by Rust:
+  :HE → 0, :EH → 1, :TE → 2, :TM → 3.
+"""
+function _kind_code(kind::Symbol)::Cuint
+    if kind == :HE;  return Cuint(0)
+    elseif kind == :EH; return Cuint(1)
+    elseif kind == :TE; return Cuint(2)
+    elseif kind == :TM; return Cuint(3)
+    else
+        error("_kind_code: unknown mode kind $kind")
+    end
+end
+
+"""
+    _loss_args(loss) -> (Cuint, Float64)
+
+Encode a Julia loss value into `(loss_on, loss_scale)` for the Rust FFI:
+  Val{true}  → (1, 1.0)
+  Val{false} → (0, 0.0)
+  Number L   → (1, Float64(L))
+"""
+_loss_args(::Val{true})    = (Cuint(1), 1.0)
+_loss_args(::Val{false})   = (Cuint(0), 0.0)
+_loss_args(loss::Number)   = (Cuint(1), Float64(loss))
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 struct ZeisbergerMode{mT<:Capillary.MarcatiliMode, LT} <: AbstractMode
     m::mT
@@ -92,6 +167,143 @@ __neff(A, B, C, D, σ, nco, loss::Val{true}) = nco*(1 - A*σ^2 - B*σ^3 - C*σ^4
 __neff(A, B, C, D, σ, nco, loss::Val{false}) = real(nco*(1 - A*σ^2 - B*σ^3 - C*σ^4))
 __neff(A, B, C, D, σ, nco, loss::Number) = nco*(1 - A*σ^2 - B*σ^3 - C*σ^4 + 1im*loss*D*σ^4)
 
+
+"""
+    _make_rust_zeisberger_handle(m::ZeisbergerMode) -> Union{Nothing, RustZeisbergerHandle}
+
+Build a Rust-side `ZeisbergerNeff` geometry handle from a `ZeisbergerMode`.
+Returns `nothing` when the toggle is off, the lib is missing, or init fails.
+"""
+function _make_rust_zeisberger_handle(m::ZeisbergerMode)
+    get(ENV, "LUNA_USE_RUST_DISPERSION", "0") == "1" || return nothing
+    if !isfile(_LIBLUNA_RUST)
+        @warn "LUNA_USE_RUST_DISPERSION=1 but Rust lib not found at $_LIBLUNA_RUST — " *
+              "falling back to Julia. Build with `cargo build --release` in luna-rust/."
+        return nothing
+    end
+    kind_c = _kind_code(m.m.kind)
+    loss_on, loss_scale = _loss_args(m.loss)
+    ptr = ccall((:init_zeisberger_neff, _LIBLUNA_RUST),
+                Ptr{Cvoid},
+                (Float64, Float64, Cuint, Float64, Cuint, Float64),
+                m.m.unm, Float64(m.m.m), kind_c, m.wallthickness, loss_on, loss_scale)
+    if ptr == C_NULL
+        @warn "init_zeisberger_neff returned null — falling back to Julia dispersion."
+        return nothing
+    end
+    RustZeisbergerHandle(ptr)
+end
+
+"""
+    neff_β_grid(grid, mode::ZeisbergerMode, λ0)
+
+Specialised `neff_β_grid` for anti-resonant fibre modes.  When
+`LUNA_USE_RUST_DISPERSION=1` this uses the Rust `zeisberger_neff_vector` FFI to
+batch-compute the complex effective index for all positive-frequency grid points
+in a single Rust call per propagation step, replacing the per-ω Julia loop.
+
+Julia still evaluates `nco(ω)` and `ncl(ω)` via its own (multi-term) Sellmeier
+model; Rust applies only the Zeisberger geometry (eq. 15).  The first call for
+a given `z` triggers the Rust batch; subsequent calls for the same `z` return
+cached values in O(1).
+
+Falls back silently to the Julia `_neff` loop if the Rust lib is not built,
+the toggle is off, or the ccall returns a non-zero error code.
+"""
+function neff_β_grid(grid, mode::ZeisbergerMode, λ0)
+    sidcs  = (1:length(grid.ω))[grid.sidx]
+    n_side = length(sidcs)
+
+    # Try to build the Rust handle (returns nothing when toggle off or lib absent)
+    rh = _make_rust_zeisberger_handle(mode)
+
+    # Contiguous scratch buffers for the n_side positive-frequency points
+    ω_pack   = zeros(Float64, n_side)
+    nco_re_s = zeros(Float64, n_side)
+    nco_im_s = zeros(Float64, n_side)
+    ncl_re_s = zeros(Float64, n_side)
+    ncl_im_s = zeros(Float64, n_side)
+    neff_re_s = zeros(Float64, n_side)
+    neff_im_s = zeros(Float64, n_side)
+    neff_cache = complex(zero(grid.ω))
+
+    # Pre-fill ω_pack — doesn't change with z
+    for (k, iω) in enumerate(sidcs)
+        ω_pack[k] = grid.ω[iω]
+    end
+
+    cache_z = Ref(NaN)  # NaN sentinel → "no valid cache yet"
+
+    function _ensure!(z)
+        cache_z[] == z && return
+        radius = Capillary.radius(mode.m, z)
+
+        # Fill nco/ncl arrays (Julia Sellmeier — always correct)
+        for (k, iω) in enumerate(sidcs)
+            ω = grid.ω[iω]
+            nc = mode.m.coren(ω; z=z)
+            nl = mode.m.cladn(ω; z=z)
+            nco_re_s[k] = real(nc);  nco_im_s[k] = imag(nc)
+            ncl_re_s[k] = real(nl);  ncl_im_s[k] = imag(nl)
+        end
+
+        rust_done = false
+        if rh !== nothing
+            # GC.@preserve requires plain symbols (not struct field access)
+            rh_ptr   = rh.ptr
+            ωa       = ω_pack
+            ncore_re = nco_re_s;  ncore_im = nco_im_s
+            nclad_re = ncl_re_s;  nclad_im = ncl_im_s
+            neff_re  = neff_re_s; neff_im  = neff_im_s
+            ret = GC.@preserve ωa ncore_re ncore_im nclad_re nclad_im neff_re neff_im begin
+                ccall((:zeisberger_neff_vector, _LIBLUNA_RUST),
+                      Cint,
+                      (Ptr{Cvoid},
+                       Ptr{Float64}, Ptr{Float64}, Ptr{Float64},
+                       Ptr{Float64}, Ptr{Float64},
+                       Float64,
+                       Ptr{Float64}, Ptr{Float64}, Csize_t),
+                      rh_ptr,
+                      pointer(ωa), pointer(ncore_re), pointer(ncore_im),
+                      pointer(nclad_re), pointer(nclad_im),
+                      radius,
+                      pointer(neff_re), pointer(neff_im),
+                      Csize_t(n_side))
+            end
+            if ret == 0
+                for (k, iω) in enumerate(sidcs)
+                    neff_cache[iω] = complex(neff_re_s[k], neff_im_s[k])
+                end
+                rust_done = true
+            else
+                @warn "zeisberger_neff_vector returned $ret — falling back to Julia dispersion."
+            end
+        end
+
+        if !rust_done
+            for iω in sidcs
+                neff_cache[iω] = _neff(mode.m, grid.ω[iω], mode.wallthickness, mode.loss; z=z)
+            end
+        end
+
+        cache_z[] = z
+    end
+
+    # Return the standard (iω; z) closure pair consumed by make_linop
+    _neff_cl = let
+        function (iω; z)
+            _ensure!(z)
+            neff_cache[iω]
+        end
+    end
+    _β_cl = let ω = grid.ω
+        function (iω; z)
+            _ensure!(z)
+            ω[iω] / c * real(neff_cache[iω])
+        end
+    end
+    _neff_cl, _β_cl
+end
 
 struct VincettiMode{mT<:Capillary.MarcatiliMode, Tclad, LT} <: AbstractMode
     m::mT

@@ -22,17 +22,25 @@ Remaining kernels to wire (same pattern, in this order):
    density-dependent τ2 (add `raman_update_coeffs` FFI entry); intermediate-broadening
    (Gaussian damping — stays Julia indefinitely); envelope (`RamanPolarEnv`) Rust path
    (needs real-buffer copy for complex→real conversion).
-3. ⬜ **Waveguide dispersion** (`dispersion.rs` `ChebyshevDispersion`) — toggle
-   `LUNA_USE_RUST_DISPERSION`, export `init_chebyshev_dispersion` / `eval_dispersion`,
-   wire into `LinearOps.jl` or `Capillary.jl` setup path.
+3. ✅ **Waveguide dispersion** (`dispersion.rs` `ZeisbergerNeff`) — toggle
+   `LUNA_USE_RUST_DISPERSION`, `init_zeisberger_neff` / `free_zeisberger_neff` /
+   `zeisberger_neff_vector` exported, wired into `Antiresonant.jl` via a specialised
+   `neff_β_grid(grid, ::ZeisbergerMode, λ0)` that batch-evaluates neff over the
+   positive-frequency grid per propagation step — `test/test_dispersion_rust.jl`.
+   Full Zeisberger eq.(15) parity: all four mode kinds (HE/EH/TE/TM), ϕ wall-thickness
+   phase, σ⁴ real (C) and imaginary (D·loss_scale) terms. Equivalence at ~1e-12
+   (same formula + Julia-supplied nco/ncl → only float-reassociation differences).
+   Follow-ups: Rust-side multi-term Sellmeier (offload nco/ncl computation too);
+   MarcatiliMode / Chebyshev-β dispersion path; const-linop one-time setup path
+   (negligible cost, left on Julia indefinitely).
 4. ⬜ **QDHT** (`diffraction.rs` `Qdht`) — toggle `LUNA_USE_RUST_QDHT`, wire into
    `NonlinearRHS.jl` (`TransRadial`/`TransFree`).
 5. ⬜ **RK45 stepper** (`stepper.rs` `Dopri5Stepper`) — largest scope; requires exporting
    a callback-based or fixed-array step loop through FFI.
 
 - **Safety net:** `test/test_rust_ffi.jl`, `test/test_ionisation_rust.jl`,
-  `test/test_raman_rust.jl`, and `luna-rust/tests/*.jl` (`@testitem tags=[:rust]`,
-  auto-discovered).
+  `test/test_raman_rust.jl`, `test/test_dispersion_rust.jl`, and
+  `luna-rust/tests/*.jl` (`@testitem tags=[:rust]`, auto-discovered).
 
 ### 🔴 Real file locking for parameter scans on Windows
 `luna-rust/src/scans.rs` `FlockLock` is a **no-op on non-Unix targets** (`#[cfg(not(unix))]`
