@@ -2,7 +2,7 @@ module RK45
 import Dates
 import Logging
 import Printf: @sprintf
-import Luna.Utils: format_elapsed
+import Luna.Utils: format_elapsed, lunadir
 
 #Get Butcher tableau etc from separate file (for convenience of changing if wanted)
 include("dopri.jl")
@@ -19,8 +19,14 @@ end
 function solve_precon(f!, linop, y0, t, dt, tmax;
                     rtol=1e-6, atol=1e-10, safety=0.9, max_dt=Inf, min_dt=0, locextrap=true, norm=weaknorm,
                     kwargs...)
-    stepper = PreconStepper(f!, linop, y0, t, dt,
+    use_rust = get(ENV, "LUNA_USE_RUST_STEPPER", "0") == "1"
+    if use_rust && isfile(_LIBLUNA_RUST_RK45) && eltype(y0) == ComplexF64
+        stepper = RustPreconStepper(f!, linop, y0, t, dt,
                       rtol=rtol, atol=atol, safety=safety, max_dt=max_dt, min_dt=min_dt, locextrap=locextrap, norm=norm)
+    else
+        stepper = PreconStepper(f!, linop, y0, t, dt,
+                      rtol=rtol, atol=atol, safety=safety, max_dt=max_dt, min_dt=min_dt, locextrap=locextrap, norm=norm)
+    end
     return solve(stepper, tmax; kwargs...)
 end
 
@@ -410,6 +416,204 @@ function steplims!(s)
 end
 
 function donothing!(y, z, dz, interpolant)
+end
+
+# ── Rust interaction-picture PreconStepper FFI (LUNA_USE_RUST_STEPPER=1) ───────
+
+function _libluna_rust_path_rk45()
+    libname = if Sys.iswindows(); "luna_rust.dll"
+              elseif Sys.isapple(); "libluna_rust.dylib"
+              else; "libluna_rust.so"; end
+    joinpath(lunadir(), "luna-rust", "target", "release", libname)
+end
+const _LIBLUNA_RUST_RK45 = _libluna_rust_path_rk45()
+
+"Result struct returned by precon_step_ffi — must match #[repr(C)] in Rust."
+struct PreconStepResult
+    ok::Cint
+    dt::Float64
+    t::Float64
+    tn::Float64
+    dtn::Float64
+    err::Float64
+    errlast::Float64
+end
+
+mutable struct RustPreconStepHandle
+    ptr::Ptr{Cvoid}
+    function RustPreconStepHandle(n::Int)
+        ptr = ccall((:init_precon_step_ffi, _LIBLUNA_RUST_RK45), Ptr{Cvoid},
+                    (Csize_t,), Csize_t(n))
+        h = new(ptr)
+        finalizer(h) do h
+            p = h.ptr
+            if p != C_NULL
+                ccall((:free_precon_step_ffi, _LIBLUNA_RUST_RK45), Cvoid, (Ptr{Cvoid},), p)
+                h.ptr = C_NULL
+            end
+        end
+        h
+    end
+end
+
+"Holds fbar! and prop! closures plus array shape for unsafe_wrap in C callbacks."
+mutable struct RustStepperCallbacks
+    fbar!::Any
+    prop!::Any
+    shape::Tuple
+end
+
+"Module-level C-callable wrapper for fbar!(k_out, y_in, t1, t2)."
+function _fbar_cfun(t1::Float64, t2::Float64,
+                    y_in::Ptr{ComplexF64}, k_out::Ptr{ComplexF64},
+                    ::Csize_t, userdata::Ptr{Cvoid})::Cvoid
+    cb = unsafe_pointer_to_objref(userdata)::RustStepperCallbacks
+    y_sl = unsafe_wrap(Array, y_in,  cb.shape)
+    k_sl = unsafe_wrap(Array, k_out, cb.shape)
+    cb.fbar!(k_sl, y_sl, t1, t2)
+    return nothing
+end
+
+"Module-level C-callable wrapper for prop!(y, t1, t2)."
+function _prop_cfun(t1::Float64, t2::Float64,
+                    y_inout::Ptr{ComplexF64},
+                    ::Csize_t, userdata::Ptr{Cvoid})::Cvoid
+    cb = unsafe_pointer_to_objref(userdata)::RustStepperCallbacks
+    y_sl = unsafe_wrap(Array, y_inout, cb.shape)
+    cb.prop!(y_sl, t1, t2)
+    return nothing
+end
+
+# Populated in __init__ so the pointer is valid in the running session (not the precompile image).
+const _FBAR_CPTR = Ref{Ptr{Cvoid}}(C_NULL)
+const _PROP_CPTR = Ref{Ptr{Cvoid}}(C_NULL)
+
+function __init__()
+    _FBAR_CPTR[] = @cfunction(_fbar_cfun, Cvoid,
+        (Float64, Float64, Ptr{ComplexF64}, Ptr{ComplexF64}, Csize_t, Ptr{Cvoid}))
+    _PROP_CPTR[] = @cfunction(_prop_cfun, Cvoid,
+        (Float64, Float64, Ptr{ComplexF64}, Csize_t, Ptr{Cvoid}))
+end
+
+mutable struct RustPreconStepper{T<:AbstractArray, F, P, nT}
+    fbar!::F
+    prop!::P
+    y::T
+    yn::T
+    yi::T
+    yerr::T
+    ks::NTuple{7, T}
+    t::Float64
+    tn::Float64
+    dt::Float64
+    dtn::Float64
+    rtol::Float64
+    atol::Float64
+    safety::Float64
+    max_dt::Float64
+    min_dt::Float64
+    locextrap::Bool
+    ok::Bool
+    err::Float64
+    errlast::Float64
+    norm::nT
+    _handle::RustPreconStepHandle
+    _callbacks::RustStepperCallbacks
+    _k_ptrs::Vector{Ptr{ComplexF64}}
+end
+
+function RustPreconStepper(f!, linop, y0, t, dt;
+                            rtol=1e-6, atol=1e-10, safety=0.9, max_dt=Inf, min_dt=0,
+                            locextrap=true, norm=weaknorm)
+    prop!  = make_prop!(linop, y0)
+    fbar!  = make_fbar!(f!, prop!, y0)
+    k1     = similar(y0)
+    fbar!(k1, y0, t, t)
+    ks     = (k1, similar(k1), similar(k1), similar(k1), similar(k1), similar(k1), similar(k1))
+    n      = length(y0)
+    handle = RustPreconStepHandle(n)
+    handle.ptr == C_NULL && error("init_precon_step_ffi failed (n=$n)")
+    callbacks = RustStepperCallbacks(fbar!, prop!, size(y0))
+    k_ptrs = Ptr{ComplexF64}[pointer(ks[i]) for i in 1:7]
+    RustPreconStepper(
+        fbar!, prop!, copy(y0), copy(y0), similar(y0), similar(y0), ks,
+        float(t), float(t), float(dt), float(dt),
+        float(rtol), float(atol), float(safety), float(max_dt), float(min_dt),
+        locextrap, false, 0.0, 0.0, norm,
+        handle, callbacks, k_ptrs
+    )
+end
+
+function step!(s::RustPreconStepper)
+    result_ref = Ref(PreconStepResult(0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    callbacks = s._callbacks
+    GC.@preserve s callbacks begin
+        cb_ptr = pointer_from_objref(callbacks)
+        for i in 1:7
+            s._k_ptrs[i] = pointer(s.ks[i])
+        end
+        rc = ccall((:precon_step_ffi, _LIBLUNA_RUST_RK45), Cint,
+            (Ptr{Cvoid},           # handle
+             Ptr{ComplexF64},      # y
+             Ptr{ComplexF64},      # yn
+             Ptr{Ptr{ComplexF64}}, # k_ptrs[7]
+             Csize_t,              # n
+             Float64, Float64,     # t_old, t_new
+             Float64,              # dtn
+             Float64, Float64,     # rtol, atol
+             Float64, Float64, Float64,  # safety, max_dt, min_dt
+             Float64,              # errlast_in
+             Cint,                 # locextrap
+             Ptr{Cvoid},           # fbar_fn
+             Ptr{Cvoid},           # prop_fn
+             Ptr{Cvoid},           # userdata
+             Ptr{PreconStepResult} # result
+            ),
+            s._handle.ptr,
+            s.y, s.yn,
+            s._k_ptrs,
+            Csize_t(length(s.y)),
+            s.t, s.tn, s.dtn,
+            s.rtol, s.atol,
+            s.safety, s.max_dt, s.min_dt,
+            s.errlast,
+            Cint(s.locextrap),
+            _FBAR_CPTR[], _PROP_CPTR[],
+            cb_ptr,
+            result_ref
+        )
+        rc == 0 || error("precon_step_ffi returned error code $rc")
+    end
+    res = result_ref[]
+    s.ok      = res.ok != 0
+    s.dt      = res.dt
+    s.t       = res.t
+    s.tn      = res.tn
+    s.dtn     = res.dtn
+    s.err     = res.err
+    s.errlast = res.errlast
+    return s.ok
+end
+
+function interpolate(s::RustPreconStepper, ti::Float64)
+    if ti > s.tn
+        error("Attempting to extrapolate!")
+    end
+    if ti == s.t
+        return s.y
+    elseif ti == s.tn
+        return s.yn
+    end
+    σ = (ti - s.t)/s.dt
+    σ2 = σ^2; σ3 = σ2*σ; σ4 = σ3*σ
+    b = ntuple(ii -> σ*interpC[1,ii] + σ2*interpC[2,ii] + σ3*interpC[3,ii] + σ4*interpC[4,ii], Val(7))
+    fill!(s.yi, 0)
+    for ii = 1:7
+        s.yi .+= s.ks[ii].*b[ii]
+    end
+    out = @. s.y + s.dt.*s.yi
+    s.prop!(out, s.t, ti)
+    return out
 end
 
 end

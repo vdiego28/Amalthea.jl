@@ -1,5 +1,5 @@
 use num_complex::Complex;
-use libc::{c_double, c_int, c_uint, size_t};
+use libc::{c_double, c_int, c_uint, size_t, c_void};
 use crate::ionization::PptIonizationRate;
 use crate::raman::{RamanOscillator, TimeDomainRamanSolver};
 use crate::dispersion::{ZeisbergerNeff, MarcatiliNeff};
@@ -791,4 +791,329 @@ pub unsafe extern "C" fn ppt_ionization_rate_vector(
             -2
         }
     }
+}
+
+// ─── Interaction-picture PreconStepper FFI ────────────────────────────────────
+//
+// Mirrors Julia's RK45.step!(s::PreconStepper) exactly:
+//   evaluate! → 5th-order yn → weaknorm → Lund PI → FSAL copy → prop!_maybe
+//
+// Callbacks use the Julia `unsafe_pointer_to_objref(userdata)` pattern:
+//   fbar_fn(t1, t2, y_in, k_out, n, userdata)  -- interaction-picture RHS
+//   prop_fn(t1, t2, y_inout, n, userdata)        -- forward propagator
+
+/// Interaction-picture RHS: `k_out ← fbar!(y_in, t1, t2)`.
+type FbarFn = unsafe extern "C" fn(
+    t1:       f64,
+    t2:       f64,
+    y_in:     *const Complex<f64>,
+    k_out:    *mut Complex<f64>,
+    n:        usize,
+    userdata: *mut c_void,
+);
+
+/// Forward propagator (in-place): `y_inout ← exp(L*(t2-t1)) * y_inout`.
+type PropFn = unsafe extern "C" fn(
+    t1:       f64,
+    t2:       f64,
+    y_inout:  *mut Complex<f64>,
+    n:        usize,
+    userdata: *mut c_void,
+);
+
+/// Result struct returned by [`precon_step_ffi`].  Must match Julia's `PreconStepResult`.
+#[repr(C)]
+pub struct PreconStepResult {
+    pub ok:      i32,
+    pub dt:      f64,
+    pub t:       f64,
+    pub tn:      f64,
+    pub dtn:     f64,
+    pub err:     f64,
+    pub errlast: f64,
+}
+
+/// Internal scratch buffers for the interaction-picture Dormand-Prince step.
+pub struct PreconStepFfiHandle {
+    y_stage: Vec<Complex<f64>>,
+    y_err:   Vec<Complex<f64>>,
+    n:       usize,
+}
+
+// ── Dormand-Prince 5(4) Butcher tableau (matches Julia src/dopri.jl) ──────────
+
+const DP_B: [[f64; 6]; 6] = [
+    [1.0/5.0,          0.0,              0.0,              0.0,             0.0,              0.0],
+    [3.0/40.0,         9.0/40.0,         0.0,              0.0,             0.0,              0.0],
+    [44.0/45.0,       -56.0/15.0,        32.0/9.0,         0.0,             0.0,              0.0],
+    [19372.0/6561.0,  -25360.0/2187.0,   64448.0/6561.0,  -212.0/729.0,    0.0,              0.0],
+    [9017.0/3168.0,   -355.0/33.0,       46732.0/5247.0,   49.0/176.0,    -5103.0/18656.0,   0.0],
+    [35.0/384.0,       0.0,              500.0/1113.0,     125.0/192.0,   -2187.0/6784.0,    11.0/84.0],
+];
+const DP_NODES: [f64; 6]  = [1.0/5.0, 3.0/10.0, 4.0/5.0, 8.0/9.0, 1.0, 1.0];
+const DP_B5: [f64; 7]     = [5179.0/57600.0, 0.0, 7571.0/16695.0, 393.0/640.0,
+                              -92097.0/339200.0, 187.0/2100.0, 1.0/40.0];
+// errest = b5 - b4
+const DP_ERREST: [f64; 7] = [-71.0/57600.0, 0.0, 71.0/16695.0, -71.0/1920.0,
+                               17253.0/339200.0, -22.0/525.0, 1.0/40.0];
+
+// ── Helper: Julia-compatible weaknorm ─────────────────────────────────────────
+
+fn weaknorm_c64(y_err: &[Complex<f64>], y: &[Complex<f64>], yn: &[Complex<f64>],
+                rtol: f64, atol: f64) -> f64 {
+    let (mut sy, mut syn, mut syerr) = (0.0f64, 0.0f64, 0.0f64);
+    for i in 0..y_err.len() {
+        sy    += y[i].norm_sqr();
+        syn   += yn[i].norm_sqr();
+        syerr += y_err[i].norm_sqr();
+    }
+    let errwt = f64::max(f64::max(sy.sqrt(), syn.sqrt()), atol);
+    syerr.sqrt() / rtol / errwt
+}
+
+// ── Helper: Lund PI step controller (Julia's stepcontrolPI! + steplims!) ──────
+
+fn stepcontrol_pi(ok: bool, err: f64, errlast: f64, dt: f64,
+                  safety: f64, max_dt: f64, min_dt: f64)
+    -> (f64, f64, bool)
+{
+    const BETA1: f64 = 3.0 / 5.0 / 5.0;
+    const BETA2: f64 = -1.0 / 5.0 / 5.0;
+    const EPS:   f64 = 0.8;
+    let (mut dtn, errlast_new);
+    if ok {
+        let el = if errlast == 0.0 { err } else { errlast };
+        let fac = if err == 0.0 {
+            1.5
+        } else {
+            safety * (EPS / err).powf(BETA1) * (EPS / el).powf(BETA2)
+        };
+        dtn = fac * dt;
+        errlast_new = err;
+    } else {
+        dtn = if !err.is_finite() {
+            dt / 2.0
+        } else {
+            dt * f64::max(0.1, safety * err.powf(-1.0 / 5.0))
+        };
+        errlast_new = errlast;
+    }
+    let mut ok_final = ok;
+    if dtn > max_dt {
+        dtn = max_dt;
+    } else if dtn < min_dt {
+        dtn = min_dt;
+        ok_final = true;
+    }
+    (dtn, errlast_new, ok_final)
+}
+
+// ── FFI exports ───────────────────────────────────────────────────────────────
+
+/// Allocate a `PreconStepFfiHandle` for arrays of `n` complex elements.
+///
+/// Returns null on `n == 0`.  Free with [`free_precon_step_ffi`].
+///
+/// # Safety
+/// Always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn init_precon_step_ffi(n: usize) -> *mut PreconStepFfiHandle {
+    if n == 0 { return std::ptr::null_mut(); }
+    Box::into_raw(Box::new(PreconStepFfiHandle {
+        y_stage: vec![Complex::new(0.0, 0.0); n],
+        y_err:   vec![Complex::new(0.0, 0.0); n],
+        n,
+    }))
+}
+
+/// Free a `PreconStepFfiHandle`.  Null is a no-op.
+///
+/// # Safety
+/// `ptr` must be a valid, non-aliased pointer from [`init_precon_step_ffi`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn free_precon_step_ffi(ptr: *mut PreconStepFfiHandle) {
+    if !ptr.is_null() {
+        unsafe { drop(Box::from_raw(ptr)); }
+    }
+}
+
+/// Execute one interaction-picture Dormand-Prince 5(4) adaptive step.
+///
+/// Mirrors Julia's `RK45.step!(s::PreconStepper)` exactly.
+///
+/// # Arguments
+/// * `ptr`         – handle from [`init_precon_step_ffi`]
+/// * `y`           – Julia's `s.y` (length-`n` `Complex<f64>`); overwritten with `s.yn`
+/// * `yn`          – Julia's `s.yn`; holds 5th-order solution on return
+/// * `k_ptrs`      – 7-element array of `*mut Complex<f64>` (Julia's `s.ks[1..7]`)
+/// * `n`           – array length (number of complex elements)
+/// * `t_old`       – `s.t` before this call
+/// * `t_new`       – `s.tn` before this call (k1 propagated from `t_old` to `t_new`)
+/// * `dtn`         – proposed step size
+/// * `rtol`, `atol`, `safety`, `max_dt`, `min_dt` – stepper tolerances
+/// * `errlast_in`  – `s.errlast` from previous accepted step (0 on first step)
+/// * `locextrap`   – non-zero → use 5th-order `yn` (always true in Luna)
+/// * `fbar_fn`, `prop_fn`, `userdata` – Julia callbacks
+/// * `result`      – output struct (filled on success)
+///
+/// # Returns
+/// `0` success · `-1` null-pointer · `-2` internal panic.
+///
+/// # Safety
+/// All pointer arguments must be non-null and valid. `k_ptrs[0..7]` must each
+/// point to a live `Complex<f64>[n]` buffer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn precon_step_ffi(
+    ptr:         *mut PreconStepFfiHandle,
+    y:           *mut Complex<f64>,
+    yn:          *mut Complex<f64>,
+    k_ptrs:      *const *mut Complex<f64>,
+    n:           usize,
+    t_old:       f64,
+    t_new:       f64,
+    dtn:         f64,
+    rtol:        f64,
+    atol:        f64,
+    safety:      f64,
+    max_dt:      f64,
+    min_dt:      f64,
+    errlast_in:  f64,
+    locextrap:   i32,
+    fbar_fn:     FbarFn,
+    prop_fn:     PropFn,
+    userdata:    *mut c_void,
+    result:      *mut PreconStepResult,
+) -> i32 {
+    if ptr.is_null() || y.is_null() || yn.is_null() || k_ptrs.is_null() || result.is_null() {
+        return -1;
+    }
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        precon_step_inner(ptr, y, yn, k_ptrs, n, t_old, t_new, dtn,
+                          rtol, atol, safety, max_dt, min_dt, errlast_in,
+                          locextrap, fbar_fn, prop_fn, userdata, result)
+    }));
+    match res {
+        Ok(rc) => rc,
+        Err(e) => { eprintln!("precon_step_ffi: panic: {:?}", e); -2 }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn precon_step_inner(
+    ptr:         *mut PreconStepFfiHandle,
+    y:           *mut Complex<f64>,
+    yn:          *mut Complex<f64>,
+    k_ptrs:      *const *mut Complex<f64>,
+    n:           usize,
+    t_old:       f64,
+    t_new:       f64,
+    dtn:         f64,
+    rtol:        f64,
+    atol:        f64,
+    safety:      f64,
+    max_dt:      f64,
+    min_dt:      f64,
+    errlast_in:  f64,
+    locextrap:   i32,
+    fbar_fn:     FbarFn,
+    prop_fn:     PropFn,
+    userdata:    *mut c_void,
+    result:      *mut PreconStepResult,
+) -> i32 {
+    let h = &mut *ptr;
+
+    // Collect the 7 k pointers
+    let ks: [*mut Complex<f64>; 7] = [
+        *k_ptrs.add(0), *k_ptrs.add(1), *k_ptrs.add(2), *k_ptrs.add(3),
+        *k_ptrs.add(4), *k_ptrs.add(5), *k_ptrs.add(6),
+    ];
+
+    // ── evaluate! ─────────────────────────────────────────────────────────────
+    // s.y .= s.yn
+    std::ptr::copy_nonoverlapping(yn, y, n);
+
+    // s.prop!(s.ks[1], s.t, s.tn)  — FSAL: propagate k1 from t_old to t_new
+    prop_fn(t_old, t_new, ks[0], n, userdata);
+
+    let dt = dtn;
+    let t  = t_new;     // s.t = s.tn after evaluate!
+
+    for ii in 0..6usize {
+        // s.yn .= s.y  (use y_stage as scratch)
+        std::ptr::copy_nonoverlapping(y, h.y_stage.as_mut_ptr(), n);
+
+        // s.yn .+= dt * B[ii][jj] * ks[jj]  for jj in 0..=ii
+        // Use real-scalar × component form to match Julia's `(real) .* complex` broadcast.
+        for jj in 0..=ii {
+            let bij = DP_B[ii][jj];
+            if bij != 0.0 {
+                let scale = dt * bij;
+                for k in 0..n {
+                    let ks_k = *ks[jj].add(k);
+                    let p = h.y_stage.as_mut_ptr().add(k);
+                    (*p).re += scale * ks_k.re;
+                    (*p).im += scale * ks_k.im;
+                }
+            }
+        }
+
+        // s.fbar!(s.ks[ii+1], s.yn, s.t, s.t + nodes[ii]*dt)
+        fbar_fn(t, t + DP_NODES[ii] * dt, h.y_stage.as_ptr(), ks[ii + 1], n, userdata);
+    }
+
+    // ── 5th-order yn (locextrap) ──────────────────────────────────────────────
+    if locextrap != 0 {
+        std::ptr::copy_nonoverlapping(y, yn, n);
+        for jj in 0..7usize {
+            let b = DP_B5[jj];
+            if b != 0.0 {
+                let scale = dt * b;
+                for k in 0..n {
+                    let ks_k = *ks[jj].add(k);
+                    (*yn.add(k)).re += scale * ks_k.re;
+                    (*yn.add(k)).im += scale * ks_k.im;
+                }
+            }
+        }
+    }
+
+    // ── error estimate ────────────────────────────────────────────────────────
+    for i in 0..n { h.y_err[i] = Complex::new(0.0, 0.0); }
+    for ii in 0..7usize {
+        let e = DP_ERREST[ii];
+        if e != 0.0 {
+            let scale = dt * e;
+            for k in 0..n {
+                let ks_k = *ks[ii].add(k);
+                h.y_err[k].re += scale * ks_k.re;
+                h.y_err[k].im += scale * ks_k.im;
+            }
+        }
+    }
+
+    let y_sl  = std::slice::from_raw_parts(y,  n);
+    let yn_sl = std::slice::from_raw_parts(yn, n);
+    let err   = weaknorm_c64(&h.y_err, y_sl, yn_sl, rtol, atol);
+    let ok    = err <= 1.0;
+
+    // ── Lund PI step control ──────────────────────────────────────────────────
+    let (dtn_new, errlast_new, ok_final) =
+        stepcontrol_pi(ok, err, errlast_in, dt, safety, max_dt, min_dt);
+
+    // ── FSAL copy + prop!_maybe ───────────────────────────────────────────────
+    let tn_new;
+    if ok_final {
+        tn_new = t + dt;
+        std::ptr::copy_nonoverlapping(ks[6], ks[0], n);    // k1 ← k7 (FSAL)
+        prop_fn(t, tn_new, yn, n, userdata);                // propagate yn forward
+    } else {
+        std::ptr::copy_nonoverlapping(y, yn, n);            // restore yn = y
+        tn_new = t_new;
+        prop_fn(t, tn_new, yn, n, userdata);                // no-op (t == tn_new)
+    }
+
+    *result = PreconStepResult {
+        ok: ok_final as i32, dt, t, tn: tn_new, dtn: dtn_new, err, errlast: errlast_new,
+    };
+    0
 }
