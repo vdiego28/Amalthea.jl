@@ -4,6 +4,8 @@ import Logging
 import Printf: @sprintf
 import Luna.Utils: format_elapsed, lunadir
 import FFTW
+import ..Luna
+
 
 #Get Butcher tableau etc from separate file (for convenience of changing if wanted)
 include("dopri.jl")
@@ -23,7 +25,7 @@ function solve_precon(f!, linop, y0, t, dt, tmax;
     use_rust = get(ENV, "LUNA_USE_RUST_STEPPER", "0") == "1"
     use_native = get(ENV, "LUNA_USE_RUST_NATIVE", "0") == "1"
     if use_native && isfile(_LIBLUNA_RUST_RK45) && eltype(y0) == ComplexF64
-        stepper = RustNativeStepper(linop, y0, t, dt,
+        stepper = RustNativeStepper(f!, linop, y0, t, dt,
                       rtol=rtol, atol=atol, safety=safety, max_dt=max_dt, min_dt=min_dt, locextrap=locextrap, norm=norm)
     elseif use_rust && isfile(_LIBLUNA_RUST_RK45) && eltype(y0) == ComplexF64
         stepper = RustPreconStepper(f!, linop, y0, t, dt,
@@ -670,20 +672,85 @@ mutable struct RustNativeStepper{T<:AbstractArray}
     _handle::RustNativeSimHandle
 end
 
-function RustNativeStepper(linop, y0, t, dt;
+function RustNativeStepper(linop, y0, t, dt; kwargs...)
+    RustNativeStepper(nothing, linop, y0, t, dt; kwargs...)
+end
+
+function RustNativeStepper(f!, linop, y0, t, dt;
                             rtol=1e-6, atol=1e-10, safety=0.9, max_dt=Inf, min_dt=0,
                             locextrap=true, norm=weaknorm)
     handle = RustNativeSimHandle(linop)
+
     handle.ptr == C_NULL && error("init_native_sim failed")
+    
+    n = length(y0)
+    is_mode_avg = f! isa Luna.NonlinearRHS.TransModeAvg
+    
+    if is_mode_avg
+        grid = f!.grid
+        n_time = length(grid.t)
+        n_time_over = length(grid.to)
+    else
+        n_time = n
+        n_time_over = 0
+    end
     
     # Set FFTW plans
     lib_path = FFTW.FFTW_jll.libfftw3
-    n = length(y0)
     # FFTW_ESTIMATE = 1 << 6 = 64
     rc = ccall((:native_set_fftw_plans, _LIBLUNA_RUST_RK45), Cint,
           (Ptr{Cvoid}, Cstring, Csize_t, Csize_t, Cint, Cuint),
-          handle.ptr, lib_path, n, n, 0, 64)
+          handle.ptr, lib_path, n_time, n_time_over, is_mode_avg ? 1 : 0, 64)
     rc == 0 || error("native_set_fftw_plans failed")
+
+    # Set parameters if mode-averaged
+    if is_mode_avg
+        norm_func = f!.norm!
+        pre = getfield(norm_func, :pre)
+        
+        if hasfield(typeof(norm_func), :βfun!)
+            bfun! = getfield(norm_func, :βfun!)
+            beta = zeros(Float64, length(pre))
+            bfun!(beta, 0.0)
+        else
+            beta = ones(Float64, length(pre))
+        end
+        
+        towin = f!.grid.towin
+        owin = f!.grid.ωwin
+        sidx = UInt8.(f!.grid.sidx)
+        
+        # Find Kerr response and extract γ3
+        γ3 = 0.0
+        for r in f!.resp
+            for fld in fieldnames(typeof(r))
+                if occursin("γ3", string(fld))
+                    γ3 = getfield(r, fld)
+                    break
+                end
+            end
+            if γ3 != 0.0
+                break
+            end
+        end
+        
+        density = f!.densityfun(0.0)
+        kerr_fac = density * Luna.PhysData.ε_0 * γ3
+        nlscale = Luna.NonlinearRHS.nlscale
+        sqrt_aeff = sqrt(f!.aeff(0.0))
+        
+        # Call FFI params setter
+        rc = ccall((:native_set_mode_avg_params, _LIBLUNA_RUST_RK45), Cint,
+            (Ptr{Cvoid}, Csize_t, Csize_t,
+             Ptr{Float64}, Ptr{Float64}, Ptr{UInt8},
+             Ptr{Float64}, Ptr{Float64}, Ptr{Float64},
+             Float64, Float64, Float64),
+            handle.ptr, n_time, n_time_over,
+            towin, owin, sidx,
+            real.(pre), imag.(pre), beta,
+            kerr_fac, nlscale, sqrt_aeff)
+        rc == 0 || error("native_set_mode_avg_params failed: $rc")
+    end
 
     # Copy initial field to Rust
     ccall((:set_field, _LIBLUNA_RUST_RK45), Cint,

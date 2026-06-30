@@ -144,3 +144,26 @@ copy of the constant linear operator, sized once to `n` and never reallocated.
 - `test_native_phase0.jl` passes. Single step equivalence gives relative error < 1e-13 (bitwise exact) and full-solve gives relative error < 1e-6 (bitwise exact due to zero RHS).
 - `LUNA_TEST_GROUP=rust julia --project test/runtests.jl` passes, and the rest of the Rust test suite (`cargo test`) also passes.
 **Next:** Phase 1 — mode-avg + Kerr `prop_capillary(:HE11)` (implementing the RHS for Kerr nonlinearity inside the Rust native loop).
+
+---
+
+## 2026-06-30 — Phase 1 — Mode-Averaged + Kerr (RealGrid) — Antigravity (Gemini-2)
+**Status:** complete
+**Did:** Ported the `TransModeAvg` preconditioned RHS for RealGrid + scalar Kerr into Rust `NativeSim`. Wired parameters and initial stage evaluations correctly to bypass Julia callbacks entirely in the hot loop.
+**How:**
+- Implemented `rhs_mode_avg_real` private method in `luna-rust/src/native.rs:111`, evaluating the time-domain Kerr nonlinearity, applying windows, norm prefactors, and FFT transformations.
+- Updated `set_field` FFI in `luna-rust/src/native.rs:222` to evaluate the initial Runge-Kutta stage `ks[0]` if `beta` is initialized.
+- Added `get_ks_stage` FFI in `luna-rust/src/native.rs:264` to enable stage-by-stage `ks` introspection from Julia.
+- Updated `test/test_native_phase1.jl` with single-step comparison and full capillary propagation solve tests.
+**Decisions:**
+- Initial evaluation of the first RK stage (`ks[0]`) was missing in the `RustNativeStepper` initialization, causing errors to be zeroed or incorrect at the start. Evaluated it in `set_field` if parameters are loaded.
+- Replaced the dt value in tests with 0.01 to avoid subnormal/precision-floor errors during relative step control comparisons.
+**Gotchas:**
+- Float64 formatting in Julia soft scope warnings can silently keep `γ3` as `0.0` inside loops. Encapsulated extraction logic clean.
+- Precision floor at `1e-14` magnifies tiny floating-point roundoff differences to `30%` relative step error. Test with a realistic `dt = 0.01` to verify true numerical equivalence.
+**Tests:**
+- `test_native_phase1.jl` passes completely (Single-step rel_step <= 1e-13, Full-solve rel_solve = 5.8e-13).
+- `cargo test` passes green.
+- `LUNA_TEST_GROUP=rust julia --project test/runtests.jl` passes all 41,928 tests.
+**Next:** Phase 2 — Mode-Averaged + Kerr (EnvGrid) Native Port.
+

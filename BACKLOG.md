@@ -32,10 +32,10 @@ full-`solve` ~1e-6 vs the Julia oracle — see TESTING.md §3 nondeterminism flo
   `luna-rust/src/ffi.rs:1002` (`precon_step_inner`) + `src/RK45.jl:309-319`.
   *Gate:* set/get bit-exact round-trip; no-op RHS reproduces the Julia stepper.
   Test `test/test_native_phase0.jl`.
-- ⬜ **Phase 1 — Mode-averaged + Kerr (RealGrid).** Port `to_time!`/`to_freq!`,
+- ✅ **Phase 1 — Mode-averaged + Kerr (RealGrid).** Port `to_time!`/`to_freq!`,
   Kerr, windows, `norm_mode_average`, exp-linop prop. Replaces
   `TransModeAvg` (`src/NonlinearRHS.jl:531`) + Kerr (`src/Nonlinear.jl:81`).
-  *First fully-Rust `prop_capillary(:HE11, Kerr)`.* Test `test/test_native_modeavg.jl`.
+  *First fully-Rust `prop_capillary(:HE11, Kerr)`.* Test `test/test_native_phase1.jl`.
 - ⬜ **Phase 2 — Plasma + EnvGrid Kerr.** `cumtrapz` ×3 + current assembly
   (rate LUT already Rust); `Kerr_env`/thg. Replaces `PlasmaCumtrapz`
   (`src/Nonlinear.jl:161`). Test `test/test_native_plasma.jl`.
