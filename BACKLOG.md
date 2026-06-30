@@ -4,6 +4,60 @@ Deferred work and known issues for Luna-Rust.jl. Severity: 🔴 correctness · �
 
 ## Open items
 
+### 🟢 Native-Rust backend port (phased)
+
+**Goal:** make the propagation backend run **exclusively in Rust** — no Julia
+callback in the per-step hot loop. **Finding:** even with all five
+`LUNA_USE_RUST_*` toggles ON, ~80% of per-step cost is still Julia. The Rust
+stepper (`precon_step_ffi`) drives the loop but calls Julia `fbar!`/`prop!` back
+through C function pointers on **every** RK stage, so every FFT (there is no Rust
+FFT), Kerr, plasma `cumtrapz`, window/norm broadcasts, and the `exp(linop)`
+application stay in Julia. "Exclusively Rust" therefore requires a **resident
+`NativeSim`** field + native RHS + FFTW binding, not a default-flip.
+
+Design docs (read before starting any phase):
+[`docs/native-port/ARCHITECTURE.md`](docs/native-port/ARCHITECTURE.md) ·
+[`docs/native-port/MATH.md`](docs/native-port/MATH.md) ·
+[`docs/native-port/TESTING.md`](docs/native-port/TESTING.md) ·
+[`docs/native-port/PORT_LOG.md`](docs/native-port/PORT_LOG.md) ·
+agent workflow [`AGENTS.md`](AGENTS.md). New toggle: `LUNA_USE_RUST_NATIVE`.
+
+Phases (each independently shippable; gate = single-step ~1e-13 **and**
+full-`solve` ~1e-6 vs the Julia oracle — see TESTING.md §3 nondeterminism floor):
+
+- ⬜ **Phase 0 — Foundations.** `NativeSim` opaque handle; bind FFTW + plans
+  matching `FFTW.jl`; copy ω/window/linop arrays in; `init_native_sim` /
+  `free_native_sim` / `set_field` / `get_field`. Stepper runs callback-free
+  against resident buffers. Replaces the callback round-trip in
+  `luna-rust/src/ffi.rs:1002` (`precon_step_inner`) + `src/RK45.jl:309-319`.
+  *Gate:* set/get bit-exact round-trip; no-op RHS reproduces the Julia stepper.
+  Test `test/test_native_phase0.jl`.
+- ⬜ **Phase 1 — Mode-averaged + Kerr (RealGrid).** Port `to_time!`/`to_freq!`,
+  Kerr, windows, `norm_mode_average`, exp-linop prop. Replaces
+  `TransModeAvg` (`src/NonlinearRHS.jl:531`) + Kerr (`src/Nonlinear.jl:81`).
+  *First fully-Rust `prop_capillary(:HE11, Kerr)`.* Test `test/test_native_modeavg.jl`.
+- ⬜ **Phase 2 — Plasma + EnvGrid Kerr.** `cumtrapz` ×3 + current assembly
+  (rate LUT already Rust); `Kerr_env`/thg. Replaces `PlasmaCumtrapz`
+  (`src/Nonlinear.jl:161`). Test `test/test_native_plasma.jl`.
+- ⬜ **Phase 3 — Radial (TransRadial) + resident QDHT.** Fold the existing Rust
+  QDHT into `NativeSim`; radial normalization. Replaces `TransRadial`
+  (`src/NonlinearRHS.jl:663`). Test `test/test_native_radial.jl`.
+- ⬜ **Phase 4 — Raman.** Integrate the existing ADE solver (`raman.rs`) into the
+  resident RHS. Replaces `RamanPolar` (`src/Nonlinear.jl:357`).
+  Test `test/test_native_raman.jl`.
+- ⬜ **Phase 5 — Modal (TransModal).** Hardest: Rust adaptive cubature + mode-field
+  eval + overlap projections (dispersion already Rust). Replaces `TransModal`
+  (`src/NonlinearRHS.jl:421`, `pointcalc!` `:363`, `Erω_to_Prω!` `:401`). Keep the
+  integration loop **sequential** (prior `Threads.@threads` race). Test
+  `test/test_native_modal.jl`.
+- ⬜ **Phase 6 — Free-space (TransFree).** 3-D FFTW plans resident. Replaces
+  `TransFree` (`src/NonlinearRHS.jl:826`). Test `test/test_native_free.jl`.
+- ⬜ **Phase 7 — z-dependent linop assembly.** Port `_fill_linop`
+  (`src/LinearOps.jl:77,185,337`) so `prop!` never returns to Julia.
+- ⬜ **Phase 8 — Default-flip + cleanup.** `LUNA_USE_RUST_NATIVE` becomes default;
+  Julia loop retained as fallback with one-time `@warn`; per-kernel toggles kept
+  for differential debugging. *Gate:* full existing suite green with native default.
+
 ### 🟡 Wire remaining Rust kernels into the Julia pipeline
 PPT ionization is now wired (opt-in via `LUNA_USE_RUST_IONISATION=1`).
 The pattern: Rust exports an opaque handle lifecycle + a vector-eval FFI function;

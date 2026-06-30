@@ -3,6 +3,7 @@ import Dates
 import Logging
 import Printf: @sprintf
 import Luna.Utils: format_elapsed, lunadir
+import FFTW
 
 #Get Butcher tableau etc from separate file (for convenience of changing if wanted)
 include("dopri.jl")
@@ -20,7 +21,11 @@ function solve_precon(f!, linop, y0, t, dt, tmax;
                     rtol=1e-6, atol=1e-10, safety=0.9, max_dt=Inf, min_dt=0, locextrap=true, norm=weaknorm,
                     kwargs...)
     use_rust = get(ENV, "LUNA_USE_RUST_STEPPER", "0") == "1"
-    if use_rust && isfile(_LIBLUNA_RUST_RK45) && eltype(y0) == ComplexF64
+    use_native = get(ENV, "LUNA_USE_RUST_NATIVE", "0") == "1"
+    if use_native && isfile(_LIBLUNA_RUST_RK45) && eltype(y0) == ComplexF64
+        stepper = RustNativeStepper(linop, y0, t, dt,
+                      rtol=rtol, atol=atol, safety=safety, max_dt=max_dt, min_dt=min_dt, locextrap=locextrap, norm=norm)
+    elseif use_rust && isfile(_LIBLUNA_RUST_RK45) && eltype(y0) == ComplexF64
         stepper = RustPreconStepper(f!, linop, y0, t, dt,
                       rtol=rtol, atol=atol, safety=safety, max_dt=max_dt, min_dt=min_dt, locextrap=locextrap, norm=norm)
     else
@@ -614,6 +619,114 @@ function interpolate(s::RustPreconStepper, ti::Float64)
     out = @. s.y + s.dt.*s.yi
     s.prop!(out, s.t, ti)
     return out
+end
+
+# ─── Rust native interaction-picture Stepper FFI (LUNA_USE_RUST_NATIVE=1) ───────
+
+struct NativeStepResult
+    ok::Cint
+    dt::Float64
+    t::Float64
+    tn::Float64
+    dtn::Float64
+    err::Float64
+    errlast::Float64
+end
+
+mutable struct RustNativeSimHandle
+    ptr::Ptr{Cvoid}
+    function RustNativeSimHandle(linop::Vector{ComplexF64})
+        n = length(linop)
+        ptr = ccall((:init_native_sim, _LIBLUNA_RUST_RK45), Ptr{Cvoid},
+                    (Ptr{ComplexF64}, Csize_t), pointer(linop), Csize_t(n))
+        h = new(ptr)
+        finalizer(h) do h
+            p = h.ptr
+            if p != C_NULL
+                ccall((:free_native_sim, _LIBLUNA_RUST_RK45), Cvoid, (Ptr{Cvoid},), p)
+                h.ptr = C_NULL
+            end
+        end
+        h
+    end
+end
+
+mutable struct RustNativeStepper{T<:AbstractArray}
+    y::T
+    yn::T
+    t::Float64
+    tn::Float64
+    dt::Float64
+    dtn::Float64
+    rtol::Float64
+    atol::Float64
+    safety::Float64
+    max_dt::Float64
+    min_dt::Float64
+    locextrap::Bool
+    ok::Bool
+    err::Float64
+    errlast::Float64
+    _handle::RustNativeSimHandle
+end
+
+function RustNativeStepper(linop, y0, t, dt;
+                            rtol=1e-6, atol=1e-10, safety=0.9, max_dt=Inf, min_dt=0,
+                            locextrap=true, norm=weaknorm)
+    handle = RustNativeSimHandle(linop)
+    handle.ptr == C_NULL && error("init_native_sim failed")
+    
+    # Set FFTW plans
+    lib_path = FFTW.FFTW_jll.libfftw3
+    n = length(y0)
+    # FFTW_ESTIMATE = 1 << 6 = 64
+    rc = ccall((:native_set_fftw_plans, _LIBLUNA_RUST_RK45), Cint,
+          (Ptr{Cvoid}, Cstring, Csize_t, Csize_t, Cint, Cuint),
+          handle.ptr, lib_path, n, n, 0, 64)
+    rc == 0 || error("native_set_fftw_plans failed")
+
+    # Copy initial field to Rust
+    ccall((:set_field, _LIBLUNA_RUST_RK45), Cint,
+          (Ptr{Cvoid}, Ptr{ComplexF64}, Csize_t),
+          handle.ptr, pointer(y0), Csize_t(n))
+
+    RustNativeStepper(
+        copy(y0), copy(y0), float(t), float(t), float(dt), float(dt),
+        float(rtol), float(atol), float(safety), float(max_dt), float(min_dt),
+        locextrap, false, 0.0, 0.0, handle
+    )
+end
+
+function step!(s::RustNativeStepper)
+    result_ref = Ref(NativeStepResult(0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    rc = ccall((:native_step, _LIBLUNA_RUST_RK45), Cint,
+        (Ptr{Cvoid}, Ptr{ComplexF64}, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Cint, Ptr{NativeStepResult}),
+        s._handle.ptr, pointer(s.yn), s.t, s.tn, s.dtn, s.rtol, s.atol, s.safety, s.max_dt, s.min_dt, s.errlast, Cint(s.locextrap), result_ref
+    )
+    rc == 0 || error("native_step returned error code $rc")
+    
+    res = result_ref[]
+    s.ok = res.ok != 0
+    s.dt = res.dt
+    s.t = res.t
+    s.tn = res.tn
+    s.dtn = res.dtn
+    s.err = res.err
+    s.errlast = res.errlast
+    
+    return s.ok
+end
+
+function interpolate(s::RustNativeStepper, ti::Float64)
+    if ti > s.tn
+        error("Attempting to extrapolate!")
+    end
+    if ti == s.t
+        return s.y
+    elseif ti == s.tn
+        return s.yn
+    end
+    error("interpolate not implemented for RustNativeStepper (no-op RHS phase 0)")
 end
 
 end

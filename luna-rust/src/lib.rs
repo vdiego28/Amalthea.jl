@@ -1,5 +1,7 @@
 pub mod grid;
 pub mod ffi;
+pub mod fftw;
+pub mod native;
 pub mod dispersion;
 pub mod cuda;
 pub mod diffraction;
