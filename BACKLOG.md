@@ -55,8 +55,11 @@ Remaining kernels to wire (same pattern, in this order):
    Tests: `test/test_qdht_rust.jl` (`@testitem tags=[:rust]`).
    Follow-ups: wire `TransFree` (2D Cartesian FFT, different transform type — stays Julia);
    consider cblas/openblas DGEMM binding for peak throughput.
-5. ⬜ **RK45 stepper** (`stepper.rs` `Dopri5Stepper`) — largest scope; requires exporting
-   a callback-based or fixed-array step loop through FFI.
+5. ✅ **RK45 interaction-picture PreconStepper** — Dormand-Prince 5(4) with FSAL and Lund PI
+   step control implemented in `ffi.rs` (`init/free/precon_step_ffi`); Julia side in
+   `src/RK45.jl` (`RustPreconStepper`, `LUNA_USE_RUST_STEPPER=1`).  Key fix: `@cfunction`
+   pointers must be created in `RK45.__init__` (not as precompile-image `const`s).
+   Tests: `test/test_stepper_rust.jl` (physical equivalence < rtol=1e-6).
 
 - **Safety net:** `test/test_rust_ffi.jl`, `test/test_ionisation_rust.jl`,
   `test/test_raman_rust.jl`, `test/test_dispersion_rust.jl`, and
