@@ -837,7 +837,7 @@ pub struct PreconStepResult {
 pub struct PreconStepFfiHandle {
     y_stage: Vec<Complex<f64>>,
     y_err:   Vec<Complex<f64>>,
-    n:       usize,
+    _n:       usize,
 }
 
 // ── Dormand-Prince 5(4) Butcher tableau (matches Julia src/dopri.jl) ──────────
@@ -922,7 +922,7 @@ pub unsafe extern "C" fn init_precon_step_ffi(n: usize) -> *mut PreconStepFfiHan
     Box::into_raw(Box::new(PreconStepFfiHandle {
         y_stage: vec![Complex::new(0.0, 0.0); n],
         y_err:   vec![Complex::new(0.0, 0.0); n],
-        n,
+        _n: n,
     }))
 }
 
@@ -1020,100 +1020,102 @@ unsafe fn precon_step_inner(
     userdata:    *mut c_void,
     result:      *mut PreconStepResult,
 ) -> i32 {
-    let h = &mut *ptr;
+    unsafe {
+        let h = &mut *ptr;
 
-    // Collect the 7 k pointers
-    let ks: [*mut Complex<f64>; 7] = [
-        *k_ptrs.add(0), *k_ptrs.add(1), *k_ptrs.add(2), *k_ptrs.add(3),
-        *k_ptrs.add(4), *k_ptrs.add(5), *k_ptrs.add(6),
-    ];
+        // Collect the 7 k pointers
+        let ks: [*mut Complex<f64>; 7] = [
+            *k_ptrs.add(0), *k_ptrs.add(1), *k_ptrs.add(2), *k_ptrs.add(3),
+            *k_ptrs.add(4), *k_ptrs.add(5), *k_ptrs.add(6),
+        ];
 
-    // ── evaluate! ─────────────────────────────────────────────────────────────
-    // s.y .= s.yn
-    std::ptr::copy_nonoverlapping(yn, y, n);
+        // ── evaluate! ─────────────────────────────────────────────────────────────
+        // s.y .= s.yn
+        std::ptr::copy_nonoverlapping(yn, y, n);
 
-    // s.prop!(s.ks[1], s.t, s.tn)  — FSAL: propagate k1 from t_old to t_new
-    prop_fn(t_old, t_new, ks[0], n, userdata);
+        // s.prop!(s.ks[1], s.t, s.tn)  — FSAL: propagate k1 from t_old to t_new
+        prop_fn(t_old, t_new, ks[0], n, userdata);
 
-    let dt = dtn;
-    let t  = t_new;     // s.t = s.tn after evaluate!
+        let dt = dtn;
+        let t  = t_new;     // s.t = s.tn after evaluate!
 
-    for ii in 0..6usize {
-        // s.yn .= s.y  (use y_stage as scratch)
-        std::ptr::copy_nonoverlapping(y, h.y_stage.as_mut_ptr(), n);
+        for ii in 0..6usize {
+            // s.yn .= s.y  (use y_stage as scratch)
+            std::ptr::copy_nonoverlapping(y, h.y_stage.as_mut_ptr(), n);
 
-        // s.yn .+= dt * B[ii][jj] * ks[jj]  for jj in 0..=ii
-        // Use real-scalar × component form to match Julia's `(real) .* complex` broadcast.
-        for jj in 0..=ii {
-            let bij = DP_B[ii][jj];
-            if bij != 0.0 {
-                let scale = dt * bij;
-                for k in 0..n {
-                    let ks_k = *ks[jj].add(k);
-                    let p = h.y_stage.as_mut_ptr().add(k);
-                    (*p).re += scale * ks_k.re;
-                    (*p).im += scale * ks_k.im;
+            // s.yn .+= dt * B[ii][jj] * ks[jj]  for jj in 0..=ii
+            // Use real-scalar × component form to match Julia's `(real) .* complex` broadcast.
+            for jj in 0..=ii {
+                let bij = DP_B[ii][jj];
+                if bij != 0.0 {
+                    let scale = dt * bij;
+                    for k in 0..n {
+                        let ks_k = *ks[jj].add(k);
+                        let p = h.y_stage.as_mut_ptr().add(k);
+                        (*p).re += scale * ks_k.re;
+                        (*p).im += scale * ks_k.im;
+                    }
+                }
+            }
+
+            // s.fbar!(s.ks[ii+1], s.yn, s.t, s.t + nodes[ii]*dt)
+            fbar_fn(t, t + DP_NODES[ii] * dt, h.y_stage.as_ptr(), ks[ii + 1], n, userdata);
+        }
+
+        // ── 5th-order yn (locextrap) ──────────────────────────────────────────────
+        if locextrap != 0 {
+            std::ptr::copy_nonoverlapping(y, yn, n);
+            for jj in 0..7usize {
+                let b = DP_B5[jj];
+                if b != 0.0 {
+                    let scale = dt * b;
+                    for k in 0..n {
+                        let ks_k = *ks[jj].add(k);
+                        (*yn.add(k)).re += scale * ks_k.re;
+                        (*yn.add(k)).im += scale * ks_k.im;
+                    }
                 }
             }
         }
 
-        // s.fbar!(s.ks[ii+1], s.yn, s.t, s.t + nodes[ii]*dt)
-        fbar_fn(t, t + DP_NODES[ii] * dt, h.y_stage.as_ptr(), ks[ii + 1], n, userdata);
-    }
-
-    // ── 5th-order yn (locextrap) ──────────────────────────────────────────────
-    if locextrap != 0 {
-        std::ptr::copy_nonoverlapping(y, yn, n);
-        for jj in 0..7usize {
-            let b = DP_B5[jj];
-            if b != 0.0 {
-                let scale = dt * b;
+        // ── error estimate ────────────────────────────────────────────────────────
+        for i in 0..n { h.y_err[i] = Complex::new(0.0, 0.0); }
+        for ii in 0..7usize {
+            let e = DP_ERREST[ii];
+            if e != 0.0 {
+                let scale = dt * e;
                 for k in 0..n {
-                    let ks_k = *ks[jj].add(k);
-                    (*yn.add(k)).re += scale * ks_k.re;
-                    (*yn.add(k)).im += scale * ks_k.im;
+                    let ks_k = *ks[ii].add(k);
+                    h.y_err[k].re += scale * ks_k.re;
+                    h.y_err[k].im += scale * ks_k.im;
                 }
             }
         }
-    }
 
-    // ── error estimate ────────────────────────────────────────────────────────
-    for i in 0..n { h.y_err[i] = Complex::new(0.0, 0.0); }
-    for ii in 0..7usize {
-        let e = DP_ERREST[ii];
-        if e != 0.0 {
-            let scale = dt * e;
-            for k in 0..n {
-                let ks_k = *ks[ii].add(k);
-                h.y_err[k].re += scale * ks_k.re;
-                h.y_err[k].im += scale * ks_k.im;
-            }
+        let y_sl  = std::slice::from_raw_parts(y,  n);
+        let yn_sl = std::slice::from_raw_parts(yn, n);
+        let err   = weaknorm_c64(&h.y_err, y_sl, yn_sl, rtol, atol);
+        let ok    = err <= 1.0;
+
+        // ── Lund PI step control ──────────────────────────────────────────────────
+        let (dtn_new, errlast_new, ok_final) =
+            stepcontrol_pi(ok, err, errlast_in, dt, safety, max_dt, min_dt);
+
+        // ── FSAL copy + prop!_maybe ───────────────────────────────────────────────
+        let tn_new;
+        if ok_final {
+            tn_new = t + dt;
+            std::ptr::copy_nonoverlapping(ks[6], ks[0], n);    // k1 ← k7 (FSAL)
+            prop_fn(t, tn_new, yn, n, userdata);                // propagate yn forward
+        } else {
+            std::ptr::copy_nonoverlapping(y, yn, n);            // restore yn = y
+            tn_new = t_new;
+            prop_fn(t, tn_new, yn, n, userdata);                // no-op (t == tn_new)
         }
+
+        *result = PreconStepResult {
+            ok: ok_final as i32, dt, t, tn: tn_new, dtn: dtn_new, err, errlast: errlast_new,
+        };
+        0
     }
-
-    let y_sl  = std::slice::from_raw_parts(y,  n);
-    let yn_sl = std::slice::from_raw_parts(yn, n);
-    let err   = weaknorm_c64(&h.y_err, y_sl, yn_sl, rtol, atol);
-    let ok    = err <= 1.0;
-
-    // ── Lund PI step control ──────────────────────────────────────────────────
-    let (dtn_new, errlast_new, ok_final) =
-        stepcontrol_pi(ok, err, errlast_in, dt, safety, max_dt, min_dt);
-
-    // ── FSAL copy + prop!_maybe ───────────────────────────────────────────────
-    let tn_new;
-    if ok_final {
-        tn_new = t + dt;
-        std::ptr::copy_nonoverlapping(ks[6], ks[0], n);    // k1 ← k7 (FSAL)
-        prop_fn(t, tn_new, yn, n, userdata);                // propagate yn forward
-    } else {
-        std::ptr::copy_nonoverlapping(y, yn, n);            // restore yn = y
-        tn_new = t_new;
-        prop_fn(t, tn_new, yn, n, userdata);                // no-op (t == tn_new)
-    }
-
-    *result = PreconStepResult {
-        ok: ok_final as i32, dt, t, tn: tn_new, dtn: dtn_new, err, errlast: errlast_new,
-    };
-    0
 }

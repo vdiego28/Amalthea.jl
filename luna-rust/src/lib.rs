@@ -867,7 +867,7 @@ mod tests {
 
         // ── real mul! ─────────────────────────────────────────────────────────
         let mut data_real: Vec<f64> = (0..n_time * n_r)
-            .map(|i| ((i as f64).sin()))
+            .map(|i| (i as f64).sin())
             .collect();
         let ref_fwd = compute_ref_real(&data_real, scale_fwd);
         let ret = unsafe { qdht_ffi_mul_real(ptr, data_real.as_mut_ptr(), n_time, n_r) };
