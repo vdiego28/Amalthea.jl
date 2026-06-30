@@ -79,7 +79,7 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          workdir: "luna-rust"
+          workspaces: "luna-rust"
 
 
       - name: Run Rust unit tests

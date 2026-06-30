@@ -12,11 +12,15 @@
 //! - [x] Phase 0a — handle lifecycle + field set/get round-trip (this file).
 //! - [x] Phase 0b — FFTW binding (`fftw.rs`): dlopen the *same* libfftw3 Julia
 //!       uses + c2c/r2c/c2r plans, planner-lock-serialized. Round-trip tested.
-//!       Still TODO at integration: store the plans in `NativeSim` and match the
-//!       `FFTW.jl` planner flag for bit-parity (ARCHITECTURE §4.1).
-//! - [ ] Phase 0c — callback-free interaction-picture step against these
-//!       resident buffers, reproducing `precon_step_inner` / Julia `make_fbar!`
-//!       + `make_prop!` exactly, with a no-op RHS as the Phase 0 gate.
+//!       Plans stored in `NativeSim`; planner flag is a parameter for bit-parity.
+//! - [x] Phase 0c — callback-free interaction-picture step (`native_step` FFI);
+//!       reproduces `precon_step_inner` / Julia `make_fbar!` + `make_prop!` with
+//!       a no-op RHS. Gate: rel_solve < 1e-6 (zero-RHS bit-exact). COMPLETE.
+//! - [x] Phase 1 — mode-averaged + scalar Kerr (RealGrid): `rhs_mode_avg_real`,
+//!       `native_set_mode_avg_params`, `RustNativeStepper` Julia wiring.
+//!       Gate: single-step ≤1e-13, full-solve 5.8e-13. COMPLETE.
+//! - [ ] Phase 2 — Plasma + EnvGrid Kerr (`rhs_*_env`, cumtrapz ×3, current
+//!       assembly; `Kerr_env`/THG). Replaces `PlasmaCumtrapz` (Nonlinear.jl:161).
 
 use num_complex::Complex;
 use libc::{c_char, c_double, c_int, c_uint, size_t};

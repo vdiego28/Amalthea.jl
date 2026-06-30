@@ -25,17 +25,18 @@ agent workflow [`AGENTS.md`](AGENTS.md). New toggle: `LUNA_USE_RUST_NATIVE`.
 Phases (each independently shippable; gate = single-step ~1e-13 **and**
 full-`solve` ~1e-6 vs the Julia oracle — see TESTING.md §3 nondeterminism floor):
 
-- ⬜ **Phase 0 — Foundations.** `NativeSim` opaque handle; bind FFTW + plans
-  matching `FFTW.jl`; copy ω/window/linop arrays in; `init_native_sim` /
-  `free_native_sim` / `set_field` / `get_field`. Stepper runs callback-free
-  against resident buffers. Replaces the callback round-trip in
-  `luna-rust/src/ffi.rs:1002` (`precon_step_inner`) + `src/RK45.jl:309-319`.
-  *Gate:* set/get bit-exact round-trip; no-op RHS reproduces the Julia stepper.
-  Test `test/test_native_phase0.jl`.
-- ✅ **Phase 1 — Mode-averaged + Kerr (RealGrid).** Port `to_time!`/`to_freq!`,
-  Kerr, windows, `norm_mode_average`, exp-linop prop. Replaces
-  `TransModeAvg` (`src/NonlinearRHS.jl:531`) + Kerr (`src/Nonlinear.jl:81`).
-  *First fully-Rust `prop_capillary(:HE11, Kerr)`.* Test `test/test_native_phase1.jl`.
+- ✅ **Phase 0 — Foundations.** `NativeSim` opaque handle; FFTW binding;
+  `init_native_sim` / `free_native_sim` / `set_field` / `get_field`; callback-free
+  `native_step` (`RustNativeStepper` in `src/RK45.jl`). Replaces callback round-trip
+  in `luna-rust/src/ffi.rs:1002` + `src/RK45.jl:309-319`. Gate passed: set/get
+  bit-exact; no-op RHS rel_solve < 1e-6 (zero-RHS → bit-exact). 41928/41928 rust
+  group pass. Test `test/test_native_phase0.jl`. ✔
+- ✅ **Phase 1 — Mode-averaged + Kerr (RealGrid).** `rhs_mode_avg_real` +
+  `native_set_mode_avg_params`; ports `to_time!`/`to_freq!`, Kerr, windows,
+  `norm_mode_average`, exp-linop prop. Replaces `TransModeAvg`
+  (`src/NonlinearRHS.jl:531`) + Kerr (`src/Nonlinear.jl:81`). First fully-Rust
+  `prop_capillary(:HE11, Kerr)`. Gate passed: single-step ≤1e-13, full-solve
+  5.8e-13. Test `test/test_native_phase1.jl`. ✔
 - ⬜ **Phase 2 — Plasma + EnvGrid Kerr.** `cumtrapz` ×3 + current assembly
   (rate LUT already Rust); `Kerr_env`/thg. Replaces `PlasmaCumtrapz`
   (`src/Nonlinear.jl:161`). Test `test/test_native_plasma.jl`.
@@ -135,10 +136,13 @@ therefore not process-safe and may race on the shared HDF5 queue file.
 
 ## Informational / no action planned
 
-- ⚪ `deps/build.jl` sets `RUSTFLAGS=""`, which overrides `.cargo/config.toml`'s
-  `target-cpu=native` for the package-driven build. This is the intended portability
-  safeguard (the runtime dispatcher in `dispatch.rs` selects the ISA at runtime); the
-  native opt only applies to a manual `cargo build`.
+- ⚪ `deps/build.jl` forwards `ENV["RUSTFLAGS"]` (defaulting to `""` if unset),
+  which neutralizes `.cargo/config.toml`'s `target-cpu=native` for package-driven
+  builds. This is the intended portability safeguard (the runtime dispatcher in
+  `dispatch.rs` selects the ISA at runtime); native opt only applies to a manual
+  `cargo build`. **Note:** `actions-rust-lang/setup-rust-toolchain` sets
+  `RUSTFLAGS=-D warnings` in CI, which propagates through `deps/build.jl` — so
+  the package build runs under strict warnings (desired; keeps the Rust code clean).
 
 ## Done (recent)
 

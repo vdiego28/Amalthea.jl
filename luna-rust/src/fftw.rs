@@ -21,7 +21,9 @@
 //! this reason. `FFTW_UNALIGNED` is always set so the new-array execute variants
 //! are safe on arbitrary Rust `Vec` buffers.
 
-use std::ffi::{CStr, CString};
+use std::ffi::CString;
+#[cfg(unix)]
+use std::ffi::CStr;
 use std::path::Path;
 use std::sync::Mutex;
 use libc::{c_int, c_uint, c_void};

@@ -167,3 +167,100 @@ copy of the constant linear operator, sized once to `n` and never reallocated.
 - `LUNA_TEST_GROUP=rust julia --project test/runtests.jl` passes all 41,928 tests.
 **Next:** Phase 2 — Mode-Averaged + Kerr (EnvGrid) Native Port.
 
+---
+
+## 2026-06-30 — Review + CI fixes — Claude (opus-4-8)
+**Status:** complete
+**Did:** Reviewed Phases 0 and 1 for correctness (not just compilation); found and
+fixed two CI problems introduced by the prior agent; cleaned up scratch files;
+updated all docs; recorded the Phase 2 plan.
+**How:**
+- Ran `LUNA_TEST_GROUP=rust julia --project test/runtests.jl` locally: 41928/41928
+  pass. The native tests **execute** (not skip) — confirmed by the log line
+  `Full solve rel_solve: 5.828078880577008e-13`. Phase 0 (zero-RHS bit-exact) and
+  Phase 1 (mode-avg Kerr, 5.8e-13 full-solve) are numerically verified.
+- Diagnosed the CI failure: `fftw.rs:24` imported `CStr` unconditionally, but the
+  only use is inside `#[cfg(unix)]`. On Windows this is an unused import → hard
+  error under `-D warnings` (set by `actions-rust-lang/setup-rust-toolchain` and
+  propagated through `deps/build.jl:15`). **Fix:** split into
+  `use std::ffi::CString;` (unconditional) + `#[cfg(unix)] use std::ffi::CStr;`.
+  Verified clean: `RUSTFLAGS="-D warnings" cargo build --release` → no warnings.
+- Fixed CI warning (all jobs): `Swatinem/rust-cache@v2` was given `workdir:`
+  (invalid key → silently ignored → cache not scoped to `luna-rust/`). Changed to
+  `workspaces: "luna-rust"` per the action's actual API.
+- Removed 4 untracked scratch files left by prior agent: `list_prs.py`,
+  `merge_prs.py`, `plan.md`, `luna-rust/patch_native.rs`.
+- Updated `BACKLOG.md`: Phase 0 ✅, Phase 1 ✅; corrected the stale
+  `deps/build.jl` informational note (it forwards `ENV["RUSTFLAGS"]`, it does not
+  force `""`).
+- Updated `native.rs` build-status comment: marked 0b/0c/1 complete, added Phase 2
+  placeholder.
+**Decisions:**
+- Used `#[cfg(unix)] use std::ffi::CStr;` rather than full qualification at the
+  call site, which is the cleaner Rust idiom and mirrors how `libc` imports are
+  already gated in this file.
+- Did not fix the Windows `LoadLibraryW` / `native_set_fftw_plans` path beyond the
+  import — that code has never been exercised on Windows, and the gate is CI-green
+  after push, not a local guarantee.
+**Gotchas:**
+- `RUSTFLAGS="-D warnings"` reaches `deps/build.jl` through
+  `setup-rust-toolchain`; any new `#[cfg(unix)]-`only import in `fftw.rs` or
+  `native.rs` will break Windows CI the same way. Use `#[cfg(...)] use` guards
+  for any OS-gated items.
+- `Swatinem/rust-cache@v2`: valid key is `workspaces`, not `workdir`. Maps to
+  `<path>` OR `<path> -> <target-dir>` — using just `"luna-rust"` is correct
+  (target defaults to `luna-rust/target`).
+**Tests:**
+- `RUSTFLAGS="-D warnings" cargo build --release` → clean (0 warnings, 0 errors).
+- `LUNA_TEST_GROUP=rust julia --project test/runtests.jl` → 41928/41928.
+- Windows CI gate: pending push (will confirm from Actions).
+**Next (resume here):**
+
+### Phase 2 — Plasma + EnvGrid Kerr
+
+**Why Phase 2 next:** Phase 1 proved the RealGrid (carrier-field) RHS works
+end-to-end. Phase 2 adds (a) the EnvGrid (envelope) path — same structure but
+uses `fft`/`ifft` (c2c) instead of `rfft`/`irfft` (r2c/c2r) — and (b) the
+plasma `cumtrapz` ×3 + current assembly, which is the most expensive Julia
+operation not yet ported.
+
+**Scope:**
+1. **`rhs_mode_avg_env` in `native.rs`** — EnvGrid Kerr (`Kerr_env`, including
+   THG if present). Mirrors `rhs_mode_avg_real` but drives the c2c FFTW plans
+   already resident in `NativeSim`. `norm_mode_average` prefactor same formula;
+   `Kerr_env` = `n2_kerr * ε₀ * c * (ω₀/ω) * |E_t|² * E_t` (envelope version).
+2. **`rhs_plasma_env` in `native.rs`** — plasma current via 3× `cumtrapz`:
+   - `w(t)` = instantaneous ionization rate (call existing Rust PPT LUT via
+     `IonRatePPTAccel` — it is already callable from Rust-side).
+   - `ρ(t)` = `cumtrapz(w * (ρ_atm - ρ(t)))` (neutral-depletion ODE approx).
+   - `J_bound(t)` = `cumtrapz(w * ρ(t) * Ip / |E|²)` (bound current from
+     ionization energy loss).
+   - `J_free(t)` = `cumtrapz(e²/mₑ * ρ(t) * E_t)` (free-electron current).
+   Replaces `PlasmaCumtrapz` (`src/Nonlinear.jl:161`).
+3. **`native_set_env_params` FFI** — extends `init_native_sim` with envelope-mode
+   parameters: `ω₀`, `n2`, `n_atm` (neutral density), `Ip` (ionization potential).
+   Mirror the `native_set_mode_avg_params` pattern.
+4. **Julia wiring in `RK45.jl`** — extend `RustNativeStepper`'s dispatch to
+   choose `rhs_mode_avg_env` / `rhs_plasma_env` when `EnvGrid` is detected. The
+   toggle stays `LUNA_USE_RUST_NATIVE`.
+5. **Gate test `test/test_native_plasma.jl`** (`@testitem tags=[:rust]`, same
+   skip-guard pattern as `test_stepper_rust.jl`):
+   - EnvGrid Kerr single-step: `rel < 1e-13`.
+   - Plasma single-step: `rel < 1e-13` (FFTW-parity; cumtrapz is deterministic).
+   - Full `prop_capillary` with plasma: `rel < 1e-6` vs Julia oracle.
+
+**Key gotchas for Phase 2:**
+- `cumtrapz` is a causal trapezoid sum — **not** an FFT convolution. The Rust
+  implementation must walk `t = 0..N-1` sequentially (no parallelism here), using
+  `(f[i] + f[i+1]) / 2 * dt` exactly. Matches Julia `PhysData.cumtrapz` in
+  `src/PhysData.jl`.
+- The PPT rate LUT (`IonRatePPTAccel`) is already a Rust struct — Phase 2 calls
+  it from within `native.rs` instead of going through FFI. Access it via
+  `crate::ionization::IonRatePPTAccel` (check the public API in `ionization.rs`).
+- EnvGrid `ifft` (c2c backward, divide by N) is normalized at the *caller* — same
+  `copy_scale! = 1/N` convention as RealGrid. Do NOT fold it into the plan.
+- THG (`third_harmonic_generation`) is an optional param — check its presence via
+  the params struct, default to 0 if absent. The Julia side sets it to `nothing`
+  when not used.
+- No new `@cfunction` needed — this is still callback-free.
+
