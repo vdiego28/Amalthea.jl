@@ -7,6 +7,102 @@ import LinearAlgebra: mul!, ldiv!
 import NumericalIntegration: integrate, SimpsonEven
 import Luna: PhysData, Modes, Maths, Grid
 import Luna.PhysData: wlfreq
+import Logging: @warn
+import Luna.Utils: lunadir
+
+# ── Rust QDHT FFI (opt-in via LUNA_USE_RUST_QDHT=1) ──────────────────────────
+function _libluna_rust_path_rhs()
+    libname = if Sys.iswindows(); "luna_rust.dll"
+              elseif Sys.isapple(); "libluna_rust.dylib"
+              else; "libluna_rust.so"; end
+    joinpath(lunadir(), "luna-rust", "target", "release", libname)
+end
+const _LIBLUNA_RUST_RHS = _libluna_rust_path_rhs()
+
+mutable struct RustQdhtHandle
+    ptr::Ptr{Cvoid}
+    function RustQdhtHandle(ptr::Ptr{Cvoid})
+        h = new(ptr)
+        finalizer(h) do self
+            if self.ptr != C_NULL
+                ccall((:free_qdht_ffi, _LIBLUNA_RUST_RHS),
+                      Cvoid, (Ptr{Cvoid},), self.ptr)
+                self.ptr = C_NULL
+            end
+        end
+        return h
+    end
+end
+
+function _make_rust_qdht_handle(HT, n_time::Int)
+    get(ENV, "LUNA_USE_RUST_QDHT", "0") == "1" || return nothing
+    !isfile(_LIBLUNA_RUST_RHS) && (@warn "libluna_rust not found at $(_LIBLUNA_RUST_RHS); QDHT stays on Julia"; return nothing)
+    T_mat = Matrix{Float64}(HT.T)  # ensure Float64 col-major copy
+    n_r = HT.N
+    size(T_mat) == (n_r, n_r) || return nothing
+    scale_fwd = Float64(HT.scaleRK)
+    scale_inv = 1.0 / scale_fwd
+    T_mat_local = T_mat
+    ptr = GC.@preserve T_mat_local begin
+        ccall((:init_qdht_ffi, _LIBLUNA_RUST_RHS), Ptr{Cvoid},
+              (Ptr{Float64}, Csize_t, Float64, Float64, Csize_t),
+              pointer(T_mat_local), Csize_t(n_r), scale_fwd, scale_inv, Csize_t(n_time))
+    end
+    ptr == C_NULL && (@warn "init_qdht_ffi returned null; QDHT stays on Julia"; return nothing)
+    RustQdhtHandle(ptr)
+end
+
+# Type-stable dispatch helpers for mul!/ldiv! in the TransRadial hot path
+@inline function _qdht_mul!(A, rust_ht::Nothing, QDHT)
+    mul!(A, QDHT, A)
+end
+@inline function _qdht_ldiv!(A, rust_ht::Nothing, QDHT)
+    ldiv!(A, QDHT, A)
+end
+@inline function _qdht_mul!(A::Array{Float64,2}, h::RustQdhtHandle, _QDHT)
+    nto, nr = size(A)
+    A_local = A
+    GC.@preserve A_local begin
+        ret = ccall((:qdht_ffi_mul_real, _LIBLUNA_RUST_RHS), Cint,
+                    (Ptr{Cvoid}, Ptr{Float64}, Csize_t, Csize_t),
+                    h.ptr, pointer(A_local), Csize_t(nto), Csize_t(nr))
+    end
+    ret == 0 || error("qdht_ffi_mul_real returned $ret")
+    return A
+end
+@inline function _qdht_ldiv!(A::Array{Float64,2}, h::RustQdhtHandle, _QDHT)
+    nto, nr = size(A)
+    A_local = A
+    GC.@preserve A_local begin
+        ret = ccall((:qdht_ffi_ldiv_real, _LIBLUNA_RUST_RHS), Cint,
+                    (Ptr{Cvoid}, Ptr{Float64}, Csize_t, Csize_t),
+                    h.ptr, pointer(A_local), Csize_t(nto), Csize_t(nr))
+    end
+    ret == 0 || error("qdht_ffi_ldiv_real returned $ret")
+    return A
+end
+@inline function _qdht_mul!(A::Array{ComplexF64,2}, h::RustQdhtHandle, _QDHT)
+    nto, nr = size(A)
+    A_local = A
+    GC.@preserve A_local begin
+        ret = ccall((:qdht_ffi_mul_cplx, _LIBLUNA_RUST_RHS), Cint,
+                    (Ptr{Cvoid}, Ptr{Float64}, Csize_t, Csize_t),
+                    h.ptr, Ptr{Float64}(pointer(A_local)), Csize_t(nto), Csize_t(nr))
+    end
+    ret == 0 || error("qdht_ffi_mul_cplx returned $ret")
+    return A
+end
+@inline function _qdht_ldiv!(A::Array{ComplexF64,2}, h::RustQdhtHandle, _QDHT)
+    nto, nr = size(A)
+    A_local = A
+    GC.@preserve A_local begin
+        ret = ccall((:qdht_ffi_ldiv_cplx, _LIBLUNA_RUST_RHS), Cint,
+                    (Ptr{Cvoid}, Ptr{Float64}, Csize_t, Csize_t),
+                    h.ptr, Ptr{Float64}(pointer(A_local)), Csize_t(nto), Csize_t(nr))
+    end
+    ret == 0 || error("qdht_ffi_ldiv_cplx returned $ret")
+    return A
+end
 
 """
     to_time!(Ato, Aω, Aωo, IFTplan)
@@ -491,7 +587,7 @@ Transform E(ω) -> Pₙₗ(ω) for radially symmetric free-space propagation.
 - `Et_nl`: preallocated buffer for the combined field + noise, passed to `Et_to_Pt!`. The
   propagating field (`Eto`) is never modified.
 """
-struct TransRadial{TT, HTT, FTT, nT, rT, gT, dT, iT, eT, nlT}
+struct TransRadial{TT, HTT, FTT, nT, rT, gT, dT, iT, eT, nlT, rhT}
     QDHT::HTT # Hankel transform (space to k-space)
     FT::FTT # Fourier transform (time to frequency)
     normfun::nT # Function which returns normalisation factor
@@ -505,6 +601,7 @@ struct TransRadial{TT, HTT, FTT, nT, rT, gT, dT, iT, eT, nlT}
     idcs::iT # CartesianIndices for Et_to_Pt! to iterate over
     Et_noise::eT # time-domain noise for modified shot-noise model, or nothing
     Et_nl::nlT # buffer for field+noise passed to Et_to_Pt!, or nothing
+    rust_ht::rhT # RustQdhtHandle or Nothing
 end
 
 function show(io::IO, t::TransRadial)
@@ -545,7 +642,8 @@ function TransRadial(TT, grid, HT, FT, responses, densityfun, normfun; noise_fie
         Et_noise = nothing
         Et_nl = nothing
     end
-    TransRadial(HT, FT, normfun, responses, grid, densityfun, Pto, Eto, Eωo, Pωo, idcs, Et_noise, Et_nl)
+    rust_ht = _make_rust_qdht_handle(HT, length(grid.to))
+    TransRadial(HT, FT, normfun, responses, grid, densityfun, Pto, Eto, Eωo, Pωo, idcs, Et_noise, Et_nl, rust_ht)
 end
 
 function TransRadial(grid::Grid.RealGrid, args...; kwargs...)
@@ -564,7 +662,7 @@ place the result in `nl`
 """
 function (t::TransRadial)(nl, Eω, z)
     to_time!(t.Eto, Eω, t.Eωo, inv(t.FT)) # transform ω -> t
-    ldiv!(t.Eto, t.QDHT, t.Eto) # transform k -> r
+    _qdht_ldiv!(t.Eto, t.rust_ht, t.QDHT)  # transform k -> r
     # Modified shot-noise: compute field+noise in separate buffer (Et_nl) so the
     # propagating field (Eto) is never contaminated.
     if !isnothing(t.Et_noise)
@@ -574,7 +672,7 @@ function (t::TransRadial)(nl, Eω, z)
         Et_to_Pt!(t.Pto, t.Eto, t.resp, t.densityfun(z), t.idcs)
     end
     @. t.Pto *= t.grid.towin # apodisation
-    mul!(t.Pto, t.QDHT, t.Pto) # transform r -> k
+    _qdht_mul!(t.Pto, t.rust_ht, t.QDHT)   # transform r -> k
     to_freq!(nl, t.Pωo, t.Pto, t.FT) # transform t -> ω
     nl .*= t.grid.ωwin .* (-im.*t.grid.ω)./(2 .* t.normfun(z))
 end

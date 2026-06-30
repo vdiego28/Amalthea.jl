@@ -43,8 +43,18 @@ Remaining kernels to wire (same pattern, in this order):
     values). Equivalence is bitwise (0.0 rel error) — same IEEE 754 formula + same
     Float64 inputs. Model `:full` (`sqrt(εco-nwg)`) and `:reduced` (`1+(εco-1)/2-nwg`)
     both wired. Tests: `test/test_dispersion_rust.jl` (second `@testitem`).
-4. ⬜ **QDHT** (`diffraction.rs` `Qdht`) — toggle `LUNA_USE_RUST_QDHT`, wire into
-   `NonlinearRHS.jl` (`TransRadial`/`TransFree`).
+4. ✅ **QDHT batch transform** — toggle `LUNA_USE_RUST_QDHT`, `init_qdht_ffi` /
+   `free_qdht_ffi` / `qdht_ffi_mul_real` / `qdht_ffi_ldiv_real` / `qdht_ffi_mul_cplx` /
+   `qdht_ffi_ldiv_cplx` exported. Wired into `TransRadial` in `NonlinearRHS.jl` via
+   type-stable `_qdht_mul!` / `_qdht_ldiv!` dispatch. Stores Julia's T matrix
+   (transposed to row-major at init); per-call transform uses Rayon parallel
+   row-vector dot products with pre-allocated scratch (4×n_r×n_time), avoiding
+   the two `permutedims` allocations that Julia's dim=2 QDHT path incurs.
+   Handles both `Float64` (RealGrid) and `ComplexF64` interleaved (EnvGrid).
+   Equivalence: ~1e-13 relative error vs Julia BLAS path (summation order differs).
+   Tests: `test/test_qdht_rust.jl` (`@testitem tags=[:rust]`).
+   Follow-ups: wire `TransFree` (2D Cartesian FFT, different transform type — stays Julia);
+   consider cblas/openblas DGEMM binding for peak throughput.
 5. ⬜ **RK45 stepper** (`stepper.rs` `Dopri5Stepper`) — largest scope; requires exporting
    a callback-based or fixed-array step loop through FFI.
 

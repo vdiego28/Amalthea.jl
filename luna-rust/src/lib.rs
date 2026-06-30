@@ -812,6 +812,185 @@ mod tests {
         let _ = (unm_he11, radius); // suppress unused-variable warnings
     }
 
+    /// Verify the QDHT FFI batch-transform functions against a direct reference implementation.
+    ///
+    /// Uses a small arbitrary symmetric matrix as T (not a true QDHT matrix, but sufficient
+    /// to exercise all code paths).  Checks: real mul!, real ldiv!, complex mul!, complex ldiv!,
+    /// null-pointer guards, n_r mismatch guard, and that free(null) is a no-op.
+    #[test]
+    fn test_qdht_ffi() {
+        use super::ffi::{
+            init_qdht_ffi, free_qdht_ffi,
+            qdht_ffi_mul_real, qdht_ffi_ldiv_real,
+            qdht_ffi_mul_cplx, qdht_ffi_ldiv_cplx,
+        };
+
+        let n_r    = 8_usize;
+        let n_time = 16_usize;
+
+        // Build a symmetric n_r×n_r test matrix (col-major Julia layout: T[r,s] at r + n_r*s)
+        let mut t_col = vec![0.0f64; n_r * n_r];
+        for r in 0..n_r {
+            for s in 0..n_r {
+                let val = 1.0 / (1.0 + ((r as f64) - (s as f64)).powi(2));
+                t_col[r + n_r * s] = val;
+            }
+        }
+
+        let scale_fwd = 2.5_f64;
+        let scale_inv = 1.0 / scale_fwd;
+
+        // ── initialise handle ──────────────────────────────────────────────────
+        let ptr = unsafe {
+            init_qdht_ffi(t_col.as_ptr(), n_r, scale_fwd, scale_inv, n_time)
+        };
+        assert!(!ptr.is_null(), "init_qdht_ffi returned null");
+
+        // ── reference: B[t,r] = scale × Σ_s T[r,s] × A[t,s] ─────────────────
+        // T[r,s] = t_col[r + n_r*s]  (Julia col-major)
+        // data layout: col-major (n_time, n_r): data[t + n_time*r]
+        let compute_ref_real = |data: &[f64], scale: f64| -> Vec<f64> {
+            let mut out = vec![0.0f64; n_time * n_r];
+            for r in 0..n_r {
+                for t in 0..n_time {
+                    let mut sum = 0.0;
+                    for s in 0..n_r {
+                        sum += t_col[r + n_r * s] * data[t + n_time * s];
+                    }
+                    out[t + n_time * r] = scale * sum;
+                }
+            }
+            out
+        };
+
+        // ── real mul! ─────────────────────────────────────────────────────────
+        let mut data_real: Vec<f64> = (0..n_time * n_r)
+            .map(|i| ((i as f64).sin()))
+            .collect();
+        let ref_fwd = compute_ref_real(&data_real, scale_fwd);
+        let ret = unsafe { qdht_ffi_mul_real(ptr, data_real.as_mut_ptr(), n_time, n_r) };
+        assert_eq!(ret, 0, "qdht_ffi_mul_real returned {}", ret);
+        for (i, (&got, &exp)) in data_real.iter().zip(ref_fwd.iter()).enumerate() {
+            let diff = (got - exp).abs();
+            assert!(diff < 1e-14,
+                "mul_real mismatch at i={}: got={} exp={} diff={}", i, got, exp, diff);
+        }
+
+        // ── real ldiv! ────────────────────────────────────────────────────────
+        let data_orig: Vec<f64> = (0..n_time * n_r).map(|i| (i as f64).cos()).collect();
+        let ref_inv = compute_ref_real(&data_orig, scale_inv);
+        let mut data_inv = data_orig.clone();
+        let ret2 = unsafe { qdht_ffi_ldiv_real(ptr, data_inv.as_mut_ptr(), n_time, n_r) };
+        assert_eq!(ret2, 0, "qdht_ffi_ldiv_real returned {}", ret2);
+        for (i, (&got, &exp)) in data_inv.iter().zip(ref_inv.iter()).enumerate() {
+            let diff = (got - exp).abs();
+            assert!(diff < 1e-14,
+                "ldiv_real mismatch at i={}: got={} exp={} diff={}", i, got, exp, diff);
+        }
+
+        // ── complex mul! ─────────────────────────────────────────────────────
+        // Interleaved layout: data[2*t + 2*n_time*r] = Re, data[2*t+1 + ...] = Im
+        let mut data_cplx: Vec<f64> = (0..2 * n_time * n_r)
+            .map(|i| (i as f64) * 0.1)
+            .collect();
+
+        // Reference for complex mul! (same T, applied to re and im separately)
+        let mut ref_cre = vec![0.0f64; n_time * n_r];
+        let mut ref_cim = vec![0.0f64; n_time * n_r];
+        for r in 0..n_r {
+            for t in 0..n_time {
+                let mut sr = 0.0f64; let mut si = 0.0f64;
+                for s in 0..n_r {
+                    let tv = t_col[r + n_r * s];
+                    sr += tv * data_cplx[2 * t     + 2 * n_time * s];
+                    si += tv * data_cplx[2 * t + 1 + 2 * n_time * s];
+                }
+                ref_cre[t + n_time * r] = scale_fwd * sr;
+                ref_cim[t + n_time * r] = scale_fwd * si;
+            }
+        }
+
+        let ret3 = unsafe { qdht_ffi_mul_cplx(ptr, data_cplx.as_mut_ptr(), n_time, n_r) };
+        assert_eq!(ret3, 0, "qdht_ffi_mul_cplx returned {}", ret3);
+        for r in 0..n_r {
+            for t in 0..n_time {
+                let got_re = data_cplx[2 * t     + 2 * n_time * r];
+                let got_im = data_cplx[2 * t + 1 + 2 * n_time * r];
+                let exp_re = ref_cre[t + n_time * r];
+                let exp_im = ref_cim[t + n_time * r];
+                assert!((got_re - exp_re).abs() < 1e-14,
+                    "cplx mul! Re mismatch t={} r={}: got={} exp={}", t, r, got_re, exp_re);
+                assert!((got_im - exp_im).abs() < 1e-14,
+                    "cplx mul! Im mismatch t={} r={}: got={} exp={}", t, r, got_im, exp_im);
+            }
+        }
+
+        // ── complex ldiv! ────────────────────────────────────────────────────
+        let data_cplx_orig = data_cplx.clone();  // already transformed by mul_cplx
+        let mut data_cplx2: Vec<f64> = (0..2 * n_time * n_r)
+            .map(|i| (i as f64) * 0.05)
+            .collect();
+        let ret4 = unsafe { qdht_ffi_ldiv_cplx(ptr, data_cplx2.as_mut_ptr(), n_time, n_r) };
+        assert_eq!(ret4, 0, "qdht_ffi_ldiv_cplx returned {}", ret4);
+        // Verify ldiv uses scale_inv (not scale_fwd): check against reference with scale_inv
+        let mut ref_cre_inv = vec![0.0f64; n_time * n_r];
+        let mut ref_cim_inv = vec![0.0f64; n_time * n_r];
+        let data_cplx2_orig: Vec<f64> = (0..2 * n_time * n_r).map(|i| (i as f64) * 0.05).collect();
+        for r in 0..n_r {
+            for t in 0..n_time {
+                let mut sr = 0.0f64; let mut si = 0.0f64;
+                for s in 0..n_r {
+                    let tv = t_col[r + n_r * s];
+                    sr += tv * data_cplx2_orig[2 * t     + 2 * n_time * s];
+                    si += tv * data_cplx2_orig[2 * t + 1 + 2 * n_time * s];
+                }
+                ref_cre_inv[t + n_time * r] = scale_inv * sr;
+                ref_cim_inv[t + n_time * r] = scale_inv * si;
+            }
+        }
+        for r in 0..n_r {
+            for t in 0..n_time {
+                let got_re = data_cplx2[2 * t     + 2 * n_time * r];
+                let got_im = data_cplx2[2 * t + 1 + 2 * n_time * r];
+                let exp_re = ref_cre_inv[t + n_time * r];
+                let exp_im = ref_cim_inv[t + n_time * r];
+                assert!((got_re - exp_re).abs() < 1e-14,
+                    "cplx ldiv! Re mismatch t={} r={}: got={} exp={}", t, r, got_re, exp_re);
+                assert!((got_im - exp_im).abs() < 1e-14,
+                    "cplx ldiv! Im mismatch t={} r={}: got={} exp={}", t, r, got_im, exp_im);
+            }
+        }
+
+        // ── null-pointer guards ───────────────────────────────────────────────
+        let mut dummy = vec![0.0f64; n_time * n_r];
+        let ret_n1 = unsafe { qdht_ffi_mul_real(std::ptr::null_mut(), dummy.as_mut_ptr(), n_time, n_r) };
+        assert_eq!(ret_n1, -1, "null ptr must return -1");
+        let ret_n2 = unsafe { qdht_ffi_mul_real(ptr, std::ptr::null_mut(), n_time, n_r) };
+        assert_eq!(ret_n2, -1, "null data must return -1");
+        let ret_n3 = unsafe { qdht_ffi_ldiv_real(std::ptr::null_mut(), dummy.as_mut_ptr(), n_time, n_r) };
+        assert_eq!(ret_n3, -1);
+        let ret_n4 = unsafe { qdht_ffi_mul_cplx(std::ptr::null_mut(), dummy.as_mut_ptr(), n_time, n_r) };
+        assert_eq!(ret_n4, -1);
+        let ret_n5 = unsafe { qdht_ffi_ldiv_cplx(ptr, std::ptr::null_mut(), n_time, n_r) };
+        assert_eq!(ret_n5, -1);
+
+        // ── n_r mismatch → -1 ────────────────────────────────────────────────
+        let ret_mm = unsafe { qdht_ffi_mul_real(ptr, dummy.as_mut_ptr(), n_time, n_r + 1) };
+        assert_eq!(ret_mm, -1, "n_r mismatch must return -1");
+
+        // ── init guards ──────────────────────────────────────────────────────
+        let null_ptr = unsafe { init_qdht_ffi(std::ptr::null(), n_r, scale_fwd, scale_inv, n_time) };
+        assert!(null_ptr.is_null(), "null t_matrix must return null");
+        let zero_ptr = unsafe { init_qdht_ffi(t_col.as_ptr(), 0, scale_fwd, scale_inv, n_time) };
+        assert!(zero_ptr.is_null(), "n_r=0 must return null");
+
+        // ── free(null) is a no-op ─────────────────────────────────────────────
+        unsafe { free_qdht_ffi(std::ptr::null_mut()); }
+
+        unsafe { free_qdht_ffi(ptr); }
+        let _ = data_cplx_orig; // suppress unused warning
+    }
+
     #[test]
     fn test_gpu_ionization_numerical_equivalence() {
         if let Err(err) = crate::cuda::init_gpu_context() {

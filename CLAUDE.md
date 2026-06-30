@@ -132,6 +132,18 @@ Each Rust kernel follows this pattern for progressive migration:
   per-ω `neff(mode, ω, ...)` overload) — the Rust implementation must match this; (d) equivalence
   is bitwise (exact IEEE 754 match, 0.0 relative error) since both paths use identical Float64
   inputs for the same `sqrt(εco-nwg)` formula. Model codes: 0→`:full`, 1→`:reduced`.
+- QDHT batch transform (`LUNA_USE_RUST_QDHT=1`) — `src/NonlinearRHS.jl`, `test/test_qdht_rust.jl`.
+  Replaces Julia's `mul!(A, Q, A)` / `ldiv!(A, Q, A)` in the `TransRadial` hot path (called
+  twice per RHS evaluation in every RK45 stage). Key wrinkles: (a) Julia's `Hankel.QDHT` uses
+  a distinct T-matrix normalization from the Rust `Qdht`; the FFI receives Julia's T matrix
+  (column-major, n_r×n_r) and transposes it to row-major at `init_qdht_ffi` time — the same
+  bit-pattern T is then used at runtime, giving ~1e-13 relative agreement (not bitwise: BLAS
+  summation order differs from Rayon sequential per row); (b) `TransRadial` gains a new type
+  parameter `rhT` (`Nothing` or `RustQdhtHandle`) — hot-path dispatch is via type-stable
+  `_qdht_mul!` / `_qdht_ldiv!` helpers (no `isa` check at runtime); (c) handles both
+  `Float64` (RealGrid) and `ComplexF64` interleaved (EnvGrid) array layouts; (d) pre-allocated
+  scratch (4×n_r×n_time f64) avoids the two `permutedims` allocations Julia's dim=2 path incurs;
+  (e) `TransFree` (2D Cartesian, different transform type) stays on Julia.
 
 See `BACKLOG.md` for remaining kernels and follow-ups.
 

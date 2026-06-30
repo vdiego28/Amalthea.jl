@@ -4,6 +4,325 @@ use crate::ionization::PptIonizationRate;
 use crate::raman::{RamanOscillator, TimeDomainRamanSolver};
 use crate::dispersion::{ZeisbergerNeff, MarcatiliNeff};
 
+// ─── QDHT batch transform FFI ─────────────────────────────────────────────────
+
+/// Batch Hankel transform handle storing Julia's pre-computed T matrix.
+///
+/// Julia's `Hankel.QDHT` struct stores a real symmetric `T[n_r, n_r]` matrix (column-major)
+/// and a scalar `scaleRK`. The forward transform `mul!(Y, Q, A)` computes
+/// `Y = T × A * scaleRK` (applied along the r-axis of the 2-D `(n_time, n_r)` array);
+/// the inverse `ldiv!(Y, Q, A)` uses `1/scaleRK` instead.
+///
+/// We store `T` transposed to row-major so that per-row dot products are cache-friendly,
+/// and pre-allocate scratch space to avoid per-call heap allocation.
+pub struct QdhtFfiHandle {
+    t_row_major: Vec<f64>,  // T[r, s] stored row-major: index = r*n_r + s
+    n_r: usize,
+    scale_fwd: f64,         // scaleRK for mul!  (forward, r→k)
+    scale_inv: f64,         // 1/scaleRK for ldiv! (inverse, k→r)
+    scratch: Vec<f64>,      // 4 × n_r × capacity working space (a_re, a_im, b_re, b_im)
+    capacity: usize,        // scratch capacity in n_time units
+}
+
+impl QdhtFfiHandle {
+    /// Construct from Julia's column-major T matrix and scale factors.
+    pub fn new(t_col_major: &[f64], n_r: usize, scale_fwd: f64, scale_inv: f64,
+               n_time_hint: usize) -> Self {
+        assert_eq!(t_col_major.len(), n_r * n_r);
+        let mut t_row_major = vec![0.0f64; n_r * n_r];
+        for r in 0..n_r {
+            for s in 0..n_r {
+                // Julia col-major: T[r, s] = t_col_major[r + n_r * s]
+                t_row_major[r * n_r + s] = t_col_major[r + n_r * s];
+            }
+        }
+        let capacity = n_time_hint.max(1);
+        let scratch = vec![0.0f64; 4 * n_r * capacity];
+        QdhtFfiHandle { t_row_major, n_r, scale_fwd, scale_inv, scratch, capacity }
+    }
+
+    fn ensure_capacity(&mut self, n_time: usize) {
+        if n_time > self.capacity {
+            self.capacity = n_time;
+            self.scratch.resize(4 * self.n_r * self.capacity, 0.0);
+        }
+    }
+
+    /// Apply batch real transform in-place.
+    ///
+    /// `data` is a Julia column-major `(n_time, n_r)` Float64 array:
+    /// `data[t + n_time * r]` = A[t, r].  After the call, A ← scale × T × A
+    /// (where multiplication is along the r axis, independently for each time t).
+    pub fn apply_real(&mut self, data: &mut [f64], n_time: usize, scale: f64) {
+        let n_r = self.n_r;
+        self.ensure_capacity(n_time);
+        let block = n_r * n_time;
+
+        // Step 1: Transpose data (col-major n_time×n_r) → scratch[0..block] (row-major A_rm)
+        // A_rm[t * n_r + s] = data[t + n_time * s]
+        for s in 0..n_r {
+            let col_start = n_time * s;
+            for t in 0..n_time {
+                self.scratch[t * n_r + s] = data[t + col_start];
+            }
+        }
+
+        // Step 2: B_rm = T_rm @ A_rm (parallel over t)
+        // scratch[block + t*n_r + r] = scale × dot(T_rm[r,:], scratch[t*n_r..])
+        {
+            let t_rm = self.t_row_major.as_slice();
+            let (a_rm, b_rm) = self.scratch[..2 * block].split_at_mut(block);
+            use rayon::prelude::*;
+            b_rm.par_chunks_mut(n_r).zip(a_rm.par_chunks(n_r)).for_each(|(b_row, a_row)| {
+                for r in 0..n_r {
+                    let t_row = &t_rm[r * n_r .. (r + 1) * n_r];
+                    let mut sum = 0.0f64;
+                    for s in 0..n_r {
+                        sum += t_row[s] * a_row[s];
+                    }
+                    b_row[r] = scale * sum;
+                }
+            });
+        }
+
+        // Step 3: Transpose scratch[block..2*block] (row-major B_rm) → data (col-major)
+        // data[t + n_time * r] = scratch[block + t * n_r + r]
+        for r in 0..n_r {
+            let col_start = n_time * r;
+            for t in 0..n_time {
+                data[t + col_start] = self.scratch[block + t * n_r + r];
+            }
+        }
+    }
+
+    /// Apply batch complex transform in-place on interleaved data.
+    ///
+    /// `data` is a Julia column-major `(n_time, n_r)` ComplexF64 array viewed as
+    /// `f64` (2 × n_time × n_r elements):
+    ///   Re(A[t, r]) = `data[2*t     + 2*n_time*r]`
+    ///   Im(A[t, r]) = `data[2*t + 1 + 2*n_time*r]`
+    pub fn apply_cplx(&mut self, data: &mut [f64], n_time: usize, scale: f64) {
+        let n_r = self.n_r;
+        self.ensure_capacity(n_time);
+        let block = n_r * n_time;
+
+        // Step 1: De-interleave + transpose into A_rm_re and A_rm_im
+        // scratch[0..block]         = A_rm_re  (real parts,  row-major)
+        // scratch[block..2*block]   = A_rm_im  (imag parts,  row-major)
+        for s in 0..n_r {
+            let col_f = 2 * n_time * s;  // float index of start of column s
+            for t in 0..n_time {
+                self.scratch[t * n_r + s]         = data[2 * t     + col_f];
+                self.scratch[block + t * n_r + s] = data[2 * t + 1 + col_f];
+            }
+        }
+
+        // Step 2: B_rm_re / B_rm_im = T_rm @ A_rm_re / A_rm_im (parallel over t)
+        // scratch[2*block..3*block] = B_rm_re
+        // scratch[3*block..4*block] = B_rm_im
+        {
+            let t_rm = self.t_row_major.as_slice();
+            let (lo, hi) = self.scratch[..4 * block].split_at_mut(2 * block);
+            let (a_re, a_im) = lo.split_at_mut(block);
+            let (b_re, b_im) = hi.split_at_mut(block);
+            use rayon::prelude::*;
+            b_re.par_chunks_mut(n_r)
+                .zip(b_im.par_chunks_mut(n_r))
+                .zip(a_re.par_chunks(n_r))
+                .zip(a_im.par_chunks(n_r))
+                .for_each(|(((br, bi), ar), ai)| {
+                    for r in 0..n_r {
+                        let t_row = &t_rm[r * n_r .. (r + 1) * n_r];
+                        let mut sr = 0.0f64;
+                        let mut si = 0.0f64;
+                        for s in 0..n_r {
+                            let tv = t_row[s];
+                            sr += tv * ar[s];
+                            si += tv * ai[s];
+                        }
+                        br[r] = scale * sr;
+                        bi[r] = scale * si;
+                    }
+                });
+        }
+
+        // Step 3: Transpose + re-interleave B_rm_re/im → data (col-major ComplexF64)
+        for r in 0..n_r {
+            let col_f = 2 * n_time * r;
+            for t in 0..n_time {
+                data[2 * t     + col_f] = self.scratch[2 * block + t * n_r + r];
+                data[2 * t + 1 + col_f] = self.scratch[3 * block + t * n_r + r];
+            }
+        }
+    }
+}
+
+/// Initialise a QDHT batch-transform handle from Julia's pre-computed T matrix.
+///
+/// # Arguments
+/// * `t_matrix`     – Julia column-major `T[n_r, n_r]` matrix (read-only)
+/// * `n_r`          – number of radial grid points
+/// * `scale_fwd`    – `scaleRK` from `Hankel.QDHT` (used by `mul!`)
+/// * `scale_inv`    – `1/scaleRK` from `Hankel.QDHT` (used by `ldiv!`)
+/// * `n_time_hint`  – expected `n_time`; scratch buffer pre-allocated to this size
+///
+/// Returns a heap-allocated `*mut QdhtFfiHandle`, or null on error (null `t_matrix`,
+/// `n_r == 0`, or internal panic).  Free with [`free_qdht_ffi`].
+///
+/// # Safety
+/// `t_matrix` must be non-null and valid for `n_r * n_r` reads for the duration of this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn init_qdht_ffi(
+    t_matrix:    *const c_double,
+    n_r:         size_t,
+    scale_fwd:   c_double,
+    scale_inv:   c_double,
+    n_time_hint: size_t,
+) -> *mut QdhtFfiHandle {
+    if t_matrix.is_null() || n_r == 0 {
+        return std::ptr::null_mut();
+    }
+    let t_sl = unsafe { std::slice::from_raw_parts(t_matrix, n_r * n_r) };
+    let result = std::panic::catch_unwind(|| {
+        QdhtFfiHandle::new(t_sl, n_r, scale_fwd, scale_inv, n_time_hint)
+    });
+    match result {
+        Ok(h) => Box::into_raw(Box::new(h)),
+        Err(e) => {
+            eprintln!("init_qdht_ffi: panic: {:?}", e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Free a `QdhtFfiHandle`. Passing null is a no-op.
+///
+/// # Safety
+/// `ptr` must be a valid, non-aliased pointer from [`init_qdht_ffi`] that has not been freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn free_qdht_ffi(ptr: *mut QdhtFfiHandle) {
+    if !ptr.is_null() {
+        unsafe { drop(Box::from_raw(ptr)); }
+    }
+}
+
+/// Batch forward Hankel transform (`mul!`) for a real-valued Julia array.
+///
+/// Applies `A[:,r] ← scaleRK × T × A[:,r]` in-place on the Julia column-major
+/// `(n_time, n_r)` Float64 array pointed to by `data`.
+///
+/// # Returns
+/// * `0`  success
+/// * `-1` null pointer or `n_r` mismatch
+/// * `-2` internal panic
+///
+/// # Safety
+/// `data` must point to a live, aligned `f64[n_time * n_r]` array.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn qdht_ffi_mul_real(
+    ptr:    *mut QdhtFfiHandle,
+    data:   *mut c_double,
+    n_time: size_t,
+    n_r:    size_t,
+) -> c_int {
+    if ptr.is_null() || data.is_null() { return -1; }
+    let handle = unsafe { &mut *ptr };
+    if n_r != handle.n_r { return -1; }
+    let data_sl = unsafe { std::slice::from_raw_parts_mut(data, n_time * n_r) };
+    let scale = handle.scale_fwd;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        handle.apply_real(data_sl, n_time, scale);
+    }));
+    match result {
+        Ok(()) => 0,
+        Err(e) => { eprintln!("qdht_ffi_mul_real: panic: {:?}", e); -2 }
+    }
+}
+
+/// Batch inverse Hankel transform (`ldiv!`) for a real-valued Julia array.
+///
+/// Applies `A[:,r] ← (1/scaleRK) × T × A[:,r]` in-place.
+///
+/// # Safety
+/// Same as [`qdht_ffi_mul_real`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn qdht_ffi_ldiv_real(
+    ptr:    *mut QdhtFfiHandle,
+    data:   *mut c_double,
+    n_time: size_t,
+    n_r:    size_t,
+) -> c_int {
+    if ptr.is_null() || data.is_null() { return -1; }
+    let handle = unsafe { &mut *ptr };
+    if n_r != handle.n_r { return -1; }
+    let data_sl = unsafe { std::slice::from_raw_parts_mut(data, n_time * n_r) };
+    let scale = handle.scale_inv;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        handle.apply_real(data_sl, n_time, scale);
+    }));
+    match result {
+        Ok(()) => 0,
+        Err(e) => { eprintln!("qdht_ffi_ldiv_real: panic: {:?}", e); -2 }
+    }
+}
+
+/// Batch forward Hankel transform (`mul!`) for an interleaved complex Julia array.
+///
+/// `data` is a Julia column-major `(n_time, n_r)` ComplexF64 array accessed as `f64`:
+///   `data[2*t     + 2*n_time*r]` = Re(A[t, r])
+///   `data[2*t + 1 + 2*n_time*r]` = Im(A[t, r])
+///
+/// # Returns
+/// `0` success, `-1` null / mismatch, `-2` panic.
+///
+/// # Safety
+/// `data` must point to a live `f64[2 * n_time * n_r]` buffer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn qdht_ffi_mul_cplx(
+    ptr:    *mut QdhtFfiHandle,
+    data:   *mut c_double,
+    n_time: size_t,
+    n_r:    size_t,
+) -> c_int {
+    if ptr.is_null() || data.is_null() { return -1; }
+    let handle = unsafe { &mut *ptr };
+    if n_r != handle.n_r { return -1; }
+    let data_sl = unsafe { std::slice::from_raw_parts_mut(data, 2 * n_time * n_r) };
+    let scale = handle.scale_fwd;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        handle.apply_cplx(data_sl, n_time, scale);
+    }));
+    match result {
+        Ok(()) => 0,
+        Err(e) => { eprintln!("qdht_ffi_mul_cplx: panic: {:?}", e); -2 }
+    }
+}
+
+/// Batch inverse Hankel transform (`ldiv!`) for an interleaved complex Julia array.
+///
+/// # Safety
+/// Same as [`qdht_ffi_mul_cplx`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn qdht_ffi_ldiv_cplx(
+    ptr:    *mut QdhtFfiHandle,
+    data:   *mut c_double,
+    n_time: size_t,
+    n_r:    size_t,
+) -> c_int {
+    if ptr.is_null() || data.is_null() { return -1; }
+    let handle = unsafe { &mut *ptr };
+    if n_r != handle.n_r { return -1; }
+    let data_sl = unsafe { std::slice::from_raw_parts_mut(data, 2 * n_time * n_r) };
+    let scale = handle.scale_inv;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        handle.apply_cplx(data_sl, n_time, scale);
+    }));
+    match result {
+        Ok(()) => 0,
+        Err(e) => { eprintln!("qdht_ffi_ldiv_cplx: panic: {:?}", e); -2 }
+    }
+}
+
 /// In-place scales a complex double-precision array by a real factor.
 /// This verifies zero-copy FFI communication between Julia and Rust.
 ///
