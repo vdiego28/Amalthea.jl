@@ -447,3 +447,144 @@ non-endpoint `ti`.
 into the resident RHS; replaces `RamanPolar`, `src/Nonlinear.jl:357`). See
 `BACKLOG.md`.
 
+## 2026-07-01 — Test-infra fix — Phase 2b plasma test was silently skipped in CI — Claude (sonnet-5)
+**Status:** complete
+**Did:** Fixed `test/test_native_phase2.jl`'s Phase 2b (RealGrid + plasma)
+sub-test, which was `@test_skip`-ing itself on every plain `LUNA_TEST_GROUP=rust`
+CI run (no failure shown, just silently absent from the pass count) because it
+required the ambient env var `LUNA_USE_RUST_IONISATION=1` to be set externally,
+which CI never did. Flagged by the user reviewing the "1 broken" in every test
+summary this session — a legitimate "is this phase actually verified
+continuously, or only when someone remembers to set a flag by hand?" question.
+**How:** The native plasma RHS needs a Rust-backed ionization-rate handle,
+which only gets wired up if `LUNA_USE_RUST_IONISATION=1` is set *before* the
+ionization LUT is constructed inside `Interface.prop_capillary_args` (deep in
+`Ionisation.IonRatePPTAccel`'s constructor) — not merely around the later
+`RustNativeStepper` construction, which was already (harmlessly) wrapped in
+its own local `withenv`. Fixed by wrapping the *entire* setup call
+(`Interface.prop_capillary_args(...)`) in `withenv("LUNA_USE_RUST_IONISATION" => "1") do ... end`
+and removing the `if get(ENV, "LUNA_USE_RUST_IONISATION", "0") != "1"; @test_skip; end`
+guard that depended on ambient state.
+**Decisions:**
+- **Fixed in the test file, not in CI config.** The tempting alternative —
+  add `LUNA_USE_RUST_IONISATION: "1"` to `.github/workflows/run_tests.yml`'s
+  `rust` job env — would have fixed Phase 2b but broken
+  `test_ionisation_rust.jl`'s "verify the default toggle state is off"
+  assertion (`ir_julia.rust_handle === nothing`, built without any `withenv`,
+  relying on ambient state being unset). Scoping the fix to a local `withenv`
+  inside the one test that needs it avoids that conflict entirely and needs
+  no CI changes.
+**Gotchas:**
+- A `@test_skip`'d test does not show up as a failure anywhere in the summary
+  line (`Pass | Broken | Total`) — it's easy to read "all rust tests pass"
+  and miss that a phase's correctness is not actually being exercised on
+  every run. When adding a skip-guard tied to an env var for a *specific
+  physics path* (not "library not built"), prefer scoping the env var locally
+  with `withenv` around the exact construction that needs it, so the test is
+  self-contained and always runs — reserve ambient-env skip-guards for
+  genuinely environment-dependent things (GPU presence, library availability).
+**Tests:**
+- `test/test_native_phase2.jl` alone, no ambient env var: Phase 2b now runs
+  (no skip) — single-step `3.76e-17`, full-solve `2.73e-16`, matching the
+  values previously only obtained by manually setting the env var.
+- `test/test_ionisation_rust.jl` alone: still 207/207 pass, confirming no
+  conflict with the "default is off" check.
+- `LUNA_TEST_GROUP=rust julia --project . test/runtests.jl` (plain, matching
+  CI exactly): **41934/41934 pass, 0 broken** — up from 41932 pass / 1 broken.
+**Next:** Phase 4 — Raman (unchanged; see above).
+
+## 2026-07-01 — Phase 4 — Raman — Claude (sonnet-5)
+**Status:** complete
+**Did:** Ported `RamanPolarField` (RealGrid, `thg=true` only) to a resident
+additive term in `rhs_mode_avg_real`, reusing `raman.rs`'s existing
+`TimeDomainRamanSolver` ADE solver directly (no FFI round-trip per RHS,
+same reuse pattern as Phase 3's `QdhtFfiHandle`).
+**How:**
+- Design written into `docs/native-port/MATH.md` §5.3 before touching code
+  (per `AGENTS.md`'s doc-first rule).
+- `NativeSim` gained: `has_raman: bool`, `raman_solver: Option<TimeDomainRamanSolver>`,
+  `raman_density: f64` (raw density, unscaled — unlike `kerr_fac` which folds
+  in `ε₀·γ3`), and scratch buffers `raman_intensity`/`raman_p` (length
+  `n_time_over`).
+- `apply_raman_real` (called from `rhs_mode_avg_real` right after the plasma
+  step, both purely additive onto `self.pto` from the same `self.eto`
+  input): `intensity[i] = Eto[i]²` → `solver.solve(intensity, raman_p)`
+  (resets oscillator state internally every call, matching the
+  "stateless per RHS evaluation" semantics the Julia FFT-convolution path
+  already has) → `Pto[i] += ρ·Eto[i]·raman_p[i]` (matches
+  `Pout[i]=ρ*E[i]*R.P[i]`, Nonlinear.jl:422).
+- New FFI `native_set_raman_params(sim, omega, gamma, coupling, n_osc, dt, density)`
+  builds the resident solver from the same `Ω`/`1/τ2ρ(1.0)`/`K` arrays
+  `Interface._make_rust_raman_handle_from_response` already extracts for the
+  existing `LUNA_USE_RUST_RAMAN` FFI wiring; called after
+  `native_set_mode_avg_params` (needs `n_time_over`), before `set_field`.
+- Julia side (`src/RK45.jl`): `RustNativeStepper`'s mode-avg block gains a
+  Raman-detection loop mirroring the plasma-wiring loop above it — checks
+  `r isa Luna.Nonlinear.RamanPolarField`, re-derives eligibility (all-SDO
+  `CombinedRamanResponse`, density-independent `τ2ρ`, `thg=true`) directly
+  from `r.r.Rs` rather than reusing `r.rust_handle` (which only holds an
+  opaque pointer to a *separate* Rust allocation from the existing per-call
+  FFI path — the resident path needs the raw oscillator arrays to build its
+  *own* copy, not that pointer).
+**Decisions:**
+- **Scope: RealGrid, `thg=true` only.** `thg=false` needs a Hilbert transform
+  (no Rust port exists); `RamanPolarEnv` (envelope) and intermediate-broadening
+  (Gaussian-damped) responses stay Julia — deferred, matching the existing
+  `LUNA_USE_RUST_RAMAN` wiring's scope exactly (CLAUDE.md).
+- **Re-derive eligibility in `RK45.jl` rather than reusing `r.rust_handle`.**
+  The existing handle only proves eligibility was checked *and* stores an
+  opaque pointer to a Rust object the resident path doesn't want to share
+  (a separate allocation, freed independently, used by the per-call FFI
+  path) — duplicating ~10 lines of eligibility logic (matching the existing
+  per-kernel-wiring precedent of small localized duplication, e.g. the Kerr
+  γ3-extraction loop already duplicated for radial in Phase 3) was simpler
+  and safer than refactoring `Interface.jl` to share a helper across module
+  boundaries.
+- **Test gas: N2, `rotation=false, vibration=true`.** N2's vibrational line
+  is a single SDO with constant `τ2v` (eligible); its rotational line is a
+  multi-line `RamanRespRotationalNonRigid` with density-dependent `τ2`
+  (ineligible) — same limitation the existing wiring already has, not
+  something this phase newly solves.
+**Gotchas — the important one:**
+- **A single-step equivalence test at the originally-chosen parameters (N2,
+  1 atm, 1 μJ, 30 fs, one 1cm z-step) passed with an exact `0.0` difference
+  whether Raman was included or not — in Julia alone, before Rust ever
+  entered the comparison.** This looked like a pass but proved nothing: a
+  test where two implementations agree because *both* silently omit the
+  feature under test is vacuous. Diagnosed via a three-cell table (Julia
+  on-vs-off; Rust-vs-Julia off; Rust-vs-Julia on) at the advisor's
+  suggestion: Raman's raw per-step RHS contribution here is ~2e-16 relative
+  to Kerr's — at the double-precision floor for a *single* small step,
+  because Raman-induced spectral changes are cumulative over propagation
+  distance (unlike Kerr self-phase-modulation, which is immediate).
+  Over 5cm / 6 fixed dt=0.01 steps the effect compounds to a measurable
+  1.1e-4 change in the Julia oracle, and Rust matches that changed result to
+  4.2e-8 — 2600× tighter than the effect itself, proving Rust is genuinely
+  computing the Raman contribution, not coincidentally passing. **Fixed by
+  making the full-solve testset self-validating**: it now asserts
+  `rel_raman_matters > 1e-6` (Raman-on vs Raman-off in Julia alone) *before*
+  asserting `rel_solve < 1e-6` (Rust vs Julia, both with Raman) — so a
+  future regression that silently disables Raman on either side would fail
+  the first assertion instead of passing vacuously.
+- A same-day, unrelated fix landed first (see the "Test-infra fix" entry
+  above): Phase 2b's plasma sub-test was silently `@test_skip`-ing on every
+  plain CI run because it needed an ambient env var CI never set. Worth
+  restating the general lesson from both fixes together: a green test
+  summary is not proof a feature is exercised — check *why* each assertion
+  would fail if the feature were broken, not just that it currently passes.
+**Tests:**
+- `RUSTFLAGS="-D warnings" cargo build --release` → clean.
+- `test/test_native_raman.jl` alone: single-step `0.0` (documented, not a
+  concern — see above); full-solve sanity check `1.08e-4` (assert `>1e-6`,
+  confirms Raman is genuinely exercised); full-solve Rust-vs-Julia `4.18e-8`
+  (assert `<1e-6`).
+- `LUNA_TEST_GROUP=rust julia --project . test/runtests.jl` (matching CI) →
+  **41937/41937 pass, 0 broken** (net +3 over the post-test-infra-fix
+  baseline of 41934 — exactly the three new Raman assertions).
+- `sim-propagation`, `physics` groups: no regressions (unaffected — only
+  `native.rs` and the mode-avg branch of `RustNativeStepper`'s constructor
+  in `RK45.jl` were touched, both native-path-only code).
+**Next:** Phase 5 — Modal (`TransModal` + overlap cubature; hardest
+remaining phase, needs a Rust adaptive-cubature routine — mode dispersion is
+already Rust). See `BACKLOG.md`.
+

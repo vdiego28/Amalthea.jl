@@ -1,7 +1,7 @@
 # Native-Rust Backend Port — Testing & Equivalence
 
-> Status: design doc for the phased port. Phases 0-3 are implemented and
-> passing (see `docs/native-port/PORT_LOG.md`); Phase 4 (Raman) is next.
+> Status: design doc for the phased port. Phases 0-4 are implemented and
+> passing (see `docs/native-port/PORT_LOG.md`); Phase 5 (Modal) is next.
 > Companion docs: [ARCHITECTURE.md](ARCHITECTURE.md), [MATH.md](MATH.md),
 > [PORT_LOG.md](PORT_LOG.md).
 
@@ -151,8 +151,8 @@ coincidence of regime, not immunity to the same mechanism).
 | 1 | ✅ done | mode-avg + Kerr `prop_capillary(:HE11)`, RealGrid | `test/test_native_phase1.jl` | <1e-13 (achieved) | 2.75e-16 (fixed dt) |
 | 2 | ✅ done | EnvGrid Kerr (2a) + plasma/RealGrid (2b) | `test/test_native_phase2.jl` | <1e-13 (achieved) | 3.19e-17 / 2.73e-16 (fixed dt) |
 | 3 | ✅ done | radial + resident QDHT (RealGrid + scalar Kerr) | `test/test_native_radial.jl` | 1.1e-17 (achieved) | 1.3e-16 (fixed dt) |
-| 4 | ⬜ next | Raman (carrier SDO) | `test/test_native_raman.jl` | ~1e-13 | ~1e-6 |
-| 5 | ⬜ | modal + overlap cubature | `test/test_native_modal.jl` | ~1e-10 (cubature) | ~1e-6 |
+| 4 | ✅ done | Raman (carrier SDO, thg=true, all-SDO eligibility) | `test/test_native_raman.jl` | 0.0 (see note) | 4.2e-8 (achieved) |
+| 5 | ⬜ next | modal + overlap cubature | `test/test_native_modal.jl` | ~1e-10 (cubature) | ~1e-6 |
 | 6 | ⬜ | free-space 3-D FFT | `test/test_native_free.jl` | ~1e-13 | ~1e-6 |
 | 7 | ⬜ | z-dependent linop assembly | extend the above | ~1e-13 | ~1e-6 |
 | 8 | ⬜ | default-flip: existing suite green with native as default | full suite | — | existing |
@@ -160,6 +160,19 @@ coincidence of regime, not immunity to the same mechanism).
 Phase 5's single-step tier is looser (~1e-10) because adaptive cubature node
 placement is itself algorithm-dependent; match Julia's cubature tolerance and
 node rule to get as close as possible, and document the achieved number.
+
+Phase 4's single-step result (`0.0`, exact) is **not a vacuous test** — verified
+via a three-cell diagnostic (PORT_LOG 2026-07-01): Raman's raw per-step RHS
+contribution is ~2e-16 relative to Kerr's at these test parameters (right at
+the FP floor for a single 1cm z-step — physically expected, since
+Raman-induced spectral changes are cumulative over propagation, unlike Kerr
+self-phase-modulation). The full-solve testset is the meaningful gate and is
+self-validating: it independently asserts Raman changes the Julia oracle's
+result (1.1e-4, far above any noise floor) *before* asserting Rust matches
+Julia on that changed result (4.2e-8). Any future Raman-adjacent full-solve
+test should include the same "does this feature actually change the
+reference result" sanity assertion — a passing comparison between two paths
+that both silently exclude the feature under test proves nothing.
 
 ## 5. Commands
 

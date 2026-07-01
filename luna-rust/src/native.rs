@@ -36,11 +36,24 @@
 //!       (`const_norm_radial`); EnvGrid-radial and plasma-radial deferred.
 //!       Gate: single-step 1.1e-17, full-solve 1.3e-16 (fixed step size).
 //!       COMPLETE.
+//! - [x] Phase 4 — Raman: resident `TimeDomainRamanSolver` (`raman.rs`,
+//!       already-existing ADE solver, reused directly) added as an additive
+//!       term in `rhs_mode_avg_real` alongside Kerr/plasma via
+//!       `native_set_raman_params`. Replaces `RamanPolarField`
+//!       (NonlinearRHS.jl:357-431). Scope: RealGrid, `thg=true` only (E²
+//!       intensity, no Hilbert transform), all-SDO density-independent-τ2
+//!       eligibility (same as the existing `LUNA_USE_RUST_RAMAN` FFI wiring).
+//!       Gate: full-solve Rust-vs-Julia 4.2e-8, with Raman independently
+//!       verified to change the Julia oracle by 1.1e-4 (self-validating —
+//!       a single 1cm z-step shows Raman's contribution below the FP floor
+//!       relative to Kerr; the effect is cumulative over propagation, see
+//!       MATH.md §5.3 and PORT_LOG 2026-07-01). COMPLETE.
 
 use num_complex::Complex;
 use libc::{c_char, c_double, c_int, c_uint, size_t};
 use crate::fftw::{FftwApi, ComplexFft1d, RealFft1d};
 use crate::ffi::QdhtFfiHandle;
+use crate::raman::{TimeDomainRamanSolver, RamanOscillator};
 use std::ffi::CStr;
 
 /// Resident simulation state. One per `solve`. Opaque to Julia.
@@ -129,6 +142,14 @@ pub struct NativeSim {
     pub radial_pto: Vec<f64>,
     pub radial_eoo: Vec<Complex<f64>>,
     pub radial_poo: Vec<Complex<f64>>,
+
+    // ── Phase 4: Raman (RealGrid, thg=true, additive term in rhs_mode_avg_real) ──
+    pub has_raman: bool,
+    pub raman_solver: Option<TimeDomainRamanSolver>,
+    /// Constant-medium density (unscaled, unlike `kerr_fac` which folds in ε₀·γ3).
+    pub raman_density: f64,
+    pub raman_intensity: Vec<f64>,
+    pub raman_p: Vec<f64>,
 }
 
 impl NativeSim {
@@ -190,6 +211,11 @@ impl NativeSim {
             radial_pto: Vec::new(),
             radial_eoo: Vec::new(),
             radial_poo: Vec::new(),
+            has_raman: false,
+            raman_solver: None,
+            raman_density: 0.0,
+            raman_intensity: Vec::new(),
+            raman_p: Vec::new(),
         }
     }
 
@@ -225,6 +251,11 @@ impl NativeSim {
         // ── Step 3b: Plasma polarisation (if enabled) ───────────────────────────
         if self.has_plasma {
             self.apply_plasma_real();
+        }
+
+        // ── Step 3c: Raman polarisation (if enabled) ────────────────────────────
+        if self.has_raman {
+            self.apply_raman_real();
         }
 
         // ── Step 4: time-window apodization Pto *= towin ────────────────────────
@@ -307,6 +338,25 @@ impl NativeSim {
         // 8. add P(t) to pto
         for i in 0..n {
             self.pto[i] += self.plas_p[i];
+        }
+    }
+
+    /// Raman polarisation via the resident time-domain ADE solver (`thg=true`:
+    /// intensity = E², no Hilbert transform), added to `self.pto` in-place.
+    /// Reproduces `(R::RamanPolar)(out, Et, ρ)` for `RamanPolarField`
+    /// (src/Nonlinear.jl:357-431) — see MATH.md §5.3.
+    fn apply_raman_real(&mut self) {
+        let n = self.n_time_over;
+        for i in 0..n {
+            let e = self.eto[i];
+            self.raman_intensity[i] = e * e;
+        }
+        if let Some(ref mut solver) = self.raman_solver {
+            solver.solve(&self.raman_intensity, &mut self.raman_p);
+        }
+        let rho = self.raman_density;
+        for i in 0..n {
+            self.pto[i] += rho * self.eto[i] * self.raman_p[i];
         }
     }
 
@@ -825,6 +875,60 @@ pub unsafe extern "C" fn native_set_radial_params(
     s.radial_pto = vec![0.0; n_time_over * n_r];
     s.radial_eoo = vec![Complex::new(0.0, 0.0); s.n_spec_over * n_r];
     s.radial_poo = vec![Complex::new(0.0, 0.0); s.n_spec_over * n_r];
+
+    0
+}
+
+/// Wire the Raman ADE solver as an additive term in `rhs_mode_avg_real`
+/// (RealGrid, `thg=true` only — see MATH.md §5.3).
+///
+/// Must be called **after** `native_set_mode_avg_params` (needs `n_time_over`
+/// to size the scratch buffers), before `set_field`.
+///
+/// # Arguments
+/// * `omega`/`gamma`/`coupling` — per-oscillator SDO parameters (`Ω`,
+///   `1/τ2ρ(1.0)`, `K`), same values `Interface._make_rust_raman_handle_from_response`
+///   already extracts for the existing `LUNA_USE_RUST_RAMAN` FFI wiring.
+/// * `n_osc` — number of oscillators.
+/// * `dt` — `grid.to[2] - grid.to[1]` (oversampled grid spacing).
+/// * `density` — constant-medium density (raw, **not** folded with `ε₀·γ3`
+///   like `kerr_fac` — Raman's accumulation formula needs it unscaled).
+///
+/// Returns 0 on success, -1 on null/zero-length args, -2 if called before
+/// `native_set_mode_avg_params`.
+///
+/// # Safety
+/// `sim` must be valid; `omega`/`gamma`/`coupling` must each be valid for
+/// `n_osc` reads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_set_raman_params(
+    sim: *mut NativeSim,
+    omega: *const c_double,
+    gamma: *const c_double,
+    coupling: *const c_double,
+    n_osc: size_t,
+    dt: c_double,
+    density: c_double,
+) -> i32 {
+    if sim.is_null() || omega.is_null() || gamma.is_null() || coupling.is_null() || n_osc == 0 {
+        return -1;
+    }
+    let s = unsafe { &mut *sim };
+    if s.n_time_over == 0 { return -2; }
+
+    let omega_sl = unsafe { std::slice::from_raw_parts(omega, n_osc) };
+    let gamma_sl = unsafe { std::slice::from_raw_parts(gamma, n_osc) };
+    let coupling_sl = unsafe { std::slice::from_raw_parts(coupling, n_osc) };
+
+    let oscillators: Vec<RamanOscillator> = (0..n_osc)
+        .map(|i| RamanOscillator { omega: omega_sl[i], gamma: gamma_sl[i], coupling: coupling_sl[i] })
+        .collect();
+
+    s.raman_solver = Some(TimeDomainRamanSolver::new(oscillators, dt));
+    s.raman_density = density;
+    s.raman_intensity = vec![0.0; s.n_time_over];
+    s.raman_p = vec![0.0; s.n_time_over];
+    s.has_raman = true;
 
     0
 }

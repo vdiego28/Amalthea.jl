@@ -243,13 +243,79 @@ Ported in Phase 2 as `rhs_plasma` (`luna-rust/src/native.rs`, `cumtrapz_slice_f6
 path silently falls back to Julia plasma physics if the ionization handle isn't
 wired — see PORT_LOG 2026-06-30 "Wire plasma" note).
 
-### 5.3 Raman (`src/Nonlinear.jl:357-431`)
+### 5.3 Raman (`src/Nonlinear.jl:357-431`) — Phase 4, ported
 Delayed χ⁽³⁾. The carrier-field SDO path (`RamanPolarField`) is already Rust
 (`LUNA_USE_RUST_RAMAN`): a single-damped-oscillator ADE stepped by an exact
 exponential integrator (`x_{n+1} = A·x_n + B0·Iₙ + B1·I_{n+1}`), O(Nt) and
 allocation-free, vs. Julia's FFT convolution. Phase 4 makes that solver resident
 in the RHS. The envelope path (`RamanPolarEnv`) and intermediate-broadening
 (Gaussian-damped) responses stay Julia.
+
+**Reuse, don't reinvent — same pattern as Phase 3's QDHT.** `raman.rs`'s
+`TimeDomainRamanSolver` is already a self-contained, public Rust struct
+(`new`, `reset_state`, `solve`) — the existing `LUNA_USE_RUST_RAMAN` FFI
+wiring is a thin `ccall` wrapper around it. `NativeSim` stores one directly
+(`Option<TimeDomainRamanSolver>`), built once in a new
+`native_set_raman_params` from the same `omega`/`gamma`/`coupling` arrays
+Julia already extracts in `Interface._make_rust_raman_handle_from_response`
+(`Ω`, `1/τ2ρ(1.0)`, `K` per `RamanRespSingleDampedOscillator`). `solve()`
+resets its internal oscillator state at the start of every call
+(`solve_scalar`, `raman.rs`), so it is safe to call once per RHS evaluation
+exactly like Kerr/plasma — no state carries between RK stages, matching the
+Julia FFT-convolution semantics it replaces (each RHS call recomputes the
+full convolution over the current trial field, not an incremental
+step-to-step integration).
+
+**Additive, not a replacement RHS.** Raman is just another entry in
+`TransModeAvg`'s `resp` tuple, called after Kerr in `Et_to_Pt!` and
+accumulated into the same `Pt` buffer — `resp!(Pt, Et, density)` for each
+response, `fill!(Pt,0)` once at the start. So `rhs_mode_avg_real` gains one
+more additive step after the existing Kerr (and optional plasma) step,
+computed from the *same* time-domain field buffer (`self.eto`) already in
+hand — no new to_time!/to_freq! transform needed:
+```
+intensity[i] = Eto[i]²                      # thg=true: sqr!(R, E) = E.^2
+raman_solver.solve(intensity, raman_p)      # resets state, then ADE-integrates
+Pto[i] += ρ · Eto[i] · raman_p[i]            # matches Pout[i]=ρ*E[i]*R.P[i]
+```
+`ρ` is the same constant-medium density (`f!.densityfun(0.0)`) already used
+for Kerr's `kerr_fac` — stored separately (unscaled by `ε₀·γ3`) since Raman's
+accumulation formula needs the raw density, not the Kerr-folded constant.
+
+**Scope: `thg=true` only** (the default, and the common case — `E²`
+intensity, no Hilbert transform). `thg=false` computes intensity via
+`1/2·|hilbert(E)|²` (`Kerr_field_nothg`'s sibling path, `sqr!` in
+Nonlinear.jl:342-349) — porting the Hilbert transform to Rust is a separate
+piece of work, deferred as a follow-up alongside `RamanPolarEnv` and
+intermediate-broadening (Gaussian-damped) responses, none of which are in
+this phase's scope.
+
+**Eligibility mirrors the existing `LUNA_USE_RUST_RAMAN` wiring exactly**
+(`Interface._make_rust_raman_handle_from_response`, `src/Interface.jl:581`):
+`CombinedRamanResponse` whose `Rs` are all `RamanRespSingleDampedOscillator`,
+with density-independent `τ2ρ`. Molecular gases (`:N2`, `:H2`, `:D2`, `:N2O`,
+`:CH4`, `:SF6`) auto-enable Raman by default in `makeresponse`
+(`src/Interface.jl:608`). N2's vibrational line qualifies (constant
+`τ2v=6e-12`); its rotational line (`RamanRespRotationalNonRigid`, a
+multi-line comb) does not — use `rotation=false, vibration=true` for a
+clean single-oscillator test case. H2's vibrational line is *not* eligible
+(`Bρv`/`Aρv` make `τ2ρ` density-dependent) — useful as a negative control.
+
+**Gate-test pitfall (found during Phase 4 validation, see PORT_LOG
+2026-07-01): verify the feature under test actually changes the reference
+result before trusting a passing equivalence assertion.** At the parameters
+first tried (N2, 1 atm, 1 μJ, 30 fs, one 1cm z-step), Raman-on vs Raman-off
+gave an *exact* `0.0` difference in the Julia oracle alone — not close to
+zero, identically zero — because Raman's raw per-step RHS contribution is
+~2e-16 relative to Kerr's (at the double-precision floor) for a single small
+step; the effect only becomes measurable (1.1e-4 over 5cm/6 fixed steps) once
+compounded through the propagation's nonlinear dynamics. A test comparing two
+implementations that both silently omit the same feature passes for the
+wrong reason. The full-solve testset therefore asserts, in order: (1) Raman
+changes the Julia oracle's result by a margin unmistakably above the FP
+floor, *then* (2) Rust matches Julia on that changed result. Apply the same
+two-part structure to any future feature whose per-step effect might be
+small relative to the dominant nonlinearity.
 
 ## 6. Linear operator `L(ω, z)` (Phase 7)
 

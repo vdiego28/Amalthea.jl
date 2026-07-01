@@ -773,6 +773,44 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                 break  # only one plasma response expected
             end
         end
+
+        # Wire Raman if present and eligible for the resident ADE path. The
+        # resident path needs the raw oscillator arrays (not just a handle
+        # pointer), so eligibility is re-checked here — same criteria as
+        # `Interface._make_rust_raman_handle_from_response` (the existing
+        # `LUNA_USE_RUST_RAMAN` FFI wiring): all-SDO `CombinedRamanResponse`
+        # with density-independent τ2. Scope: `thg=true` only (E² intensity,
+        # no Hilbert transform) — see docs/native-port/MATH.md §5.3.
+        for r in f!.resp
+            if r isa Luna.Nonlinear.RamanPolarField
+                if !r.thg
+                    @warn "LUNA_USE_RUST_NATIVE: RamanPolarField has thg=false — native " *
+                          "Raman path only supports thg=true (E² intensity); native path " *
+                          "will skip Raman (incorrect physics)."
+                    break
+                end
+                rr = r.r
+                eligible = rr isa Luna.Raman.CombinedRamanResponse &&
+                    all(ri isa Luna.Raman.RamanRespSingleDampedOscillator for ri in rr.Rs) &&
+                    all(abs(ri.τ2ρ(1.0) - ri.τ2ρ(2.0)) < 1e-10 * abs(ri.τ2ρ(1.0)) for ri in rr.Rs)
+                if eligible
+                    omegas    = Float64[ri.Ω for ri in rr.Rs]
+                    gammas    = Float64[1.0 / ri.τ2ρ(1.0) for ri in rr.Rs]
+                    couplings = Float64[ri.K for ri in rr.Rs]
+                    raman_density = f!.densityfun(0.0)
+                    rc = ccall((:native_set_raman_params, _LIBLUNA_RUST_RK45), Cint,
+                        (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Csize_t, Float64, Float64),
+                        handle.ptr, omegas, gammas, couplings, Csize_t(length(omegas)),
+                        r.dt, raman_density)
+                    rc == 0 || @warn "native_set_raman_params returned $rc; Raman uses Julia fallback"
+                else
+                    @warn "LUNA_USE_RUST_NATIVE: Raman response present but not eligible for " *
+                          "the native path (needs all-SDO CombinedRamanResponse with " *
+                          "density-independent τ2) — native path will skip Raman (incorrect physics)."
+                end
+                break  # only one Raman response expected
+            end
+        end
     end
 
     # Set parameters if radial (TransRadial) — Phase 3 gate: RealGrid + scalar

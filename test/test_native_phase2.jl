@@ -79,28 +79,33 @@ end
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
-        # This test requires LUNA_USE_RUST_IONISATION=1 for the native plasma path.
-        # Without it, native path silently skips plasma → wrong physics → skip test.
-        if get(ENV, "LUNA_USE_RUST_IONISATION", "0") != "1"
-            @test_skip "LUNA_USE_RUST_IONISATION not set; native plasma path requires it"
-        else
-            radius = 125e-6
-            flength = 0.10
-            gas = :He
-            pressure = 1.0
-            λ0 = 800e-9
-            λlims = (150e-9, 4e-6)
-            trange = 500e-15
+        radius = 125e-6
+        flength = 0.10
+        gas = :He
+        pressure = 1.0
+        λ0 = 800e-9
+        λlims = (150e-9, 4e-6)
+        trange = 500e-15
 
-            args = (radius, flength, gas, pressure)
-            kw = (; λ0, λlims, trange,
-                   raman=false, plasma=:PPT, kerr=true, shotnoise=false,
-                   energy=2e-6, τfwhm=30e-15)
+        args = (radius, flength, gas, pressure)
+        kw = (; λ0, λlims, trange,
+               raman=false, plasma=:PPT, kerr=true, shotnoise=false,
+               energy=2e-6, τfwhm=30e-15)
 
-            Eω, grid, linop, transform, FT, output = with_logger(NullLogger()) do
+        # The native plasma path needs a Rust-backed ionization-rate handle,
+        # which is only wired up if LUNA_USE_RUST_IONISATION=1 is set BEFORE
+        # the ionization LUT is built inside prop_capillary_args (not just
+        # around the later RustNativeStepper construction below) — so the
+        # whole setup is wrapped in one withenv rather than relying on an
+        # ambient CI-wide env var (which would conflict with
+        # test_ionisation_rust.jl's check that the default is off).
+        Eω, grid, linop, transform, FT, output = withenv("LUNA_USE_RUST_IONISATION" => "1") do
+            with_logger(NullLogger()) do
                 Interface.prop_capillary_args(args...; kw...)
             end
+        end
 
+        let
             @assert grid isa Luna.Grid.RealGrid "plasma test uses RealGrid"
 
             t0 = 0.0

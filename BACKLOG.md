@@ -55,9 +55,17 @@ full-`solve` ~1e-6 vs the Julia oracle — see TESTING.md §3 nondeterminism flo
   plasma-radial deferred). Gate passed: single-step 1.1e-17, full-solve
   1.3e-16 (fixed step size, per the Phase 2 lesson — see PORT_LOG
   2026-07-01). Test `test/test_native_radial.jl`. ✔
-- ⬜ **Phase 4 — Raman.** Integrate the existing ADE solver (`raman.rs`) into the
-  resident RHS. Replaces `RamanPolar` (`src/Nonlinear.jl:357`).
-  Test `test/test_native_raman.jl`.
+- ✅ **Phase 4 — Raman.** `rhs_mode_avg_real` gains an additive Raman term via
+  the resident `TimeDomainRamanSolver` (already-existing ADE solver, reused
+  directly) + `native_set_raman_params`. Replaces `RamanPolarField`
+  (`src/Nonlinear.jl:357`). Scope: RealGrid, `thg=true` only, all-SDO
+  density-independent-τ2 eligibility (same criteria as `LUNA_USE_RUST_RAMAN`).
+  Gate passed: full-solve Rust-vs-Julia 4.2e-8 — independently verified
+  non-vacuous (Raman changes the Julia oracle's full-solve result by 1.1e-4,
+  self-validated in-test; a single 1cm z-step alone shows Raman's
+  contribution below the FP floor relative to Kerr — the effect is
+  cumulative over propagation, see PORT_LOG 2026-07-01). Test
+  `test/test_native_raman.jl`. ✔
 - ⬜ **Phase 5 — Modal (TransModal).** Hardest: Rust adaptive cubature + mode-field
   eval + overlap projections (dispersion already Rust). Replaces `TransModal`
   (`src/NonlinearRHS.jl:421`, `pointcalc!` `:363`, `Erω_to_Prω!` `:401`). Keep the
