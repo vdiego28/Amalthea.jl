@@ -300,9 +300,88 @@ ceiling even though this run landed far under it.
 > single-threaded (no `rayon`/`Threads` inside the callback) for the same
 > reason.
 
-### 3.4 Free-space — `TransFree` (`src/NonlinearRHS.jl:826`) — Phase 6
-2-D Cartesian spatial axis: a **3-D FFT** (2 spatial + 1 time). Needs 3-D FFTW
-plans resident in `NativeSim`. Stays on Julia until Phase 6.
+### 3.4 Free-space — `TransFree` (`src/NonlinearRHS.jl:826`) — Phase 6, ported
+2-D Cartesian spatial axis: a genuine **3-D FFT** over `(t,y,x)` jointly
+(`FFTW.plan_rfft(x, (1,2,3))`, `src/Luna.jl:295` — all three axes transformed
+together, unlike Phase 3's radial QDHT-plus-1-D-FFT). Per RHS
+(`TransFree.__call__`, `src/NonlinearRHS.jl:818-838`):
+```
+copy_scale!(Eωo, Eωk, N, scale)     # zero-pad ω → oversampled, per (y,x) column
+ldiv!(Eto, FT, Eωo)                 # (ω,ky,kx) → (t,y,x), ONE joint 3-D transform
+Et_to_Pt!(Pto, Eto, resp, ρ, idcs)  # Kerr, pointwise over the whole (t,y,x) volume
+Pto .*= towin                       # per t, broadcast over (y,x)
+mul!(Pωo, FT, Pto)                  # (t,y,x) → (ω,ky,kx), ONE joint 3-D transform
+copy_scale!(nl, Pωo, N, 1/scale)    # truncate oversampled → base, per (y,x) column
+nl .*= ωwin .* (-im·ω) ./ (2 .* normfun(z))
+```
+
+**Reuse, don't reinvent — same FFTW binary, one new plan-creation call.**
+`fftw.rs` already `dlopen`s the identical libfftw3 Julia's `FFTW.jl` uses
+(ARCHITECTURE §4.1); the *execute* entry points (`fftw_execute_dft_r2c`/
+`_c2r`) are rank-agnostic — they work on a 3-D plan exactly as on the
+existing 1-D plans. The only new surface is **plan creation**:
+`fftw_plan_dft_r2c_3d`/`fftw_plan_dft_c2r_3d` (`RealFft3d` in `fftw.rs`).
+This is much lower-risk than Phase 5's cubature situation (a genuinely new
+library) — it is the *same* binary, just a rank-3 plan instead of rank-1.
+
+**Dimension order and normalization were measured, not assumed, before
+being trusted.** Julia's buffers are column-major `(n_t, n_y, n_x)` (`n_t`
+fastest-varying); FFTW's basic-interface dimension list is given
+slowest→fastest, so `RealFft3d::new` passes `(n_x, n_y, n_t)` — **reversed**
+— to align FFTW's fastest dimension with Julia's `n_t` axis. This is the
+same reversal rule that makes 1-D bit-parity trivial, but for rank 3 it is
+easy to get subtly wrong (and a Rust-only forward+inverse round-trip test
+*cannot* catch a transposed-axis bug — it would still round-trip correctly
+against itself). Verified instead with a literal cross-check against
+`FFTW.rfft(reshape(Float64.(1:24),4,3,2), (1,2,3))` computed independently in
+Julia (`fftw.rs::tests::r2c_3d_matches_julia_reference`) — confirms both the
+dimension order **and** which axis gets conjugate-symmetric-halved (`n_t`,
+matching Julia's `size(rfft(x,(1,2,3))) == (n_t÷2+1, n_y, n_x)`).
+
+**The round-trip normalization factor is `1/(n_t·n_y·n_x)`, not `1/n_t`** —
+easy to get wrong by copying the 1-D convention, since the transform now
+spans all three axes rather than just the time axis. Confirmed by the same
+literal test.
+
+**Multi-dimensional c2r destroys its input.** Unlike 1-D c2r (which supports
+`FFTW_PRESERVE_INPUT`, used by `RealFft1d`), FFTW does not support
+`PRESERVE_INPUT` for rank>1 c2r plans. `rhs_free` follows the same
+copy-into-scratch-before-inverse structure every other native RHS already
+uses (Phase 1/3's `eoo`/`radial_eoo` scratch buffers), so this is harmless
+by construction, not a new precaution.
+
+**No per-column spatial step, unlike radial.** Because the FFT is a single
+joint 3-D transform (not a 1-D transform looped over a separate QDHT-style
+spatial step), the Kerr response and the final normalization multiply are
+**plain flat elementwise operations over the whole `(t,y,x)`/`(ω,ky,kx)`
+volume** — no column-dependent logic at all (Kerr's `E³` formula and the
+precomputed `M` array are identical at every spatial point). Only the
+zero-pad/truncate (`copy_scale!`) and `towin` apodization steps need an
+explicit per-`(y,x)`-column loop, since those act along the `t`/`ω` axis
+specifically. This makes `rhs_free` mechanically simpler than `rhs_radial`
+once the FFT primitive itself is trusted.
+
+**Normalization precomputed as one flat complex array, same pattern as
+Phase 3's `M`.** `ωwin[iω]·(-i·ω[iω])/(2·normfun(z)[iω,iky,ikx])` is
+precomputed once in Julia (valid only for a z-invariant `normfun`, i.e.
+`const_norm_free` — the same constant-medium restriction every other phase
+carries) and passed as one flat `(n_spec, n_y, n_x)` array; `rhs_free` does
+one elementwise multiply, needing zero of `norm_free`'s `k_z`/evanescent
+masking logic ported.
+
+**Scope implemented:** RealGrid + `const_norm_free` (z-invariant normfun)
+only, scalar Kerr (reusing the exact `E³` formula already ported), the
+modified shot-noise branch (`Et_noise`/`Et_nl`) is **not** ported
+(`shotnoise=false` required). EnvGrid free-space (c2c 3-D) and a z-dependent
+`normfun` are deferred, mirroring every prior phase's RealGrid-first pattern.
+
+**Gate achieved:** single-step 7.05e-18, full-solve 5.01e-17 (fixed step
+size, `test/test_native_free.jl`, `N=8` transverse grid). Both land at the
+same clean FFTW-parity floor as Phase 1/2 (no QDHT-style intermediate
+summation-order floor, since there is no separate spatial transform step) —
+consistent with the dimension-order/normalization risk being fully retired
+at the FFT-primitive level (`fftw.rs`'s literal cross-check) rather than
+showing up as residual noise in the RHS.
 
 ## 4. FFT conventions (must match FFTW.jl exactly)
 

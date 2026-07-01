@@ -84,8 +84,19 @@ full-`solve` ~1e-6 vs the Julia oracle — see TESTING.md §3 nondeterminism flo
   any noise floor). General-order modes (`TE`/`TM`/`n>1`), tapered radius,
   `full=true`, EnvGrid, and Raman/plasma-in-modal are deferred (see MATH.md
   §3.3). Test `test/test_native_modal.jl`. ✔
-- ⬜ **Phase 6 — Free-space (TransFree).** 3-D FFTW plans resident. Replaces
-  `TransFree` (`src/NonlinearRHS.jl:826`). Test `test/test_native_free.jl`.
+- ✅ **Phase 6 — Free-space (TransFree).** A genuine 3-D FFTW plan
+  (`fftw.rs::RealFft3d`, new `fftw_plan_dft_r2c_3d`/`_c2r_3d` symbols — same
+  libfftw3 binary Julia's `FFTW.jl` uses, not a new library) replaces the
+  QDHT-plus-1-D pattern Phase 3 used for radial. Dimension order
+  (`(n_x,n_y,n_t)` reversed for Julia's column-major `(n_t,n_y,n_x)`) and the
+  `1/(n_t·n_y·n_x)` round-trip normalization were verified against a literal
+  `FFTW.rfft` reference before being trusted, not assumed from the
+  row/column-major rule alone. Scope: RealGrid, `const_norm_free`
+  (z-invariant), scalar Kerr, `shotnoise=false`. Replaces `TransFree`
+  (`src/NonlinearRHS.jl:826`) within that scope. Gate passed: single-step
+  7.05e-18, full-solve 5.01e-17 (fixed step size). EnvGrid (c2c 3-D) and a
+  z-dependent `normfun` are deferred (see MATH.md §3.4). Test
+  `test/test_native_free.jl`. ✔
 - ⬜ **Phase 7 — z-dependent linop assembly.** Port `_fill_linop`
   (`src/LinearOps.jl:77,185,337`) so `prop!` never returns to Julia.
 - ⬜ **Phase 8 — Default-flip + cleanup.** `LUNA_USE_RUST_NATIVE` becomes default;

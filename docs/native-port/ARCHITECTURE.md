@@ -1,8 +1,8 @@
 # Native-Rust Backend Port — Architecture
 
-> Status: design doc for the phased port. Phases 0-5 are implemented and
-> passing (see `docs/native-port/PORT_LOG.md` for the latest entry); Phase 6
-> (Free-space) is next.
+> Status: design doc for the phased port. Phases 0-6 are implemented and
+> passing (see `docs/native-port/PORT_LOG.md` for the latest entry); Phase 7
+> (z-dependent linop) is next.
 > Companion docs: [MATH.md](MATH.md), [TESTING.md](TESTING.md),
 > [PORT_LOG.md](PORT_LOG.md). Agent workflow: [`AGENTS.md`](../../AGENTS.md).
 > Phase checklist: [`BACKLOG.md`](../../BACKLOG.md).
@@ -140,8 +140,8 @@ independently shippable and independently testable.
 | `TransRadial` + QDHT | `src/NonlinearRHS.jl:663` | 3 | ✅ done | QDHT already Rust, made resident |
 | Raman (`RamanPolar`) | `src/Nonlinear.jl:357` | 4 | ✅ done | ADE already Rust, made resident |
 | `TransModal` + overlap cubature | `src/NonlinearRHS.jl:421` | 5 | ✅ done | narrow scope: `libcubature` reused (dlopen, not reimplemented), `HE,n=1`/`full=false`/Kerr-only |
-| `TransFree` (3D FFT) | `src/NonlinearRHS.jl:826` | 6 | ⬜ next | 3D FFTW plans |
-| z-dependent linop assembly | `src/LinearOps.jl:77,185,337` | 7 | ⬜ | free-space/radial/modal |
+| `TransFree` (3D FFT) | `src/NonlinearRHS.jl:826` | 6 | ✅ done | joint 3-D FFTW plan (same libfftw3, new plan rank); RealGrid + const_norm_free + Kerr-only |
+| z-dependent linop assembly | `src/LinearOps.jl:77,185,337` | 7 | ⬜ next | free-space/radial/modal |
 | Default-flip + cleanup | — | 8 | ⬜ | native becomes default |
 
 ## 6. Out of scope (stays Julia indefinitely)

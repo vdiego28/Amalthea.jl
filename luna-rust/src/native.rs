@@ -59,6 +59,20 @@
 //!       4.0e-16 (fixed step size), with the HE11→HE12 energy transfer
 //!       independently verified non-negligible (2.0e-5, self-validating —
 //!       see MATH.md §3.3 and PORT_LOG). COMPLETE.
+//! - [x] Phase 6 — Free-space (`TransFree`): a genuine 3-D FFTW plan
+//!       (`fftw.rs::RealFft3d`, new `fftw_plan_dft_r2c_3d`/`_c2r_3d` symbols —
+//!       same libfftw3 binary, not a new library) replaces the QDHT-plus-1-D
+//!       pattern Phase 3 used for radial; `rhs_free` has no per-column
+//!       spatial step (Kerr and the precomputed normalization are plain flat
+//!       elementwise ops over the whole `(t,y,x)`/`(ω,ky,kx)` volume). Dim
+//!       order (`(n_x,n_y,n_t)` reversed for Julia's column-major
+//!       `(n_t,n_y,n_x)`) and the `1/(n_t·n_y·n_x)` round-trip normalization
+//!       were verified against a literal `FFTW.rfft` reference
+//!       (`fftw.rs::tests::r2c_3d_matches_julia_reference`) before being
+//!       trusted, not assumed from the row/column-major rule alone. Scope:
+//!       RealGrid, `const_norm_free` (z-invariant), scalar Kerr,
+//!       `shotnoise=false`. Gate: single-step 7.05e-18, full-solve 5.01e-17
+//!       (fixed step size). See MATH.md §3.4. COMPLETE.
 //!       Scope: RealGrid, `MarcatiliMode{<:Number,...}` (constant radius)
 //!       with `kind=:HE, n=1` only (needs only `besselj(0,·)`/`besselj(1,·)`,
 //!       already in `diffraction.rs`), Kerr-only, `shotnoise=false`. See
@@ -66,7 +80,7 @@
 
 use num_complex::Complex;
 use libc::{c_char, c_double, c_int, c_uint, size_t, c_void};
-use crate::fftw::{FftwApi, ComplexFft1d, RealFft1d};
+use crate::fftw::{FftwApi, ComplexFft1d, RealFft1d, RealFft3d};
 use crate::ffi::QdhtFfiHandle;
 use crate::raman::{TimeDomainRamanSolver, RamanOscillator};
 use crate::cubature::CubatureApi;
@@ -211,6 +225,26 @@ pub struct NativeSim {
     /// integrate against has to live on `self` rather than be passed
     /// alongside it.
     pub modal_emega: Vec<Complex<f64>>,
+
+    // ── Phase 6: Free-space (TransFree), RealGrid + scalar Kerr — see MATH.md §3.4 ──
+    pub is_free: bool,
+    pub n_y: usize,
+    pub n_x: usize,
+    pub fft_r2c_3d: Option<RealFft3d>,
+    /// Precomputed `ωwin[iω]·(-i·ω[iω])/(2·normfun(z)[iω,iky,ikx])`, flattened
+    /// column-major `(n_spec, n_y, n_x)` — folds `norm_free` + `ωwin` into one
+    /// elementwise multiply, exactly like Phase 3's radial `M` array. Valid
+    /// only for a z-invariant `normfun` (`const_norm_free`).
+    pub free_m: Vec<Complex<f64>>,
+    /// `1/(n_time_over·n_y·n_x)` — **not** the 1-D `fft_norm_over` (which is
+    /// only `1/n_time_over`): the free-space transform spans all three axes,
+    /// so reusing the 1-D factor would silently under-scale by `1/(n_y·n_x)`.
+    /// See MATH.md §3.4.
+    pub free_fft_norm_over: f64,
+    pub free_eto: Vec<f64>,
+    pub free_pto: Vec<f64>,
+    pub free_eoo: Vec<Complex<f64>>,
+    pub free_poo: Vec<Complex<f64>>,
 }
 
 impl NativeSim {
@@ -299,6 +333,16 @@ impl NativeSim {
             modal_prwo: Vec::new(),
             modal_prw: Vec::new(),
             modal_emega: Vec::new(),
+            is_free: false,
+            n_y: 0,
+            n_x: 0,
+            fft_r2c_3d: None,
+            free_m: Vec::new(),
+            free_fft_norm_over: 1.0,
+            free_eto: Vec::new(),
+            free_pto: Vec::new(),
+            free_eoo: Vec::new(),
+            free_poo: Vec::new(),
         }
     }
 
@@ -780,6 +824,72 @@ impl NativeSim {
             }
         }
     }
+
+    /// Free-space (`TransFree`) RHS: joint 3-D FFT (RealGrid, scalar Kerr —
+    /// see MATH.md §3.4). Mirrors `TransFree.__call__`
+    /// (src/NonlinearRHS.jl:818-838). Unlike `rhs_radial`, there is no
+    /// per-column spatial step: Kerr and the final normalization multiply
+    /// are plain flat elementwise ops over the whole `(t,y,x)`/`(ω,ky,kx)`
+    /// volume; only the zero-pad/truncate and `towin` steps need a
+    /// per-`(y,x)`-column loop, since those act along the `t`/`ω` axis.
+    fn rhs_free(&mut self, idx: usize, eomega: &[Complex<f64>]) {
+        let n_spec = self.n_spec;
+        let n_spec_over = self.n_spec_over;
+        let n_time_over = self.n_time_over;
+        let n_cols = self.n_y * self.n_x;
+
+        // ── Step 1: zero-pad ω → oversampled, per (y,x) column ───────────────────
+        let scale_fwd = (n_spec_over - 1) as f64 / (n_spec - 1) as f64;
+        self.free_eoo.fill(Complex::new(0.0, 0.0));
+        for c in 0..n_cols {
+            let in_col = &eomega[c * n_spec..(c + 1) * n_spec];
+            let out_col = &mut self.free_eoo[c * n_spec_over..(c + 1) * n_spec_over];
+            for i in 0..n_spec { out_col[i] = in_col[i] * scale_fwd; }
+        }
+
+        // ── Step 2: ONE joint 3-D inverse transform (ω,ky,kx) → (t,y,x) ──────────
+        if let Some(ref fft) = self.fft_r2c_3d {
+            fft.inverse(&mut self.free_eoo, &mut self.free_eto);
+            let inv_nto = self.free_fft_norm_over;
+            for v in &mut self.free_eto { *v *= inv_nto; }
+        }
+
+        // ── Step 3: Kerr (KerrScalar!), flat over the whole (t,y,x) volume ───────
+        self.free_pto.fill(0.0);
+        for i in 0..(n_time_over * n_cols) {
+            let e = self.free_eto[i];
+            self.free_pto[i] += self.kerr_fac * e * e * e;
+        }
+
+        // ── Step 4: towin apodization per (y,x) column ───────────────────────────
+        for c in 0..n_cols {
+            let start = c * n_time_over;
+            for t in 0..n_time_over {
+                self.free_pto[start + t] *= self.towin[t];
+            }
+        }
+
+        // ── Step 5: ONE joint 3-D forward transform (t,y,x) → (ω,ky,kx) ──────────
+        if let Some(ref fft) = self.fft_r2c_3d {
+            fft.forward(&mut self.free_pto, &mut self.free_poo);
+        }
+
+        // ── Step 6: truncate oversampled → base, per (y,x) column ────────────────
+        let scale_inv2 = (n_spec - 1) as f64 / (n_spec_over - 1) as f64;
+        self.ks[idx].fill(Complex::new(0.0, 0.0));
+        for c in 0..n_cols {
+            let in_start = c * n_spec_over;
+            let out_start = c * n_spec;
+            for i in 0..n_spec {
+                self.ks[idx][out_start + i] = self.free_poo[in_start + i] * scale_inv2;
+            }
+        }
+
+        // ── Step 7: normalization — ks[idx] *= M (folds norm_free + ωwin) ────────
+        for i in 0..(n_spec * n_cols) {
+            self.ks[idx][i] *= self.free_m[i];
+        }
+    }
 }
 
 /// C `integrand_v` callback for `pcubature_v` — reconstructs `&mut NativeSim`
@@ -894,7 +1004,10 @@ pub unsafe extern "C" fn set_field(
     let src = unsafe { std::slice::from_raw_parts(data as *const Complex<f64>, n) };
     sim.field.copy_from_slice(src);
     
-    if sim.is_modal {
+    if sim.is_free {
+        let field = sim.field.clone();
+        sim.rhs_free(0, &field);
+    } else if sim.is_modal {
         let field = sim.field.clone();
         sim.rhs_modal(0, &field);
     } else if sim.is_radial {
@@ -1346,6 +1459,90 @@ pub unsafe extern "C" fn native_set_modal_params(
     0
 }
 
+/// Wire the free-space (`TransFree`) RHS: resident joint 3-D FFTW plan +
+/// scalar Kerr. See MATH.md §3.4 for the design (dimension order,
+/// `1/(n_t·n_y·n_x)` normalization, no per-column spatial step).
+///
+/// Must be called **after** `native_set_fftw_plans` (`is_real=1` — Phase 6
+/// gate is RealGrid-only; reuses the already-loaded FFTW library handle
+/// rather than loading it again).
+///
+/// # Arguments
+/// * `n_time`/`n_time_over` — `grid.t`/`grid.to` lengths.
+/// * `n_y`/`n_x` — transverse grid sizes (`length(xygrid.y)`/`length(xygrid.x)`);
+///   `sim.n` must equal `n_spec * n_y * n_x`.
+/// * `flags` — FFTW planner flag, must match the one used for the 1-D plans
+///   (planning-algorithm/summation-order parity, see `fftw.rs` header).
+/// * `towin` — length `n_time_over`, or null for all-ones.
+/// * `kerr_fac` — `density · ε₀ · γ3`.
+/// * `m_re`/`m_im` — precomputed `ωwin[iω]·(-i·ω[iω])/(2·normfun(0.0)[iω,iky,ikx])`,
+///   flattened column-major `(n_spec, n_y, n_x)`, length `n_spec*n_y*n_x` each.
+///
+/// Returns 0 on success, -1 on null/shape-mismatched args, -2 if
+/// `native_set_fftw_plans` was not called first.
+///
+/// # Safety
+/// `sim` must be valid; `m_re`/`m_im` must each be valid for `n_spec*n_y*n_x`
+/// reads (`n_spec = sim.n / (n_y*n_x)`); `towin`, if non-null, valid for
+/// `n_time_over` reads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_set_free_params(
+    sim: *mut NativeSim,
+    n_time: size_t,
+    n_time_over: size_t,
+    n_y: size_t,
+    n_x: size_t,
+    flags: c_uint,
+    towin: *const c_double,
+    kerr_fac: c_double,
+    m_re: *const c_double,
+    m_im: *const c_double,
+) -> i32 {
+    if sim.is_null() || m_re.is_null() || m_im.is_null() { return -1; }
+    let s = unsafe { &mut *sim };
+    if n_y == 0 || n_x == 0 { return -1; }
+    let n_cols = n_y * n_x;
+    if s.n % n_cols != 0 { return -1; }
+    let n_spec = s.n / n_cols;
+
+    let n_spec_over_tmp = if s.is_real { n_time_over / 2 + 1 } else { n_time_over };
+
+    let fft3d = match s.fftw_api.as_ref() {
+        Some(api) => RealFft3d::new(api, n_time_over, n_y, n_x, flags),
+        None => return -2,
+    };
+
+    s.is_free = true;
+    s.n_time = n_time;
+    s.n_time_over = n_time_over;
+    s.n_spec = n_spec;
+    s.n_spec_over = n_spec_over_tmp;
+    s.n_y = n_y;
+    s.n_x = n_x;
+    s.fft_r2c_3d = Some(fft3d);
+    s.free_fft_norm_over = 1.0 / (n_time_over * n_y * n_x) as f64;
+
+    if !towin.is_null() {
+        s.towin = unsafe { std::slice::from_raw_parts(towin, n_time_over) }.to_vec();
+    } else {
+        s.towin = vec![1.0; n_time_over];
+    }
+    s.kerr_fac = kerr_fac;
+
+    let m_re_sl = unsafe { std::slice::from_raw_parts(m_re, n_spec * n_cols) };
+    let m_im_sl = unsafe { std::slice::from_raw_parts(m_im, n_spec * n_cols) };
+    s.free_m = m_re_sl.iter().zip(m_im_sl.iter())
+        .map(|(&r, &i)| Complex::new(r, i))
+        .collect();
+
+    s.free_eto = vec![0.0; n_time_over * n_cols];
+    s.free_pto = vec![0.0; n_time_over * n_cols];
+    s.free_eoo = vec![Complex::new(0.0, 0.0); s.n_spec_over * n_cols];
+    s.free_poo = vec![Complex::new(0.0, 0.0); s.n_spec_over * n_cols];
+
+    0
+}
+
 // ── Dormand-Prince constants (matching ffi.rs) ──────────────────────────────
 const DP_B: [[f64; 6]; 6] = [
     [1.0/5.0,          0.0,              0.0,              0.0,             0.0,              0.0],
@@ -1473,7 +1670,13 @@ pub unsafe extern "C" fn native_step(
             }
         }
         
-        if s.is_modal {
+        if s.is_free {
+            let dt_prop = DP_NODES[ii] * dt;
+            let mut ystage_prop = s.ystage.clone();
+            apply_prop(&mut ystage_prop, &s.linop, dt_prop);
+            s.rhs_free(ii + 1, &ystage_prop);
+            apply_prop(&mut s.ks[ii + 1], &s.linop, -dt_prop);
+        } else if s.is_modal {
             let dt_prop = DP_NODES[ii] * dt;
             let mut ystage_prop = s.ystage.clone();
             apply_prop(&mut ystage_prop, &s.linop, dt_prop);

@@ -688,8 +688,9 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     is_mode_avg = f! isa Luna.NonlinearRHS.TransModeAvg
     is_radial = f! isa Luna.NonlinearRHS.TransRadial
     is_modal = f! isa Luna.NonlinearRHS.TransModal
+    is_free = f! isa Luna.NonlinearRHS.TransFree
 
-    if is_mode_avg || is_radial || is_modal
+    if is_mode_avg || is_radial || is_modal || is_free
         grid = f!.grid
         is_real_grid = grid isa Luna.Grid.RealGrid   # EnvGrid uses c2c FFTs
         n_time = length(grid.t)
@@ -959,6 +960,59 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             towin, kerr_fac, real.(nlfac), imag.(nlfac),
             lib_path, f!.rtol, f!.atol, Csize_t(f!.mfcn))
         rc == 0 || error("native_set_modal_params failed: $rc")
+    end
+
+    # Set parameters if free-space (TransFree) — Phase 6 gate: RealGrid,
+    # const_norm_free (z-invariant), scalar Kerr only. Reuses the FFTW
+    # library handle native_set_fftw_plans already loaded (no new dlopen) —
+    # only a new 3-D plan is created. See MATH.md §3.4.
+    if is_free
+        is_real_grid || error("RustNativeStepper: EnvGrid free-space not yet " *
+                               "supported (Phase 6 gate is RealGrid-only)")
+        isnothing(f!.Et_noise) || error("RustNativeStepper: modified shot-noise " *
+                          "(Et_noise) not yet supported for the native free-space path")
+
+        n_y = length(f!.xygrid.y)
+        n_x = length(f!.xygrid.x)
+
+        towin = f!.grid.towin
+
+        γ3 = 0.0
+        for r in f!.resp
+            for fld in fieldnames(typeof(r))
+                if occursin("γ3", string(fld))
+                    γ3 = getfield(r, fld)
+                    break
+                end
+            end
+            γ3 != 0.0 && break
+        end
+        length(f!.resp) == 1 ||
+            @warn "RustNativeStepper (free-space): only single-response " *
+                  "(Kerr-only) is verified by the native path; extra responses " *
+                  "(plasma, Raman, ...) are ignored — physics will be wrong if " *
+                  "any are present."
+
+        density = f!.densityfun(0.0)
+        kerr_fac = density * Luna.PhysData.ε_0 * γ3
+
+        # Precompute M[iω,iky,ikx] = ωwin[iω]·(-i·ω[iω]) / (2·normfun(0.0)[iω,iky,ikx]).
+        # Folds norm_free + ωwin into one array. Valid only for a z-invariant
+        # normfun (const_norm_free) — see MATH.md §3.4.
+        normarr = f!.normfun(0.0)
+        ω = f!.grid.ω
+        ωwin = f!.grid.ωwin
+        M = (ωwin .* (-im .* ω)) ./ (2 .* normarr)
+
+        # FFTW_ESTIMATE = 1 << 6 = 64 — must match native_set_fftw_plans' flag.
+        rc = ccall((:native_set_free_params, _LIBLUNA_RUST_RK45), Cint,
+            (Ptr{Cvoid}, Csize_t, Csize_t, Csize_t, Csize_t, Cuint,
+             Ptr{Float64}, Float64,
+             Ptr{Float64}, Ptr{Float64}),
+            handle.ptr, n_time, n_time_over, n_y, n_x, Cuint(64),
+            towin, kerr_fac,
+            real.(M), imag.(M))
+        rc == 0 || error("native_set_free_params failed: $rc")
     end
 
     # Copy initial field to Rust

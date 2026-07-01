@@ -139,6 +139,10 @@ type PlanR2c1d =
     unsafe extern "C" fn(c_int, *mut f64, *mut FftwComplex, c_uint) -> FftwPlan;
 type PlanC2r1d =
     unsafe extern "C" fn(c_int, *mut FftwComplex, *mut f64, c_uint) -> FftwPlan;
+type PlanR2c3d =
+    unsafe extern "C" fn(c_int, c_int, c_int, *mut f64, *mut FftwComplex, c_uint) -> FftwPlan;
+type PlanC2r3d =
+    unsafe extern "C" fn(c_int, c_int, c_int, *mut FftwComplex, *mut f64, c_uint) -> FftwPlan;
 type ExecDft = unsafe extern "C" fn(FftwPlan, *mut FftwComplex, *mut FftwComplex);
 type ExecR2c = unsafe extern "C" fn(FftwPlan, *mut f64, *mut FftwComplex);
 type ExecC2r = unsafe extern "C" fn(FftwPlan, *mut FftwComplex, *mut f64);
@@ -150,6 +154,8 @@ pub struct FftwApi {
     plan_dft_1d: PlanDft1d,
     plan_r2c_1d: PlanR2c1d,
     plan_c2r_1d: PlanC2r1d,
+    plan_r2c_3d: PlanR2c3d,
+    plan_c2r_3d: PlanC2r3d,
     exec_dft: ExecDft,
     exec_r2c: ExecR2c,
     exec_c2r: ExecC2r,
@@ -187,6 +193,8 @@ impl FftwApi {
         let plan_dft_1d = sym!("fftw_plan_dft_1d", PlanDft1d);
         let plan_r2c_1d = sym!("fftw_plan_dft_r2c_1d", PlanR2c1d);
         let plan_c2r_1d = sym!("fftw_plan_dft_c2r_1d", PlanC2r1d);
+        let plan_r2c_3d = sym!("fftw_plan_dft_r2c_3d", PlanR2c3d);
+        let plan_c2r_3d = sym!("fftw_plan_dft_c2r_3d", PlanC2r3d);
         let exec_dft = sym!("fftw_execute_dft", ExecDft);
         let exec_r2c = sym!("fftw_execute_dft_r2c", ExecR2c);
         let exec_c2r = sym!("fftw_execute_dft_c2r", ExecC2r);
@@ -197,6 +205,8 @@ impl FftwApi {
             plan_dft_1d,
             plan_r2c_1d,
             plan_c2r_1d,
+            plan_r2c_3d,
+            plan_c2r_3d,
             exec_dft,
             exec_r2c,
             exec_c2r,
@@ -325,6 +335,83 @@ impl Drop for RealFft1d {
     }
 }
 
+/// A real↔complex 3-D plan pair (`TransFree`'s `plan_rfft(x, (1,2,3))` —
+/// RealGrid free-space, transform spans all three axes: time + 2 transverse).
+///
+/// Buffers are Julia column-major `(n_t, n_y, n_x)` (`n_t` fastest-varying).
+/// FFTW's basic-interface dimension list is given slowest→fastest, so the
+/// constructor passes `(n_x, n_y, n_t)` — **reversed** — to align FFTW's
+/// fastest dimension with Julia's `n_t` axis; verified against
+/// `FFTW.rfft(x,(1,2,3))`/`irfft` on a fixed array (`fftw.rs` unit test)
+/// before this was trusted, not assumed from the row/column-major rule alone.
+/// The conjugate-symmetric halving lands on `n_t` (→ `n_t/2+1`), matching
+/// Julia's `size(rfft(x,(1,2,3))) == (n_t÷2+1, n_y, n_x)`.
+///
+/// **Multi-dim c2r destroys its input** (unlike 1-D c2r, `PRESERVE_INPUT` is
+/// not supported for rank>1 c2r in FFTW) — callers must copy the spectrum
+/// into scratch before calling `inverse`, exactly like every other native
+/// RHS in this port already does before its inverse transform.
+pub struct RealFft3d {
+    n_t: usize,
+    n_y: usize,
+    n_x: usize,
+    nspec: usize,
+    r2c: FftwPlan,
+    c2r: FftwPlan,
+    destroy_plan: DestroyPlan,
+    exec_r2c: ExecR2c,
+    exec_c2r: ExecC2r,
+}
+
+impl RealFft3d {
+    pub fn new(api: &FftwApi, n_t: usize, n_y: usize, n_x: usize, flags: c_uint) -> Self {
+        let nspec = n_t / 2 + 1;
+        let mut tbuf = vec![0.0f64; n_t * n_y * n_x];
+        let mut sbuf = vec![[0.0f64; 2]; nspec * n_y * n_x];
+        let f = flags | FFTW_UNALIGNED;
+        let _guard = PLANNER_LOCK.lock().unwrap();
+        let r2c = unsafe {
+            (api.plan_r2c_3d)(n_x as c_int, n_y as c_int, n_t as c_int,
+                              tbuf.as_mut_ptr(), sbuf.as_mut_ptr(), f)
+        };
+        let c2r = unsafe {
+            (api.plan_c2r_3d)(n_x as c_int, n_y as c_int, n_t as c_int,
+                              sbuf.as_mut_ptr(), tbuf.as_mut_ptr(), f)
+        };
+        RealFft3d { n_t, n_y, n_x, nspec, r2c, c2r,
+                    destroy_plan: api.destroy_plan, exec_r2c: api.exec_r2c, exec_c2r: api.exec_c2r }
+    }
+
+    pub fn nspec(&self) -> usize { self.nspec }
+
+    /// `spec = rfft(time, (1,2,3))` (unnormalized), column-major `(nspec, n_y, n_x)`.
+    pub fn forward(&self, time: &mut [f64], spec: &mut [Complex<f64>]) {
+        assert_eq!(time.len(), self.n_t * self.n_y * self.n_x);
+        assert_eq!(spec.len(), self.nspec * self.n_y * self.n_x);
+        unsafe {
+            (self.exec_r2c)(self.r2c, time.as_mut_ptr(), spec.as_mut_ptr() as *mut FftwComplex);
+        }
+    }
+
+    /// `time = irfft_unnormalized(spec, (1,2,3))` (caller divides by
+    /// `n_t*n_y*n_x`). **Destroys `spec`** — copy first if the caller still
+    /// needs it (see struct doc).
+    pub fn inverse(&self, spec: &mut [Complex<f64>], time: &mut [f64]) {
+        assert_eq!(spec.len(), self.nspec * self.n_y * self.n_x);
+        assert_eq!(time.len(), self.n_t * self.n_y * self.n_x);
+        unsafe {
+            (self.exec_c2r)(self.c2r, spec.as_mut_ptr() as *mut FftwComplex, time.as_mut_ptr());
+        }
+    }
+}
+
+impl Drop for RealFft3d {
+    fn drop(&mut self) {
+        let _guard = PLANNER_LOCK.lock().unwrap();
+        unsafe { (self.destroy_plan)(self.r2c); (self.destroy_plan)(self.c2r); }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,6 +463,68 @@ mod tests {
         for i in 0..n {
             assert!((back[i] / n as f64 - orig[i]).abs() < 1e-12,
                     "r2c roundtrip mismatch at {i}");
+        }
+    }
+
+    /// Cross-validates `RealFft3d`'s dimension order (reversed `(n_x,n_y,n_t)`
+    /// passed to FFTW for Julia's column-major `(n_t,n_y,n_x)`) against a
+    /// literal reference computed independently in Julia:
+    /// `FFTW.rfft(reshape(Float64.(1:24), 4,3,2), (1,2,3))`. A pure Rust
+    /// round-trip test (forward+inverse self-consistency) cannot catch a
+    /// dimension-order bug — forward/inverse would still round-trip
+    /// correctly even if transposed relative to Julia's convention — so this
+    /// compares actual spectral values, not just round-trip agreement. See
+    /// MATH.md §3.4.
+    #[test]
+    fn r2c_3d_matches_julia_reference() {
+        let api = match try_api() {
+            Some(a) => a,
+            None => { eprintln!("skip r2c_3d_matches_julia_reference: no FFTW found"); return; }
+        };
+        let (n_t, n_y, n_x) = (4usize, 3usize, 2usize);
+        let plan = RealFft3d::new(&api, n_t, n_y, n_x, FFTW_ESTIMATE);
+
+        // Column-major (n_t,n_y,n_x): reshape(Float64.(1:24), 4,3,2) in Julia.
+        let mut x: Vec<f64> = (1..=24).map(|v| v as f64).collect();
+        let nspec = plan.nspec();
+        let mut spec = vec![Complex::new(0.0, 0.0); nspec * n_y * n_x];
+        plan.forward(&mut x, &mut spec);
+
+        // Julia: FFTW.rfft(x, (1,2,3))[i,j,k], column-major (nspec,n_y,n_x).
+        let expected: [(usize, usize, usize, f64, f64); 6] = [
+            (0, 0, 0, 300.0, 0.0),
+            (1, 0, 0, -12.0, 12.0),
+            (2, 0, 0, -12.0, 0.0),
+            (0, 1, 0, -48.0, 27.712812921102035),
+            (0, 2, 0, -48.0, -27.712812921102035),
+            (0, 0, 1, -144.0, 0.0),
+        ];
+        for (i, j, k, re, im) in expected {
+            let idx = i + nspec * (j + n_y * k);
+            let got = spec[idx];
+            assert!((got.re - re).abs() < 1e-9 && (got.im - im).abs() < 1e-9,
+                "r2c_3d mismatch at ({i},{j},{k}): got {got}, expected {re}+{im}i");
+        }
+        // Everything else in this particular input is exactly zero.
+        for k in 0..n_x {
+            for j in 0..n_y {
+                for i in 0..nspec {
+                    if expected.iter().any(|&(ei, ej, ek, ..)| ei == i && ej == j && ek == k) {
+                        continue;
+                    }
+                    let idx = i + nspec * (j + n_y * k);
+                    assert!(spec[idx].norm() < 1e-9, "expected ~0 at ({i},{j},{k}), got {}", spec[idx]);
+                }
+            }
+        }
+
+        // Round-trip: irfft(rfft(x)) == n_t*n_y*n_x * x. c2r destroys `spec`,
+        // so this also exercises that spec is scratch, not reusable after.
+        let mut back = vec![0.0f64; n_t * n_y * n_x];
+        plan.inverse(&mut spec, &mut back);
+        let norm = (n_t * n_y * n_x) as f64;
+        for i in 0..back.len() {
+            assert!((back[i] / norm - x[i]).abs() < 1e-9, "r2c_3d roundtrip mismatch at {i}");
         }
     }
 }

@@ -160,11 +160,13 @@ boundary once per step (`native_step`), not once per stage. Toggle:
 
 **Status:** Phase 0 (foundations), Phase 1 (mode-averaged Kerr, RealGrid),
 Phase 2 (plasma + EnvGrid Kerr), Phase 3 (Radial + resident QDHT, RealGrid +
-scalar Kerr), Phase 4 (Raman, RealGrid, thg=true), and Phase 5 (Modal, narrow
+scalar Kerr), Phase 4 (Raman, RealGrid, thg=true), Phase 5 (Modal, narrow
 scope: `HE,n=1` Marcatili modes, `full=false`, Kerr-only — reuses the *same*
 `libcubature` C library Julia's `Cubature.jl` wraps, dlopened at runtime like
-FFTW, rather than reimplementing adaptive cubature) are complete. Phase 6
-(Free-space) is next. Full design docs, phase checklist, and math reference live
+FFTW, rather than reimplementing adaptive cubature), and Phase 6 (Free-space,
+RealGrid, `const_norm_free`, Kerr-only — a genuine joint 3-D FFTW plan, same
+libfftw3 binary, new plan rank only) are complete. Phase 7 (z-dependent
+linop) is next. Full design docs, phase checklist, and math reference live
 under `docs/native-port/{ARCHITECTURE,MATH,TESTING,PORT_LOG}.md` and `AGENTS.md`
 (repo root) — read those before touching this code; they are the source of
 truth for phase status, not this section.

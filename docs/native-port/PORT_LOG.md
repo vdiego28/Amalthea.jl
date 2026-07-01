@@ -732,3 +732,99 @@ copies into `ks[idx]` only after the call returns, for this reason.
 **Next:** Phase 6 — Free-space (`TransFree`, 3-D FFTW plans resident). See
 `BACKLOG.md`.
 
+## 2026-07-01 — Phase 6 — Free-space (TransFree) — Claude (sonnet-5)
+
+**Did:** Ported `TransFree`'s RHS — a genuine joint 3-D FFT over `(t,y,x)`
+(not a QDHT-plus-1-D-FFT like Phase 3's radial). New `fftw.rs::RealFft3d`
+(binds `fftw_plan_dft_r2c_3d`/`fftw_plan_dft_c2r_3d` — the *same* libfftw3
+already dlopened for the 1-D plans, one new plan-creation call, not a new
+library); `native.rs` gains `rhs_free` + `native_set_free_params`; `RK45.jl`
+gains an `is_free` wiring block. Gate: single-step 7.05e-18, full-solve
+5.01e-17 (fixed dt). Test `test/test_native_free.jl`. `LUNA_TEST_GROUP=rust`
+→ **41942/41942 pass, 0 broken**. `sim-propagation` group (includes the
+pure-Julia `test_full_freespace.jl`, a paraxial-analytic physics test over
+the same `TransFree` code path): no regressions.
+
+**Applying the Phase 5 lesson immediately: checked for C-library reuse
+before writing any new Rust math.** `fftw.rs` already dlopens the identical
+FFTW Julia's `FFTW.jl` calls; the *execute* entry points
+(`fftw_execute_dft_r2c`/`_c2r`) are rank-agnostic, so they work on a 3-D plan
+exactly as on the existing 1-D plans without any new binding for execution
+— only *plan creation* needed a new FFI symbol. This made Phase 6
+mechanically lower-risk than Phase 5 (reusing an already-bound library,
+adding one rank) rather than a new-library situation.
+
+**The one real risk (advisor-flagged, verified before touching the RHS, not
+assumed): 3-D dimension order and the round-trip normalization factor.**
+Julia's buffers are column-major `(n_t,n_y,n_x)` (`n_t` fastest); FFTW's
+basic-interface dimension list is slowest→fastest, so `RealFft3d::new`
+passes `(n_x,n_y,n_t)` — reversed — to align FFTW's fastest dim with
+Julia's `n_t` axis. A **pure Rust round-trip test (forward+inverse
+self-consistency) cannot catch a dimension-order bug** — it would still
+round-trip correctly even transposed relative to Julia's convention. Built
+a literal cross-check instead (`fftw.rs::tests::r2c_3d_matches_julia_reference`):
+computed `FFTW.rfft(reshape(Float64.(1:24),4,3,2), (1,2,3))` independently
+in Julia, hardcoded the six nonzero complex values as literals in a Rust
+`#[test]`, and asserted `RealFft3d::forward` produces the *same* values at
+the *same* flat indices (not just "some" values matching after an
+unverified reshuffle) — confirming both the dimension order and that the
+conjugate-symmetric halving lands on `n_t` (matching Julia's
+`size(rfft(x,(1,2,3))) == (n_t÷2+1,n_y,n_x)`). Also caught, in the same
+test: the round-trip normalization is `1/(n_t·n_y·n_x)`, not `1/n_t` —
+copying the 1-D `fft_norm_over` convention (as originally drafted, before
+this was caught) would have silently under-scaled by `1/(n_y·n_x)` in the
+full RHS, a bug that would have been far harder to localize there than at
+the isolated FFT-primitive level. Renamed the field to
+`free_fft_norm_over` specifically so it can never be confused with or
+accidentally reused as the 1-D `fft_norm_over`.
+
+**Multi-dim c2r destroys its input** (unlike 1-D c2r, `PRESERVE_INPUT` is
+not supported for rank>1 c2r in FFTW) — `rhs_free` follows the same
+copy-into-scratch-before-inverse structure every other native RHS already
+uses, so this is harmless by construction, not a new precaution needed.
+
+**Mechanically simpler than radial once the FFT primitive was trusted, not
+harder.** Because the spatial (y,x) transform is folded into the *same*
+joint 3-D FFT as the time axis (not a separate QDHT-style step), `rhs_free`
+has **no per-column spatial step at all** — Kerr (`E³`) and the precomputed
+normalization multiply are plain flat elementwise loops over the whole
+`(t,y,x)`/`(ω,ky,kx)` volume, identical in every column. Only the
+zero-pad/truncate (`copy_scale!`-equivalent) and `towin` apodization steps
+need a per-`(y,x)`-column loop, since those act along the `t`/`ω` axis
+specifically. Normalization reuses the exact same "precompute one flat
+complex array in Julia" pattern as Phase 3's `M` (`ωwin·(-iω)/(2·normfun)`,
+now `(n_spec,n_y,n_x)` instead of `(n_spec,n_r)`), needing zero of
+`norm_free`'s `k_z`/evanescent-masking logic ported into Rust.
+
+**Scope, consistent with the established narrowing discipline:** RealGrid
++ `const_norm_free` (z-invariant `normfun`) only, scalar Kerr,
+`shotnoise=false` (`Et_noise` not ported). EnvGrid free-space (c2c 3-D) and
+a z-dependent `normfun` are deferred (same shape of restriction every prior
+phase already carries).
+
+**Tests:**
+- `RUSTFLAGS="-D warnings" cargo build --release` → clean; `cargo test` →
+  28/28 pass (net +1 — the new `r2c_3d_matches_julia_reference`).
+- `test/test_native_free.jl` alone: single-step `7.05e-18`; full-solve
+  `5.01e-17` (rectangular `Nx=8, Ny=6` transverse grid — deliberately
+  non-square: a post-implementation advisor review pointed out that a square
+  grid with a radially-symmetric `GaussGaussField` input is invariant under a
+  y↔x transpose, so it gives **zero** independent coverage of a swapped-axis
+  bug in the `M`-array layout or `RealFft3d`'s dimension order — only the
+  standalone `fftw.rs` unit test would have caught that. The rectangular
+  grid makes this equivalence test a genuine RHS-level backstop too, and
+  incidentally exercises the `FreeGrid(Rx,Nx,Ry,Ny)` rectangular
+  constructor, reachable through the public API but previously untested at
+  the RHS level. Confirmed the same clean floor holds rectangular as square).
+- `LUNA_TEST_GROUP=rust julia --project . test/runtests.jl` → **41942/41942
+  pass, 0 broken** (net +2 over the Phase 5 baseline of 41940 — the two new
+  free-space assertions).
+- `sim-propagation` group: no regressions, including `test_full_freespace.jl`
+  (a pre-existing pure-Julia paraxial-analytic accuracy test over the same
+  `TransFree` code path — confirms the Julia-only path is untouched).
+
+**Next:** Phase 7 — z-dependent linop assembly (`_fill_linop`,
+`src/LinearOps.jl:77,185,337`), so `prop!` never returns to Julia for any
+geometry with a non-constant medium (tapered fiber, pressure gradient). See
+`BACKLOG.md`.
+

@@ -1,7 +1,8 @@
 # Native-Rust Backend Port — Testing & Equivalence
 
-> Status: design doc for the phased port. Phases 0-5 are implemented and
-> passing (see `docs/native-port/PORT_LOG.md`); Phase 6 (Free-space) is next.
+> Status: design doc for the phased port. Phases 0-6 are implemented and
+> passing (see `docs/native-port/PORT_LOG.md`); Phase 7 (z-dependent linop)
+> is next.
 > Companion docs: [ARCHITECTURE.md](ARCHITECTURE.md), [MATH.md](MATH.md),
 > [PORT_LOG.md](PORT_LOG.md).
 
@@ -153,8 +154,8 @@ coincidence of regime, not immunity to the same mechanism).
 | 3 | ✅ done | radial + resident QDHT (RealGrid + scalar Kerr) | `test/test_native_radial.jl` | 1.1e-17 (achieved) | 1.3e-16 (fixed dt) |
 | 4 | ✅ done | Raman (carrier SDO, thg=true, all-SDO eligibility) | `test/test_native_raman.jl` | 0.0 (see note) | 4.2e-8 (achieved) |
 | 5 | ✅ done | modal + overlap cubature (`HE,n=1`, `full=false`, Kerr-only) | `test/test_native_modal.jl` | 1.4e-19 (achieved; ~1e-10 tier) | 4.0e-16 (achieved; fixed dt) |
-| 6 | ⬜ next | free-space 3-D FFT | `test/test_native_free.jl` | ~1e-13 | ~1e-6 |
-| 7 | ⬜ | z-dependent linop assembly | extend the above | ~1e-13 | ~1e-6 |
+| 6 | ✅ done | free-space 3-D FFT (RealGrid, const_norm_free, Kerr-only) | `test/test_native_free.jl` | 7.05e-18 (achieved) | 5.01e-17 (achieved; fixed dt) |
+| 7 | ⬜ next | z-dependent linop assembly | extend the above | ~1e-13 | ~1e-6 |
 | 8 | ⬜ | default-flip: existing suite green with native as default | full suite | — | existing |
 
 Phase 5's single-step tier is documented looser (~1e-10) than the FFTW-only
