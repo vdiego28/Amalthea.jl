@@ -1,8 +1,8 @@
 # Native-Rust Backend Port — Architecture
 
-> Status: design doc for the phased port. Phases 0-2 are implemented and
-> passing (see `docs/native-port/PORT_LOG.md` for the latest entry); Phase 3
-> (Radial + resident QDHT) is next.
+> Status: design doc for the phased port. Phases 0-3 are implemented and
+> passing (see `docs/native-port/PORT_LOG.md` for the latest entry); Phase 4
+> (Raman) is next.
 > Companion docs: [MATH.md](MATH.md), [TESTING.md](TESTING.md),
 > [PORT_LOG.md](PORT_LOG.md). Agent workflow: [`AGENTS.md`](../../AGENTS.md).
 > Phase checklist: [`BACKLOG.md`](../../BACKLOG.md).
@@ -137,8 +137,8 @@ independently shippable and independently testable.
 |----------|--------------|-------|--------|-------|
 | `TransModeAvg` + Kerr | `src/NonlinearRHS.jl:531` | 1 | ✅ done | RealGrid first |
 | Plasma (`PlasmaCumtrapz`) + EnvGrid Kerr | `src/Nonlinear.jl:161`, `:81` | 2 | ✅ done | rate LUT already Rust |
-| `TransRadial` + QDHT | `src/NonlinearRHS.jl:663` | 3 | ⬜ next | QDHT already Rust, make resident |
-| Raman (`RamanPolar`) | `src/Nonlinear.jl:357` | 4 | ⬜ | ADE already Rust, make resident |
+| `TransRadial` + QDHT | `src/NonlinearRHS.jl:663` | 3 | ✅ done | QDHT already Rust, made resident |
+| Raman (`RamanPolar`) | `src/Nonlinear.jl:357` | 4 | ⬜ next | ADE already Rust, make resident |
 | `TransModal` + overlap cubature | `src/NonlinearRHS.jl:421` | 5 | ⬜ | hardest; needs Rust cubature |
 | `TransFree` (3D FFT) | `src/NonlinearRHS.jl:826` | 6 | ⬜ | 3D FFTW plans |
 | z-dependent linop assembly | `src/LinearOps.jl:77,185,337` | 7 | ⬜ | free-space/radial/modal |

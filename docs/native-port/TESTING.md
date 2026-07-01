@@ -1,7 +1,7 @@
 # Native-Rust Backend Port — Testing & Equivalence
 
-> Status: design doc for the phased port. Phases 0-2 are implemented and
-> passing (see `docs/native-port/PORT_LOG.md`); Phase 3 is next.
+> Status: design doc for the phased port. Phases 0-3 are implemented and
+> passing (see `docs/native-port/PORT_LOG.md`); Phase 4 (Raman) is next.
 > Companion docs: [ARCHITECTURE.md](ARCHITECTURE.md), [MATH.md](MATH.md),
 > [PORT_LOG.md](PORT_LOG.md).
 
@@ -150,12 +150,12 @@ coincidence of regime, not immunity to the same mechanism).
 | 0 | ✅ done | set/get round-trip bit-exact; no-op RHS reproduces Julia stepper | `test/test_native_phase0.jl` | bitwise (round-trip) | ~1e-6 |
 | 1 | ✅ done | mode-avg + Kerr `prop_capillary(:HE11)`, RealGrid | `test/test_native_phase1.jl` | <1e-13 (achieved) | 2.75e-16 (fixed dt) |
 | 2 | ✅ done | EnvGrid Kerr (2a) + plasma/RealGrid (2b) | `test/test_native_phase2.jl` | <1e-13 (achieved) | 3.19e-17 / 2.73e-16 (fixed dt) |
-| 3 | ⬜ next | radial + resident QDHT | `test/test_native_radial.jl` | ~1e-13 | ~1e-6 |
-| 4 | Raman (carrier SDO) | `test/test_native_raman.jl` | ~1e-13 | ~1e-6 |
-| 5 | modal + overlap cubature | `test/test_native_modal.jl` | ~1e-10 (cubature) | ~1e-6 |
-| 6 | free-space 3-D FFT | `test/test_native_free.jl` | ~1e-13 | ~1e-6 |
-| 7 | z-dependent linop assembly | extend the above | ~1e-13 | ~1e-6 |
-| 8 | default-flip: existing suite green with native as default | full suite | — | existing |
+| 3 | ✅ done | radial + resident QDHT (RealGrid + scalar Kerr) | `test/test_native_radial.jl` | 1.1e-17 (achieved) | 1.3e-16 (fixed dt) |
+| 4 | ⬜ next | Raman (carrier SDO) | `test/test_native_raman.jl` | ~1e-13 | ~1e-6 |
+| 5 | ⬜ | modal + overlap cubature | `test/test_native_modal.jl` | ~1e-10 (cubature) | ~1e-6 |
+| 6 | ⬜ | free-space 3-D FFT | `test/test_native_free.jl` | ~1e-13 | ~1e-6 |
+| 7 | ⬜ | z-dependent linop assembly | extend the above | ~1e-13 | ~1e-6 |
+| 8 | ⬜ | default-flip: existing suite green with native as default | full suite | — | existing |
 
 Phase 5's single-step tier is looser (~1e-10) because adaptive cubature node
 placement is itself algorithm-dependent; match Julia's cubature tolerance and

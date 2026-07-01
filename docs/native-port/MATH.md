@@ -105,11 +105,85 @@ path (`rhs_mode_avg_real`); Phase 2 extended it to the EnvGrid (c2c) envelope
 path (`rhs_mode_avg_env`), which needs the 3/4 SVEA prefactor on `Kerr_env`
 that the carrier-resolved Kerr term doesn't (§5.1).
 
-### 3.2 Radial — `TransRadial` (`src/NonlinearRHS.jl:663`) — Phase 3
-The field carries a radial axis. Each RHS adds a **QDHT** (`mul!`/`ldiv!` with
-the Hankel `T` matrix) on the `r ↔ k` axis around the time transform. The QDHT
-is already in Rust (`LUNA_USE_RUST_QDHT`); Phase 3 makes its `T` matrix and
-scratch resident in `NativeSim` instead of re-marshalling per call.
+### 3.2 Radial — `TransRadial` (`src/NonlinearRHS.jl:663`) — Phase 3, ported
+The field carries a radial axis: buffers are `(n_time, n_r)`, and each RHS
+wraps the time transform with a **QDHT** (`mul!`/`ldiv!` with the Hankel `T`
+matrix) on the `r ↔ k` axis:
+```
+to_time!(Eto, Eω)        # ω → t, per r-column (batched dim-1 FFT in Julia)
+_qdht_ldiv!(Eto, QDHT)   # k → r
+Et_to_Pt!(Pto, Eto, ...) # Kerr, pointwise in (t, r) — same E³ formula as Phase 1
+Pto .*= towin
+_qdht_mul!(Pto, QDHT)    # r → k
+to_freq!(nl, Pto)        # t → ω, per r-column
+nl .*= ωwin .* (-im·ω) ./ (2 .* normfun(z))
+```
+
+**Reuse, don't reinvent — the resident QDHT is already built.** `ffi.rs`'s
+`QdhtFfiHandle` (used by the existing `LUNA_USE_RUST_QDHT` FFI wiring) already
+holds Julia's `T` matrix in the correct convention and exposes
+`apply_real(data, n_time, scale)` / `apply_cplx(data, n_time, scale)` as plain
+Rust methods operating on a column-major `(n_time, n_r)` buffer — not just an
+FFI entry point. Phase 3 stores a `QdhtFfiHandle` instance directly inside
+`NativeSim` (built once in `native_set_radial_params` from Julia's `HT.T`,
+`HT.N`, `HT.scaleRK`) and calls `apply_real`/`apply_cplx` directly from
+`rhs_radial` — no FFI round-trip per RHS, no reimplementation of the QDHT
+math. Do **not** use `diffraction::Qdht` (a different Rust-native struct with
+its own T-matrix convention) — it does not match Julia's normalization
+(CLAUDE.md gotcha).
+
+**FFT: loop the existing rank-1 plan over columns, don't add `plan_many`
+yet.** Julia's `plan_rfft(xt, 1)` is a batched ("many") transform over the
+`n_r` columns; the native side reuses the existing single-vector
+`ComplexFft1d`/`RealFft1d` (`fftw.rs`) called `n_r` times in a loop instead
+of adding a new batched FFTW plan type. This is simpler and the established
+~1e-13 tolerance tier is the safety net — only add `plan_many` if single-step
+equivalence comes in worse than that tier for a reason traced to the FFT
+step specifically.
+
+**Normalization: precompute one complex `(n_ω, n_r)` array, don't port
+`norm_radial`'s Bessel/k_z math into Rust.** The tail of `TransRadial`'s
+`__call__` is `nl .*= ωwin .* (-im·ω) ./ (2 .* normfun(z))`. Precompute
+`M[iω,ir] = ωwin[iω] * (-im*ω[iω]) / (2 * normfun_array[iω,ir])` once in
+Julia and pass it to Rust as a flat array; `rhs_radial` just does
+`ks[idx][i] *= M[i]` elementwise on the flattened buffer. This captures the
+`ω=0`/evanescent (`βsq≤0`) masking and `ωwin` for free, and needs zero of
+`norm_radial`'s math ported. **This is only valid for a z-invariant
+`normfun`** (i.e. `const_norm_radial`, constant-medium gas cell) — exactly
+the same constant-medium restriction Phases 1-6 already carry for the linop
+(§6, ARCHITECTURE §4.4). A z-dependent `normfun` (tapered fiber, pressure
+gradient) is out of scope until Phase 7 alongside the z-dependent linop.
+
+**The linop is 2-D for radial**, `(n_ω, n_r)` (`LinearOps.make_const_linop`
+with a `Hankel.QDHT` grid — `k_z = √((nω/c)² − k_r²)` depends on both `ω` and
+`k_r`), not the `Vector{ComplexF64}` Phases 1-2 assumed. `apply_prop` stays
+purely elementwise on the flattened column-major buffer, so no Rust change is
+needed there — but the Julia-side native-path guard in `RK45.solve_precon`
+(`src/RK45.jl:27`, currently `linop isa Vector{ComplexF64}`) must broaden to
+also accept `Matrix{ComplexF64}`, or radial never reaches the native
+constructor at all.
+
+**Invariant (state explicitly, don't let it drift):** every 2-D buffer touched
+by `rhs_radial` — `Eto`/`Pto` (time domain), `Eωo`/`Pωo` (oversampled
+frequency), the flattened `ks[i]`/`field` buffers — is **column-major
+`(n_time, n_r)`**, i.e. one r-column is `n_time` contiguous elements. This is
+what `QdhtFfiHandle::apply_real/apply_cplx` expects, and what makes each
+column contiguous for the looped rank-1 FFT. If any buffer ever disagrees with
+this layout, the result is silent garbage, not a crash.
+
+**Tolerance heads-up:** the QDHT carries a ~1e-13 BLAS-vs-Rayon summation-order
+floor (CLAUDE.md), applied *twice* per RHS call (`ldiv!` + `mul!`) inside the
+stepper now. Radial's single-step tier will land around low-1e-13 to ~1e-12,
+not the cleaner sub-1e-13 Phase 1/2 FFTW-only tier — that is the QDHT floor,
+not a bug; do not chase it lower. Apply the Phase 2 lesson from the start:
+build the full-solve equivalence test with `max_dt=min_dt=dt` (fixed step
+size) so it measures state accumulation, not adaptive-path agreement.
+
+**Scope implemented:** RealGrid + scalar Kerr only (`Nonlinear.Kerr_field`,
+the same `E³` formula already in `rhs_mode_avg_real`, applied per r-column),
+`shotnoise=false` (skips the `Et_noise` branch). EnvGrid-radial and
+plasma-radial are deferred follow-ups, mirroring how Phase 1 preceded Phase
+2's EnvGrid/plasma extension.
 
 ### 3.3 Modal — `TransModal` (`src/NonlinearRHS.jl:421`) — Phase 5
 The hardest. The nonlinear polarization is projected onto each waveguide mode by

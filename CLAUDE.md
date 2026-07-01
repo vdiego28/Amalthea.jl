@@ -158,9 +158,10 @@ resident FFTW plans for the lifetime of a `solve`; Julia only crosses the FFI
 boundary once per step (`native_step`), not once per stage. Toggle:
 `LUNA_USE_RUST_NATIVE=1`, wired at `RK45.solve_precon` (`src/RK45.jl:19`).
 
-**Status:** Phase 0 (foundations), Phase 1 (mode-averaged Kerr, RealGrid), and
-Phase 2 (plasma + EnvGrid Kerr) are complete. Phase 3 (Radial + resident QDHT)
-is next. Full design docs, phase checklist, and math reference live under
+**Status:** Phase 0 (foundations), Phase 1 (mode-averaged Kerr, RealGrid),
+Phase 2 (plasma + EnvGrid Kerr), and Phase 3 (Radial + resident QDHT,
+RealGrid + scalar Kerr) are complete. Phase 4 (Raman) is next. Full design
+docs, phase checklist, and math reference live under
 `docs/native-port/{ARCHITECTURE,MATH,TESTING,PORT_LOG}.md` and `AGENTS.md`
 (repo root) — read those before touching this code; they are the source of
 truth for phase status, not this section.

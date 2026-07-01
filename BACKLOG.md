@@ -47,9 +47,14 @@ full-`solve` ~1e-6 vs the Julia oracle — see TESTING.md §3 nondeterminism flo
   sensitive and not itself a meaningful equivalence signal). Also fixed a
   latent `RustNativeStepper.s.y`-not-updated bug that broke `interpolate()`.
   Test `test/test_native_phase2.jl`. ✔
-- ⬜ **Phase 3 — Radial (TransRadial) + resident QDHT.** Fold the existing Rust
-  QDHT into `NativeSim`; radial normalization. Replaces `TransRadial`
-  (`src/NonlinearRHS.jl:663`). Test `test/test_native_radial.jl`.
+- ✅ **Phase 3 — Radial (TransRadial) + resident QDHT.** `rhs_radial` reuses the
+  existing `QdhtFfiHandle` directly (no FFI round-trip per RHS) + a
+  precomputed complex `(n_ω, n_r)` normalization array (folds `norm_radial` +
+  `ωwin`, valid for a z-invariant `normfun`). Replaces `TransRadial`
+  (`src/NonlinearRHS.jl:663`). Scope: RealGrid + scalar Kerr only (EnvGrid and
+  plasma-radial deferred). Gate passed: single-step 1.1e-17, full-solve
+  1.3e-16 (fixed step size, per the Phase 2 lesson — see PORT_LOG
+  2026-07-01). Test `test/test_native_radial.jl`. ✔
 - ⬜ **Phase 4 — Raman.** Integrate the existing ADE solver (`raman.rs`) into the
   resident RHS. Replaces `RamanPolar` (`src/Nonlinear.jl:357`).
   Test `test/test_native_raman.jl`.

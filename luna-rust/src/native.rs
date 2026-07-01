@@ -26,10 +26,21 @@
 //!       full-solve 3.2e-17; Phase 2b (RealGrid+plasma) single-step 3.8e-17,
 //!       full-solve 2.7e-16 (fixed step size — see PORT_LOG 2026-07-01).
 //!       COMPLETE.
+//! - [x] Phase 3 — Radial (`TransRadial`) + resident QDHT: `rhs_radial`
+//!       (RealGrid scalar Kerr, QDHT wrapped around the time transform via the
+//!       resident `QdhtFfiHandle`) + `native_set_radial_params`. Replaces
+//!       `TransRadial` (NonlinearRHS.jl:663). See MATH.md §3.2 for the design
+//!       (column-major `(n_time, n_r)` buffer invariant, precomputed `M`
+//!       normalization array, looped rank-1 FFT rather than a batched plan).
+//!       Scope: RealGrid + scalar Kerr only, z-invariant `normfun`
+//!       (`const_norm_radial`); EnvGrid-radial and plasma-radial deferred.
+//!       Gate: single-step 1.1e-17, full-solve 1.3e-16 (fixed step size).
+//!       COMPLETE.
 
 use num_complex::Complex;
 use libc::{c_char, c_double, c_int, c_uint, size_t};
 use crate::fftw::{FftwApi, ComplexFft1d, RealFft1d};
+use crate::ffi::QdhtFfiHandle;
 use std::ffi::CStr;
 
 /// Resident simulation state. One per `solve`. Opaque to Julia.
@@ -100,6 +111,24 @@ pub struct NativeSim {
     pub plasma_preionfrac: f64,
     pub plasma_dt: f64,
     pub has_plasma: bool,
+
+    // ── Phase 3: Radial (TransRadial) — resident QDHT + scalar Kerr ──────────────
+    pub is_radial: bool,
+    /// Number of radial grid points (`Hankel.QDHT.N`). Buffers are column-major
+    /// `(n_time, n_r)`: column `r` is `n_time` contiguous elements.
+    pub n_r: usize,
+    pub qdht: Option<QdhtFfiHandle>,
+    pub qdht_scale_fwd: f64,
+    pub qdht_scale_inv: f64,
+    /// Precomputed `M[iω,ir] = ωwin[iω]·(-i·ω[iω])/(2·normfun_array[iω,ir])`
+    /// (flattened, column-major `(n_spec, n_r)`) — folds `norm_radial` + `ωwin`
+    /// into one elementwise multiply. Valid only for a z-invariant `normfun`
+    /// (`const_norm_radial`) — see MATH.md §3.2.
+    pub radial_m: Vec<Complex<f64>>,
+    pub radial_eto: Vec<f64>,
+    pub radial_pto: Vec<f64>,
+    pub radial_eoo: Vec<Complex<f64>>,
+    pub radial_poo: Vec<Complex<f64>>,
 }
 
 impl NativeSim {
@@ -151,6 +180,16 @@ impl NativeSim {
             plasma_preionfrac: 0.0,
             plasma_dt: 1.0,
             has_plasma: false,
+            is_radial: false,
+            n_r: 0,
+            qdht: None,
+            qdht_scale_fwd: 1.0,
+            qdht_scale_inv: 1.0,
+            radial_m: Vec::new(),
+            radial_eto: Vec::new(),
+            radial_pto: Vec::new(),
+            radial_eoo: Vec::new(),
+            radial_poo: Vec::new(),
         }
     }
 
@@ -342,6 +381,95 @@ impl NativeSim {
             }
         }
     }
+
+    /// Radial (`TransRadial`) RHS: QDHT-wrapped scalar Kerr (`E³`) for a
+    /// RealGrid field. Reproduces `TransRadial.__call__`
+    /// (src/NonlinearRHS.jl:663) for `Nonlinear.Kerr_field` only (no plasma,
+    /// no shot-noise — see MATH.md §3.2 for scope).
+    ///
+    /// All 2-D buffers here are column-major `(n_time, n_r)`: column `r` is
+    /// `n_time` contiguous elements — required by `QdhtFfiHandle::apply_real`
+    /// and what makes each column contiguous for the looped rank-1 FFT.
+    fn rhs_radial(&mut self, idx: usize, eomega: &[Complex<f64>]) {
+        let n_r = self.n_r;
+        let n_spec = self.n_spec;
+        let n_spec_over = self.n_spec_over;
+        let n_time_over = self.n_time_over;
+
+        // ── Step 1: to_time! per r-column (RealGrid r2c) ─────────────────────────
+        let scale_fwd = (n_spec_over - 1) as f64 / (n_spec - 1) as f64;
+        self.radial_eoo.fill(Complex::new(0.0, 0.0));
+        for r in 0..n_r {
+            let in_col = &eomega[r * n_spec..(r + 1) * n_spec];
+            let out_col = &mut self.radial_eoo[r * n_spec_over..(r + 1) * n_spec_over];
+            for i in 0..n_spec {
+                out_col[i] = in_col[i] * scale_fwd;
+            }
+        }
+        if let Some(ref fft) = self.fft_r2c_over {
+            for r in 0..n_r {
+                let spec_start = r * n_spec_over;
+                let time_start = r * n_time_over;
+                let spec_col = &mut self.radial_eoo[spec_start..spec_start + n_spec_over];
+                let time_col = &mut self.radial_eto[time_start..time_start + n_time_over];
+                fft.inverse(spec_col, time_col);
+            }
+            let inv_nto = self.fft_norm_over;
+            for v in &mut self.radial_eto { *v *= inv_nto; }
+        }
+
+        // ── Step 2: QDHT ldiv! (k → r) ────────────────────────────────────────────
+        let scale_inv = self.qdht_scale_inv;
+        if let Some(ref mut qdht) = self.qdht {
+            qdht.apply_real(&mut self.radial_eto, n_time_over, scale_inv);
+        }
+
+        // ── Step 3: Kerr (KerrScalar!): Pto += kerr_fac · Eto³, pointwise (t,r) ───
+        self.radial_pto.fill(0.0);
+        for i in 0..(n_time_over * n_r) {
+            let e = self.radial_eto[i];
+            self.radial_pto[i] += self.kerr_fac * e * e * e;
+        }
+
+        // ── Step 4: time-window apodization per r-column (reuses 1-D towin) ──────
+        for r in 0..n_r {
+            let start = r * n_time_over;
+            for t in 0..n_time_over {
+                self.radial_pto[start + t] *= self.towin[t];
+            }
+        }
+
+        // ── Step 5: QDHT mul! (r → k) ─────────────────────────────────────────────
+        let scale_fwd_q = self.qdht_scale_fwd;
+        if let Some(ref mut qdht) = self.qdht {
+            qdht.apply_real(&mut self.radial_pto, n_time_over, scale_fwd_q);
+        }
+
+        // ── Step 6: to_freq! per r-column (RealGrid r2c) ─────────────────────────
+        let scale_inv2 = (n_spec - 1) as f64 / (n_spec_over - 1) as f64;
+        if let Some(ref fft) = self.fft_r2c_over {
+            for r in 0..n_r {
+                let time_start = r * n_time_over;
+                let spec_start = r * n_spec_over;
+                let time_col = &mut self.radial_pto[time_start..time_start + n_time_over];
+                let spec_col = &mut self.radial_poo[spec_start..spec_start + n_spec_over];
+                fft.forward(time_col, spec_col);
+            }
+        }
+        self.ks[idx].fill(Complex::new(0.0, 0.0));
+        for r in 0..n_r {
+            let in_start = r * n_spec_over;
+            let out_start = r * n_spec;
+            for i in 0..n_spec {
+                self.ks[idx][out_start + i] = self.radial_poo[in_start + i] * scale_inv2;
+            }
+        }
+
+        // ── Step 7: normalization — ks[idx] *= M (folds norm_radial + ωwin) ──────
+        for i in 0..(n_spec * n_r) {
+            self.ks[idx][i] *= self.radial_m[i];
+        }
+    }
 }
 
 /// Cumulative trapezoidal integral: `dst[0]=0`, `dst[i] = dst[i-1] + (src[i-1]+src[i])/2·dt`.
@@ -422,7 +550,10 @@ pub unsafe extern "C" fn set_field(
     let src = unsafe { std::slice::from_raw_parts(data as *const Complex<f64>, n) };
     sim.field.copy_from_slice(src);
     
-    if !sim.beta.is_empty() {
+    if sim.is_radial {
+        let field = sim.field.clone();
+        sim.rhs_radial(0, &field);
+    } else if !sim.beta.is_empty() {
         let field = sim.field.clone();
         if sim.is_real {
             sim.rhs_mode_avg_real(0, &field);
@@ -625,6 +756,79 @@ pub unsafe extern "C" fn native_set_plasma_params(
     0
 }
 
+/// Wire the radial (`TransRadial`) RHS: resident QDHT + scalar Kerr.
+///
+/// Must be called **after** `native_set_fftw_plans` (which must be called with
+/// `is_real=1` — Phase 3's first gate is RealGrid-only). Sets `sim.is_radial`,
+/// so this determines the RHS branch `native_step` takes.
+///
+/// # Arguments
+/// * `n_time`/`n_time_over` — grid.t / grid.to lengths.
+/// * `n_r` — `Hankel.QDHT.N`; `sim.n` must be `n_spec * n_r` for some integer `n_spec`.
+/// * `t_matrix` — Julia's `HT.T`, column-major `n_r × n_r` (read-only for this call).
+/// * `scale_fwd`/`scale_inv` — `HT.scaleRK` / `1/HT.scaleRK`.
+/// * `towin` — length `n_time_over`, or null for all-ones.
+/// * `m_re`/`m_im` — precomputed normalization array (see MATH.md §3.2),
+///   column-major `(n_spec, n_r)`, length `n_spec * n_r` each.
+///
+/// Returns 0 on success, -1 on null/shape-mismatched args.
+///
+/// # Safety
+/// `sim` must be valid; `t_matrix` must be valid for `n_r*n_r` reads; `m_re`/`m_im`
+/// must each be valid for `n_spec*n_r` reads (`n_spec = sim.n / n_r`); `towin`, if
+/// non-null, must be valid for `n_time_over` reads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_set_radial_params(
+    sim: *mut NativeSim,
+    n_time: size_t,
+    n_time_over: size_t,
+    n_r: size_t,
+    t_matrix: *const c_double,
+    scale_fwd: c_double,
+    scale_inv: c_double,
+    towin: *const c_double,
+    kerr_fac: c_double,
+    m_re: *const c_double,
+    m_im: *const c_double,
+) -> i32 {
+    if sim.is_null() || t_matrix.is_null() || m_re.is_null() || m_im.is_null() { return -1; }
+    let s = unsafe { &mut *sim };
+    if n_r == 0 || s.n % n_r != 0 { return -1; }
+    let n_spec = s.n / n_r;
+
+    s.is_radial = true;
+    s.n_r = n_r;
+    s.n_time = n_time;
+    s.n_time_over = n_time_over;
+    s.n_spec = n_spec;
+    s.n_spec_over = if s.is_real { n_time_over / 2 + 1 } else { n_time_over };
+
+    let t_mat_sl = unsafe { std::slice::from_raw_parts(t_matrix, n_r * n_r) };
+    s.qdht = Some(QdhtFfiHandle::new(t_mat_sl, n_r, scale_fwd, scale_inv, n_time_over));
+    s.qdht_scale_fwd = scale_fwd;
+    s.qdht_scale_inv = scale_inv;
+
+    if !towin.is_null() {
+        s.towin = unsafe { std::slice::from_raw_parts(towin, n_time_over) }.to_vec();
+    } else {
+        s.towin = vec![1.0; n_time_over];
+    }
+    s.kerr_fac = kerr_fac;
+
+    let m_re_sl = unsafe { std::slice::from_raw_parts(m_re, n_spec * n_r) };
+    let m_im_sl = unsafe { std::slice::from_raw_parts(m_im, n_spec * n_r) };
+    s.radial_m = m_re_sl.iter().zip(m_im_sl.iter())
+        .map(|(&r, &i)| Complex::new(r, i))
+        .collect();
+
+    s.radial_eto = vec![0.0; n_time_over * n_r];
+    s.radial_pto = vec![0.0; n_time_over * n_r];
+    s.radial_eoo = vec![Complex::new(0.0, 0.0); s.n_spec_over * n_r];
+    s.radial_poo = vec![Complex::new(0.0, 0.0); s.n_spec_over * n_r];
+
+    0
+}
+
 // ── Dormand-Prince constants (matching ffi.rs) ──────────────────────────────
 const DP_B: [[f64; 6]; 6] = [
     [1.0/5.0,          0.0,              0.0,              0.0,             0.0,              0.0],
@@ -752,7 +956,13 @@ pub unsafe extern "C" fn native_step(
             }
         }
         
-        if s.n_time_over > 0 && (s.fft_r2c_over.is_some() || s.fft_c2c_over.is_some()) {
+        if s.is_radial {
+            let dt_prop = DP_NODES[ii] * dt;
+            let mut ystage_prop = s.ystage.clone();
+            apply_prop(&mut ystage_prop, &s.linop, dt_prop);
+            s.rhs_radial(ii + 1, &ystage_prop);
+            apply_prop(&mut s.ks[ii + 1], &s.linop, -dt_prop);
+        } else if s.n_time_over > 0 && (s.fft_r2c_over.is_some() || s.fft_c2c_over.is_some()) {
             let dt_prop = DP_NODES[ii] * dt;
             let mut ystage_prop = s.ystage.clone();
             apply_prop(&mut ystage_prop, &s.linop, dt_prop);

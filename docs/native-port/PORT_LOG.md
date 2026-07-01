@@ -355,3 +355,95 @@ non-endpoint `ti`.
   regression; run that file separately from the Phase 2b plasma path.)
 **Next:** Phase 3 — Radial + resident QDHT (see `BACKLOG.md`).
 
+## 2026-07-01 — Phase 3 — Radial + resident QDHT — Claude (sonnet-5)
+**Status:** complete
+**Did:** Ported `TransRadial` (RealGrid + scalar Kerr only) to a resident
+`rhs_radial` in `native.rs`, reusing the existing `QdhtFfiHandle` directly
+(no FFI round-trip per RHS) instead of building new QDHT machinery.
+**How:**
+- Design written into `docs/native-port/MATH.md` §3.2 *before* touching code
+  (per `AGENTS.md`'s doc-first rule), then implemented exactly as designed.
+- `NativeSim` (`luna-rust/src/native.rs`) gained: `is_radial: bool`, `n_r`,
+  `qdht: Option<crate::ffi::QdhtFfiHandle>` (+ `qdht_scale_fwd/inv`),
+  `radial_m: Vec<Complex<f64>>` (precomputed normalization), and 2-D scratch
+  buffers `radial_eto/pto` (time domain) + `radial_eoo/poo` (oversampled
+  freq domain), all column-major `(n_time, n_r)`.
+- `rhs_radial` mirrors `TransRadial.__call__` (NonlinearRHS.jl:663): to_time!
+  per r-column (loops the existing rank-1 `RealFft1d` over `n_r` columns —
+  no new batched "many" FFTW plan) → `QdhtFfiHandle::apply_real` (ldiv,
+  k→r) → scalar Kerr `E³` per point (same formula as `rhs_mode_avg_real`,
+  just applied over the extra r-axis) → `towin` apodization (reuses the
+  existing 1-D `towin` buffer, applied per column) → `apply_real` (mul,
+  r→k) → to_freq! per r-column → elementwise `*= radial_m`.
+- New FFI `native_set_radial_params` builds the resident `QdhtFfiHandle`
+  from Julia's `HT.T`/`HT.N`/`HT.scaleRK` (same values `_make_rust_qdht_handle`
+  already extracts) and the precomputed `M` array; called after
+  `native_set_fftw_plans`, before `set_field`.
+- `native_step`'s stage-loop dispatch (`s.is_radial` branch) and `set_field`'s
+  k1 precompute gate both updated to route to `rhs_radial`.
+- Julia side (`src/RK45.jl`): `RustNativeStepper` constructor detects
+  `f! isa Luna.NonlinearRHS.TransRadial`, extracts `HT.T`/`N`/`scaleRK`,
+  precomputes `M = ωwin.*(-im.*ω)./(2 .*normfun(0.0))`, calls
+  `native_set_radial_params`. The Phase 1/2 native-path guard
+  (`linop isa Vector{ComplexF64}` in `solve_precon`, and
+  `RustNativeSimHandle`'s constructor) broadened to `Array{ComplexF64}` —
+  radial's linop is `(n_ω, n_r)`, a `Matrix`, not a `Vector`.
+**Decisions:**
+- **Reused `ffi.rs`'s `QdhtFfiHandle` directly** (its `apply_real`/`apply_cplx`
+  are plain Rust methods, not just FFI entry points) rather than building new
+  QDHT machinery or using `diffraction::Qdht` (a different Rust-native
+  struct with its own T-matrix convention that does **not** match Julia's
+  normalization — would have silently produced wrong results).
+- **Looped the existing rank-1 FFT plan over `n_r` columns** rather than
+  adding a new batched ("many") FFTW plan type to `fftw.rs`. Julia's
+  `plan_rfft(xt, 1)` is technically a batched transform, but the
+  already-established ~1e-13 tolerance tier is the safety net; a batched
+  plan is only worth adding if single-step equivalence lands worse than that
+  tier for a reason traced to the FFT step specifically. It didn't — single
+  step landed at 1.1e-17.
+- **Precomputed one complex `(n_ω, n_r)` array (`M`)** for the entire
+  post-transform normalization tail (`ωwin .* (-im·ω) ./ (2 .* normfun(z))`)
+  instead of porting `norm_radial`'s Bessel/k_z math into Rust. This is only
+  valid for a z-invariant `normfun` (`const_norm_radial`) — the same
+  constant-medium restriction Phases 1-6 already carry for the linop. A
+  z-dependent `normfun` (tapered fiber, pressure gradient) is deferred to
+  Phase 7 alongside the z-dependent linop.
+- **Scope: RealGrid + scalar Kerr only**, `shotnoise=false`. EnvGrid-radial
+  and plasma-radial are follow-ups, mirroring Phase 1 → Phase 2's structure.
+**Gotchas:**
+- The Phase 1/2 native-path guard assumed `linop isa Vector{ComplexF64}`
+  (true for mode-averaged geometries). Radial's linop
+  (`LinearOps.make_const_linop(grid, q::Hankel.QDHT, ...)`) is a
+  `Matrix{ComplexF64}` — `(n_ω, n_r)`, since `k_z` depends on both `ω` and
+  the radial wavenumber `k_r`. Any future geometry with a non-`Vector` linop
+  needs the same guard broadening check.
+- `set_field`'s k1 precompute was gated on `!sim.beta.is_empty()` (mode-avg
+  only) — a radial `NativeSim` never populates `beta`, so without an
+  explicit `sim.is_radial` branch, `ks[0]` would silently stay zero after
+  `set_field`, corrupting FSAL on the first step. Added an explicit
+  `is_radial` branch ahead of the `beta` check.
+- `QdhtFfiHandle::apply_real`/`apply_cplx` take `scale` as an explicit
+  argument (not read from an internal field), and its `scale_fwd`/`scale_inv`
+  fields are private to the `ffi` module — so `NativeSim` stores its own
+  `qdht_scale_fwd`/`qdht_scale_inv` copies rather than reaching into the
+  handle's private state.
+- Disjoint-field mutable borrows (e.g. `if let Some(ref mut qdht) = self.qdht { qdht.apply_real(&mut self.radial_eto, ...) }`)
+  compiled without any restructuring — same pattern already used for
+  `self.fft_r2c_over` + `self.eto`/`self.eoo` in Phase 1/2's RHS functions.
+**Tests:**
+- `RUSTFLAGS="-D warnings" cargo build --release` → clean.
+- `LUNA_TEST_GROUP=rust julia --project . test/runtests.jl` (matching CI,
+  no env override) → 41932 passed, 1 broken (Phase 2b's expected self-skip),
+  net +2 over the pre-Phase-3 baseline (exactly the two new radial tests).
+- `test/test_native_radial.jl`: single-step `1.1e-17` (assert `< 1e-13`,
+  matching the Phase 1/2 single-step tier — MATH.md's ~1e-13 QDHT-floor
+  expectation turned out pessimistic for this problem size, but the
+  assertion is pinned to the documented tier rather than the looser observed
+  number, so a future QDHT-floor regression won't be masked); full-solve
+  (fixed `max_dt=min_dt=dt` from the outset, applying the Phase 2 lesson
+  immediately rather than discovering it again) `1.3e-16` (assert `< 1e-6`,
+  matching the project's standard full-run tier).
+**Next:** Phase 4 — Raman (integrate the existing ADE solver, `raman.rs`,
+into the resident RHS; replaces `RamanPolar`, `src/Nonlinear.jl:357`). See
+`BACKLOG.md`.
+

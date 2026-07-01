@@ -24,7 +24,7 @@ function solve_precon(f!, linop, y0, t, dt, tmax;
                     kwargs...)
     use_rust = get(ENV, "LUNA_USE_RUST_STEPPER", "0") == "1"
     use_native = get(ENV, "LUNA_USE_RUST_NATIVE", "0") == "1"
-    if use_native && isfile(_LIBLUNA_RUST_RK45) && eltype(y0) == ComplexF64 && linop isa Vector{ComplexF64}
+    if use_native && isfile(_LIBLUNA_RUST_RK45) && eltype(y0) == ComplexF64 && linop isa Array{ComplexF64}
         stepper = RustNativeStepper(f!, linop, y0, t, dt,
                       rtol=rtol, atol=atol, safety=safety, max_dt=max_dt, min_dt=min_dt, locextrap=locextrap, norm=norm)
     elseif use_rust && isfile(_LIBLUNA_RUST_RK45) && eltype(y0) == ComplexF64
@@ -637,7 +637,7 @@ end
 
 mutable struct RustNativeSimHandle
     ptr::Ptr{Cvoid}
-    function RustNativeSimHandle(linop::Vector{ComplexF64})
+    function RustNativeSimHandle(linop::Array{ComplexF64})
         n = length(linop)
         ptr = ccall((:init_native_sim, _LIBLUNA_RUST_RK45), Ptr{Cvoid},
                     (Ptr{ComplexF64}, Csize_t), pointer(linop), Csize_t(n))
@@ -685,8 +685,9 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     
     n = length(y0)
     is_mode_avg = f! isa Luna.NonlinearRHS.TransModeAvg
+    is_radial = f! isa Luna.NonlinearRHS.TransRadial
 
-    if is_mode_avg
+    if is_mode_avg || is_radial
         grid = f!.grid
         is_real_grid = grid isa Luna.Grid.RealGrid   # EnvGrid uses c2c FFTs
         n_time = length(grid.t)
@@ -772,6 +773,63 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                 break  # only one plasma response expected
             end
         end
+    end
+
+    # Set parameters if radial (TransRadial) — Phase 3 gate: RealGrid + scalar
+    # Kerr only. See docs/native-port/MATH.md §3.2 for the design (precomputed
+    # normalization array M, resident QdhtFfiHandle reused directly).
+    if is_radial
+        is_real_grid || error("RustNativeStepper: EnvGrid radial not yet supported " *
+                               "(Phase 3 gate is RealGrid-only)")
+
+        HT = f!.QDHT
+        n_r = HT.N
+        n % n_r == 0 || error("RustNativeStepper: field length $n not divisible by QDHT.N=$n_r")
+
+        T_mat = Matrix{Float64}(HT.T)
+        size(T_mat) == (n_r, n_r) || error("RustNativeStepper: QDHT.T shape mismatch")
+        scale_fwd = Float64(HT.scaleRK)
+        scale_inv = 1.0 / scale_fwd
+
+        towin = f!.grid.towin
+
+        # Find Kerr response and extract γ3 (same pattern as mode-averaged above).
+        γ3 = 0.0
+        for r in f!.resp
+            for fld in fieldnames(typeof(r))
+                if occursin("γ3", string(fld))
+                    γ3 = getfield(r, fld)
+                    break
+                end
+            end
+            γ3 != 0.0 && break
+        end
+        length(f!.resp) == 1 ||
+            @warn "RustNativeStepper (radial): only single-response (Kerr-only) is " *
+                  "verified by the native path; extra responses (plasma, Raman, ...) " *
+                  "are ignored — physics will be wrong if any are present."
+
+        density = f!.densityfun(0.0)
+        kerr_fac = density * Luna.PhysData.ε_0 * γ3
+
+        # Precompute M[iω,ir] = ωwin[iω]·(-i·ω[iω]) / (2·normfun(0.0)[iω,ir]).
+        # Folds norm_radial + ωwin into one array. Valid only for a z-invariant
+        # normfun (const_norm_radial, constant-medium gas cell) — see MATH.md §3.2.
+        normarr = f!.normfun(0.0)
+        ω = f!.grid.ω
+        ωwin = f!.grid.ωwin
+        M = (ωwin .* (-im .* ω)) ./ (2 .* normarr)
+
+        rc = ccall((:native_set_radial_params, _LIBLUNA_RUST_RK45), Cint,
+            (Ptr{Cvoid}, Csize_t, Csize_t, Csize_t,
+             Ptr{Float64}, Float64, Float64,
+             Ptr{Float64}, Float64,
+             Ptr{Float64}, Ptr{Float64}),
+            handle.ptr, n_time, n_time_over, n_r,
+            T_mat, scale_fwd, scale_inv,
+            towin, kerr_fac,
+            real.(M), imag.(M))
+        rc == 0 || error("native_set_radial_params failed: $rc")
     end
 
     # Copy initial field to Rust
