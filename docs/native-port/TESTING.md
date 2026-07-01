@@ -1,7 +1,7 @@
 # Native-Rust Backend Port — Testing & Equivalence
 
-> Status: design doc for the phased port. Phases 0-4 are implemented and
-> passing (see `docs/native-port/PORT_LOG.md`); Phase 5 (Modal) is next.
+> Status: design doc for the phased port. Phases 0-5 are implemented and
+> passing (see `docs/native-port/PORT_LOG.md`); Phase 6 (Free-space) is next.
 > Companion docs: [ARCHITECTURE.md](ARCHITECTURE.md), [MATH.md](MATH.md),
 > [PORT_LOG.md](PORT_LOG.md).
 
@@ -152,14 +152,22 @@ coincidence of regime, not immunity to the same mechanism).
 | 2 | ✅ done | EnvGrid Kerr (2a) + plasma/RealGrid (2b) | `test/test_native_phase2.jl` | <1e-13 (achieved) | 3.19e-17 / 2.73e-16 (fixed dt) |
 | 3 | ✅ done | radial + resident QDHT (RealGrid + scalar Kerr) | `test/test_native_radial.jl` | 1.1e-17 (achieved) | 1.3e-16 (fixed dt) |
 | 4 | ✅ done | Raman (carrier SDO, thg=true, all-SDO eligibility) | `test/test_native_raman.jl` | 0.0 (see note) | 4.2e-8 (achieved) |
-| 5 | ⬜ next | modal + overlap cubature | `test/test_native_modal.jl` | ~1e-10 (cubature) | ~1e-6 |
-| 6 | ⬜ | free-space 3-D FFT | `test/test_native_free.jl` | ~1e-13 | ~1e-6 |
+| 5 | ✅ done | modal + overlap cubature (`HE,n=1`, `full=false`, Kerr-only) | `test/test_native_modal.jl` | 1.4e-19 (achieved; ~1e-10 tier) | 4.0e-16 (achieved; fixed dt) |
+| 6 | ⬜ next | free-space 3-D FFT | `test/test_native_free.jl` | ~1e-13 | ~1e-6 |
 | 7 | ⬜ | z-dependent linop assembly | extend the above | ~1e-13 | ~1e-6 |
 | 8 | ⬜ | default-flip: existing suite green with native as default | full suite | — | existing |
 
-Phase 5's single-step tier is looser (~1e-10) because adaptive cubature node
-placement is itself algorithm-dependent; match Julia's cubature tolerance and
-node rule to get as close as possible, and document the achieved number.
+Phase 5's single-step tier is documented looser (~1e-10) than the FFTW-only
+phases, not because cubature node placement is algorithm-dependent — it binds
+the *same* `libcubature` C library Julia calls (`Cubature.jl` is a thin
+`ccall` wrapper, confirmed via `Cubature.Cubature_jll.libcubature` and
+`nm -D libcubature.so`), so node placement is bit-identical by construction.
+The tier is looser because the per-node mode-field synthesis needs
+`besselj(0,·)`, and the existing Rust `j0` (`diffraction.rs`) agrees with
+`SpecialFunctions.besselj` to ~1e-15 *absolute*, not bitwise — verified
+standalone before implementing, not assumed. In practice the achieved
+number (1.4e-19) came in far under even the tight tier at this problem size;
+the ~1e-10 ceiling is the honest one to keep asserting.
 
 Phase 4's single-step result (`0.0`, exact) is **not a vacuous test** — verified
 via a three-cell diagnostic (PORT_LOG 2026-07-01): Raman's raw per-step RHS

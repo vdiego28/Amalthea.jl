@@ -588,3 +588,147 @@ same reuse pattern as Phase 3's `QdhtFfiHandle`).
 remaining phase, needs a Rust adaptive-cubature routine — mode dispersion is
 already Rust). See `BACKLOG.md`.
 
+## 2026-07-01 — Phase 5 — Modal (TransModal), narrow scope — Claude (sonnet-5)
+
+**Did:** Ported `TransModal`'s overlap-integral RHS for the common case —
+constant-radius Marcatili `kind=:HE, n=1` mode collections (the `HE1m`
+family) with `full=false` (the radial modal integral). New `luna-rust/src/
+cubature.rs` (dlopen binding for the C `libcubature`); `native.rs` gains
+`rhs_modal`/`rhs_modal_pointcalc`/`modal_integrand_v` + `native_set_modal_
+params`; `RK45.jl` gains an `is_modal` wiring block. Gate: two-mode
+(HE11+HE12) single-step 1.4e-19, full-solve 4.0e-16 (fixed dt), with the
+HE11→HE12 energy transfer independently verified non-negligible (2.0e-5 —
+self-validating, see the Phase 4 lesson below). Test
+`test/test_native_modal.jl`. `LUNA_TEST_GROUP=rust` → **41940/41940 pass, 0
+broken**. `sim-propagation` group: no regressions.
+
+**The crux decision (advisor-prompted, made before writing any cubature
+code): bind the same C `libcubature`, don't reimplement adaptive cubature.**
+The initial framing in `BACKLOG.md`/memory going into this phase was "needs
+a Rust adaptive-cubature routine" — that was the wrong default. Verified
+first: `Cubature.jl` is a thin `ccall` wrapper around Steven Johnson's C
+`libcubature` (`Cubature_jll`), not a pure-Julia reimplementation — confirmed
+via `Cubature.Cubature_jll.libcubature` (resolves to an artifact `.so` path)
+and `nm -D libcubature.so` (exports `hcubature_v`/`pcubature_v`/`hcubature`/
+`pcubature`). This is exactly `FFTW.FFTW_jll.libfftw3`'s shape, so
+`cubature.rs` reuses the identical `dlopen`/`dlsym`/`dlclose` `Library`
+pattern already established in `fftw.rs`, binding `pcubature_v` and passing
+a Rust `extern "C"` function as the `integrand_v` callback.
+
+**Why this mattered, not just tidiness:** adaptive cubature's region-
+subdivision decisions depend on an FP-summation-order-sensitive error
+estimate — the *same* class of bug as the RK45 step controller (Phase 1-2's
+adaptive-path divergence, TESTING.md §3), except cubature has no
+`max_dt=min_dt` escape hatch to pin node placement if a reimplementation's
+node choices ever drifted from Julia's. Binding the same binary makes node
+placement bit-identical by construction, sidestepping that entire failure
+mode rather than tolerating it.
+
+**Scope narrowed by what the math actually requires, mirroring Phase 3/4's
+pattern:**
+- `full=false` only (`pcubature_v`, 1-D radial integral). Not an artificial
+  restriction — Luna's own `Interface.needfull(modes)` already selects
+  `full=false` for exactly this mode class (`all(m -> m.kind==:HE && m.n==1,
+  modes)`), i.e. this is the common case, not a corner case.
+- `MarcatiliMode`, `kind=:HE`, `n=1` only. The field formula
+  (`src/Capillary.jl:271-288`) needs only `besselj(0,·)`/`besselj(1,·)` for
+  `n=1`, and both already exist in `diffraction.rs` (`j0`/`j1`) from earlier
+  work — verified standalone against `SpecialFunctions.besselj` over
+  `x∈[0,6]` (covers `u₀₁≈2.405`, `u₀₂≈5.520`) before writing any of the new
+  pipeline: **max absolute error ~1.5e-15**. (A ~2.4e-11 *relative* error
+  right at `x=u₀₂` is not a precision problem — it's `J0(x)/J0(x)` blowing up
+  near a value that is correctly ≈0 by construction, the Bessel-zero
+  boundary condition the mode's `unm` encodes.) General-order Bessel
+  (Miller's backward recurrence — the naive upward recurrence is unstable
+  for `x<n`) is deferred; it would have added a second, independent source
+  of numerical risk to a phase whose real crux was the FFI/pipeline, not the
+  special function.
+- Constant radius only (`m.a isa Number`) — no tapered-capillary support.
+- **Normalization precomputed in Julia, not ported.** `MarcatiliMode`
+  overrides the generic (numerically-integrated) `Modes.N` with a closed
+  form, `N(m,z) = π/2·a²·besselj(n,unm)²·√(ε₀/μ₀)` — for constant radius this
+  is a single z-invariant scalar per mode. Julia precomputes `1/√N` once and
+  passes it over FFI; **no `besselj` call happens in Rust for
+  normalization**, only for the per-node field synthesis.
+- **`norm_modal`'s effect (`ωwin` + the shock/no-shock `-im·ω/4` or
+  `-im·ω0/4` factor) is extracted by numerically probing the Julia closure**
+  (`nlfac = ComplexF64.(grid.ωwin); f!.norm!(nlfac)`) rather than re-deriving
+  which branch is active — robust to any future change in `norm_modal`,
+  same "precompute the exact array Julia would produce" pattern as Phase 3's
+  `M` array, just simpler here (1-D, no radial dependence — mode
+  normalization is already fully baked into the `Exy` field used on both the
+  forward `to_space!` leg and the back-projection leg).
+- Kerr-only, **`npol=1` gated in, `npol=2` implemented but gated off** (a
+  post-implementation advisor review caught this before commit: the shipped
+  test only reaches `KerrScalar!`, npol=1, `components=:y`; `KerrVector!`
+  (npol=2, circular/elliptical polarisation) is written in `native.rs` and
+  wired in `RK45.jl`, but that code path is reachable through the real
+  `Interface.prop_capillary` API — `polarisation=:circular` with HE11/n=1
+  modes stays eligible — and had never been run. A degenerate `:xy` test
+  with y-only input would exercise buffer plumbing but not the actual
+  `(Ex²+Ey²)·Ex` cross-term, since `Ex≡0` — real coverage needs genuine
+  circular/elliptical input. Rather than ship an untested-but-reachable
+  path, `RK45.jl` now `error()`s on `npol≠1` until that test exists — same
+  discipline already applied to `DelegatedMode`/`full=true`/EnvGrid/
+  shotnoise). Raman and plasma are **deferred for complexity, not
+  because they are physically ill-defined at cubature nodes** — an earlier
+  draft of this phase's design doc claimed the opposite and was corrected
+  before implementation (advisor review): Raman's ADE solver resets its
+  state every RHS call from the current time-domain field (`solve_scalar`,
+  Phase 4), with no memory across z-steps or spatial location, so a moving
+  cubature node is exactly as well-formed as Phase 4's per-column Raman. A
+  future phase can add it as one more additive `Et_to_Pt!` term.
+- `shotnoise=false` (`Emω_noise = nothing`) — not ported.
+- Any other mode type (`DelegatedMode`, interpolated modes, or a mixed
+  eligible/ineligible tuple) is a **hard fallback to Julia**, not a deferred
+  scope item — those are arbitrary Julia closures with no Rust-portable
+  representation, unlike the scope items above which are simply "not yet
+  ported."
+
+**Multi-mode test, not single-mode.** The gate test uses `HE11`+`HE12`
+(`Capillary.MarcatiliMode(a, gas, pres; m=1)` / `m=2`) specifically so the
+`to_space!` sum-over-modes matmul and the back-projection matmul
+(`Prω·transpose(Ems)`) are genuinely exercised with `nmodes=2` — a
+single-mode test would leave both matmuls' mode-loop logic untested.
+
+**Gotcha — self-validating test, applying the Phase 4 lesson from the
+start.** At the first parameter choice tried (`energy=1e-9`, `L=0.02`), the
+full-solve testset passed at `rel_solve=1.95e-16`, but the sanity-check
+assertion (`he12_frac > 1e-6`) failed: only `6.5e-13` of the energy had
+actually transferred from HE11 into HE12 — the equivalence test would have
+passed even if the back-projection matmul were silently wrong for `m=2`,
+because there was nothing there to get wrong yet. Fixed by increasing
+`energy` to `5e-6` and `L` to `0.1` (more propagation distance and
+intensity for the Kerr-driven mode coupling to become measurable:
+`he12_frac=2.0e-5`), re-verified `rel_solve` stayed at the same floor
+(`4.0e-16` — the extra energy/length did not erode the equivalence, as
+expected since both paths integrate the identical physics). Applying this
+"assert the feature isn't vacuous before trusting the comparison" pattern
+proactively, rather than discovering it after the fact as in Phase 4, is
+the intended payoff of writing it into MATH.md/TESTING.md last time.
+
+**Reentrant-FFI note for future cubature-adjacent work:** `rhs_modal` must
+`self.cubature.take()` (not borrow) before calling `pcubature_v`, and must
+not hold any live view into another `self` field (e.g. `self.ks[idx]`)
+across that call — the C library re-enters Rust via `modal_integrand_v`,
+which reconstructs a fresh `&mut NativeSim` from the raw `self` pointer, and
+a concurrently-live Rust reference into the same allocation would alias it.
+`rhs_modal` writes its `pcubature_v` output into a scratch `valbuf` and
+copies into `ks[idx]` only after the call returns, for this reason.
+
+**Tests:**
+- `RUSTFLAGS="-D warnings" cargo build --release` → clean; `cargo test` →
+  27/27 pass.
+- `test/test_native_modal.jl` alone: single-step `1.4e-19`; full-solve
+  sanity check `2.0e-5` (assert `>1e-6`); full-solve Rust-vs-Julia `4.0e-16`
+  (assert `<1e-6`).
+- `LUNA_TEST_GROUP=rust julia --project . test/runtests.jl` → **41940/41940
+  pass, 0 broken** (net +3 over the Phase 4 baseline of 41937 — the three
+  new modal assertions).
+- `sim-propagation` group: no regressions (unaffected — only `native.rs`,
+  `cubature.rs`, and the new `is_modal` branch of `RustNativeStepper`'s
+  constructor in `RK45.jl` were touched, all native-path-only code).
+
+**Next:** Phase 6 — Free-space (`TransFree`, 3-D FFTW plans resident). See
+`BACKLOG.md`.
+

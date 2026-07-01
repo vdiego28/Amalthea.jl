@@ -48,12 +48,29 @@
 //!       a single 1cm z-step shows Raman's contribution below the FP floor
 //!       relative to Kerr; the effect is cumulative over propagation, see
 //!       MATH.md §5.3 and PORT_LOG 2026-07-01). COMPLETE.
+//! - [x] Phase 5 — Modal (`TransModal`), narrow scope: `libcubature`
+//!       (`Cubature_jll`) dlopened at runtime, same binary Julia's
+//!       `Cubature.jl` calls, bound via `cubature.rs` (`pcubature_v` only —
+//!       `full=false`, the radial modal integral, is what Luna itself selects
+//!       for `HE, n=1` mode collections — see `Interface.needfull`). Per-node
+//!       evaluation (`rhs_modal_pointcalc`) reuses the existing rank-1 FFT
+//!       plans (looped, not batched, mirroring Phase 3) and the existing Kerr
+//!       formula. Two-mode (HE11+HE12) gate: single-step 1.4e-19, full-solve
+//!       4.0e-16 (fixed step size), with the HE11→HE12 energy transfer
+//!       independently verified non-negligible (2.0e-5, self-validating —
+//!       see MATH.md §3.3 and PORT_LOG). COMPLETE.
+//!       Scope: RealGrid, `MarcatiliMode{<:Number,...}` (constant radius)
+//!       with `kind=:HE, n=1` only (needs only `besselj(0,·)`/`besselj(1,·)`,
+//!       already in `diffraction.rs`), Kerr-only, `shotnoise=false`. See
+//!       MATH.md §3.3 for the full design and deferred-scope list.
 
 use num_complex::Complex;
-use libc::{c_char, c_double, c_int, c_uint, size_t};
+use libc::{c_char, c_double, c_int, c_uint, size_t, c_void};
 use crate::fftw::{FftwApi, ComplexFft1d, RealFft1d};
 use crate::ffi::QdhtFfiHandle;
 use crate::raman::{TimeDomainRamanSolver, RamanOscillator};
+use crate::cubature::CubatureApi;
+use crate::diffraction::j0;
 use std::ffi::CStr;
 
 /// Resident simulation state. One per `solve`. Opaque to Julia.
@@ -150,6 +167,50 @@ pub struct NativeSim {
     pub raman_density: f64,
     pub raman_intensity: Vec<f64>,
     pub raman_p: Vec<f64>,
+
+    // ── Phase 5: Modal (TransModal), narrow scope — see MATH.md §3.3 ────────────
+    pub is_modal: bool,
+    /// Number of modes (`sim.n == n_spec * n_modes`).
+    pub n_modes: usize,
+    /// Number of polarisation columns (1 or 2 — `Modes.ToSpace.npol`).
+    pub npol: usize,
+    /// Shared physical core radius (constant across z and across modes —
+    /// scope restriction, see MATH.md §3.3).
+    pub modal_a: f64,
+    /// Per-mode `unm` (Bessel zero), length `n_modes`.
+    pub modal_unm: Vec<f64>,
+    /// Per-mode `1/√N(m)` (closed-form Marcatili normalization, precomputed
+    /// in Julia — no `besselj` call in Rust for this), length `n_modes`.
+    pub modal_inv_sqrt_n: Vec<f64>,
+    /// Per-mode rotation angle `ϕ`, length `n_modes`.
+    pub modal_phi: Vec<f64>,
+    /// Per-polarisation-column selector: 0 → `sin(ϕ)` (x), 1 → `cos(ϕ)` (y).
+    /// Length `npol`.
+    pub modal_pol_select: Vec<u8>,
+    /// Precomputed `ωwin[iω]·normfunc(ω[iω])` (folds the window and whatever
+    /// `TransModal.norm!` does — extracted numerically from the Julia
+    /// closure, not re-derived — see MATH.md §3.3), length `n_spec`.
+    pub modal_nlfac: Vec<Complex<f64>>,
+    pub modal_kerr_fac: f64,
+    pub cubature: Option<CubatureApi>,
+    pub modal_rtol: f64,
+    pub modal_atol: f64,
+    pub modal_maxevals: usize,
+    // Per-node scratch (one node at a time — looped, not batched, see doc
+    // comment above). Sized once in `native_set_modal_params`.
+    pub modal_ems: Vec<f64>,
+    pub modal_erw: Vec<Complex<f64>>,
+    pub modal_erwo: Vec<Complex<f64>>,
+    pub modal_er: Vec<f64>,
+    pub modal_pr: Vec<f64>,
+    pub modal_prwo: Vec<Complex<f64>>,
+    pub modal_prw: Vec<Complex<f64>>,
+    /// Snapshot of the trial field (`Emω`, flattened column-major
+    /// `(n_spec, n_modes)`) for the duration of one `rhs_modal` call — the
+    /// `libcubature` callback only receives a `void*`, so the field to
+    /// integrate against has to live on `self` rather than be passed
+    /// alongside it.
+    pub modal_emega: Vec<Complex<f64>>,
 }
 
 impl NativeSim {
@@ -216,6 +277,28 @@ impl NativeSim {
             raman_density: 0.0,
             raman_intensity: Vec::new(),
             raman_p: Vec::new(),
+            is_modal: false,
+            n_modes: 0,
+            npol: 0,
+            modal_a: 0.0,
+            modal_unm: Vec::new(),
+            modal_inv_sqrt_n: Vec::new(),
+            modal_phi: Vec::new(),
+            modal_pol_select: Vec::new(),
+            modal_nlfac: Vec::new(),
+            modal_kerr_fac: 0.0,
+            cubature: None,
+            modal_rtol: 1e-3,
+            modal_atol: 0.0,
+            modal_maxevals: 512,
+            modal_ems: Vec::new(),
+            modal_erw: Vec::new(),
+            modal_erwo: Vec::new(),
+            modal_er: Vec::new(),
+            modal_pr: Vec::new(),
+            modal_prwo: Vec::new(),
+            modal_prw: Vec::new(),
+            modal_emega: Vec::new(),
         }
     }
 
@@ -520,6 +603,217 @@ impl NativeSim {
             self.ks[idx][i] *= self.radial_m[i];
         }
     }
+
+    /// Modal (`TransModal`) RHS, narrow scope — see MATH.md §3.3. Drives the
+    /// resident `libcubature` (`pcubature_v`, 1-D radial integral — the
+    /// `full=false` case Luna itself selects for `HE, n=1` mode collections,
+    /// `Interface.needfull`) with `rhs_modal_pointcalc` as the C callback.
+    /// The cubature output (`val`, length `2·n_spec·n_modes`) is exactly the
+    /// packed real/imag `Prmω` array Julia's `pointcalc!` builds, so it is
+    /// written directly into `ks[idx]` reinterpreted as `f64`.
+    fn rhs_modal(&mut self, idx: usize, eomega: &[Complex<f64>]) {
+        self.modal_emega.copy_from_slice(eomega);
+
+        let n_spec = self.n_spec;
+        let n_modes = self.n_modes;
+        let fdim = 2 * n_spec * n_modes;
+        let mut valbuf = vec![0.0f64; fdim];
+        let mut errbuf = vec![0.0f64; fdim];
+
+        // `self.cubature` is `take()`n out (not borrowed) before the FFI call:
+        // the C library re-enters Rust via `modal_integrand_v`, which
+        // reconstructs a fresh `&mut NativeSim` from the raw `self` pointer —
+        // holding any live `&`/`&mut` borrow of a `self` field across that
+        // call (including a view into `self.ks[idx]`, hence the separate
+        // `valbuf` written back afterward) would alias it.
+        let cubature = self.cubature.take().expect("rhs_modal called before native_set_modal_params");
+        let rc = unsafe {
+            cubature.pcubature_v(
+                fdim,
+                modal_integrand_v,
+                self as *mut NativeSim as *mut c_void,
+                0.0, self.modal_a,
+                self.modal_maxevals,
+                self.modal_atol, self.modal_rtol,
+                &mut valbuf, &mut errbuf,
+            )
+        };
+        self.cubature = Some(cubature);
+        if rc != 0 {
+            eprintln!("rhs_modal: pcubature_v returned {}", rc);
+        }
+
+        let ks_f64: &mut [f64] = unsafe {
+            std::slice::from_raw_parts_mut(self.ks[idx].as_mut_ptr() as *mut f64, fdim)
+        };
+        ks_f64.copy_from_slice(&valbuf);
+    }
+
+    /// Per-node integrand: mirrors `Erω_to_Prω!` + the mode back-projection +
+    /// polar Jacobian in Julia's `pointcalc!` (`src/NonlinearRHS.jl:363-399`)
+    /// for a single radial coordinate `r`, `θ=0` fixed (the `full=false`
+    /// branch always evaluates at `θ=0` — the azimuthal dependence is
+    /// carried analytically in the mode-field formula, not integrated
+    /// numerically). Writes the packed real/imag `Prmω[·,·]·2πr` into `out`
+    /// (length `2·n_spec·n_modes`).
+    fn rhs_modal_pointcalc(&mut self, r: f64, out: &mut [f64]) {
+        let n_modes = self.n_modes;
+        let npol = self.npol;
+        let n_spec = self.n_spec;
+        let n_spec_over = self.n_spec_over;
+        let n_time_over = self.n_time_over;
+
+        if r <= 0.0 || r >= self.modal_a {
+            out.fill(0.0);
+            return;
+        }
+
+        // ── mode field synthesis at (r, θ=0): Exy = J0(r·unm/a)/√N · (sin ϕ, cos ϕ) ──
+        for m in 0..n_modes {
+            let x = r * self.modal_unm[m] / self.modal_a;
+            let base = j0(x) * self.modal_inv_sqrt_n[m];
+            let phi = self.modal_phi[m];
+            for (p, &sel) in self.modal_pol_select.iter().enumerate() {
+                self.modal_ems[m * npol + p] = base * if sel == 0 { phi.sin() } else { phi.cos() };
+            }
+        }
+
+        // ── to_space!: Erω[iω,p] = Σ_m Emω[iω,m]·Ems[m,p] ────────────────────────
+        for v in self.modal_erw.iter_mut() { *v = Complex::new(0.0, 0.0); }
+        for p in 0..npol {
+            for m in 0..n_modes {
+                let coeff = self.modal_ems[m * npol + p];
+                if coeff == 0.0 { continue; }
+                let em_col = &self.modal_emega[m * n_spec..(m + 1) * n_spec];
+                let er_col = &mut self.modal_erw[p * n_spec..(p + 1) * n_spec];
+                for i in 0..n_spec {
+                    er_col[i] += em_col[i] * coeff;
+                }
+            }
+        }
+
+        // ── to_time! per polarisation column (RealGrid r2c, looped rank-1 plan) ──
+        let scale_fwd = (n_spec_over - 1) as f64 / (n_spec - 1) as f64;
+        self.modal_erwo.fill(Complex::new(0.0, 0.0));
+        for p in 0..npol {
+            let in_col = &self.modal_erw[p * n_spec..(p + 1) * n_spec];
+            let out_col = &mut self.modal_erwo[p * n_spec_over..(p + 1) * n_spec_over];
+            for i in 0..n_spec { out_col[i] = in_col[i] * scale_fwd; }
+        }
+        if let Some(ref fft) = self.fft_r2c_over {
+            for p in 0..npol {
+                let spec_start = p * n_spec_over;
+                let time_start = p * n_time_over;
+                let spec_col = &mut self.modal_erwo[spec_start..spec_start + n_spec_over];
+                let time_col = &mut self.modal_er[time_start..time_start + n_time_over];
+                fft.inverse(spec_col, time_col);
+            }
+            let inv_nto = self.fft_norm_over;
+            for v in &mut self.modal_er { *v *= inv_nto; }
+        }
+
+        // ── Kerr (KerrScalar!/KerrVector!, src/Nonlinear.jl:81-93) ───────────────
+        self.modal_pr.fill(0.0);
+        let fac = self.modal_kerr_fac;
+        if npol == 1 {
+            for i in 0..n_time_over {
+                let e = self.modal_er[i];
+                self.modal_pr[i] += fac * e * e * e;
+            }
+        } else {
+            for i in 0..n_time_over {
+                let ex = self.modal_er[i];
+                let ey = self.modal_er[n_time_over + i];
+                let sq = ex * ex + ey * ey;
+                self.modal_pr[i] += fac * sq * ex;
+                self.modal_pr[n_time_over + i] += fac * sq * ey;
+            }
+        }
+
+        // ── towin apodization per column (reuses the 1-D towin buffer) ───────────
+        for p in 0..npol {
+            let start = p * n_time_over;
+            for t in 0..n_time_over {
+                self.modal_pr[start + t] *= self.towin[t];
+            }
+        }
+
+        // ── to_freq! per column ───────────────────────────────────────────────────
+        let scale_inv2 = (n_spec - 1) as f64 / (n_spec_over - 1) as f64;
+        if let Some(ref fft) = self.fft_r2c_over {
+            for p in 0..npol {
+                let time_start = p * n_time_over;
+                let spec_start = p * n_spec_over;
+                let time_col = &mut self.modal_pr[time_start..time_start + n_time_over];
+                let spec_col = &mut self.modal_prwo[spec_start..spec_start + n_spec_over];
+                fft.forward(time_col, spec_col);
+            }
+        }
+        for p in 0..npol {
+            let in_start = p * n_spec_over;
+            let out_start = p * n_spec;
+            for i in 0..n_spec {
+                self.modal_prw[out_start + i] = self.modal_prwo[in_start + i] * scale_inv2;
+            }
+        }
+
+        // ── ωwin + norm! (precomputed modal_nlfac, per ω, same for every pol column) ──
+        for p in 0..npol {
+            let col = &mut self.modal_prw[p * n_spec..(p + 1) * n_spec];
+            for i in 0..n_spec {
+                col[i] *= self.modal_nlfac[i];
+            }
+        }
+
+        // ── back-projection: Prmω[iω,m] = Σ_p Prω[iω,p]·Ems[m,p] ─────────────────
+        let pre = 2.0 * std::f64::consts::PI * r;
+        for m in 0..n_modes {
+            for i in 0..n_spec {
+                let mut acc = Complex::new(0.0, 0.0);
+                for p in 0..npol {
+                    acc += self.modal_prw[p * n_spec + i] * self.modal_ems[m * npol + p];
+                }
+                acc *= pre;
+                let idx = i + n_spec * m;
+                out[2 * idx] = acc.re;
+                out[2 * idx + 1] = acc.im;
+            }
+        }
+    }
+}
+
+/// C `integrand_v` callback for `pcubature_v` — reconstructs `&mut NativeSim`
+/// from `fdata` and loops `rhs_modal_pointcalc` over the batch of nodes
+/// (evaluated one at a time, not truly vectorized — mirrors Phase 3's
+/// "loop the existing rank-1 plan" precedent, see MATH.md §3.3).
+///
+/// # Safety
+/// `fdata` must be a valid `*mut NativeSim` (guaranteed: it is always
+/// `rhs_modal`'s own `self` pointer, round-tripped through `libcubature`).
+/// `x`/`fval` must be valid for `npt`/`npt*fdim` reads/writes respectively.
+unsafe extern "C" fn modal_integrand_v(
+    _ndim: c_uint,
+    npt: size_t,
+    x: *const c_double,
+    fdata: *mut c_void,
+    fdim: c_uint,
+    fval: *mut c_double,
+) -> c_int {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let sim = unsafe { &mut *(fdata as *mut NativeSim) };
+        let npt = npt as usize;
+        let fdim = fdim as usize;
+        let xs = unsafe { std::slice::from_raw_parts(x, npt) };
+        let fvals = unsafe { std::slice::from_raw_parts_mut(fval, npt * fdim) };
+        for p in 0..npt {
+            let out = &mut fvals[p * fdim..(p + 1) * fdim];
+            sim.rhs_modal_pointcalc(xs[p], out);
+        }
+    }));
+    match result {
+        Ok(()) => 0,
+        Err(_) => 1,
+    }
 }
 
 /// Cumulative trapezoidal integral: `dst[0]=0`, `dst[i] = dst[i-1] + (src[i-1]+src[i])/2·dt`.
@@ -600,7 +894,10 @@ pub unsafe extern "C" fn set_field(
     let src = unsafe { std::slice::from_raw_parts(data as *const Complex<f64>, n) };
     sim.field.copy_from_slice(src);
     
-    if sim.is_radial {
+    if sim.is_modal {
+        let field = sim.field.clone();
+        sim.rhs_modal(0, &field);
+    } else if sim.is_radial {
         let field = sim.field.clone();
         sim.rhs_radial(0, &field);
     } else if !sim.beta.is_empty() {
@@ -933,6 +1230,122 @@ pub unsafe extern "C" fn native_set_raman_params(
     0
 }
 
+/// Wire the modal (`TransModal`) RHS: resident `libcubature` (`pcubature_v`,
+/// `full=false` only) + analytic `HE, n=1` Marcatili mode-field synthesis.
+/// See MATH.md §3.3 for the full design and scope restrictions.
+///
+/// Must be called **after** `native_set_fftw_plans` (`is_real=1` — RealGrid
+/// only) and `native_set_mode_avg_params`-style buffer sizing is done here
+/// directly (modal does not reuse `native_set_mode_avg_params`).
+///
+/// # Arguments
+/// * `n_time`/`n_time_over` — `grid.t`/`grid.to` lengths.
+/// * `n_modes` — number of modes; `sim.n` must equal `n_spec * n_modes`.
+/// * `npol` — 1 or 2 (`Modes.ToSpace.npol`).
+/// * `a` — shared physical core radius (constant across modes and z —
+///   scope restriction).
+/// * `unm`/`inv_sqrt_n`/`phi` — per-mode arrays, length `n_modes` (`unm`,
+///   `1/√N(m)` precomputed closed-form, `ϕ`).
+/// * `pol_select` — length `npol`, 0 → `sin ϕ` (x column), 1 → `cos ϕ` (y column).
+/// * `towin` — length `n_time_over`, or null for all-ones.
+/// * `kerr_fac` — `density · ε₀ · γ3` (same convention as every other phase).
+/// * `nlfac_re`/`nlfac_im` — precomputed `ωwin[iω]·normfunc(ω[iω])`, length `n_spec` each.
+/// * `lib_path` — path to the `libcubature` shared library
+///   (`Cubature.Cubature_jll.libcubature` from Julia).
+/// * `rtol`/`atol`/`maxevals` — passed straight through to `pcubature_v`.
+///
+/// Returns 0 on success, -1 on null/shape-mismatched args, -2 if `libcubature`
+/// failed to load.
+///
+/// # Safety
+/// `sim` must be valid; `unm`/`inv_sqrt_n`/`phi` must each be valid for
+/// `n_modes` reads; `pol_select` for `npol` reads; `nlfac_re`/`nlfac_im` for
+/// `n_spec` reads (`n_spec = sim.n / n_modes`); `towin`, if non-null, for
+/// `n_time_over` reads; `lib_path` must be a valid null-terminated C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_set_modal_params(
+    sim: *mut NativeSim,
+    n_time: size_t,
+    n_time_over: size_t,
+    n_modes: size_t,
+    npol: size_t,
+    a: c_double,
+    unm: *const c_double,
+    inv_sqrt_n: *const c_double,
+    phi: *const c_double,
+    pol_select: *const u8,
+    towin: *const c_double,
+    kerr_fac: c_double,
+    nlfac_re: *const c_double,
+    nlfac_im: *const c_double,
+    lib_path: *const c_char,
+    rtol: c_double,
+    atol: c_double,
+    maxevals: size_t,
+) -> i32 {
+    if sim.is_null() || unm.is_null() || inv_sqrt_n.is_null() || phi.is_null()
+        || pol_select.is_null() || nlfac_re.is_null() || nlfac_im.is_null() || lib_path.is_null() {
+        return -1;
+    }
+    let s = unsafe { &mut *sim };
+    if n_modes == 0 || npol == 0 || (npol != 1 && npol != 2) || s.n % n_modes != 0 {
+        return -1;
+    }
+    let n_spec = s.n / n_modes;
+
+    let path_str = unsafe { CStr::from_ptr(lib_path).to_str().unwrap_or("") };
+    let cubature = match CubatureApi::load(path_str) {
+        Ok(api) => api,
+        Err(e) => {
+            eprintln!("native_set_modal_params: failed to load libcubature: {}", e);
+            return -2;
+        }
+    };
+
+    s.is_modal = true;
+    s.n_time = n_time;
+    s.n_time_over = n_time_over;
+    s.n_modes = n_modes;
+    s.npol = npol;
+    s.n_spec = n_spec;
+    s.n_spec_over = if s.is_real { n_time_over / 2 + 1 } else { n_time_over };
+    s.modal_a = a;
+
+    s.modal_unm = unsafe { std::slice::from_raw_parts(unm, n_modes) }.to_vec();
+    s.modal_inv_sqrt_n = unsafe { std::slice::from_raw_parts(inv_sqrt_n, n_modes) }.to_vec();
+    s.modal_phi = unsafe { std::slice::from_raw_parts(phi, n_modes) }.to_vec();
+    s.modal_pol_select = unsafe { std::slice::from_raw_parts(pol_select, npol) }.to_vec();
+
+    if !towin.is_null() {
+        s.towin = unsafe { std::slice::from_raw_parts(towin, n_time_over) }.to_vec();
+    } else {
+        s.towin = vec![1.0; n_time_over];
+    }
+    s.modal_kerr_fac = kerr_fac;
+
+    let re_sl = unsafe { std::slice::from_raw_parts(nlfac_re, n_spec) };
+    let im_sl = unsafe { std::slice::from_raw_parts(nlfac_im, n_spec) };
+    s.modal_nlfac = re_sl.iter().zip(im_sl.iter())
+        .map(|(&r, &i)| Complex::new(r, i))
+        .collect();
+
+    s.cubature = Some(cubature);
+    s.modal_rtol = rtol;
+    s.modal_atol = atol;
+    s.modal_maxevals = maxevals;
+
+    s.modal_ems = vec![0.0; n_modes * npol];
+    s.modal_erw = vec![Complex::new(0.0, 0.0); n_spec * npol];
+    s.modal_erwo = vec![Complex::new(0.0, 0.0); s.n_spec_over * npol];
+    s.modal_er = vec![0.0; n_time_over * npol];
+    s.modal_pr = vec![0.0; n_time_over * npol];
+    s.modal_prwo = vec![Complex::new(0.0, 0.0); s.n_spec_over * npol];
+    s.modal_prw = vec![Complex::new(0.0, 0.0); n_spec * npol];
+    s.modal_emega = vec![Complex::new(0.0, 0.0); s.n];
+
+    0
+}
+
 // ── Dormand-Prince constants (matching ffi.rs) ──────────────────────────────
 const DP_B: [[f64; 6]; 6] = [
     [1.0/5.0,          0.0,              0.0,              0.0,             0.0,              0.0],
@@ -1060,7 +1473,13 @@ pub unsafe extern "C" fn native_step(
             }
         }
         
-        if s.is_radial {
+        if s.is_modal {
+            let dt_prop = DP_NODES[ii] * dt;
+            let mut ystage_prop = s.ystage.clone();
+            apply_prop(&mut ystage_prop, &s.linop, dt_prop);
+            s.rhs_modal(ii + 1, &ystage_prop);
+            apply_prop(&mut s.ks[ii + 1], &s.linop, -dt_prop);
+        } else if s.is_radial {
             let dt_prop = DP_NODES[ii] * dt;
             let mut ystage_prop = s.ystage.clone();
             apply_prop(&mut ystage_prop, &s.linop, dt_prop);

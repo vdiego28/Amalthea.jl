@@ -4,6 +4,7 @@ import Logging
 import Printf: @sprintf
 import Luna.Utils: format_elapsed, lunadir
 import FFTW
+import Cubature
 import ..Luna
 
 
@@ -686,8 +687,9 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     n = length(y0)
     is_mode_avg = f! isa Luna.NonlinearRHS.TransModeAvg
     is_radial = f! isa Luna.NonlinearRHS.TransRadial
+    is_modal = f! isa Luna.NonlinearRHS.TransModal
 
-    if is_mode_avg || is_radial
+    if is_mode_avg || is_radial || is_modal
         grid = f!.grid
         is_real_grid = grid isa Luna.Grid.RealGrid   # EnvGrid uses c2c FFTs
         n_time = length(grid.t)
@@ -868,6 +870,95 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             towin, kerr_fac,
             real.(M), imag.(M))
         rc == 0 || error("native_set_radial_params failed: $rc")
+    end
+
+    # Set parameters if modal (TransModal) — Phase 5 gate: RealGrid,
+    # `full=false` only (the radial modal integral — this is exactly what
+    # `Interface.needfull` selects for `HE, n=1` mode collections, i.e. the
+    # common case, not an artificial restriction), constant-radius Marcatili
+    # `kind=:HE, n=1` modes only, Kerr-only. See MATH.md §3.3 for the design
+    # (libcubature reuse, closed-form N(m), the numerically-probed norm!).
+    if is_modal
+        is_real_grid || error("RustNativeStepper: EnvGrid modal not yet supported " *
+                               "(Phase 5 gate is RealGrid-only)")
+        f!.full && error("RustNativeStepper: full=true (2-D modal integral) not yet " *
+                          "supported (Phase 5 gate is full=false — the radial modal " *
+                          "integral Luna selects for HE,n=1 mode collections, " *
+                          "Interface.needfull)")
+        isnothing(f!.Emω_noise) || error("RustNativeStepper: modified shot-noise " *
+                          "(Emω_noise) not yet supported for the native modal path")
+
+        modes = f!.ts.ms
+        n_modes = length(modes)
+        npol = f!.ts.npol
+        npol == 1 || error("RustNativeStepper: native modal path only supports " *
+                  "npol=1 (single polarisation component — components=:x or :y, " *
+                  "i.e. polarisation=:linear/:x/:y with non-vector modes). The " *
+                  "KerrVector! (npol=2, components=:xy — circular/elliptical " *
+                  "polarisation) code path is implemented in native.rs but not yet " *
+                  "verified against the Julia oracle and is gated off here until it " *
+                  "is (Phase 5 gate — see MATH.md §3.3).")
+
+        all(m -> m isa Luna.Capillary.MarcatiliMode, modes) ||
+            error("RustNativeStepper: native modal path only supports MarcatiliMode " *
+                  "(Phase 5 gate)")
+        all(m -> m.kind == :HE && m.n == 1, modes) ||
+            error("RustNativeStepper: native modal path only supports kind=:HE, n=1 " *
+                  "modes (needs only besselj(0,·)/besselj(1,·) — Phase 5 gate; general " *
+                  "n needs a general-order Bessel routine, deferred, see MATH.md §3.3)")
+        all(m -> m.a isa Number, modes) ||
+            error("RustNativeStepper: native modal path only supports constant-radius " *
+                  "modes (Phase 5 gate; tapered/z-dependent radius deferred)")
+
+        a = Float64(modes[1].a)
+        all(m -> Float64(m.a) == a, modes) ||
+            error("RustNativeStepper: all modes must share the same core radius")
+
+        unm = Float64[m.unm for m in modes]
+        invsqrtn = Float64[1.0 / sqrt(Luna.Modes.N(m, z=0.0)) for m in modes]
+        phi = Float64[m.ϕ for m in modes]
+
+        pol_select = npol == 2 ? UInt8[0, 1] : UInt8[f!.ts.indices == 1 ? 0 : 1]
+
+        towin = f!.grid.towin
+
+        # Find Kerr response and extract γ3 (same pattern as mode-averaged/radial above).
+        γ3 = 0.0
+        for r in f!.resp
+            for fld in fieldnames(typeof(r))
+                if occursin("γ3", string(fld))
+                    γ3 = getfield(r, fld)
+                    break
+                end
+            end
+            γ3 != 0.0 && break
+        end
+        length(f!.resp) == 1 ||
+            @warn "RustNativeStepper (modal): only single-response (Kerr-only) is " *
+                  "verified by the native path; extra responses (plasma, Raman, ...) " *
+                  "are ignored — physics will be wrong if any are present."
+
+        density = f!.densityfun(0.0)
+        kerr_fac = density * Luna.PhysData.ε_0 * γ3
+
+        # Extract exactly what `ωwin .* norm!` computes by numerically probing
+        # the closure (robust to norm_modal's shock/no-shock branch — avoids
+        # re-deriving grid.ω/shock logic, see MATH.md §3.3).
+        nlfac = ComplexF64.(f!.grid.ωwin)
+        f!.norm!(nlfac)
+
+        lib_path = Cubature.Cubature_jll.libcubature
+
+        rc = ccall((:native_set_modal_params, _LIBLUNA_RUST_RK45), Cint,
+            (Ptr{Cvoid}, Csize_t, Csize_t, Csize_t, Csize_t,
+             Float64, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Ptr{UInt8},
+             Ptr{Float64}, Float64, Ptr{Float64}, Ptr{Float64},
+             Cstring, Float64, Float64, Csize_t),
+            handle.ptr, n_time, n_time_over, n_modes, npol,
+            a, unm, invsqrtn, phi, pol_select,
+            towin, kerr_fac, real.(nlfac), imag.(nlfac),
+            lib_path, f!.rtol, f!.atol, Csize_t(f!.mfcn))
+        rc == 0 || error("native_set_modal_params failed: $rc")
     end
 
     # Copy initial field to Rust

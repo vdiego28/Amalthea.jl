@@ -185,19 +185,120 @@ the same `E³` formula already in `rhs_mode_avg_real`, applied per r-column),
 plasma-radial are deferred follow-ups, mirroring how Phase 1 preceded Phase
 2's EnvGrid/plasma extension.
 
-### 3.3 Modal — `TransModal` (`src/NonlinearRHS.jl:421`) — Phase 5
-The hardest. The nonlinear polarization is projected onto each waveguide mode by
-an **overlap integral** evaluated with adaptive cubature (`pointcalc!`,
-`src/NonlinearRHS.jl:363-399`; `Erω_to_Prω!`, `:401-419`). Steps per RHS:
-mode-field evaluation at cubature nodes → `to_space!` (sum modes → physical
-field) → responses → re-project (`Erω_to_Prω!`) → modal normalization. Requires
-a Rust adaptive-cubature routine; mode dispersion is already Rust.
+### 3.3 Modal — `TransModal` (`src/NonlinearRHS.jl:421`) — Phase 5, ported (narrow scope)
+The nonlinear polarization is projected onto each waveguide mode by an
+**overlap integral** evaluated with adaptive cubature (`pointcalc!`,
+`src/NonlinearRHS.jl:363-399`; `Erω_to_Prω!`, `:401-419`). Per cubature node
+`(r,θ)`: mode-field synthesis (`to_space!`: sum `Emω` weighted by each mode's
+`Exy(r,θ,z)` → physical field `Erω`) → `to_time!` → nonlinear response
+(`Et_to_Pt!`) → `towin` → `to_freq!` → `ωwin`/`norm!` → re-project onto modes
+(`Prω · transpose(Ems)`) → scale by the polar Jacobian `2π·r` → return to the
+cubature routine as one component of the vector integrand.
+
+**Reuse, don't reinvent — bind the same C `libcubature`, don't write an
+adaptive-cubature algorithm.** `Cubature.jl` is a thin `ccall` wrapper around
+Steven Johnson's C library (`Cubature_jll`, symbols `hcubature_v`/
+`pcubature_v`), not a pure-Julia reimplementation — confirmed via
+`Cubature.Cubature_jll.libcubature` (an artifact path) and
+`nm -D libcubature.so` (exports `hcubature_v`/`pcubature_v`/`hcubature`/
+`pcubature`). This is exactly `FFTW.FFTW_jll.libfftw3`'s shape: `native.rs`
+`dlopen`s the identical binary Julia calls (path passed in from Julia, same
+`Library` loader pattern as `fftw.rs`), and Rust's per-node evaluator is
+registered as the `integrand_v` C callback
+(`int(unsigned ndim, size_t npt, const double *x, void *fdata, unsigned fdim, double *fval)`).
+**Reimplementing the adaptive subdivision algorithm was rejected outright**:
+region-splitting decisions depend on an FP-summation-order-sensitive error
+estimate exactly like the RK45 step controller (§2.2) — a reimplementation
+would face the same adaptive-path divergence that took real debugging effort
+in Phases 1-2 (TESTING.md §3), except cubature has no `max_dt=min_dt` escape
+hatch to pin node placement. Binding the same library makes node placement
+bit-identical by construction instead of merely close.
+
+**Scope implemented — narrow on purpose, mirrors the Phase 3/4 pattern:**
+- **RealGrid only**, `full=false` only (the default — `Cubature.pcubature_v`,
+  a 1-D radial integral; Julia's `pointcalc!` fixes `θ=0` in this branch, since
+  the azimuthal dependence is folded into the analytic mode-field formula, not
+  integrated numerically). `full=true` (`hcubature_v`, genuine 2-D `(r,θ)`
+  integral) is deferred.
+- **`MarcatiliMode`, `kind=:HE`, `n=1` only** (the `HE1m` family —
+  `HE11`, `HE12`, …, the mode basis used throughout Luna's capillary examples
+  and tests). Field formula needs only `besselj(0,·)` and `besselj(1,·)`
+  (`src/Capillary.jl:271-288`), which `diffraction.rs`'s existing `j0`/`j1`
+  already provide — **verified against Julia `SpecialFunctions.besselj` over
+  `x∈[0,6]` (covers `u₀₁≈2.405`, `u₀₂≈5.520`): max absolute error ~1.5e-15**
+  (the ~1e-11 *relative* error right at a Bessel zero is an artifact of
+  dividing by a near-zero value, not a precision problem — the field itself is
+  correctly ~0 there by construction, the boundary condition the zero encodes).
+  General `n` (needed for `TE`/`TM` and `HE_{n>1,m}` modes) needs a proper
+  general-order Bessel routine (Miller's backward recurrence — the naive
+  upward recurrence is unstable for `x<n`) and is deferred; the native guard
+  rejects any mode with `n≠1` or `kind≠:HE` and falls back to Julia.
+- **Constant radius only** (`MarcatiliMode{<:Number,...}`, i.e. `m.a` is a
+  plain number, not a z-dependent closure `m.a(z)` for a tapered capillary).
+  Reject/fall back otherwise.
+- **Normalization precomputed in Julia, not ported.** `MarcatiliMode` overrides
+  the generic (numerically-integrated) `Modes.N` with a **closed form**:
+  `N(m,z) = π/2 · a(z)² · besselj(n, unm)² · √(ε₀/μ₀)` (`src/Capillary.jl:285-288`).
+  For a constant-radius mode this is a single z-invariant scalar. Julia
+  precomputes `1/√N` per mode once and passes it over FFI alongside `unm`,
+  `a`, `n`, `φ` — **no `besselj` call happens in Rust for normalization**, only
+  for the per-node field synthesis (`besselj(n-1, r·unm/a)`, i.e. `j0` for
+  `n=1`).
+- **Kerr-only nonlinearity, `npol=1` gated in — `npol=2` implemented but not
+  yet verified, gated off.** `rhs_modal_pointcalc` reuses the exact
+  `KerrScalar!` (`npol=1`, `E³`) / `KerrVector!` (`npol=2`,
+  `(Ex²+Ey²)·(Ex,Ey)`, `src/Nonlinear.jl:81-93`) formulas already ported for
+  Phase 1/3. The Julia wiring in `RK45.jl` `error()`s on `npol≠1` — the
+  `KerrVector!` code path exists in `native.rs` but the shipped gate test
+  only exercises `npol=1` (`components=:y`, the default for
+  `polarisation=:linear/:x/:y`); a `npol=2` test needs real energy in
+  **both** polarisation components (circular/elliptical, not just `:xy`
+  components with a degenerate y-only input, which would leave the
+  `Ex²`-cross-term untested) to genuinely check the coupling term, and that
+  hasn't been done — do not remove this gate without adding that test first.
+  Raman and plasma are **deferred for complexity, not because they are physically
+  ill-defined at cubature nodes** — per-node Raman is exactly as well-formed
+  as Phase 4's per-column Raman (the ADE solver resets its state every RHS
+  call from the current time-domain field, `solve_scalar`; it has no memory
+  across z-steps or across spatial location, so a moving cubature node is not
+  a problem). A future phase can add it as one more additive `Et_to_Pt!` term,
+  exactly as Phase 4 added it to `rhs_mode_avg_real`.
+- **`shotnoise=false`** (`Emω_noise = nothing`) — the modified shot-noise
+  branch (`Er_noise`/`Er_nl`) is not ported.
+- **Any other mode type (`DelegatedMode`, interpolated/numeric modes, or a
+  mode tuple mixing an ineligible mode with eligible ones) is a hard
+  fallback to Julia, not a deferred scope item** — those modes are arbitrary
+  Julia closures with no Rust-portable representation at all (unlike the
+  scope items above, which are "not yet ported").
+
+**Multi-mode projection is exercised by the first-cut test, not skipped.**
+The gate test uses two co-eligible modes (`HE11` + `HE12`, both `n=1`, both
+`j0`-based, different `unm`) specifically so the `to_space!` sum-over-modes
+matmul and the back-projection matmul (`Prω · transpose(Ems)`) are genuinely
+tested with `nmodes=2`, not left implicitly untested by a single-mode
+shortcut. Self-validating per the Phase 4 lesson: the full-solve testset
+independently asserts the Kerr-driven HE11→HE12 energy transfer is
+non-negligible (2.0e-5 of total energy, far above any noise floor) before
+trusting the Rust-vs-Julia comparison — a passing comparison where both
+paths trivially stay in mode 1 would prove nothing about the two matmuls.
+
+**Gate achieved:** single-step 1.4e-19 (looser ~1e-10 tier documented below
+was the conservative target; the dominant single-step error source, `j0`'s
+~1e-15 absolute agreement with `SpecialFunctions.besselj`, turned out not to
+be the limiting factor at this problem size), full-solve 4.0e-16 (fixed step
+size, `test/test_native_modal.jl`). The looser tier is still worth stating
+explicitly for future phases: node placement is bit-identical (same
+`libcubature` binary) but mode-field synthesis is not bit-for-bit against
+`SpecialFunctions.besselj`, so ~1e-10 (not ~1e-13) is the *documented*
+ceiling even though this run landed far under it.
 
 > **Concurrency note (do not reintroduce):** the `TransModal` integration loop
 > writes shared struct buffers (`t.Erω`, `t.Prω`, `t.Prmω`); it must stay
 > **sequential**. A prior `Threads.@threads` parallelization caused a data race
 > → corrupted overlaps → every RK step rejected. (BACKLOG "Done" item.) The Rust
-> port must keep per-node state thread-local if it ever parallelizes.
+> port keeps the `libcubature` call and its Rust callback strictly
+> single-threaded (no `rayon`/`Threads` inside the callback) for the same
+> reason.
 
 ### 3.4 Free-space — `TransFree` (`src/NonlinearRHS.jl:826`) — Phase 6
 2-D Cartesian spatial axis: a **3-D FFT** (2 spatial + 1 time). Needs 3-D FFTW

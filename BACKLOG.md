@@ -66,11 +66,24 @@ full-`solve` ~1e-6 vs the Julia oracle — see TESTING.md §3 nondeterminism flo
   contribution below the FP floor relative to Kerr — the effect is
   cumulative over propagation, see PORT_LOG 2026-07-01). Test
   `test/test_native_raman.jl`. ✔
-- ⬜ **Phase 5 — Modal (TransModal).** Hardest: Rust adaptive cubature + mode-field
-  eval + overlap projections (dispersion already Rust). Replaces `TransModal`
-  (`src/NonlinearRHS.jl:421`, `pointcalc!` `:363`, `Erω_to_Prω!` `:401`). Keep the
-  integration loop **sequential** (prior `Threads.@threads` race). Test
-  `test/test_native_modal.jl`.
+- ✅ **Phase 5 — Modal (TransModal), narrow scope.** Binds the *same*
+  `libcubature` C library Julia's `Cubature.jl` wraps (`Cubature_jll`,
+  dlopened at runtime like FFTW — not a reimplemented cubature algorithm, so
+  adaptive node placement is bit-identical, not just close). Per-node
+  evaluation reuses the existing rank-1 FFT plans + Kerr formula. Scope:
+  RealGrid, constant-radius `MarcatiliMode` with `kind=:HE, n=1` only (needs
+  only `besselj(0,·)`/`besselj(1,·)`, already in `diffraction.rs`),
+  `full=false` (the radial modal integral — what `Interface.needfull`
+  already selects for `HE,n=1` mode collections, not an artificial
+  restriction), Kerr-only, `shotnoise=false`. Replaces `TransModal`
+  (`src/NonlinearRHS.jl:421`, `pointcalc!` `:363`, `Erω_to_Prω!` `:401`) within
+  that scope. Keeps the integration loop **sequential** (prior
+  `Threads.@threads` race). Gate passed: two-mode (HE11+HE12) single-step
+  1.4e-19, full-solve 4.0e-16 (fixed step size) — independently verified
+  non-vacuous (HE11→HE12 energy transfer is 2.0e-5 of total energy, far above
+  any noise floor). General-order modes (`TE`/`TM`/`n>1`), tapered radius,
+  `full=true`, EnvGrid, and Raman/plasma-in-modal are deferred (see MATH.md
+  §3.3). Test `test/test_native_modal.jl`. ✔
 - ⬜ **Phase 6 — Free-space (TransFree).** 3-D FFTW plans resident. Replaces
   `TransFree` (`src/NonlinearRHS.jl:826`). Test `test/test_native_free.jl`.
 - ⬜ **Phase 7 — z-dependent linop assembly.** Port `_fill_linop`
