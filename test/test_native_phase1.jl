@@ -48,9 +48,18 @@ using TestItems
         end
         
         @testset "Full-solve equivalence (~1e-6)" begin
-            s_jl = PreconStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10)
-            s_ru = RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10)
-            
+            # Fixed step size (max_dt=min_dt=dt): the adaptive PI controller's
+            # embedded error estimate is a near-total cancellation (b5-b4=0),
+            # so tiny FP-summation-order differences between Julia and Rust
+            # can amplify into different dt choices, sending the two adaptive
+            # integrators down different step paths that land at different z
+            # (see docs/native-port/PORT_LOG.md). Forcing an identical step-size
+            # sequence isolates genuine multi-step state-accumulation error.
+            s_jl = PreconStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
+                                  max_dt=dt, min_dt=dt)
+            s_ru = RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
+                                  max_dt=dt, min_dt=dt)
+
             solve(s_jl, flength)
             solve(s_ru, flength)
             

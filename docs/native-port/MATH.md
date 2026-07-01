@@ -97,10 +97,13 @@ f!(out, Eω, z):
 
 The geometries differ in steps 1/3 (which transform) and step 4 (normalization):
 
-### 3.1 Mode-averaged — `TransModeAvg` (`src/NonlinearRHS.jl:531`) — Phase 1
+### 3.1 Mode-averaged — `TransModeAvg` (`src/NonlinearRHS.jl:531`) — Phase 1 (RealGrid) / Phase 2 (EnvGrid)
 No spatial transform. Pure 1-D FFT pair plus an effective-area scaling
 (`norm_mode_average`). The simplest geometry; the reference implementation for
-the resident-field architecture.
+the resident-field architecture. Phase 1 ported the RealGrid (r2c/c2r) Kerr
+path (`rhs_mode_avg_real`); Phase 2 extended it to the EnvGrid (c2c) envelope
+path (`rhs_mode_avg_env`), which needs the 3/4 SVEA prefactor on `Kerr_env`
+that the carrier-resolved Kerr term doesn't (§5.1).
 
 ### 3.2 Radial — `TransRadial` (`src/NonlinearRHS.jl:663`) — Phase 3
 The field carries a radial axis. Each RHS adds a **QDHT** (`mul!`/`ldiv!` with
@@ -150,15 +153,21 @@ All live in `src/Nonlinear.jl`. The native port reproduces each in Rust.
 Instantaneous χ⁽³⁾. Variants: scalar `E³`; vectorial (polarization-resolved);
 third-harmonic (`thg`) vs. Hilbert-envelope (no-thg) forms. For EnvGrid a
 `Kerr_env` variant uses `|E|²E`. Coefficient: `χ₃ · ε₀` folded into one scalar.
+**Gotcha (bit us in Phase 2a):** `Kerr_env` carries an extra **3/4 SVEA
+prefactor** vs. the carrier-resolved (no-thg) form — `rhs_mode_avg_env` must
+multiply `kerr_fac` by `0.75`. Missing this passed compilation but showed up
+as a single-step error of ~9.5e-6 (not machine epsilon), not a crash.
 
-### 5.2 Plasma — `PlasmaCumtrapz` (`src/Nonlinear.jl:161-250`)
+### 5.2 Plasma — `PlasmaCumtrapz` (`src/Nonlinear.jl:161-250`) — Phase 2, ported
 The expensive nonlinearity. Per RHS:
 1. ionization rate `W(|E|)` from the PPT LUT (already Rust, `LUNA_USE_RUST_IONISATION`);
 2. **three cumulative trapezoidal integrals** (`cumtrapz`): free-electron density
    `ρ(t)` from the rate; the loss/heating current; the polarization current;
 3. assemble the plasma current `J(t)` and add to `Pt`.
-The three `cumtrapz` passes and the current assembly are the Phase 2 port target;
-the rate LUT is already offloaded.
+Ported in Phase 2 as `rhs_plasma` (`luna-rust/src/native.rs`, `cumtrapz_slice_f64`
++ `native_set_plasma_params`), gated on `LUNA_USE_RUST_IONISATION=1` (the native
+path silently falls back to Julia plasma physics if the ionization handle isn't
+wired — see PORT_LOG 2026-06-30 "Wire plasma" note).
 
 ### 5.3 Raman (`src/Nonlinear.jl:357-431`)
 Delayed χ⁽³⁾. The carrier-field SDO path (`RamanPolarField`) is already Rust

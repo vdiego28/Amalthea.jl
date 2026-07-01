@@ -264,3 +264,94 @@ operation not yet ported.
   when not used.
 - No new `@cfunction` needed — this is still callback-free.
 
+## 2026-07-01 — Phase 2 — Plasma + EnvGrid Kerr — Claude (sonnet-5)
+**Status:** complete
+**Did:** Fixed the EnvGrid Kerr (`rhs_mode_avg_env`) SVEA factor (single-step was
+9.49e-6, now < 1e-13) and root-caused + fixed the Phase 2a full-solve failure
+(9.64e-5, target < 1e-6). Also fixed a real (separate) bug: `RustNativeStepper`
+never updated `s.y` after a successful step, corrupting `interpolate()` at any
+non-endpoint `ti`.
+**How:**
+- SVEA fix: `rhs_mode_avg_env` (`luna-rust/src/native.rs`) was missing the 3/4
+  envelope Kerr prefactor; Julia's `Kerr_env` includes it, the Rust port didn't.
+  Added `let kf = Complex::new(0.75 * self.kerr_fac, 0.0);`.
+- Full-solve root cause: NOT a physics/kernel bug. Confirmed via a step-by-step
+  diagnostic (manual `step!` loop comparing `PreconStepper` vs `RustNativeStepper`
+  field-by-field): `yn` agrees to ~1e-18 at step 1, but the embedded RK
+  error estimate `err` (a near-total cancellation, `b5-b4=0` in the Butcher
+  tableau) differs by ~20% between languages at the ~1e-15 floor purely from
+  FP-summation-order noise (Rust vs Julia accumulate the same sums in different
+  order). The PI step controller amplifies that 20% `err` disagreement into a
+  ~1.4% difference in the chosen next `dt`, and that one divergence compounds:
+  by step 3 the two adaptive integrators have taken different step paths and
+  land at genuinely different z (`tn` differs by ~0.26% of flength). Comparing
+  `s.yn` after `solve()` was therefore comparing the field at two different
+  points in space, not detecting a state-accumulation bug.
+- Confirmed this diagnosis two ways: (1) forcing both steppers onto an
+  *identical* fixed step-size grid (`max_dt=min_dt=dt`, no adaptivity) made the
+  full-solve agreement ~1e-17–3e-17 all the way to flength — proof the kernel
+  itself (`native_step`/`rhs_mode_avg_env`) is correct; (2) Phase 1 and 2b's
+  `err` values are "healthy" (1e-4 to 7e-2, agree to ~1e-11–1e-13 relative)
+  because their early-step nonlinearity is strong enough that `err` is far from
+  the cancellation floor — so their adaptive `tn` paths stay in lockstep and
+  their full-solve tests already passed at ~1e-13/1e-16 by coincidence of
+  regime, not because they're immune to the same underlying mechanism.
+- Fix applied uniformly to Phase 1 and Phase 2 (2a, 2b) full-solve testsets:
+  construct both steppers with `max_dt=dt, min_dt=dt` so the adaptive
+  step-size controller can't diverge the two integrators onto different z —
+  this tests genuine multi-step state-accumulation error, which is what
+  "full-solve equivalence" is supposed to mean. (Phase 0's full-solve test
+  didn't need this: its no-op RHS makes `err` exactly `0.0` in both languages,
+  not near-zero, so there's no cancellation noise to amplify.)
+- `s.y` bug: `step!(s::RustNativeStepper)` (`src/RK45.jl`) only ever updated
+  `s.t/s.tn/s.dt/s.dtn/s.err/s.errlast/s.ok` — never `s.y`. Verified via
+  `native_step` (`luna-rust/src/native.rs:704-820`) that the passed-in `yn`
+  buffer always holds a valid field on return regardless of accept/reject
+  outcome (`s.field` is Rust's source of truth; `yn_sl` is unconditionally
+  reset from it at function entry, line 729), so snapshotting `s.yn` just
+  before the `ccall` and copying it into `s.y` after a successful step is safe
+  in all cases (including retries after a rejected step). Fixed in
+  `step!(s::RustNativeStepper)`.
+**Decisions:**
+- Did NOT attempt to implement full quartic Hermite dense output for
+  `RustNativeStepper` (would require exporting k-stages via FFI) to make
+  `interpolate()`-based full-solve comparison work at 1e-6. Verified this
+  wouldn't even solve the problem: Julia and Rust would still be interpolating
+  two *different* step intervals (different `t`/`tn` endpoints) to a common z,
+  which leaves a residual close to `rtol` regardless of interpolant order —
+  confirmed empirically (substituting Julia's own quartic interpolant for a
+  naive linear one, on identical data, reproduces the ~1e-5 residual). The
+  fixed-dt fix removes the confound entirely for less work.
+- Did not loosen the full-solve tolerance (kept `< 1e-6` in all three phases);
+  fixed-dt passes with 4+ orders of magnitude of margin (1e-16 to 1e-17), so no
+  loosening was needed.
+**Gotchas:**
+- The embedded RK45 error estimate (`yerr = dt * Σ errest[i]*ks[i]`, where
+  `Σ errest = b5-b4 = 0` identically) is a near-total cancellation by
+  construction. Any future cross-language (or cross-hardware-dispatch) parity
+  test that reads `err`/`dtn`/adaptive `tn` directly, rather than the field
+  state, should expect this to be fragile at the FP-noise level whenever the
+  RHS is weakly nonlinear (small per-step phase accumulation) — this is not
+  specific to EnvGrid/Kerr, it's a property of adaptive local-extrapolation
+  RK controllers with a near-zero true error.
+- `RustNativeStepper`'s `interpolate()` is still only linear-in-IP (not full
+  dense output) — fine for the `output=true` sampling use case at moderate
+  step sizes, but will show real (not buggy) 1e-5-to-1e-6-level deviation from
+  Julia's quartic Hermite interpolant on unusually large adaptive steps. Don't
+  mistake that gap for a bug if it resurfaces elsewhere.
+**Tests:**
+- `RUSTFLAGS="-D warnings" cargo build --release` → clean.
+- `LUNA_TEST_GROUP=rust julia --project . test/runtests.jl` (no env override,
+  matching CI) → 41930 passed, 1 broken (Phase 2b plasma sub-test, which
+  correctly `@test_skip`s itself when `LUNA_USE_RUST_IONISATION` isn't set —
+  expected, not a regression).
+- With `LUNA_USE_RUST_IONISATION=1` set (to exercise the native plasma path):
+  Phase 1 full-solve `2.75e-16`; Phase 2a (EnvGrid Kerr) single-step `< 1e-13`,
+  full-solve `3.19e-17`; Phase 2b (RealGrid + plasma) single-step `3.76e-17`,
+  full-solve `2.73e-16`. All comfortably under the `1e-6` target.
+  (Setting `LUNA_USE_RUST_IONISATION=1` globally makes one unrelated
+  `test_ionisation_rust.jl` assertion fail — it asserts the *default* env-var
+  state is off, so it must be run without the global override. Not a
+  regression; run that file separately from the Phase 2b plasma path.)
+**Next:** Phase 3 — Radial + resident QDHT (see `BACKLOG.md`).
+

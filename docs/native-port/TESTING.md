@@ -1,6 +1,7 @@
 # Native-Rust Backend Port — Testing & Equivalence
 
-> Status: design doc for the phased port. No phase is implemented yet.
+> Status: design doc for the phased port. Phases 0-2 are implemented and
+> passing (see `docs/native-port/PORT_LOG.md`); Phase 3 is next.
 > Companion docs: [ARCHITECTURE.md](ARCHITECTURE.md), [MATH.md](MATH.md),
 > [PORT_LOG.md](PORT_LOG.md).
 
@@ -118,14 +119,38 @@ The step controller also matters: once two paths' `err` estimates differ by even
 diverge within the tolerance band (MATH §2.2). Single-step comparison sidesteps
 this entirely.
 
+**Phase 2 postmortem — this bit us for real.** Phase 2a's full-solve test
+initially failed at 9.64e-5 (vs the 1e-6 tier) despite the single-step test
+passing at <1e-13. Root cause: the embedded RK45 error estimate is a
+near-total cancellation (`b5-b4=0` in the Butcher tableau) — early in a weakly
+nonlinear propagation, `err` sits at the ~1e-15 floor, where FP-summation-order
+noise between Julia and Rust shows up as a ~20% *relative* disagreement in
+`err`. The PI controller amplifies that into a different `dtn` choice, and the
+two adaptive integrators diverge onto different step sequences that land at
+different z — so the "full-solve" comparison was comparing the field at two
+different points in space, not detecting a state-accumulation bug. Confirmed
+by forcing `max_dt=min_dt=dt` on both steppers: agreement collapsed to
+~1e-17 all the way to `flength`.
+
+**Recommended full-run test shape (adopted in `test_native_phase{1,2}.jl`):**
+construct both steppers with `max_dt=dt, min_dt=dt` for the full-solve
+testset specifically (leave the single-step testset as-is). This forces an
+identical step-size sequence — sidestepping the adaptive-path-divergence
+confound entirely — while still exercising genuine multi-step state
+accumulation, which is what the full-run tier is supposed to test. Apply this
+to every future phase's full-solve test, not just the ones where it happens to
+bite (Phase 1/2b's `err` values were "healthy" — far from the cancellation
+floor — so their raw-`yn` full-solve tests happened to pass anyway; that's
+coincidence of regime, not immunity to the same mechanism).
+
 ## 4. Per-phase acceptance criteria
 
-| Phase | What to test | Test file | Single-step tier | Full-run tier |
-|-------|--------------|-----------|------------------|---------------|
-| 0 | set/get round-trip bit-exact; no-op RHS reproduces Julia stepper | `test/test_native_phase0.jl` | bitwise (round-trip) | ~1e-6 |
-| 1 | mode-avg + Kerr `prop_capillary(:HE11)` | `test/test_native_modeavg.jl` | ~1e-13 | ~1e-6 |
-| 2 | plasma + EnvGrid Kerr (`gnlse`/ionising capillary) | `test/test_native_plasma.jl` | ~1e-13 | ~1e-6 |
-| 3 | radial + resident QDHT | `test/test_native_radial.jl` | ~1e-13 | ~1e-6 |
+| Phase | Status | What to test | Test file | Single-step tier | Full-run tier |
+|-------|--------|--------------|-----------|------------------|---------------|
+| 0 | ✅ done | set/get round-trip bit-exact; no-op RHS reproduces Julia stepper | `test/test_native_phase0.jl` | bitwise (round-trip) | ~1e-6 |
+| 1 | ✅ done | mode-avg + Kerr `prop_capillary(:HE11)`, RealGrid | `test/test_native_phase1.jl` | <1e-13 (achieved) | 2.75e-16 (fixed dt) |
+| 2 | ✅ done | EnvGrid Kerr (2a) + plasma/RealGrid (2b) | `test/test_native_phase2.jl` | <1e-13 (achieved) | 3.19e-17 / 2.73e-16 (fixed dt) |
+| 3 | ⬜ next | radial + resident QDHT | `test/test_native_radial.jl` | ~1e-13 | ~1e-6 |
 | 4 | Raman (carrier SDO) | `test/test_native_raman.jl` | ~1e-13 | ~1e-6 |
 | 5 | modal + overlap cubature | `test/test_native_modal.jl` | ~1e-10 (cubature) | ~1e-6 |
 | 6 | free-space 3-D FFT | `test/test_native_free.jl` | ~1e-13 | ~1e-6 |

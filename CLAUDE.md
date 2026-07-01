@@ -147,6 +147,40 @@ Each Rust kernel follows this pattern for progressive migration:
 
 See `BACKLOG.md` for remaining kernels and follow-ups.
 
+#### Native-port resident stepper (`NativeSim` / `RustNativeStepper`)
+
+Separate from the per-kernel wiring pattern above: a **phased effort** (Phases
+0-8) to make the RK45 hot loop resident entirely in Rust, so the per-step
+callback round-trip into Julia (`fbar!`/`prop!`, ~14×/step even with every
+`LUNA_USE_RUST_*` toggle on) goes away. One opaque handle (`NativeSim`,
+`luna-rust/src/native.rs`) owns the field + every RK scratch buffer +
+resident FFTW plans for the lifetime of a `solve`; Julia only crosses the FFI
+boundary once per step (`native_step`), not once per stage. Toggle:
+`LUNA_USE_RUST_NATIVE=1`, wired at `RK45.solve_precon` (`src/RK45.jl:19`).
+
+**Status:** Phase 0 (foundations), Phase 1 (mode-averaged Kerr, RealGrid), and
+Phase 2 (plasma + EnvGrid Kerr) are complete. Phase 3 (Radial + resident QDHT)
+is next. Full design docs, phase checklist, and math reference live under
+`docs/native-port/{ARCHITECTURE,MATH,TESTING,PORT_LOG}.md` and `AGENTS.md`
+(repo root) — read those before touching this code; they are the source of
+truth for phase status, not this section.
+
+**Non-obvious gotcha (Phase 2, worth knowing before writing any new full-solve
+equivalence test):** the embedded RK45 error estimate is a near-total
+cancellation (`b5-b4=0`), so when the RHS is weakly nonlinear early in a
+propagation, `err` sits near the FP noise floor — a ~1e-15 summation-order
+difference between Julia and Rust can show up as a ~20% *relative*
+disagreement in `err`, which the PI step controller amplifies into a
+different `dt` choice, sending the two adaptive integrators down different
+step paths to different z. A "full-solve" test that reads `s.yn` directly
+after independently calling `solve()` on both steppers can then fail by
+orders of magnitude for a reason that has nothing to do with the RHS kernel
+being wrong. Fix: construct both steppers with `max_dt=dt, min_dt=dt` for the
+full-solve testset (see `test/test_native_phase{1,2}.jl`) — this pins both
+integrators to an identical step-size sequence, isolating genuine multi-step
+state-accumulation error from adaptive-path divergence. See
+`docs/native-port/TESTING.md` §3 for the full postmortem.
+
 ## Math & Advancements
 
 The `luna-rust` crate replaces several numerical approximations from the original Julia codebase with exact analytical forms and allocation-free solvers. **`luna-rust/README.md` is the authoritative math reference** (with full equations); the summary below is a map:

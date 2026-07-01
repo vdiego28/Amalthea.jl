@@ -24,7 +24,7 @@ function solve_precon(f!, linop, y0, t, dt, tmax;
                     kwargs...)
     use_rust = get(ENV, "LUNA_USE_RUST_STEPPER", "0") == "1"
     use_native = get(ENV, "LUNA_USE_RUST_NATIVE", "0") == "1"
-    if use_native && isfile(_LIBLUNA_RUST_RK45) && eltype(y0) == ComplexF64
+    if use_native && isfile(_LIBLUNA_RUST_RK45) && eltype(y0) == ComplexF64 && linop isa Vector{ComplexF64}
         stepper = RustNativeStepper(f!, linop, y0, t, dt,
                       rtol=rtol, atol=atol, safety=safety, max_dt=max_dt, min_dt=min_dt, locextrap=locextrap, norm=norm)
     elseif use_rust && isfile(_LIBLUNA_RUST_RK45) && eltype(y0) == ComplexF64
@@ -685,29 +685,31 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     
     n = length(y0)
     is_mode_avg = f! isa Luna.NonlinearRHS.TransModeAvg
-    
+
     if is_mode_avg
         grid = f!.grid
+        is_real_grid = grid isa Luna.Grid.RealGrid   # EnvGrid uses c2c FFTs
         n_time = length(grid.t)
         n_time_over = length(grid.to)
     else
+        is_real_grid = true
         n_time = n
         n_time_over = 0
     end
-    
-    # Set FFTW plans
-    lib_path = FFTW.FFTW_jll.libfftw3
+
+    # Set FFTW plans; is_real=1 for RealGrid (r2c), 0 for EnvGrid (c2c).
     # FFTW_ESTIMATE = 1 << 6 = 64
+    lib_path = FFTW.FFTW_jll.libfftw3
     rc = ccall((:native_set_fftw_plans, _LIBLUNA_RUST_RK45), Cint,
           (Ptr{Cvoid}, Cstring, Csize_t, Csize_t, Cint, Cuint),
-          handle.ptr, lib_path, n_time, n_time_over, is_mode_avg ? 1 : 0, 64)
+          handle.ptr, lib_path, n_time, n_time_over, is_real_grid ? 1 : 0, 64)
     rc == 0 || error("native_set_fftw_plans failed")
 
     # Set parameters if mode-averaged
     if is_mode_avg
         norm_func = f!.norm!
         pre = getfield(norm_func, :pre)
-        
+
         if hasfield(typeof(norm_func), :βfun!)
             bfun! = getfield(norm_func, :βfun!)
             beta = zeros(Float64, length(pre))
@@ -715,11 +717,11 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         else
             beta = ones(Float64, length(pre))
         end
-        
+
         towin = f!.grid.towin
         owin = f!.grid.ωwin
         sidx = UInt8.(f!.grid.sidx)
-        
+
         # Find Kerr response and extract γ3
         γ3 = 0.0
         for r in f!.resp
@@ -729,17 +731,14 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                     break
                 end
             end
-            if γ3 != 0.0
-                break
-            end
+            γ3 != 0.0 && break
         end
-        
+
         density = f!.densityfun(0.0)
         kerr_fac = density * Luna.PhysData.ε_0 * γ3
         nlscale = Luna.NonlinearRHS.nlscale
         sqrt_aeff = sqrt(f!.aeff(0.0))
-        
-        # Call FFI params setter
+
         rc = ccall((:native_set_mode_avg_params, _LIBLUNA_RUST_RK45), Cint,
             (Ptr{Cvoid}, Csize_t, Csize_t,
              Ptr{Float64}, Ptr{Float64}, Ptr{UInt8},
@@ -750,6 +749,29 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             real.(pre), imag.(pre), beta,
             kerr_fac, nlscale, sqrt_aeff)
         rc == 0 || error("native_set_mode_avg_params failed: $rc")
+
+        # Wire plasma if present and a Rust ionization handle is available.
+        # Requires LUNA_USE_RUST_IONISATION=1; if not set, plasma is silently
+        # skipped by the native path (wrong physics — warn the user).
+        for r in f!.resp
+            if r isa Luna.Nonlinear.PlasmaCumtrapz
+                irf = r.ratefunc
+                if irf isa Luna.Ionisation.IonRatePPTAccel &&
+                        !isnothing(irf.rust_handle) &&
+                        irf.rust_handle.ptr != C_NULL
+                    rc = ccall((:native_set_plasma_params, _LIBLUNA_RUST_RK45), Cint,
+                        (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64),
+                        handle.ptr, irf.rust_handle.ptr,
+                        r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt)
+                    rc == 0 || @warn "native_set_plasma_params returned $rc; plasma uses Julia fallback"
+                else
+                    @warn "LUNA_USE_RUST_NATIVE: plasma detected but LUNA_USE_RUST_IONISATION not set " *
+                          "or not IonRatePPTAccel — native path will skip plasma (incorrect physics). " *
+                          "Set LUNA_USE_RUST_IONISATION=1 to enable native plasma."
+                end
+                break  # only one plasma response expected
+            end
+        end
     end
 
     # Copy initial field to Rust
@@ -765,13 +787,18 @@ function RustNativeStepper(f!, linop, y0, t, dt;
 end
 
 function step!(s::RustNativeStepper)
+    # native_step overwrites s.yn in place; snapshot the pre-call value (the
+    # field at the start of this interval, s.t) so interpolate() has a valid
+    # start-of-interval field once the step is accepted.
+    y_before = copy(s.yn)
+
     result_ref = Ref(NativeStepResult(0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
     rc = ccall((:native_step, _LIBLUNA_RUST_RK45), Cint,
         (Ptr{Cvoid}, Ptr{ComplexF64}, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Cint, Ptr{NativeStepResult}),
         s._handle.ptr, pointer(s.yn), s.t, s.tn, s.dtn, s.rtol, s.atol, s.safety, s.max_dt, s.min_dt, s.errlast, Cint(s.locextrap), result_ref
     )
     rc == 0 || error("native_step returned error code $rc")
-    
+
     res = result_ref[]
     s.ok = res.ok != 0
     s.dt = res.dt
@@ -780,7 +807,11 @@ function step!(s::RustNativeStepper)
     s.dtn = res.dtn
     s.err = res.err
     s.errlast = res.errlast
-    
+
+    if s.ok
+        s.y .= y_before
+    end
+
     return s.ok
 end
 
@@ -793,7 +824,10 @@ function interpolate(s::RustNativeStepper, ti::Float64)
     elseif ti == s.tn
         return s.yn
     end
-    error("interpolate not implemented for RustNativeStepper (no-op RHS phase 0)")
+    # Linear interpolation in the interaction picture (both y and yn are in IP).
+    # Full DOPRI5 dense output would require exporting k-stages from Rust via FFI.
+    σ = (ti - s.t) / (s.tn - s.t)
+    return @. s.y + σ * (s.yn - s.y)
 end
 
 end

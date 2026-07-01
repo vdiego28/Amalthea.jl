@@ -83,7 +83,9 @@ treated as not done.
 - **Unicode math vars** in Julia (`ω`, `λ`, `β`, `τ`, `ε`): enter with
   `\omega<tab>`, etc. Match the surrounding code.
 - Build the Rust lib with `cargo build --release` in `luna-rust/`; the package
-  build (`deps/build.jl`) forces `RUSTFLAGS=""` for portability — respect it.
+  build (`deps/build.jl`) forwards `ENV["RUSTFLAGS"]` (defaulting to `""` if
+  unset), neutralizing `.cargo/config.toml`'s `target-cpu=native` for
+  portability — respect it (see BACKLOG.md "Informational" section).
 - Keep the FFI safety-net tests green: `test/test_rust_ffi.jl` and
   `luna-rust/tests/*.jl`.
 - Prefer reusing existing Rust modules (`stepper.rs`, `diffraction.rs`,

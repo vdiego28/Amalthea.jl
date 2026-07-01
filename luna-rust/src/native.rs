@@ -19,8 +19,13 @@
 //! - [x] Phase 1 — mode-averaged + scalar Kerr (RealGrid): `rhs_mode_avg_real`,
 //!       `native_set_mode_avg_params`, `RustNativeStepper` Julia wiring.
 //!       Gate: single-step ≤1e-13, full-solve 5.8e-13. COMPLETE.
-//! - [ ] Phase 2 — Plasma + EnvGrid Kerr (`rhs_*_env`, cumtrapz ×3, current
-//!       assembly; `Kerr_env`/THG). Replaces `PlasmaCumtrapz` (Nonlinear.jl:161).
+//! - [x] Phase 2 — Plasma + EnvGrid Kerr: `rhs_mode_avg_env` (EnvGrid c2c Kerr,
+//!       3/4 SVEA prefactor) + `rhs_plasma` (cumtrapz ×3, current assembly via
+//!       `native_set_plasma_params`). Replaces `PlasmaCumtrapz` (Nonlinear.jl:161)
+//!       + EnvGrid Kerr. Gate: Phase 2a (EnvGrid Kerr) single-step <1e-13,
+//!       full-solve 3.2e-17; Phase 2b (RealGrid+plasma) single-step 3.8e-17,
+//!       full-solve 2.7e-16 (fixed step size — see PORT_LOG 2026-07-01).
+//!       COMPLETE.
 
 use num_complex::Complex;
 use libc::{c_char, c_double, c_int, c_uint, size_t};
@@ -73,6 +78,28 @@ pub struct NativeSim {
     pub n_time_over: usize,
     pub n_spec: usize,
     pub n_spec_over: usize,
+
+    // ── Phase 2: EnvGrid complex time-domain buffers (c2c path) ─────────────────
+    pub eto_cplx: Vec<Complex<f64>>,
+    pub pto_cplx: Vec<Complex<f64>>,
+    pub eoo_cplx: Vec<Complex<f64>>,
+    pub poo_cplx: Vec<Complex<f64>>,
+
+    // ── Phase 2: Plasma (RealGrid only — Julia has no EnvGrid plasma yet) ────────
+    /// Rate, fraction, phase, J, P scratch buffers for cumtrapz ×3.
+    pub plas_rate: Vec<f64>,
+    pub plas_fraction: Vec<f64>,
+    pub plas_phase: Vec<f64>,
+    pub plas_j: Vec<f64>,
+    pub plas_p: Vec<f64>,
+    /// Raw ptr to Julia's `PptIonizationRate` handle. Julia owns the pointee;
+    /// valid for the lifetime of the enclosing `RustNativeStepper`.
+    pub plasma_ion_ptr: *const crate::ionization::PptIonizationRate,
+    pub plasma_ionpot: f64,
+    pub plasma_e_ratio: f64,
+    pub plasma_preionfrac: f64,
+    pub plasma_dt: f64,
+    pub has_plasma: bool,
 }
 
 impl NativeSim {
@@ -109,6 +136,21 @@ impl NativeSim {
             n_time_over: 0,
             n_spec: n,
             n_spec_over: 0,
+            eto_cplx: Vec::new(),
+            pto_cplx: Vec::new(),
+            eoo_cplx: Vec::new(),
+            poo_cplx: Vec::new(),
+            plas_rate: Vec::new(),
+            plas_fraction: Vec::new(),
+            plas_phase: Vec::new(),
+            plas_j: Vec::new(),
+            plas_p: Vec::new(),
+            plasma_ion_ptr: std::ptr::null(),
+            plasma_ionpot: 0.0,
+            plasma_e_ratio: 0.0,
+            plasma_preionfrac: 0.0,
+            plasma_dt: 1.0,
+            has_plasma: false,
         }
     }
 
@@ -141,6 +183,11 @@ impl NativeSim {
             self.pto[i] += self.kerr_fac * e * e * e;
         }
 
+        // ── Step 3b: Plasma polarisation (if enabled) ───────────────────────────
+        if self.has_plasma {
+            self.apply_plasma_real();
+        }
+
         // ── Step 4: time-window apodization Pto *= towin ────────────────────────
         for i in 0..self.n_time_over {
             self.pto[i] *= self.towin[i];
@@ -168,6 +215,143 @@ impl NativeSim {
                 self.ks[idx][i] *= self.owin[i];
             }
         }
+    }
+
+    /// Plasma polarisation via cumtrapz ×3, added to `self.pto` in-place.
+    /// Reproduces `Nonlinear.PlasmaScalar!` (src/Nonlinear.jl:194-206).
+    ///
+    /// # Safety
+    /// `plasma_ion_ptr` must be non-null and valid.
+    fn apply_plasma_real(&mut self) {
+        let n = self.n_time_over;
+        let dt = self.plasma_dt;
+        // SAFETY: pointer set by `native_set_plasma_params`; Julia owns the handle
+        // and keeps it alive for the lifetime of the stepper.
+        let ion = unsafe { &*self.plasma_ion_ptr };
+
+        // 1. ionization rate W(|E(t)|)
+        for i in 0..n {
+            let e_abs = self.eto[i].abs();
+            self.plas_rate[i] = ion.rate(e_abs)
+                .unwrap_or_else(|_| ion.rate(ion.e_max).unwrap_or(0.0));
+        }
+
+        // 2. cumtrapz(fraction, rate, dt) → raw integral ∫₀ᵗ W dτ
+        cumtrapz_slice_f64(&self.plas_rate, &mut self.plas_fraction, dt);
+
+        // 3. ρ(t) = preionfrac + 1 − exp(−∫W)
+        for i in 0..n {
+            self.plas_fraction[i] =
+                self.plasma_preionfrac + 1.0 - (-self.plas_fraction[i]).exp();
+        }
+
+        // 4. phase[i] = ρ[i] * e_ratio * E[i]
+        for i in 0..n {
+            self.plas_phase[i] = self.plas_fraction[i] * self.plasma_e_ratio * self.eto[i];
+        }
+
+        // 5. cumtrapz(J, phase, dt) → free-electron current
+        cumtrapz_slice_f64(&self.plas_phase, &mut self.plas_j, dt);
+
+        // 6. ionization loss current: J[i] += Ip * W[i] * (1−ρ[i]) / E[i]
+        for i in 0..n {
+            let e = self.eto[i];
+            if e.abs() > 0.0 {
+                self.plas_j[i] +=
+                    self.plasma_ionpot * self.plas_rate[i] * (1.0 - self.plas_fraction[i]) / e;
+            }
+        }
+
+        // 7. cumtrapz(P, J, dt) → plasma polarisation
+        cumtrapz_slice_f64(&self.plas_j, &mut self.plas_p, dt);
+
+        // 8. add P(t) to pto
+        for i in 0..n {
+            self.pto[i] += self.plas_p[i];
+        }
+    }
+
+    /// EnvGrid mode-averaged RHS: Kerr_env (|E|²·E) via c2c FFTW plans.
+    /// Reproduces `TransModeAvg` for `ComplexF64` fields (src/NonlinearRHS.jl:531).
+    fn rhs_mode_avg_env(&mut self, idx: usize, eomega: &[Complex<f64>]) {
+        let n  = self.n_spec;       // = n_time for EnvGrid (c2c: Nω = Nt)
+        let no = self.n_time_over;
+        let half = n / 2;
+
+        // ── Step 1: to_time! (EnvGrid c2c) ──────────────────────────────────────
+        // copy_scale_both: first and last N÷2 elements; zero-pad middle.
+        // scale = No/N  (NonlinearRHS.jl:124)
+        let scale_fwd = no as f64 / n as f64;
+        self.eoo_cplx.fill(Complex::new(0.0, 0.0));
+        for i in 0..half {
+            self.eoo_cplx[i] = eomega[i] * scale_fwd;
+        }
+        for i in 0..half {
+            self.eoo_cplx[no - half + i] = eomega[n - half + i] * scale_fwd;
+        }
+
+        if let Some(ref fft) = self.fft_c2c_over {
+            fft.inverse(&mut self.eoo_cplx, &mut self.eto_cplx);
+            let inv_nto = self.fft_norm_over;
+            for v in &mut self.eto_cplx { *v *= inv_nto; }
+        }
+
+        // ── Step 2: scale by 1/(nlscale·√Aeff) ──────────────────────────────────
+        let inv_sc = 1.0 / (self.nlscale * self.sqrt_aeff);
+        for v in &mut self.eto_cplx { *v *= inv_sc; }
+
+        // ── Step 3: Kerr_env: pto_cplx[i] += (3/4)*kerr_fac · |E|² · E ──────────
+        // Factor 3/4: SVEA averaging of E³ over carrier oscillation
+        // (matches KerrScalarEnv! in Nonlinear.jl:121).
+        self.pto_cplx.fill(Complex::new(0.0, 0.0));
+        let kf = Complex::new(0.75 * self.kerr_fac, 0.0);
+        for i in 0..no {
+            let e = self.eto_cplx[i];
+            self.pto_cplx[i] += kf * e.norm_sqr() * e;
+        }
+
+        // ── Step 4: time-window apodization ─────────────────────────────────────
+        for i in 0..no {
+            self.pto_cplx[i] *= self.towin[i];
+        }
+
+        // ── Step 5: to_freq! (c2c): fft → copy_scale_both_back → ks[idx] ────────
+        // scale = N/No  (NonlinearRHS.jl:146)
+        let scale_inv = n as f64 / no as f64;
+        if let Some(ref fft) = self.fft_c2c_over {
+            fft.forward(&mut self.pto_cplx, &mut self.poo_cplx);
+            // zero out ks[idx] first (positions outside first/last half stay 0)
+            self.ks[idx].fill(Complex::new(0.0, 0.0));
+            for i in 0..half {
+                self.ks[idx][i] = self.poo_cplx[i] * scale_inv;
+            }
+            for i in 0..half {
+                self.ks[idx][n - half + i] = self.poo_cplx[no - half + i] * scale_inv;
+            }
+        }
+
+        // ── Step 6: norm! and freq-window ────────────────────────────────────────
+        for i in 0..n {
+            if self.sidx[i] {
+                self.ks[idx][i] *= self.pre[i] / self.beta[i] * self.sqrt_aeff;
+            }
+        }
+        for i in 0..n {
+            if self.sidx[i] {
+                self.ks[idx][i] *= self.owin[i];
+            }
+        }
+    }
+}
+
+/// Cumulative trapezoidal integral: `dst[0]=0`, `dst[i] = dst[i-1] + (src[i-1]+src[i])/2·dt`.
+/// Reproduces `Maths.cumtrapz!(out, y, δt)` (src/Maths.jl:323-328).
+fn cumtrapz_slice_f64(src: &[f64], dst: &mut [f64], dt: f64) {
+    let n = src.len();
+    if n == 0 { return; }
+    dst[0] = 0.0;
+    for i in 1..n {
+        dst[i] = dst[i - 1] + 0.5 * (src[i - 1] + src[i]) * dt;
     }
 }
 
@@ -240,7 +424,11 @@ pub unsafe extern "C" fn set_field(
     
     if !sim.beta.is_empty() {
         let field = sim.field.clone();
-        sim.rhs_mode_avg_real(0, &field);
+        if sim.is_real {
+            sim.rhs_mode_avg_real(0, &field);
+        } else {
+            sim.rhs_mode_avg_env(0, &field);
+        }
     }
     0
 }
@@ -346,12 +534,22 @@ pub unsafe extern "C" fn native_set_mode_avg_params(
     s.n_time = n_time;
     s.n_time_over = n_time_over;
     s.n_spec = s.n;
-    s.n_spec_over = n_time_over / 2 + 1;
 
-    s.eto = vec![0.0; n_time_over];
-    s.pto = vec![0.0; n_time_over];
-    s.eoo = vec![Complex::new(0.0, 0.0); s.n_spec_over];
-    s.poo = vec![Complex::new(0.0, 0.0); s.n_spec_over];
+    if s.is_real {
+        // RealGrid: r2c — spectral length is Nt/2+1
+        s.n_spec_over = n_time_over / 2 + 1;
+        s.eto = vec![0.0; n_time_over];
+        s.pto = vec![0.0; n_time_over];
+        s.eoo = vec![Complex::new(0.0, 0.0); s.n_spec_over];
+        s.poo = vec![Complex::new(0.0, 0.0); s.n_spec_over];
+    } else {
+        // EnvGrid: c2c — spectral length equals time length
+        s.n_spec_over = n_time_over;
+        s.eto_cplx = vec![Complex::new(0.0, 0.0); n_time_over];
+        s.pto_cplx = vec![Complex::new(0.0, 0.0); n_time_over];
+        s.eoo_cplx = vec![Complex::new(0.0, 0.0); n_time_over];
+        s.poo_cplx = vec![Complex::new(0.0, 0.0); n_time_over];
+    }
 
     if !towin.is_null() {
         s.towin = unsafe { std::slice::from_raw_parts(towin, n_time_over) }.to_vec();
@@ -386,6 +584,44 @@ pub unsafe extern "C" fn native_set_mode_avg_params(
     s.kerr_fac = kerr_fac;
     s.nlscale = nlscale;
     s.sqrt_aeff = sqrt_aeff;
+    0
+}
+
+/// Wire the PPT ionization handle for the plasma cumtrapz path (RealGrid only).
+///
+/// `ion_ptr` is a raw pointer to a `PptIonizationRate` already constructed by Julia
+/// (via `init_ppt_ionization_lut`). Julia owns it; this call just borrows it for the
+/// lifetime of the `NativeSim`. Must be called **after** `native_set_mode_avg_params`.
+///
+/// Returns 0 on success, -1 on null args, -2 if called before mode-avg params are set.
+///
+/// # Safety
+/// `sim` must be valid; `ion_ptr` must be a non-null, valid `PptIonizationRate` pointer
+/// that remains valid for the lifetime of the `NativeSim`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_set_plasma_params(
+    sim: *mut NativeSim,
+    ion_ptr: *const crate::ionization::PptIonizationRate,
+    ionpot: c_double,
+    e_ratio: c_double,
+    preionfrac: c_double,
+    dt: c_double,
+) -> i32 {
+    if sim.is_null() || ion_ptr.is_null() { return -1; }
+    let s = unsafe { &mut *sim };
+    let n = s.n_time_over;
+    if n == 0 { return -2; }
+    s.plasma_ion_ptr   = ion_ptr;
+    s.plasma_ionpot    = ionpot;
+    s.plasma_e_ratio   = e_ratio;
+    s.plasma_preionfrac = preionfrac;
+    s.plasma_dt        = dt;
+    s.plas_rate     = vec![0.0; n];
+    s.plas_fraction = vec![0.0; n];
+    s.plas_phase    = vec![0.0; n];
+    s.plas_j        = vec![0.0; n];
+    s.plas_p        = vec![0.0; n];
+    s.has_plasma    = true;
     0
 }
 
@@ -516,20 +752,17 @@ pub unsafe extern "C" fn native_step(
             }
         }
         
-        if s.n_time_over > 0 && s.fft_r2c_over.is_some() {
-            // RealGrid mode-averaged preconditioned RHS:
-            // 1. ystage_prop = ystage * exp(linop * nodes[ii] * dt)
+        if s.n_time_over > 0 && (s.fft_r2c_over.is_some() || s.fft_c2c_over.is_some()) {
             let dt_prop = DP_NODES[ii] * dt;
             let mut ystage_prop = s.ystage.clone();
             apply_prop(&mut ystage_prop, &s.linop, dt_prop);
-            
-            // 2. ks[ii+1] = f!(ystage_prop)
-            s.rhs_mode_avg_real(ii + 1, &ystage_prop);
-            
-            // 3. ks[ii+1] *= exp(linop * -nodes[ii] * dt)
+            if s.is_real {
+                s.rhs_mode_avg_real(ii + 1, &ystage_prop);
+            } else {
+                s.rhs_mode_avg_env(ii + 1, &ystage_prop);
+            }
             apply_prop(&mut s.ks[ii + 1], &s.linop, -dt_prop);
         } else {
-            // Phase 0 / fallback
             for k in 0..n {
                 s.ks[ii+1][k] = Complex::new(0.0, 0.0);
             }

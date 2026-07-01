@@ -37,9 +37,16 @@ full-`solve` ~1e-6 vs the Julia oracle — see TESTING.md §3 nondeterminism flo
   (`src/NonlinearRHS.jl:531`) + Kerr (`src/Nonlinear.jl:81`). First fully-Rust
   `prop_capillary(:HE11, Kerr)`. Gate passed: single-step ≤1e-13, full-solve
   5.8e-13. Test `test/test_native_phase1.jl`. ✔
-- ⬜ **Phase 2 — Plasma + EnvGrid Kerr.** `cumtrapz` ×3 + current assembly
-  (rate LUT already Rust); `Kerr_env`/thg. Replaces `PlasmaCumtrapz`
-  (`src/Nonlinear.jl:161`). Test `test/test_native_plasma.jl`.
+- ✅ **Phase 2 — Plasma + EnvGrid Kerr.** `rhs_mode_avg_env` (EnvGrid c2c Kerr,
+  3/4 SVEA factor) + `native_set_plasma_params`/plasma current assembly (rate
+  LUT already Rust). Replaces `PlasmaCumtrapz` (`src/Nonlinear.jl:161`) +
+  EnvGrid Kerr. Gate passed: Phase 2a (EnvGrid Kerr) single-step <1e-13,
+  full-solve 3.2e-17; Phase 2b (RealGrid+plasma) single-step 3.8e-17,
+  full-solve 2.7e-16 — all with fixed step size (see PORT_LOG 2026-07-01: the
+  adaptive PI controller's near-cancellation error estimate is FP-noise
+  sensitive and not itself a meaningful equivalence signal). Also fixed a
+  latent `RustNativeStepper.s.y`-not-updated bug that broke `interpolate()`.
+  Test `test/test_native_phase2.jl`. ✔
 - ⬜ **Phase 3 — Radial (TransRadial) + resident QDHT.** Fold the existing Rust
   QDHT into `NativeSim`; radial normalization. Replaces `TransRadial`
   (`src/NonlinearRHS.jl:663`). Test `test/test_native_radial.jl`.
