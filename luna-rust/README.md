@@ -40,6 +40,10 @@ The Rust migration replaces several numerical approximations from the original J
 *   **Proposed (Rust)**: Avoids compile-time linking requirements by dynamically locating and loading `libhdf5.so` at runtime from the system or Julia's artifact cache. File locking for queued sweeps is implemented via lightweight `libc::flock` system calls, enabling process-safe parameter scans without external dependencies.
     > **Platform caveat:** `flock`-based locking is **Unix only** (Linux/macOS). On Windows the lock is currently a no-op, so concurrent parameter scans are not yet process-safe there (see the `TODO` in `scans.rs`; a Windows `LockFileEx` implementation is still pending).
 
+### 7. Group-Velocity β1(z) for Graded-Core (Pressure-Gradient) Waveguides
+*   **Original (Julia)**: For a z-dependent (pressure-gradient) capillary, `β1(z)` — the group-velocity term rebuilt at every propagation step — is computed with an *adaptive* finite difference (`FiniteDifferences.central_fdm`), which has a real, repeatable ~1e-12 relative error against the true derivative (the truncation/rounding step-size tradeoff never fully closes at `Float64` precision).
+*   **Rust**: `εco(ω;z)-1` is separable into a fixed per-ω gas term times a scalar `dens(z)`, and the waveguide term `nwg(ω)` is z-independent, so the chain rule collapses `β1(z)` to a closed form in 4 constants (`γ0, dγ0, nwg0, dnwg0`) computed once — via `Maths.derivative` fed a `BigFloat` argument, not hand-derived per-material symbolics, so it works for any gas/glass Sellmeier closure unmodified. This makes Rust's `β1(z)` *more* accurate than Julia's own value, at the cost of a small, deliberate, and fully characterized divergence from the Julia oracle (see [`docs/native-port/BETA1_ANALYTIC.md`](../docs/native-port/BETA1_ANALYTIC.md) for the derivation, verification, and the resulting tolerance tradeoff).
+
 ---
 
 ## 2. Solver Architecture (`stepper.rs`)

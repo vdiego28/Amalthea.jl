@@ -383,6 +383,141 @@ consistent with the dimension-order/normalization risk being fully retired
 at the FFT-primitive level (`fftw.rs`'s literal cross-check) rather than
 showing up as residual noise in the RHS.
 
+### 3.5 z-dependent linear operator — mode-averaged pressure-gradient capillary, Phase 7, ported (narrow scope)
+
+Phases 1–6 all require `L(ω)` to be **constant in z** (`make_const_linop`):
+built once in Julia, copied into `NativeSim.linop`, applied via
+`exp(linop·Δt)`. Phase 7 is the first to support `L(ω,z)` resident, for one
+concrete, common case: a **pressure-gradient (tapered-fill) capillary**,
+`Interface.jl:532-541` → `Capillary.gradient(gas, L, p0, p1)` → a graded-core,
+**constant-radius** `MarcatiliMode`. This is the "tapered fiber, pressure
+gradient" case flagged as the motivating use in the Phase 6 handoff notes.
+Scope restrictions (mirrors every prior phase's narrowing discipline):
+mode-averaged (`TransModeAvg`) only, RealGrid only, single non-vector mode,
+`kind`/`n`/`model`/`loss` unrestricted (both work — see below), Kerr-only.
+Radial/free-space/modal z-dependent `nfun` (arbitrary index profile, not
+just a graded-core gas fill) is deferred — narrower but real, matching the
+existing wired path (`Interface.jl`'s pressure-tuple branch), not invented.
+
+**The physics is separable in `(ω, z)` — this is the whole design.**
+`LinearOps.jl:279-296`'s z-dependent `linop!(out,z)` (mode-averaged case)
+needs, at each requested `z`:
+```
+εco(ω;z) = coren(ω;z)² = 1 + γ(λ(ω))·dens(z)        # Capillary.gradient, :302-341
+nwg(ω)                                                # z-independent for constant radius
+neff(ω;z) = combine(εco(ω;z), nwg(ω); model)          # sqrt(εco-nwg) or 1+(εco-1)/2-nwg
+nc(ω;z)   = conj_clamp(neff(ω;z), ω)                  # LinearOps.jl:246
+β1(z)     = Modes.dispersion(mode, 1, ω0; z=z)        # Maths.derivative — adaptive FD
+out[iω]   = -i·(ω[iω]/c·nc(ω[iω];z) - ω[iω]·β1(z))    # LinearOps.jl:307
+```
+`γ(λ)` is the gas's Sellmeier susceptibility-per-density coefficient
+(`PhysData.sellmeier_gas`, a *real* function of wavelength only — no
+z-dependence at all) and `dens(z)` is the density profile
+(`dspl(p(z))`, a cubic spline of pressure over a closed-form or piecewise
+pressure ramp). **Critically, `εco(ω;z) - 1` factors as a fixed per-ω array
+(`γ(λ(ω))`) times a scalar function of z (`dens(z)`)** — the ω-dependence
+and z-dependence never mix. This means:
+- `nwg(ω)` is **exactly** the already-resident combine from the existing
+  `LUNA_USE_RUST_DISPERSION` wiring (`dispersion.rs::MarcatiliNeff::neff_vector`,
+  `Capillary.jl:409-470`) — not re-derived, just re-implemented inline in
+  `native.rs` (the opaque handle itself isn't shared with `NativeSim`, but
+  the formula — `sqrt(εco-nwg)`/`1+(εco-1)/2-nwg`, then truncate `Im` if
+  `!loss` — is copied verbatim from `neff_vector`, which already documents
+  "no clamping here" i.e. `conj_clamp` is applied by the *caller*, exactly
+  matching where it's applied here too).
+- The only two z-dependent quantities the resident stepper needs are
+  **scalars**: `dens(z)` and `β1(z)`. Neither needs an O(n_ω) Julia
+  round-trip per stage — each is a single number.
+
+**`β1(z)` is an exact closed form, not a LUT — see `BETA1_ANALYTIC.md`.**
+`dens(pressure)` is transferred exactly from `PhysData.densityspline`'s own
+`(x,y,D)` (a `HermiteSpline` reproducing Julia's `Maths.CSpline` formula
+bit-for-bit — re-fitting a *different* spline through sampled `dens` values
+was tried first and does not converge, see the postmortem in `PORT_LOG.md`).
+`β1(z) = d/dω[ω/c·Re(neff(ω,z))]|_{ω0}` does not need a LUT at all: since
+`εco(ω;z)-1 = γ(λ(ω))·dens(z)` is separable and `nwg(ω)` is z-independent,
+the chain rule collapses β1(z) to a function of the single scalar `dens(z)`
+given 4 z-independent constants (`γ0`, `dγ0`, `nwg0`, `dnwg0`) computed once
+at setup. These are computed via `Maths.derivative` fed a `BigFloat`
+argument rather than hand-derived symbolically (the gas/glass Sellmeier
+closures are opaque — arbitrary materials, not hardcoded coefficients) —
+see `BETA1_ANALYTIC.md` for the full derivation, why an earlier `(dens,β1)`
+LUT design was replaced, and the resulting tolerance tradeoff (Rust's β1 is
+now more accurate than Julia's own adaptive-FD `dispersion`, which means
+Rust *deliberately* diverges from the Julia oracle by Julia's own FD error,
+amplified over propagation length and bandwidth into the full-solve
+tolerance floor below).
+
+**Boundary behavior must match Julia's flat clamp, not spline extrapolation.**
+`Capillary.gradient`'s `p(z)` is flat outside `[0,L]`
+(`z > L ? p1 : z <= 0 ? p0 : sqrt(...)`, `Capillary.jl:310-312`), and the
+adaptive stepper's final accepted step can legitimately evaluate the linop
+at a `z` slightly past `flength` (the `while s.tn <= tmax` loop in
+`RK45.solve` checks *before* stepping, so the step that crosses `tmax` still
+executes). Both LUTs therefore **clamp their query `z` into `[0, flength]`
+before the spline lookup** (`z.clamp(0.0, flength)`), exactly reproducing
+Julia's flat boundary behavior instead of letting the natural-spline BC
+extrapolate/oscillate past the fitted domain — a held-out test point at and
+beyond both boundaries is part of the equivalence test, not just interior
+points (an all-interior held-out check would be blind to exactly this, the
+same way Phase 6's square-grid test was blind to the axis-swap bug).
+
+**`prop!`'s per-stage recompute, not a new call site.** Rust already applies
+`exp(linop·Δt)` at 5 call sites per `native_step` (the FSAL re-frame, the
+3 forward/backward pairs per RK stage, and the final propagate-to-`tn`) —
+see `native.rs::native_step`. Every one of Julia's `prop!(y,t1,t2,bwd)`
+calls evaluates `linop!` at `t2` **regardless of `bwd`** (`LinearOps.jl:306-311`,
+memoized so a repeated `t2` is a no-op) — i.e. a forward/backward pair
+always shares one `linop` evaluation. Phase 7 mirrors this with
+`NativeSim::ensure_linop_at(z)`, which overwrites the (now no-longer-const)
+`self.linop` buffer in place only when the requested `z` differs from the
+last one cached, and is a no-op entirely when the mode is not the
+z-dependent case (Phases 1-6 unaffected, zero cost). This keeps every
+existing `apply_prop(y, &s.linop, dt)` call site unchanged; only a
+`s.ensure_linop_at(z_eval)` call is inserted immediately before each one.
+
+**Scope not ported:** `EnvGrid` (β0-reference-frame variant of the same
+formula, `LinearOps.jl:353-380`), radial/free-space/modal z-dependent
+`nfun` (arbitrary index profile — the separable-in-`(ω,z)` structure this
+design leans on is specific to a graded-core gas fill, not a general
+`nfun(ω;z)`), multi-mode (`make_linop(grid,modes,λ0)`, tapered-radius
+`MarcatiliMode{<:Function}`), and plasma/Raman-in-z-dependent-linop (Kerr
+only, consistent with every prior phase).
+
+**The nonlinear RHS also needs the z-dependence, not just the linop.**
+`TransModeAvg`'s `(t::TransModeAvg)(nl,Eω,z)` (`NonlinearRHS.jl:531-545`)
+calls `t.densityfun(z)` fresh every RK stage, and `norm_mode_average`'s
+`norm!(nl,z)` (`NonlinearRHS.jl:553-565`) calls `βfun!(β,z)` fresh every
+stage too — both genuinely vary across a pressure gradient. Phases 1-6's
+constant-medium `native_set_mode_avg_params` instead bakes `kerr_fac =
+density(0)·ε₀·γ3` and `beta[i] = β(ω_i;0)` in **once**, at construction —
+correct there (medium never changes), wrong for Phase 7 as originally
+wired. `ensure_linop_at` now also rescales `kerr_fac` by the just-computed
+`dens(z)` and overwrites `beta[i]` with `ω_i/c·Re(neff(ω_i,z))` (reusing the
+per-ω `neff` already computed for the linop) every call. Missing this was
+the actual cause of a ~9% full-solve mismatch during development — traced
+by isolating that the z-dependent linop alone already matched Julia to
+~1e-8 (via `native_debug_linop_at`), and that a `kerr=false` (pure linear)
+full-solve run matched Julia to the same ~1e-8, while `kerr=true` did not:
+the divergence had to be in the RHS, not the linear propagator. See
+`PORT_LOG.md`'s Phase 7 postmortem.
+
+**Expected tolerance floor.** `dens(z)` is transferred exactly (no LUT, no
+interpolation error), and `β1(z)`'s analytic closed form matches Julia's own
+`Modes.dispersion` (an adaptive finite difference) to ~1e-11–1e-12 relative
+— see `BETA1_ANALYTIC.md`. This is *smaller* than Phases 1-6's floors, but
+it is a **systematic**, not random, difference from the Julia oracle (Rust
+computes the true derivative; Julia's FD has its own small, repeatable
+truncation error), so it accumulates coherently over the full propagation
+length and spectral bandwidth rather than averaging out. For a broadband
+run (λlims spanning 200nm-4000nm, 0.5m gradient) this measured as ~1e-6 in
+the point-wise linop and ~1e-4 in a fixed-step full-solve — both confirmed
+(via a `kerr=false` control run showing the *same* magnitude) to be entirely
+this β1 method difference, not a bug. Narrower-bandwidth or shorter runs
+will show a proportionally smaller floor. Do not chase this number down by
+reverting to a Julia-value-reproducing LUT — that trades "Rust is exact"
+for "Rust matches Julia's imprecision," which is not what Phase 7 is for.
+
 ## 4. FFT conventions (must match FFTW.jl exactly)
 
 | Grid | forward (t→ω) | inverse (ω→t) | length |
@@ -497,15 +632,18 @@ floor, *then* (2) Rust matches Julia on that changed result. Apply the same
 two-part structure to any future feature whose per-step effect might be
 small relative to the dominant nonlinearity.
 
-## 6. Linear operator `L(ω, z)` (Phase 7)
+## 6. Linear operator `L(ω, z)` (Phase 7, ported — narrow scope, see §3.5)
 
 `L` is built in `src/LinearOps.jl`:
 - **Constant** (`make_const_linop`): z-independent; built once at setup, copied
   into `NativeSim` as a flat array. Phases 1–6 use this path — cheap, left on
   Julia for assembly, applied in Rust.
-- **z-dependent** (`make_linop`, free-space/radial/modal, `LinearOps.jl:77,185,337`):
-  rebuilt per step (e.g. changing gas pressure, bending). Phase 7 ports the
-  `_fill_linop` assembly so `prop!` never returns to Julia.
+- **z-dependent** (`make_linop`): rebuilt per step (e.g. changing gas
+  pressure, bending). Phase 7 ports the mode-averaged, graded-core
+  constant-radius `MarcatiliMode` case (`LinearOps.jl:279-296`) resident —
+  see §3.5 for the full design (separable `εco(ω;z)`, LUT'd `dens(z)`/`β1(z)`,
+  boundary-clamp discipline). Radial/free-space/modal `make_linop` (arbitrary
+  `nfun(ω;z)`, `LinearOps.jl:77,185,337`) and multi-mode are deferred.
 
 `L` includes: the propagation constant β(ω) (from the Rust dispersion kernels),
 the loss `α(ω)/2`, and the subtraction of the reference `β₀ + β₁·(ω-ω₀)` that

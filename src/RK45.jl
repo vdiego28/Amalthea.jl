@@ -25,9 +25,17 @@ function solve_precon(f!, linop, y0, t, dt, tmax;
                     kwargs...)
     use_rust = get(ENV, "LUNA_USE_RUST_STEPPER", "0") == "1"
     use_native = get(ENV, "LUNA_USE_RUST_NATIVE", "0") == "1"
-    if use_native && isfile(_LIBLUNA_RUST_RK45) && eltype(y0) == ComplexF64 && linop isa Array{ComplexF64}
+    # Constant linop (Phases 1-6) or the narrow z-dependent case Phase 7 supports
+    # (graded-core, constant-radius MarcatiliMode — see Capillary.jl / MATH.md
+    # §3.5). Any other z-dependent linop (a bare `Function`, e.g. multimode or
+    # radial/free-space/modal `nfun(ω;z)`) is NOT recognized here, so it falls
+    # through to the non-native paths below exactly as before Phase 7 — no
+    # behavior change for configurations outside the new narrow scope.
+    native_ok = linop isa Array{ComplexF64} || linop isa Luna.Capillary.ZDepLinopMarcatili
+    if use_native && isfile(_LIBLUNA_RUST_RK45) && eltype(y0) == ComplexF64 && native_ok
         stepper = RustNativeStepper(f!, linop, y0, t, dt,
-                      rtol=rtol, atol=atol, safety=safety, max_dt=max_dt, min_dt=min_dt, locextrap=locextrap, norm=norm)
+                      rtol=rtol, atol=atol, safety=safety, max_dt=max_dt, min_dt=min_dt, locextrap=locextrap, norm=norm,
+                      flength=tmax)
     elseif use_rust && isfile(_LIBLUNA_RUST_RK45) && eltype(y0) == ComplexF64
         stepper = RustPreconStepper(f!, linop, y0, t, dt,
                       rtol=rtol, atol=atol, safety=safety, max_dt=max_dt, min_dt=min_dt, locextrap=locextrap, norm=norm)
@@ -652,6 +660,30 @@ mutable struct RustNativeSimHandle
         end
         h
     end
+    # Phase 7: z-dependent linop — `linop` is a `Capillary.ZDepLinopMarcatili`
+    # wrapper, not an `Array{ComplexF64}`, so there is no fixed array to seed
+    # with. Untyped (not `Luna.Capillary.ZDepLinopMarcatili`) because RK45.jl
+    # is `include`d before Capillary.jl in Luna.jl — the caller
+    # (`RustNativeStepper`) already gates this constructor on a runtime
+    # `isa` check, so no eager type resolution is needed here; dispatch on
+    # 2-arg vs 1-arg is unambiguous regardless. `init_native_sim` only uses
+    # the seed to size `n` and populate the initial `s.linop`;
+    # `ensure_linop_at` overwrites it before it is ever read (the first
+    # `native_step` call), so a zero seed is exact, not an approximation.
+    function RustNativeSimHandle(linop, n::Int)
+        seed = zeros(ComplexF64, n)
+        ptr = ccall((:init_native_sim, _LIBLUNA_RUST_RK45), Ptr{Cvoid},
+                    (Ptr{ComplexF64}, Csize_t), pointer(seed), Csize_t(n))
+        h = new(ptr)
+        finalizer(h) do h
+            p = h.ptr
+            if p != C_NULL
+                ccall((:free_native_sim, _LIBLUNA_RUST_RK45), Cvoid, (Ptr{Cvoid},), p)
+                h.ptr = C_NULL
+            end
+        end
+        h
+    end
 end
 
 mutable struct RustNativeStepper{T<:AbstractArray}
@@ -679,12 +711,21 @@ end
 
 function RustNativeStepper(f!, linop, y0, t, dt;
                             rtol=1e-6, atol=1e-10, safety=0.9, max_dt=Inf, min_dt=0,
-                            locextrap=true, norm=weaknorm)
-    handle = RustNativeSimHandle(linop)
+                            locextrap=true, norm=weaknorm, flength=Inf)
+    n = length(y0)
+    is_zdep_mode_avg = linop isa Luna.Capillary.ZDepLinopMarcatili
+    if is_zdep_mode_avg
+        isfinite(flength) || error("RustNativeStepper: z-dependent linop requires a " *
+                  "finite `flength` (propagation length) to build the resident z-LUTs " *
+                  "— got flength=$flength. This should always be `tmax`/`grid.zmax` " *
+                  "when called from `solve_precon` (Phase 7 gate — see MATH.md §3.5).")
+        handle = RustNativeSimHandle(linop, n)
+    else
+        handle = RustNativeSimHandle(linop)
+    end
 
     handle.ptr == C_NULL && error("init_native_sim failed")
-    
-    n = length(y0)
+
     is_mode_avg = f! isa Luna.NonlinearRHS.TransModeAvg
     is_radial = f! isa Luna.NonlinearRHS.TransRadial
     is_modal = f! isa Luna.NonlinearRHS.TransModal
@@ -814,6 +855,47 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                 break  # only one Raman response expected
             end
         end
+    end
+
+    # Set parameters for the z-dependent linop (Phase 7) — mode-averaged,
+    # graded-core constant-radius MarcatiliMode only. See MATH.md §3.5 and
+    # docs/native-port/BETA1_ANALYTIC.md. dens(pressure) is TRANSFERRED
+    # exactly (PhysData.densityspline's own (x,y,D)), not re-fit — re-fitting
+    # a fresh spline through sampled dens values doesn't converge (real-gas
+    # density via CoolProp, composed with dspl already being a spline
+    # itself, isn't smooth enough at the scale a refit needs). β1(z) is a
+    # closed form in dens(z) (4 constants precomputed in
+    # `Capillary.make_linop`'s ZDepLinopMarcatili specialization) — not a
+    # LUT: an earlier version of this design LUT'd β1 against density, which
+    # could only ever chase Julia's own adaptive-FD noise floor
+    # (`Modes.dispersion`) rather than the true derivative.
+    if is_zdep_mode_avg
+        w = linop
+        w.L == flength || error("RustNativeStepper: z-dependent linop's gradient length " *
+                  "($(w.L)) does not match the propagation length flength=$flength passed " *
+                  "to solve_precon — these should always be the same quantity " *
+                  "(Capillary.gradient's `L` vs `grid.zmax`/`tmax`). Refusing to guess " *
+                  "which is correct.")
+        model_code = w.model == :full ? Cuint(0) : Cuint(1)
+        loss_code = w.loss ? Cuint(1) : Cuint(0)
+        # density(z)·ε₀·γ3 = kerr_fac(z): γ3 must be re-scaled by the
+        # z-dependent density every RK stage (TransModeAvg calls
+        # `densityfun(z)` fresh, unlike the constant-medium phases which
+        # bake `density(0)` into `kerr_fac` once) — see `ensure_linop_at`.
+        eps0_gamma3 = Luna.PhysData.ε_0 * γ3
+
+        rc = ccall((:native_set_zdep_mode_avg_params, _LIBLUNA_RUST_RK45), Cint,
+            (Ptr{Cvoid}, Float64, Float64, Float64,
+             Csize_t, Ptr{Float64}, Ptr{Float64}, Ptr{Float64},
+             Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64},
+             Cuint, Cuint, Float64,
+             Float64, Float64, Float64, Float64, Float64, Float64, Float64),
+            handle.ptr, w.L, w.p0, w.p1,
+            Csize_t(length(w.dspl_x)), w.dspl_x, w.dspl_y, w.dspl_d,
+            w.gamma, w.nwg_re, w.nwg_im, w.omega,
+            model_code, loss_code, eps0_gamma3,
+            w.ω0, w.γ0, w.dγ0, w.nwg0_re, w.nwg0_im, w.dnwg0_re, w.dnwg0_im)
+        rc == 0 || error("native_set_zdep_mode_avg_params failed: $rc")
     end
 
     # Set parameters if radial (TransRadial) — Phase 3 gate: RealGrid + scalar

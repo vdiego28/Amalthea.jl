@@ -828,3 +828,86 @@ phase already carries).
 geometry with a non-constant medium (tapered fiber, pressure gradient). See
 `BACKLOG.md`.
 
+## Phase 7 — z-dependent linop, mode-averaged pressure-gradient capillary
+
+**Scope:** `TransModeAvg`, RealGrid, graded-core constant-radius
+`MarcatiliMode` built via `Capillary.gradient(gas,L,p0,p1)` (two-point
+pressure ramp), Kerr-only. See `MATH.md` §3.5 and `BETA1_ANALYTIC.md`.
+
+**Three designs were tried for `dens(z)`/`β1(z)` before landing on the final
+one — each dead end taught something the final design depends on:**
+
+1. **z-domain LUT** (sample `dens`/`β1` uniformly in `z`, fit a spline).
+   Failed near `z=0`: the two-point pressure ramp is a `sqrt`, so `dp/dz`
+   varies severalfold across `[0,L]`, concentrating curvature near the
+   low-pressure end. A uniform-*z* grid samples that region too sparsely no
+   matter how many points are added.
+2. **Pressure-domain LUT for `dens`** (fit against pressure instead of z).
+   Also failed to converge — `PhysData.densityspline` is *itself* already a
+   `Maths.CSpline`; refitting a *different* (natural-BC) spline through
+   samples of an existing spline is a spline-of-a-spline problem whose error
+   concentrates at the original spline's knots and shrinks only `~O(h)`, not
+   `~O(h⁴)`, regardless of resampling density. **Fix that survived into the
+   final design:** transfer `dspl`'s own `(x,y,D)` to Rust and evaluate with
+   an identical Hermite-cubic formula (`HermiteSpline`) instead of
+   re-fitting. Verified bit-for-bit against a literal Julia reference,
+   including extrapolation-boundary behavior.
+3. **Density-domain LUT for `β1`** (fit `β1` against the now-exact `dens(z)`,
+   uniform in z, then uniform in density). Both failed too, for two
+   different reasons in sequence: (a) uniform-*z* sampling still produces
+   non-uniform *density* knot spacing for the same `sqrt`-profile reason as
+   design 1, one composition layer removed — fixed by sampling uniformly in
+   *density* via a fine-probe inverse-interpolation grid; (b) even with
+   density-uniform sampling, the held-out validation loop never converged,
+   because `β1`'s own source (`Modes.dispersion`, an adaptive finite
+   difference) has a small but genuine point-to-point discrepancy against
+   the true derivative — a spline can't be fit tighter than the data it's
+   fitting is accurate to. This is what motivated abandoning the LUT
+   approach for `β1` entirely.
+
+**Final design:** `dens(pressure)` stays a **transferred** `HermiteSpline`
+(design 2's fix). `β1(z)` is **not LUT'd at all** — `εco(ω;z)-1 =
+γ(λ(ω))·dens(z)` is separable and `nwg(ω)` is z-independent (constant
+radius), so the chain rule collapses β1(z) to a closed form in the single
+scalar `dens(z)`, needing 4 z-independent constants computed once via
+`Maths.derivative` fed a `BigFloat` argument (not hand-derived per-gas/
+per-glass symbolics — see `BETA1_ANALYTIC.md`). This makes Rust's β1(z)
+*more accurate* than Julia's own `dispersion`, at the cost of a small,
+deliberate, fully-characterized divergence from the Julia oracle (the
+first phase where this trade appears — every prior phase is a faithful,
+bit-parity port).
+
+**A second, independent bug found during the same debugging session:** the
+z-dependent linop was correct (~1e-8 point-wise) well before the full-solve
+comparison was, because the *nonlinear RHS* was still using the
+constant-medium wiring — `kerr_fac = density(0)·ε₀·γ3` and `beta[i] =
+β(ω_i;0)` baked in once at construction, never updated. `TransModeAvg`
+re-evaluates `densityfun(z)` and `norm_mode_average`'s `βfun!(β,z)` fresh
+every RK stage in Julia; for a pressure gradient (density varying ~10× over
+the fibre) this is a real effect, not negligible. This alone caused a ~9%
+fixed-step full-solve mismatch — isolated by: (a) confirming the z-dependent
+linop matched Julia to ~1e-8 via `native_debug_linop_at` well before the RHS
+fix, and (b) running the same fixed-step full-solve with `kerr=false` (pure
+linear propagation) and seeing it match Julia to the same ~1e-8, proving the
+divergence lived in the RHS, not the linear propagator. Fix: `ensure_linop_at`
+now also rescales `kerr_fac` by the just-computed `dens(z)` and overwrites
+`beta[i]` with `ω_i/c·Re(neff(ω_i,z))` (reusing the per-ω `neff` already
+computed for the linop) on every call.
+
+**Tests:**
+- `RUSTFLAGS="-D warnings" cargo build --release` → clean; `cargo test` →
+  31/31 pass.
+- `test_native_zdep_linop.jl`: a dedicated β1-exactness unit test (Rust's
+  resident β1(z) vs a BigFloat-precision derivative of the same formula,
+  independent of Julia's `dispersion`) passes at <1e-9 relative at several
+  z including both boundaries; single-step equivalence at ~1e-12 (`dtn`/
+  `err`); fixed-step full-solve at `rel_solve < 1e-3` (measured ~7.3e-5 for
+  this broadband λlims=200nm-4000nm, 0.5m-gradient config — see
+  `BETA1_ANALYTIC.md` for why this tier, not ~1e-10 like every prior phase,
+  is correct here).
+- `LUNA_TEST_GROUP=rust julia --project test/runtests.jl` → 41957/41957
+  pass (net +15 over the Phase 6 baseline of 41942).
+- `sim-propagation` (18/18) and `sim-interface` (301/301): no regressions.
+
+**Next:** Phase 8 — see `BACKLOG.md`.
+

@@ -1,10 +1,11 @@
 # Native-Rust Backend Port — Architecture
 
-> Status: design doc for the phased port. Phases 0-6 are implemented and
-> passing (see `docs/native-port/PORT_LOG.md` for the latest entry); Phase 7
-> (z-dependent linop) is next.
+> Status: design doc for the phased port. Phases 0-7 are implemented and
+> passing (see `docs/native-port/PORT_LOG.md` for the latest entry); Phase 8
+> (default-flip) is next.
 > Companion docs: [MATH.md](MATH.md), [TESTING.md](TESTING.md),
-> [PORT_LOG.md](PORT_LOG.md). Agent workflow: [`AGENTS.md`](../../AGENTS.md).
+> [PORT_LOG.md](PORT_LOG.md), [BETA1_ANALYTIC.md](BETA1_ANALYTIC.md). Agent
+> workflow: [`AGENTS.md`](../../AGENTS.md).
 > Phase checklist: [`BACKLOG.md`](../../BACKLOG.md).
 
 ## 1. Why this document exists

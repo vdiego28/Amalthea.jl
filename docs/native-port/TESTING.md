@@ -79,6 +79,18 @@ tier than its math allows is hiding a bug.
 | **reassociation** | `~1e-13` | same formula, summation/BLAS order differs (FFTW parity, QDHT, dot products) | QDHT (`test_qdht_rust.jl`), Zeisberger (~1e-12) |
 | **method/spline** | `~1e-8` | LUT/spline interpolation or a different-but-equivalent algorithm | PPT ionization (`test_ionisation_rust.jl`) |
 | **FFT-method + floor** | `~1e-6` | FFT method differences **and** the run-to-run nondeterminism floor (§3) | RK45 stepper (`test_stepper_rust.jl`) |
+| **deliberate divergence** | `~1e-4` (config-dependent) | Rust computes a *more accurate* value than Julia's own oracle on purpose, and the resulting small systematic (non-random) offset accumulates coherently over propagation length/bandwidth | Phase 7 β1(z) (`test_native_zdep_linop.jl`, see `BETA1_ANALYTIC.md`) |
+
+This last tier is different in kind from the others: it is not "we haven't
+converged Rust to match Julia yet," it is "Rust and Julia will never
+converge further, because Rust is right and Julia's own value has a real,
+repeatable, tiny error against the true derivative." Before reaching for
+this tier, do the two checks that prove it isn't secretly the other three
+tiers in disguise: (1) a `kerr=false`/linear-only control run should show
+the *same* magnitude as the full nonlinear run (proves it's not a bug in
+some other piece of the RHS), and (2) an independent BigFloat/higher-precision
+ground truth should confirm Rust's value, not just Julia's, is the accurate
+one. See `BETA1_ANALYTIC.md` §4 for a worked example of both checks.
 
 **Per-phase target.** Because the native port binds the **same FFTW** (so
 transforms are bit-parity) and copies Julia's coefficient arrays in, most phases
@@ -155,7 +167,7 @@ coincidence of regime, not immunity to the same mechanism).
 | 4 | ✅ done | Raman (carrier SDO, thg=true, all-SDO eligibility) | `test/test_native_raman.jl` | 0.0 (see note) | 4.2e-8 (achieved) |
 | 5 | ✅ done | modal + overlap cubature (`HE,n=1`, `full=false`, Kerr-only) | `test/test_native_modal.jl` | 1.4e-19 (achieved; ~1e-10 tier) | 4.0e-16 (achieved; fixed dt) |
 | 6 | ✅ done | free-space 3-D FFT (RealGrid, const_norm_free, Kerr-only) | `test/test_native_free.jl` | 7.05e-18 (achieved) | 5.01e-17 (achieved; fixed dt) |
-| 7 | ⬜ next | z-dependent linop assembly | extend the above | ~1e-13 | ~1e-6 |
+| 7 | ✅ done | z-dependent linop (mode-avg, graded-core, two-point pressure gradient) | `test/test_native_zdep_linop.jl` | <1e-9 (β1 vs BigFloat truth, achieved); ~1e-12 (`dtn`/`err`, achieved) | <1e-3 tier (measured ~7.3e-5, deliberate-divergence, see §2) |
 | 8 | ⬜ | default-flip: existing suite green with native as default | full suite | — | existing |
 
 Phase 5's single-step tier is documented looser (~1e-10) than the FFTW-only
@@ -182,6 +194,17 @@ Julia on that changed result (4.2e-8). Any future Raman-adjacent full-solve
 test should include the same "does this feature actually change the
 reference result" sanity assertion — a passing comparison between two paths
 that both silently exclude the feature under test proves nothing.
+
+Phase 7's full-run tier (~1e-3, measured ~7.3e-5) is the widest of any
+phase, and is the **only** phase where the widening is deliberate rather
+than a limitation to work around — see the "deliberate divergence" tier in
+§2 and `BETA1_ANALYTIC.md`. The single-step tier is still tight (β1 itself
+is verified to <1e-9 against a BigFloat ground truth, and `dtn`/`err`
+agreement is ~1e-12); it is specifically the *coherent accumulation* of
+β1's tiny systematic offset from Julia's own value, over a broad-bandwidth,
+multi-step propagation, that produces the wider full-run number. A
+narrower-bandwidth or shorter-fibre config would show a smaller number
+without any code change.
 
 ## 5. Commands
 

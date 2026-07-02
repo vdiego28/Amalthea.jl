@@ -298,6 +298,58 @@ Aeff(m::MarcatiliMode; z=0) = radius(m, z)^2 * m.aeff_intg
 
 
 """
+    TwoPointGradient(L, p0, p1)
+
+Callable pressure profile `p(z)` for the simple two-point gradient fill built
+by [`gradient(gas,L,p0,p1)`](@ref) — a distinct, concrete type (rather than
+an anonymous closure) so the native-Rust resident path (Phase 7) can detect
+this *specific* closed-form z→pressure map and port it exactly (elementary
+`sqrt` arithmetic, no interpolation error), as opposed to the general
+multi-point `gradient(gas,Z,P)` profile (out of Phase 7 scope — falls back
+to the non-native path). See `docs/native-port/MATH.md` §3.5.
+"""
+struct TwoPointGradient
+    L::Float64
+    p0::Float64
+    p1::Float64
+end
+(pg::TwoPointGradient)(z) = z > pg.L ? pg.p1 :
+                            z <= 0  ? pg.p0 :
+                            sqrt(pg.p0^2 + z/pg.L*(pg.p1^2 - pg.p0^2))
+
+"""
+    GradedCoreIndex(γ, densf, pfun, dspl)
+
+Callable core-index profile `coren(ω; z) = sqrt(1 + γ(λ_μm(ω))·densf(z))` for a
+graded (pressure-gradient) gas fill, as built by [`gradient`](@ref). A distinct,
+concrete type (rather than an anonymous closure) so that the native-Rust
+resident path (`RustNativeStepper`, Phase 7) can detect — via dispatch on
+`MarcatiliMode{<:Number, GradedCoreIndex, ...}` in the `make_linop` method
+below — that `εco(ω;z)-1` is separable into a fixed per-ω `γ` array and a
+scalar `densf(z)`, and build a cheap resident z-dependent linop instead of
+falling back to the (non-native) per-stage Julia callback path. `pfun` is the
+pressure profile `p(z)` — a [`TwoPointGradient`](@ref) for the simple
+two-point `gradient` method (Phase 7's supported case) or `nothing` for the
+general multi-point `gradient` (native path not attempted for that case).
+`dspl` is `PhysData.densityspline`'s density-of-pressure spline (`densf(z) =
+dspl(pfun(z))`) exposed directly so the native path can **transfer** its
+`(x,y,D)` to Rust rather than re-fitting a different spline through sampled
+values — real-gas density (via CoolProp) is not perfectly smooth at the
+scale a from-scratch refit would need to resolve, so re-fitting doesn't
+converge; transferring the identical piecewise-cubic sidesteps this
+entirely (see `docs/native-port/MATH.md` §3.5). Purely additive: calling a
+`GradedCoreIndex` gives byte-identical results to the old anonymous-closure
+`coren`.
+"""
+struct GradedCoreIndex{Γ, D, P, S}
+    γ::Γ
+    densf::D
+    pfun::P
+    dspl::S
+end
+(g::GradedCoreIndex)(ω; z) = sqrt(1 + g.γ(wlfreq(ω)*1e6)*g.densf(z))
+
+"""
     gradient(gas, L, p0, p1; T=roomtemp)
 
 Convenience function to create density and core index profiles for
@@ -307,11 +359,9 @@ simple two-point gradient fills defined by the waveguide length `L` and the pres
 function gradient(gas, L, p0, p1; T=roomtemp)
     γ = sellmeier_gas(gas)
     dspl = densityspline(gas, Pmin=p0==p1 ? 0 : min(p0, p1), Pmax=max(p0, p1); T)
-    p(z) =  z > L ? p1 :
-            z <= 0 ? p0 :
-            sqrt(p0^2 + z/L*(p1^2 - p0^2))
-    dens(z) = dspl(p(z))
-    coren(ω; z) = sqrt(1 + γ(wlfreq(ω)*1e6)*dens(z))
+    pfun = TwoPointGradient(Float64(L), Float64(p0), Float64(p1))
+    dens(z) = dspl(pfun(z))
+    coren = GradedCoreIndex(γ, dens, pfun, dspl)
     return coren, dens
 end
 
@@ -336,7 +386,11 @@ function gradient(gas, Z, P; T=roomtemp)
         end
     end
     dens(z) = dspl(p(z))
-    coren(ω; z) = sqrt(1 + γ(wlfreq(ω)*1e6)*dens(z))
+    # pfun=nothing: the multi-point piecewise ramp is out of Phase 7's native
+    # scope (see GradedCoreIndex docstring) -- the specialized `make_linop`
+    # method below returns the plain (unwrapped) linop!/βfun! for this case,
+    # so RustNativeStepper's native path is simply not attempted.
+    coren = GradedCoreIndex(γ, dens, nothing, dspl)
     return coren, dens
 end
 
@@ -509,6 +563,159 @@ function transmission(a, λ, L; kind=:HE, n=1, m=1)
     # TODO hardcoded fill needs to be updated if using absorbing materials
     mode = MarcatiliMode(a, :He, 0; n=n, m=m, kind=kind)
     Modes.transmission(mode, wlfreq(λ), L)
+end
+
+# ─── Phase 7: z-dependent linop for graded-core, constant-radius MarcatiliMode ──
+#
+# See docs/native-port/MATH.md §3.5 and docs/native-port/BETA1_ANALYTIC.md.
+# `ZDepLinopMarcatili` wraps the ordinary z-dependent `linop!(out,z)` closure
+# (so it behaves identically everywhere a z-dependent linop is used —
+# `LinearOps.make_prop!`, `RustPreconStepper`, the plain Julia `PreconStepper`)
+# while additionally carrying the precomputed metadata `RustNativeStepper`
+# needs to build a resident native z-dependent linop.
+#
+# `dspl_x`/`dspl_y`/`dspl_d` are `densityspline`'s own knots/values/first-
+# derivatives, **transferred** to Rust rather than re-fit: an earlier version
+# of this design LUT'd `dens(pressure)` by resampling and refitting a fresh
+# natural cubic spline, which never converged — real-gas density (via
+# CoolProp, inside `PhysData.density`) is not perfectly smooth at the scale
+# a from-scratch refit needs, and worse, `dspl` is *itself* already a cubic
+# spline, so refitting is a spline-of-a-spline: the error concentrates at
+# `dspl`'s own knots and shrinks only ~O(h), not ~O(h⁴), so no amount of
+# resampling closes the gap (see PORT_LOG for the full postmortem, and the
+# z-domain postmortem before that — even N=262144 uniform z-samples left
+# ~1e-10 error near z=0, and adaptive z-refinement hit ill-conditioning
+# before converging). Transferring the *identical* piecewise cubic
+# sidesteps the whole problem: Rust's `dens(pressure)` becomes exactly
+# Julia's `dspl(pressure)` (reassociation tier), not an approximation of it.
+#
+# `β1(z) = d/dω[ω/c·Re(neff(ω,z))]|_{ω0}` is **not** LUT'd — `εco(ω;z)-1 =
+# γ(λ(ω))·dens(z)` is separable and `nwg(ω)` is z-independent (constant
+# radius), so β1(z) collapses to a closed form in the *single* scalar
+# `dens(z)`, needing only 4 z-independent constants computed once here:
+# `γ0=γ(λ(ω0))`, `dγ0=dγ/dω|_{ω0}`, `nwg0=nwg(ω0)`, `dnwg0=dnwg/dω|_{ω0}`.
+# These are computed to near-BigFloat precision (`Maths.derivative` fed a
+# `BigFloat` argument — the same adaptive-FD algorithm Julia already uses
+# for `dispersion`, just with the rounding floor pushed far below `Float64`
+# epsilon by the wider input type), not hand-derived symbolically: `γ`/
+# `cladn` are opaque per-gas/per-glass closures (arbitrary Sellmeier terms,
+# or user-registered materials), so a hand-derived chain rule would need to
+# special-case every material, whereas BigFloat promotion differentiates
+# *whatever* closure is passed in, generically and exactly. See
+# `docs/native-port/BETA1_ANALYTIC.md` for the derivation, the adaptive-FD
+# noise floor this replaces, and verification against both Julia's own
+# `dispersion` and an independent BigFloat cross-check.
+struct ZDepLinopMarcatili{F, DF}
+    linop!::F
+    densf::DF        # dens(z) = dspl(pfun(z))
+    L::Float64
+    p0::Float64
+    p1::Float64
+    dspl_x::Vector{Float64}
+    dspl_y::Vector{Float64}
+    dspl_d::Vector{Float64}
+    gamma::Vector{Float64}
+    nwg_re::Vector{Float64}
+    nwg_im::Vector{Float64}
+    omega::Vector{Float64}
+    sidx::BitVector
+    model::Symbol
+    loss::Bool
+    ω0::Float64
+    γ0::Float64
+    dγ0::Float64
+    nwg0_re::Float64
+    nwg0_im::Float64
+    dnwg0_re::Float64
+    dnwg0_im::Float64
+end
+(w::ZDepLinopMarcatili)(out, z) = w.linop!(out, z)
+
+"""
+    make_linop(grid::Grid.RealGrid, mode::MarcatiliMode{<:Number,<:GradedCoreIndex,...}, λ0)
+
+Specialized z-dependent linop for a constant-radius, graded-core
+(pressure-gradient, [`gradient`](@ref)) `MarcatiliMode`. Builds the ordinary
+`linop!`/`βfun!` pair exactly as the generic `LinearOps.make_linop` method
+would. For the two-point gradient (`mode.coren.pfun isa TwoPointGradient`),
+additionally wraps `linop!` in [`ZDepLinopMarcatili`](@ref) carrying the
+extra metadata the native-Rust resident path (Phase 7) needs; for the
+general multi-point gradient (`pfun === nothing`), returns the plain
+`linop!`/`βfun!` unwrapped — out of Phase 7's scope, so `RustNativeStepper`'s
+native path is simply not attempted (no behavior change from before Phase 7).
+Behaviourally identical to the generic method for every existing caller
+either way (the wrapper is directly callable as `linop!(out,z)`) — only
+`RustNativeStepper` inspects the wrapper type.
+"""
+function make_linop(grid::Grid.RealGrid,
+                     mode::MarcatiliMode{<:Number, <:GradedCoreIndex, Tcl, LT} where {Tcl, LT},
+                     λ0)
+    sidcs = (1:length(grid.ω))[grid.sidx]
+    neff, β = neff_β_grid(grid, mode, λ0)
+    ω0 = wlfreq(λ0)
+    linop! = let neff=neff, ω=grid.ω, mode=mode, ω0=ω0
+        function linop!(out, z)
+            fill!(out, 0.0)
+            β1 = dispersion(mode, 1, ω0, z=z)::Float64
+            for iω in sidcs
+                nc = conj_clamp(neff(iω; z=z), ω[iω])
+                out[iω] = -im*(ω[iω]/c*nc - ω[iω]*β1)
+            end
+        end
+    end
+    βfun! = let β=β, ω=grid.ω
+        function βfun!(out, z)
+            fill!(out, 1.0)
+            for iω in sidcs
+                out[iω] = β(iω; z=z)
+            end
+        end
+    end
+
+    pfun = mode.coren.pfun
+    pfun isa TwoPointGradient || return linop!, βfun!
+
+    # ── Phase 7 metadata for the native resident path (MATH.md §3.5) ────────
+    γ = mode.coren.γ
+    densf = mode.coren.densf
+    dspl = mode.coren.dspl
+    n_full = length(grid.ω)
+    gamma_arr = zeros(n_full)
+    nwg_re = zeros(n_full)
+    nwg_im = zeros(n_full)
+    for iω in sidcs
+        gamma_arr[iω] = γ(wlfreq(grid.ω[iω])*1e6)
+        nwg = neff_wg(mode, grid.ω[iω]; z=0.0)
+        nwg_re[iω] = real(nwg)
+        nwg_im[iω] = imag(nwg)
+    end
+
+    L, p0, p1 = pfun.L, pfun.p0, pfun.p1
+
+    # ── β1(z) closed form: 4 z-independent constants (BETA1_ANALYTIC.md) ────
+    # γ0, dγ0: γ(λ_μm(ω)) evaluated/differentiated at ω0. `Maths.derivative`
+    # fed a BigFloat ω0 reuses Julia's own adaptive-FD algorithm, but with
+    # the rounding floor pushed far below Float64 epsilon by the wider type
+    # — no need to know γ's internal Sellmeier coefficients.
+    γ_of_ω(ω) = γ(wlfreq(ω)*1e6)
+    γ0 = γ_of_ω(ω0)
+    dγ0 = Float64(Maths.derivative(γ_of_ω, BigFloat(ω0), 1))
+
+    # nwg0, dnwg0: the z-independent waveguide term (constant core radius),
+    # already model-correct (`neff_wg` branches :full/:reduced internally).
+    nwg0 = neff_wg(mode, ω0; z=0.0)
+    nwg_re_of_ω(ω) = real(neff_wg(mode, ω; z=0.0))
+    nwg_im_of_ω(ω) = imag(neff_wg(mode, ω; z=0.0))
+    dnwg0_re = Float64(Maths.derivative(nwg_re_of_ω, BigFloat(ω0), 1))
+    dnwg0_im = Float64(Maths.derivative(nwg_im_of_ω, BigFloat(ω0), 1))
+
+    wrapped = ZDepLinopMarcatili(linop!, densf, L, p0, p1,
+                                  dspl.x, dspl.y, dspl.D,
+                                  gamma_arr, nwg_re, nwg_im,
+                                  collect(Float64, grid.ω), BitVector(grid.sidx),
+                                  mode.model, mode.loss isa Val{true},
+                                  ω0, γ0, dγ0, real(nwg0), imag(nwg0), dnwg0_re, dnwg0_im)
+    return wrapped, βfun!
 end
 
 end

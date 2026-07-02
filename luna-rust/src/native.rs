@@ -73,15 +73,33 @@
 //!       RealGrid, `const_norm_free` (z-invariant), scalar Kerr,
 //!       `shotnoise=false`. Gate: single-step 7.05e-18, full-solve 5.01e-17
 //!       (fixed step size). See MATH.md §3.4. COMPLETE.
-//!       Scope: RealGrid, `MarcatiliMode{<:Number,...}` (constant radius)
-//!       with `kind=:HE, n=1` only (needs only `besselj(0,·)`/`besselj(1,·)`,
-//!       already in `diffraction.rs`), Kerr-only, `shotnoise=false`. See
-//!       MATH.md §3.3 for the full design and deferred-scope list.
+//! - [x] Phase 7 — z-dependent linop: mode-averaged, graded-core
+//!       constant-radius `MarcatiliMode`, two-point pressure gradient
+//!       (`Capillary.gradient`/`Interface.jl:532-541`). `εco(ω;z)-1` factors
+//!       as a fixed per-ω `γ(λ(ω))` array times a scalar `dens(z)` — the
+//!       `nwg(ω)` combine is the same formula as the existing
+//!       `dispersion.rs::MarcatiliNeff` (copied inline, handle not shared).
+//!       `z→pressure` is a closed form ported exactly (no interpolation).
+//!       `dens(pressure)` and `β1(dens)` are both **transferred**
+//!       `Maths.CSpline`s (`spline.rs::HermiteSpline`), not spline-fit from
+//!       scratch in Rust — an earlier attempt to LUT `dens`/`β1` by
+//!       resampling and refitting a *different* (natural-BC) spline never
+//!       converged, because real-gas density (via CoolProp) composed
+//!       through `dspl` (itself already a spline) isn't smooth enough at
+//!       the scale a from-scratch refit needs; transferring the identical
+//!       piecewise cubic sidesteps this (see MATH.md §3.5, PORT_LOG). `z` is
+//!       clamped to `[0,flength]` before the pressure map to match Julia's
+//!       flat pressure-profile boundary. `NativeSim::ensure_linop_at`
+//!       recomputes `self.linop` in place only when `z` changes and is a
+//!       no-op for Phases 1-6. Scope: RealGrid, mode-averaged, Kerr-only;
+//!       EnvGrid and radial/free-space/modal `nfun(ω;z)` deferred. Gate:
+//!       single-step/full-solve — see MATH.md §3.5 and PORT_LOG. COMPLETE.
 
 use num_complex::Complex;
 use libc::{c_char, c_double, c_int, c_uint, size_t, c_void};
 use crate::fftw::{FftwApi, ComplexFft1d, RealFft1d, RealFft3d};
 use crate::ffi::QdhtFfiHandle;
+use crate::spline::HermiteSpline;
 use crate::raman::{TimeDomainRamanSolver, RamanOscillator};
 use crate::cubature::CubatureApi;
 use crate::diffraction::j0;
@@ -245,6 +263,74 @@ pub struct NativeSim {
     pub free_pto: Vec<f64>,
     pub free_eoo: Vec<Complex<f64>>,
     pub free_poo: Vec<Complex<f64>>,
+
+    // ── Phase 7: z-dependent linop — mode-averaged, graded-core constant-
+    // radius MarcatiliMode, two-point pressure gradient — see MATH.md §3.5.
+    pub is_zdep_mode_avg: bool,
+    /// Fibre length; `z` queries are clamped into `[0, zdep_flength]` before
+    /// converting to pressure, reproducing `Capillary.gradient`'s flat
+    /// pressure profile outside `[0,L]` instead of extrapolating.
+    pub zdep_flength: f64,
+    /// Two-point pressure-gradient parameters (`TwoPointGradient`): pressure
+    /// at z=0/z=L. `p(z) = sqrt(p0² + z/L·(p1²-p0²))` is a closed form,
+    /// ported exactly (no interpolation) — only `dens`/`β1` as functions of
+    /// the resulting *pressure* are LUT'd (see below for why pressure, not
+    /// z, is the LUT axis).
+    pub zdep_grad_p0: f64,
+    pub zdep_grad_p1: f64,
+    /// `dens(pressure)` — **transferred**, not re-fit: `Maths.CSpline`'s own
+    /// `(x,y,D)` from `PhysData.densityspline`, evaluated in Rust with the
+    /// identical Hermite-cubic formula. Re-fitting a *different* (natural
+    /// cubic) spline through samples of `dspl` was tried first and failed
+    /// to converge — the refit chases `dspl`'s own knot-to-knot 3rd-derivative
+    /// jumps (real-gas density via CoolProp is not perfectly smooth at that
+    /// scale), which only shrinks like `O(h)`, not `O(h⁴)`, so no amount of
+    /// resampling closes the gap. Transferring the *same* piecewise cubic
+    /// sidesteps the problem entirely (see MATH.md §3.5, PORT_LOG postmortem).
+    pub zdep_dens_lut: Option<HermiteSpline>,
+    /// `γ(λ(ω))` per spectral bin (0 outside `sidx`) — z-independent gas
+    /// Sellmeier coefficient, computed once in Julia.
+    pub zdep_gamma: Vec<f64>,
+    /// `nwg(ω)` per spectral bin (0 outside `sidx`) — z-independent for
+    /// constant core radius, same combine as `dispersion.rs::MarcatiliNeff`.
+    pub zdep_nwg_re: Vec<f64>,
+    pub zdep_nwg_im: Vec<f64>,
+    /// Angular frequency grid — needed for the linop assembly and for
+    /// `conj_clamp`'s `3000·c/ω` bound; not stored elsewhere in `NativeSim`.
+    pub zdep_omega: Vec<f64>,
+    /// 0 = `:full` (`sqrt(εco-nwg)`), 1 = `:reduced` (`1+(εco-1)/2-nwg`).
+    pub zdep_model: u8,
+    pub zdep_loss_on: bool,
+    /// Reference frequency `ω0` — where `β1(z) = d/dω[ω/c·Re(neff(ω,z))]`
+    /// is evaluated. Closed-form β1 constants (see `docs/native-port/
+    /// BETA1_ANALYTIC.md`): `εco(ω;z)-1 = γ(λ(ω))·dens(z)` is separable and
+    /// `nwg(ω)` is z-independent (constant radius), so β1(z) reduces to a
+    /// function of the single scalar `dens(z)` given these 4 z-independent
+    /// constants (computed once in Julia via `Maths.derivative` fed a
+    /// `BigFloat` argument — exact to far below `Float64` epsilon, replacing
+    /// an earlier `(dens,β1)` LUT that chased Julia's own adaptive-FD noise
+    /// floor instead of the true derivative).
+    pub zdep_omega0: f64,
+    pub zdep_gamma0: f64,
+    pub zdep_dgamma0: f64,
+    pub zdep_nwg0: Complex<f64>,
+    pub zdep_dnwg0: Complex<f64>,
+    /// `ε₀·γ3` — density factored out of `kerr_fac = density(z)·ε₀·γ3` so
+    /// `ensure_linop_at` can rescale `kerr_fac` by the just-computed `dens(z)`
+    /// every call. Julia's `TransModeAvg` calls `t.densityfun(z)` fresh at
+    /// every RK stage (`NonlinearRHS.jl`'s `(t::TransModeAvg)(nl,Eω,z)`) — the
+    /// non-z-dependent phases (0-6) instead bake a single `kerr_fac` in at
+    /// construction (`density(0)`), which is wrong for a pressure gradient
+    /// where density varies ~10× over the fibre. Missing this update was the
+    /// actual cause of the ~9% full-solve mismatch seen during development —
+    /// the z-dependent *linop* was already accurate to ~1e-8 at that point,
+    /// so the divergence had to be in the RHS, not the linear propagator (see
+    /// PORT_LOG's Phase 7 postmortem).
+    pub zdep_kerr_fac_per_dens: f64,
+    /// Memoizes the last `z` `ensure_linop_at` computed `self.linop` for —
+    /// mirrors Julia's `make_prop!`'s `lastt2` memoization (a
+    /// forward/backward `prop!` pair always shares one evaluation).
+    pub zdep_last_z: f64,
 }
 
 impl NativeSim {
@@ -343,6 +429,24 @@ impl NativeSim {
             free_pto: Vec::new(),
             free_eoo: Vec::new(),
             free_poo: Vec::new(),
+            is_zdep_mode_avg: false,
+            zdep_flength: 0.0,
+            zdep_grad_p0: 0.0,
+            zdep_grad_p1: 0.0,
+            zdep_dens_lut: None,
+            zdep_gamma: Vec::new(),
+            zdep_nwg_re: Vec::new(),
+            zdep_nwg_im: Vec::new(),
+            zdep_omega: Vec::new(),
+            zdep_model: 0,
+            zdep_loss_on: false,
+            zdep_omega0: 0.0,
+            zdep_gamma0: 0.0,
+            zdep_dgamma0: 0.0,
+            zdep_nwg0: Complex::new(0.0, 0.0),
+            zdep_dnwg0: Complex::new(0.0, 0.0),
+            zdep_kerr_fac_per_dens: 0.0,
+            zdep_last_z: f64::NAN,
         }
     }
 
@@ -890,6 +994,94 @@ impl NativeSim {
             self.ks[idx][i] *= self.free_m[i];
         }
     }
+
+    /// Recompute `self.linop` in place for propagation position `z`, for the
+    /// z-dependent mode-averaged (Phase 7) case. No-op for Phases 1-6 (the
+    /// constant-linop geometries) and a no-op if `z` matches the last call
+    /// (mirrors Julia's `make_prop!`'s `lastt2` memoization — every
+    /// forward/backward `prop!` pair in `native_step` shares one `z`). See
+    /// MATH.md §3.5.
+    fn ensure_linop_at(&mut self, z: f64) {
+        if !self.is_zdep_mode_avg { return; }
+        if self.zdep_last_z == z { return; }
+
+        // Closed-form z -> pressure (TwoPointGradient.p(z)), ported exactly
+        // (no interpolation error) — the flat clamp outside [0,L] reproduces
+        // Capillary.gradient's own boundary behavior.
+        let zc = z.clamp(0.0, self.zdep_flength);
+        let p0 = self.zdep_grad_p0;
+        let p1 = self.zdep_grad_p1;
+        let l = self.zdep_flength;
+        let pressure = if zc >= l {
+            p1
+        } else if zc <= 0.0 {
+            p0
+        } else {
+            (p0 * p0 + zc / l * (p1 * p1 - p0 * p0)).sqrt()
+        };
+        let dens = self.zdep_dens_lut.as_ref().unwrap().eval(pressure);
+        const C: f64 = 299_792_458.0;
+
+        // β1(z) closed form (docs/native-port/BETA1_ANALYTIC.md): εco(ω0;z)-1
+        // = γ0·dens(z), and nwg0/dnwg0 are z-independent (constant radius),
+        // so β1 needs only these 4 precomputed constants plus the just-
+        // computed scalar `dens`, not a per-z LUT lookup.
+        let eco0 = 1.0 + self.zdep_gamma0 * dens;
+        let deco0 = self.zdep_dgamma0 * dens;
+        let (neff0, dneff0) = if self.zdep_model == 0 {
+            // :full — neff0 = sqrt(εco0 − nwg0), dneff0 = (dεco0 − dnwg0)/(2·neff0)
+            let neff0 = (Complex::new(eco0, 0.0) - self.zdep_nwg0).sqrt();
+            let dneff0 = (Complex::new(deco0, 0.0) - self.zdep_dnwg0) / (2.0 * neff0);
+            (neff0, dneff0)
+        } else {
+            // :reduced — neff0 = 1 + (εco0−1)/2 − nwg0, dneff0 = dεco0/2 − dnwg0
+            let neff0 = Complex::new(1.0 + (eco0 - 1.0) / 2.0, 0.0) - self.zdep_nwg0;
+            let dneff0 = Complex::new(deco0 / 2.0, 0.0) - self.zdep_dnwg0;
+            (neff0, dneff0)
+        };
+        let beta1 = (neff0.re + self.zdep_omega0 * dneff0.re) / C;
+
+        for i in 0..self.n {
+            if !self.sidx[i] {
+                self.linop[i] = Complex::new(0.0, 0.0);
+                continue;
+            }
+            let eco = 1.0 + self.zdep_gamma[i] * dens;
+            let nwg = Complex::new(self.zdep_nwg_re[i], self.zdep_nwg_im[i]);
+            let mut neff = if self.zdep_model == 0 {
+                // :full — neff = sqrt(complex(εco − nwg))
+                (Complex::new(eco, 0.0) - nwg).sqrt()
+            } else {
+                // :reduced — neff = 1 + (εco−1)/2 − nwg
+                Complex::new(1.0 + (eco - 1.0) / 2.0, 0.0) - nwg
+            };
+            if !self.zdep_loss_on {
+                neff = Complex::new(neff.re, 0.0);
+            }
+            // conj_clamp(n, ω) = clamp(re(n), 1e-3, Inf) - i·clamp(im(n), 0, 3000·c/ω)
+            let omega = self.zdep_omega[i];
+            let re_c = neff.re.max(1e-3);
+            let im_bound = 3000.0 * C / omega;
+            let im_c = neff.im.clamp(0.0, im_bound);
+            let nc = Complex::new(re_c, -im_c);
+
+            // -i·w where w = ω/c·nc - ω·β1  (avoids relying on Complex::i())
+            let w = nc * (omega / C) - Complex::new(omega * beta1, 0.0);
+            self.linop[i] = Complex::new(w.im, -w.re);
+
+            // norm_mode_average's β(ω,z) = ω/c·real(neff(ω,z)) (Modes.jl:136-138)
+            // — UNCLAMPED, unlike the linop's nc.re — reusing `neff.re` from
+            // above, computed before the conj_clamp above is applied.
+            if i < self.beta.len() {
+                self.beta[i] = omega / C * neff.re;
+            }
+        }
+        // TransModeAvg calls `t.densityfun(z)` fresh every RK stage
+        // (NonlinearRHS.jl), so `kerr_fac = density(z)·ε₀·γ3` must be
+        // rescaled here too, not just baked in once at construction.
+        self.kerr_fac = self.zdep_kerr_fac_per_dens * dens;
+        self.zdep_last_z = z;
+    }
 }
 
 /// C `integrand_v` callback for `pcubature_v` — reconstructs `&mut NativeSim`
@@ -1068,6 +1260,68 @@ pub unsafe extern "C" fn get_ks_stage(
 }
 
 
+/// Debug getter (mirrors `get_field`/`get_ks_stage`): force `ensure_linop_at(z)`
+/// and copy out the resulting `self.linop`. Used only by Rust-vs-Julia
+/// diagnostic scripts for Phase 7 (z-dependent linop) — not part of the hot
+/// loop.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_debug_linop_at(
+    sim: *mut NativeSim,
+    z: c_double,
+    data: *mut c_double,
+    n: size_t,
+) -> i32 {
+    if sim.is_null() || data.is_null() { return -1; }
+    let sim = unsafe { &mut *sim };
+    if n != sim.n { return -1; }
+    sim.ensure_linop_at(z);
+    let dst = unsafe { std::slice::from_raw_parts_mut(data as *mut Complex<f64>, n) };
+    dst.copy_from_slice(&sim.linop);
+    0
+}
+
+/// Debug getter (Phase 7 diagnostics, used by `test_native_zdep_linop.jl`'s
+/// unit test): force `ensure_linop_at(z)` and report `[dens, beta1]` at that
+/// z, so the analytic β1(z) closed form (`docs/native-port/BETA1_ANALYTIC.md`)
+/// can be checked directly against a BigFloat ground truth, independent of
+/// the full linop/RHS machinery.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_debug_beta1_at(
+    sim: *mut NativeSim,
+    z: c_double,
+    out_dens: *mut c_double,
+    out_beta1: *mut c_double,
+) -> i32 {
+    if sim.is_null() || out_dens.is_null() || out_beta1.is_null() { return -1; }
+    let sim = unsafe { &mut *sim };
+    sim.ensure_linop_at(z);
+    let zc = z.clamp(0.0, sim.zdep_flength);
+    let p0 = sim.zdep_grad_p0;
+    let p1 = sim.zdep_grad_p1;
+    let l = sim.zdep_flength;
+    let pressure = if zc >= l { p1 } else if zc <= 0.0 { p0 }
+                   else { (p0*p0 + zc/l*(p1*p1-p0*p0)).sqrt() };
+    let dens = sim.zdep_dens_lut.as_ref().unwrap().eval(pressure);
+    let eco0 = 1.0 + sim.zdep_gamma0 * dens;
+    let deco0 = sim.zdep_dgamma0 * dens;
+    let (neff0, dneff0) = if sim.zdep_model == 0 {
+        let neff0 = (Complex::new(eco0, 0.0) - sim.zdep_nwg0).sqrt();
+        let dneff0 = (Complex::new(deco0, 0.0) - sim.zdep_dnwg0) / (2.0 * neff0);
+        (neff0, dneff0)
+    } else {
+        let neff0 = Complex::new(1.0 + (eco0 - 1.0) / 2.0, 0.0) - sim.zdep_nwg0;
+        let dneff0 = Complex::new(deco0 / 2.0, 0.0) - sim.zdep_dnwg0;
+        (neff0, dneff0)
+    };
+    const C: f64 = 299_792_458.0;
+    let beta1 = (neff0.re + sim.zdep_omega0 * dneff0.re) / C;
+    unsafe {
+        *out_dens = dens;
+        *out_beta1 = beta1;
+    }
+    0
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn native_set_fftw_plans(
     sim: *mut NativeSim,
@@ -1175,6 +1429,103 @@ pub unsafe extern "C" fn native_set_mode_avg_params(
     s.kerr_fac = kerr_fac;
     s.nlscale = nlscale;
     s.sqrt_aeff = sqrt_aeff;
+    0
+}
+
+/// Wire the z-dependent linop path (Phase 7 — mode-averaged, graded-core
+/// constant-radius `MarcatiliMode`, two-point pressure gradient only, see
+/// MATH.md §3.5 and `docs/native-port/BETA1_ANALYTIC.md`). Must be called
+/// **after** `native_set_mode_avg_params` (reuses `s.sidx`, sized there).
+///
+/// `dspl_x`/`dspl_y`/`dspl_d` are `PhysData.densityspline`'s own knots,
+/// values, and first derivatives — **transferred**, not re-fit (see
+/// `HermiteSpline`'s docstring for why re-fitting a *different* spline
+/// through samples of `dspl` doesn't converge). `p0`/`p1` are the two-point
+/// gradient's pressures at z=0/z=L, needed to invert the closed-form
+/// z→pressure map at runtime. `gamma`/`nwg_re`/`nwg_im`/`omega` are
+/// per-spectral-bin arrays of length `sim.n` (0 outside `sidx` is fine —
+/// those bins are overwritten with 0 regardless, see `ensure_linop_at`).
+///
+/// `omega0`/`gamma0`/`dgamma0`/`nwg0_re`/`nwg0_im`/`dnwg0_re`/`dnwg0_im` are
+/// the 4 z-independent constants (ω0 plus γ0, dγ0, nwg0, dnwg0) needed for
+/// β1(z)'s closed form — computed once in Julia via `Maths.derivative` fed a
+/// `BigFloat` argument (exact to far below `Float64` epsilon), **not** a
+/// `(dens,β1)` LUT: an earlier version of this design sampled β1 into a
+/// spline, which could only ever chase Julia's own adaptive-FD noise floor
+/// (`Modes.dispersion`'s `central_fdm`) rather than the true derivative —
+/// see BETA1_ANALYTIC.md for the derivation and postmortem.
+///
+/// `eps0_gamma3` is `PhysData.ε_0·γ3` (density factored out) —
+/// `ensure_linop_at` rescales `sim.kerr_fac` by the freshly computed
+/// `dens(z)` every call, and also overwrites `sim.beta[i]` with
+/// `ω/c·real(neff(ω,z))` (Modes.jl's unclamped `β(ω,z)`, reusing the `neff`
+/// already computed for the linop) — both are genuinely z-dependent for a
+/// pressure gradient (`TransModeAvg` re-evaluates `densityfun(z)` and
+/// `norm_mode_average`'s `βfun!(β,z)` fresh every RK stage in Julia) and
+/// were the actual source of a ~9% full-solve mismatch before this was
+/// wired up (see PORT_LOG's Phase 7 postmortem).
+///
+/// Returns 0 on success, -1 on null/empty args, -2 if `dspl` has fewer than
+/// 2 samples, -3 if called before `native_set_mode_avg_params` sized
+/// `sim.sidx`.
+///
+/// # Safety
+/// All pointer arguments must be non-null and valid for the lengths given.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_set_zdep_mode_avg_params(
+    sim: *mut NativeSim,
+    flength: c_double,
+    p0: c_double,
+    p1: c_double,
+    n_dspl: size_t,
+    dspl_x: *const c_double,
+    dspl_y: *const c_double,
+    dspl_d: *const c_double,
+    gamma: *const c_double,
+    nwg_re: *const c_double,
+    nwg_im: *const c_double,
+    omega: *const c_double,
+    model: c_uint,
+    loss_on: c_uint,
+    eps0_gamma3: c_double,
+    omega0: c_double,
+    gamma0: c_double,
+    dgamma0: c_double,
+    nwg0_re: c_double,
+    nwg0_im: c_double,
+    dnwg0_re: c_double,
+    dnwg0_im: c_double,
+) -> i32 {
+    if sim.is_null() || dspl_x.is_null() || dspl_y.is_null() || dspl_d.is_null()
+        || gamma.is_null() || nwg_re.is_null() || nwg_im.is_null() || omega.is_null() {
+        return -1;
+    }
+    if n_dspl < 2 { return -2; }
+    let s = unsafe { &mut *sim };
+    if s.sidx.len() != s.n { return -3; }
+
+    let dspl_x_v = unsafe { std::slice::from_raw_parts(dspl_x, n_dspl) }.to_vec();
+    let dspl_y_v = unsafe { std::slice::from_raw_parts(dspl_y, n_dspl) }.to_vec();
+    let dspl_d_v = unsafe { std::slice::from_raw_parts(dspl_d, n_dspl) }.to_vec();
+
+    s.zdep_flength = flength;
+    s.zdep_grad_p0 = p0;
+    s.zdep_grad_p1 = p1;
+    s.zdep_dens_lut = Some(HermiteSpline::from_parts(dspl_x_v, dspl_y_v, dspl_d_v));
+    s.zdep_gamma = unsafe { std::slice::from_raw_parts(gamma, s.n) }.to_vec();
+    s.zdep_nwg_re = unsafe { std::slice::from_raw_parts(nwg_re, s.n) }.to_vec();
+    s.zdep_nwg_im = unsafe { std::slice::from_raw_parts(nwg_im, s.n) }.to_vec();
+    s.zdep_omega = unsafe { std::slice::from_raw_parts(omega, s.n) }.to_vec();
+    s.zdep_model = if model == 0 { 0 } else { 1 };
+    s.zdep_loss_on = loss_on != 0;
+    s.zdep_kerr_fac_per_dens = eps0_gamma3;
+    s.zdep_omega0 = omega0;
+    s.zdep_gamma0 = gamma0;
+    s.zdep_dgamma0 = dgamma0;
+    s.zdep_nwg0 = Complex::new(nwg0_re, nwg0_im);
+    s.zdep_dnwg0 = Complex::new(dnwg0_re, dnwg0_im);
+    s.zdep_last_z = f64::NAN;
+    s.is_zdep_mode_avg = true;
     0
 }
 
@@ -1651,7 +2002,8 @@ pub unsafe extern "C" fn native_step(
     // s.yn .= s.y -> but wait, `s.field` is `y`.
     yn_sl.copy_from_slice(&s.field);
     
-    // prop!(s.ks[1], s.t, s.tn)
+    // prop!(s.ks[1], s.t, s.tn)  — linop evaluated at the later time, t_new
+    s.ensure_linop_at(t_new);
     apply_prop(&mut s.ks[0], &s.linop, t_new - t_old);
     
     let dt = dtn;
@@ -1672,24 +2024,28 @@ pub unsafe extern "C" fn native_step(
         
         if s.is_free {
             let dt_prop = DP_NODES[ii] * dt;
+            s.ensure_linop_at(t + dt_prop);
             let mut ystage_prop = s.ystage.clone();
             apply_prop(&mut ystage_prop, &s.linop, dt_prop);
             s.rhs_free(ii + 1, &ystage_prop);
             apply_prop(&mut s.ks[ii + 1], &s.linop, -dt_prop);
         } else if s.is_modal {
             let dt_prop = DP_NODES[ii] * dt;
+            s.ensure_linop_at(t + dt_prop);
             let mut ystage_prop = s.ystage.clone();
             apply_prop(&mut ystage_prop, &s.linop, dt_prop);
             s.rhs_modal(ii + 1, &ystage_prop);
             apply_prop(&mut s.ks[ii + 1], &s.linop, -dt_prop);
         } else if s.is_radial {
             let dt_prop = DP_NODES[ii] * dt;
+            s.ensure_linop_at(t + dt_prop);
             let mut ystage_prop = s.ystage.clone();
             apply_prop(&mut ystage_prop, &s.linop, dt_prop);
             s.rhs_radial(ii + 1, &ystage_prop);
             apply_prop(&mut s.ks[ii + 1], &s.linop, -dt_prop);
         } else if s.n_time_over > 0 && (s.fft_r2c_over.is_some() || s.fft_c2c_over.is_some()) {
             let dt_prop = DP_NODES[ii] * dt;
+            s.ensure_linop_at(t + dt_prop);
             let mut ystage_prop = s.ystage.clone();
             apply_prop(&mut ystage_prop, &s.linop, dt_prop);
             if s.is_real {
@@ -1743,11 +2099,13 @@ pub unsafe extern "C" fn native_step(
         tn_new = t + dt;
         let (left, right) = s.ks.split_at_mut(6);
         left[0].copy_from_slice(&right[0]); // FSAL
+        s.ensure_linop_at(tn_new);
         apply_prop(yn_sl, &s.linop, tn_new - t);
         s.field.copy_from_slice(yn_sl);
     } else {
         yn_sl.copy_from_slice(&s.field);
         tn_new = t_new;
+        s.ensure_linop_at(tn_new);
         apply_prop(yn_sl, &s.linop, tn_new - t); // no-op since t == tn_new
     }
     

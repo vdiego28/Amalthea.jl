@@ -6,6 +6,7 @@ pub mod dispersion;
 pub mod cuda;
 pub mod diffraction;
 pub mod cubature;
+pub mod spline;
 pub mod ionization;
 pub mod raman;
 pub mod integrator;

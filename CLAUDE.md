@@ -165,11 +165,29 @@ scope: `HE,n=1` Marcatili modes, `full=false`, Kerr-only — reuses the *same*
 `libcubature` C library Julia's `Cubature.jl` wraps, dlopened at runtime like
 FFTW, rather than reimplementing adaptive cubature), and Phase 6 (Free-space,
 RealGrid, `const_norm_free`, Kerr-only — a genuine joint 3-D FFTW plan, same
-libfftw3 binary, new plan rank only) are complete. Phase 7 (z-dependent
-linop) is next. Full design docs, phase checklist, and math reference live
-under `docs/native-port/{ARCHITECTURE,MATH,TESTING,PORT_LOG}.md` and `AGENTS.md`
-(repo root) — read those before touching this code; they are the source of
-truth for phase status, not this section.
+libfftw3 binary, new plan rank only), and Phase 7 (z-dependent linop,
+mode-averaged graded-core constant-radius `MarcatiliMode` built via
+`Capillary.gradient` — a two-point pressure-gradient capillary, Kerr-only)
+are complete. Phase 8 (default-flip) is next. Full design docs, phase
+checklist, and math reference live under
+`docs/native-port/{ARCHITECTURE,MATH,TESTING,PORT_LOG,BETA1_ANALYTIC}.md`
+and `AGENTS.md` (repo root) — read those before touching this code; they
+are the source of truth for phase status, not this section.
+
+**Non-obvious gotcha (Phase 7):** the z-dependent linop's `β1(z)` is
+computed as an **exact analytic closed form** in Rust (4 constants,
+BigFloat-differentiated once at setup — see `BETA1_ANALYTIC.md`), not by
+reproducing Julia's own `Modes.dispersion` (an adaptive finite difference
+with a small, real, ~1e-12 relative error against the true derivative).
+This is the first native-port phase where Rust *deliberately* diverges from
+the Julia oracle to be more correct, rather than a faithful bit-parity
+port — so its full-solve tolerance is intentionally wider (~1e-4, not
+~1e-8) for broadband/long-fibre configs, because that tiny systematic
+offset accumulates coherently over propagation length and spectral
+bandwidth. Confirmed (not assumed) via a `kerr=false` control run showing
+the identical magnitude, proving it's the β1 method difference and nothing
+in the RHS. Don't "fix" this by reverting to a LUT that reproduces Julia's
+FD noise — see `BETA1_ANALYTIC.md` for the full reasoning.
 
 **Non-obvious gotcha (Phase 2, worth knowing before writing any new full-solve
 equivalence test):** the embedded RK45 error estimate is a near-total

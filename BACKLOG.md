@@ -97,8 +97,28 @@ full-`solve` ~1e-6 vs the Julia oracle — see TESTING.md §3 nondeterminism flo
   7.05e-18, full-solve 5.01e-17 (fixed step size). EnvGrid (c2c 3-D) and a
   z-dependent `normfun` are deferred (see MATH.md §3.4). Test
   `test/test_native_free.jl`. ✔
-- ⬜ **Phase 7 — z-dependent linop assembly.** Port `_fill_linop`
-  (`src/LinearOps.jl:77,185,337`) so `prop!` never returns to Julia.
+- ✅ **Phase 7 — z-dependent linop assembly (narrow scope).** Ports the
+  mode-averaged, graded-core constant-radius `MarcatiliMode` case
+  (`Capillary.gradient(gas,L,p0,p1)`, a two-point pressure-gradient
+  capillary) resident — `NativeSim::ensure_linop_at(z)`. `dens(pressure)` is
+  a **transferred** `HermiteSpline` (Julia's own `Maths.CSpline`
+  `(x,y,D)`, not re-fit — re-fitting a different spline through sampled
+  values is a spline-of-a-spline problem that doesn't converge, see
+  PORT_LOG). `β1(z)` is an **exact analytic closed form**, not a LUT: since
+  `εco(ω;z)-1` is separable and `nwg(ω)` is z-independent, β1(z) reduces to
+  4 z-independent constants computed once via `Maths.derivative` fed a
+  `BigFloat` argument — see `docs/native-port/BETA1_ANALYTIC.md` for the
+  derivation, why this is *more* accurate than Julia's own adaptive-FD
+  `Modes.dispersion`, and the resulting tolerance tradeoff (this is the
+  first phase where Rust deliberately diverges from the Julia oracle to be
+  more correct, rather than a faithful bit-parity port). Also fixed: the
+  nonlinear RHS's `kerr_fac`/`beta[i]` must be rescaled by `dens(z)` every
+  RK stage too (`TransModeAvg` re-evaluates `densityfun(z)` fresh each
+  stage) — missing this caused a ~9% full-solve mismatch, found by isolating
+  that a `kerr=false` control run matched Julia while `kerr=true` didn't.
+  Scope: RealGrid, Kerr-only, two-point gradient only (multi-point gradient
+  and radial/free-space/modal z-dependent `nfun` deferred — see MATH.md
+  §3.5). Test `test/test_native_zdep_linop.jl`. ✔
 - ⬜ **Phase 8 — Default-flip + cleanup.** `LUNA_USE_RUST_NATIVE` becomes default;
   Julia loop retained as fallback with one-time `@warn`; per-kernel toggles kept
   for differential debugging. *Gate:* full existing suite green with native default.
