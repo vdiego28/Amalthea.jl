@@ -901,10 +901,11 @@ computed for the linop) on every call.
   resident β1(z) vs a BigFloat-precision derivative of the same formula,
   independent of Julia's `dispersion`) passes at <1e-9 relative at several
   z including both boundaries; single-step equivalence at ~1e-12 (`dtn`/
-  `err`); fixed-step full-solve at `rel_solve < 1e-3` (measured ~7.3e-5 for
-  this broadband λlims=200nm-4000nm, 0.5m-gradient config — see
-  `BETA1_ANALYTIC.md` for why this tier, not ~1e-10 like every prior phase,
-  is correct here).
+  `err`); fixed-step full-solve at `rel_solve < 1e-3` (measured ~7.3e-5 at
+  the time for this broadband λlims=200nm-4000nm, 0.5m-gradient config —
+  see `BETA1_ANALYTIC.md` for why this tier, not ~1e-10 like every prior
+  phase, is correct here; a Phase 8 precision fix later tightened this
+  measurement to ~2.7e-7, see `BETA1_ANALYTIC.md` §6).
 - `LUNA_TEST_GROUP=rust julia --project test/runtests.jl` → 41957/41957
   pass (net +15 over the Phase 6 baseline of 41942).
 - `sim-propagation` (18/18) and `sim-interface` (301/301): no regressions.
@@ -1045,14 +1046,17 @@ comparison to legitimately execute on different backends:**
   changed to the same `norm`-based comparison (`< 1e-6`).
 - `test_gradient.jl` ("field"/"envelope"): a two-point `Capillary.gradient`
   with `p0==p1` (native-eligible, `ZDepLinopMarcatili`) compared against a
-  genuinely constant linop. This one *is* physics, not backend mismatch —
-  Phase 7's analytic β1(z) is deliberately more accurate than Julia's own
-  `Modes.dispersion` (see `BETA1_ANALYTIC.md`), and for this small-core
-  (13 μm, vs Phase 7's own 125 μm test config) the waveguide term dominates
-  and amplifies that divergence far past the `~1e-4` tier documented there —
-  confirmed via the same `kerr=false`-control + BigFloat-ground-truth
-  discipline Phase 7 originally used, not assumed. Changed the default
-  `isapprox` comparison to a `norm`-based one at `< 0.15`.
+  genuinely constant linop. Changed the default `isapprox` comparison to a
+  `norm`-based one (necessary regardless, for the same near-zero-bin reason
+  as `test_tapers.jl` above). The magnitude initially measured here (a
+  `< 0.15` relative discrepancy) was **not** just Phase 7's known analytic-β1-
+  vs-`Modes.dispersion` divergence amplified by this config's small core, as
+  first assumed — it also contained a real ~500x amplification from a
+  BigFloat-precision-convergence bug in `Capillary.jl`, caught before push
+  and fixed; see `BETA1_ANALYTIC.md` §6 for the full postmortem. After the
+  fix, this config's actual discrepancy is `~1.3e-4` (field) / `~5e-10`
+  (envelope) — both back in `BETA1_ANALYTIC.md`'s originally-documented tier
+  — and the test tolerances were tightened accordingly (`< 1e-3` / `< 1e-7`).
 
 **Tests:**
 - `RUSTFLAGS="-D warnings" cargo build --release` → clean; `cargo test` →

@@ -168,7 +168,7 @@ coincidence of regime, not immunity to the same mechanism).
 | 4 | ✅ done | Raman (carrier SDO, thg=true, all-SDO eligibility) | `test/test_native_raman.jl` | 0.0 (see note) | 4.2e-8 (achieved) |
 | 5 | ✅ done | modal + overlap cubature (`HE,n=1`, `full=false`, Kerr-only) | `test/test_native_modal.jl` | 1.4e-19 (achieved; ~1e-10 tier) | 4.0e-16 (achieved; fixed dt) |
 | 6 | ✅ done | free-space 3-D FFT (RealGrid, const_norm_free, Kerr-only) | `test/test_native_free.jl` | 7.05e-18 (achieved) | 5.01e-17 (achieved; fixed dt) |
-| 7 | ✅ done | z-dependent linop (mode-avg, graded-core, two-point pressure gradient) | `test/test_native_zdep_linop.jl` | <1e-9 (β1 vs BigFloat truth, achieved); ~1e-12 (`dtn`/`err`, achieved) | <1e-3 tier (measured ~7.3e-5, deliberate-divergence, see §2) |
+| 7 | ✅ done | z-dependent linop (mode-avg, graded-core, two-point pressure gradient) | `test/test_native_zdep_linop.jl` | <1e-9 (β1 vs BigFloat truth, achieved); ~1e-12 (`dtn`/`err`, achieved) | <1e-3 tier (measured ~2.7e-7 post-Phase-8-precision-fix, deliberate-divergence, see §2) |
 | 8 | ✅ done | default-flip: existing suite green with native as default | `test/test_native_phase8.jl` + full suite | — | 46590 pass / 0 fail / 0 error / 12 broken (pre-existing), 46602 total |
 
 Phase 5's single-step tier is documented looser (~1e-10) than the FFTW-only
@@ -196,8 +196,9 @@ test should include the same "does this feature actually change the
 reference result" sanity assertion — a passing comparison between two paths
 that both silently exclude the feature under test proves nothing.
 
-Phase 7's full-run tier (~1e-3, measured ~7.3e-5) is the widest of any
-phase, and is the **only** phase where the widening is deliberate rather
+Phase 7's full-run tier (~1e-3, measured ~2.7e-7 post-Phase-8-precision-fix,
+see `BETA1_ANALYTIC.md` §6) is the widest of any phase, and is the **only**
+phase where the widening is deliberate rather
 than a limitation to work around — see the "deliberate divergence" tier in
 §2 and `BETA1_ANALYTIC.md`. The single-step tier is still tight (β1 itself
 is verified to <1e-9 against a BigFloat ground truth, and `dtn`/`err`

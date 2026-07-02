@@ -147,27 +147,74 @@ Concretely, for a broadband test config (`λlims=(200e-9,4e-6)`,
 `flength=0.5`, two-point gradient `p0=0.5,p1=5.0` bar, `:Ar`): the
 point-wise linop comparison against Julia is ~1e-6 to 1e-7 (worse near
 `z=0`, the low-pressure end), and a fixed-step full-solve comparison is
-~7e-5 — both *larger* than an earlier (superseded) LUT design's ~1e-8,
+~2.7e-7 — both *larger* than an earlier (superseded) LUT design's ~1e-8,
 which directly interpolated Julia's own sampled FD output rather than the
-true derivative.
+true derivative, but far smaller than what an earlier version of this
+section reported (see the precision-bug postmortem below).
 
 This was checked, not assumed, to be the β1 difference and nothing else:
 re-running the same fixed-step full-solve with `kerr=false` (pure linear
 propagation, the only Rust-vs-Julia moving part left is `β1(z)`) gives the
-**same ~7e-5** magnitude, growing linearly with propagated distance — i.e.
-a small (~1e-11 relative) but *coherent* (same sign, same magnitude at
-every z) offset in `β1`, multiplied by `ω` (up to ~1e16 rad/s for this
-config's bandwidth) and integrated over the full propagation length,
-accumulates into a macroscopic phase difference. A **random** per-z error
-of the same size would mostly average out over many steps; a **systematic**
-one does not. Narrower bandwidth or a shorter fibre will show a
-proportionally smaller number.
+**same** magnitude, growing linearly with propagated distance — i.e.
+a small but *coherent* (same sign, same magnitude at every z) offset in
+`β1`, multiplied by `ω` (up to ~1e16 rad/s for this config's bandwidth) and
+integrated over the full propagation length, accumulates into a
+macroscopic phase difference. A **random** per-z error of the same size
+would mostly average out over many steps; a **systematic** one does not.
+Narrower bandwidth or a shorter fibre will show a proportionally smaller
+number.
 
 **This is the intended tradeoff, not a regression to chase down**: Phase 7
 was changed, on request, from "reproduce Julia's `dispersion` value" to
 "compute the true β1(z)". The honest cost is that Rust-vs-Julia parity
-numbers for this phase are measured at ~1e-4–1e-6 (still far smaller than
+numbers for this phase are measured at ~1e-4–1e-7 (still far smaller than
 the physics itself cares about) rather than ~1e-8, and they will not shrink
 by tuning anything in Rust — only by improving Julia's own `dispersion`
 (out of scope here) or by testing a narrower-bandwidth config. See
 `TESTING.md` for how the test suite documents and gates this tier.
+
+## 6. Postmortem: a real precision bug inflated this ~500x for small-core configs
+
+Phase 8's full-suite run surfaced `test_gradient.jl` (a 13 μm core, vs. this
+document's 125 μm reference config) failing at a much larger discrepancy
+than this tier — initially assumed to be the same "deliberately more
+accurate" divergence, just amplified by the smaller core's larger waveguide
+term, and the test's tolerance was widened to accommodate it (`< 0.15`).
+That assumption was wrong, and was caught by an independent check before
+shipping: differentiating `β(ω,z)` directly at increasing BigFloat
+precision (`central_fdm(N,1)` for `N = 7..15`, at 256-bit precision) landed
+tightly on a single value, and a *separate* direct high-precision check
+(512+ bit `Maths.derivative`) converged to the same value — both disagreeing
+with the shipped Rust value by ~3e-7 relative, ~500x worse than this
+document's own ~1e-4–1e-6 tier.
+
+Root cause: `Capillary.jl`'s `dγ0`/`dnwg0` constants (§2, §3 above) are
+computed via `Maths.derivative(f, BigFloat(ω0), 1)` at Julia's **ambient
+default** BigFloat precision (256 bits). For the `neff_wg` closure
+(Bessel-root waveguide term) at small core radius, the adaptive-FD step
+search inside `Maths.derivative` does not converge at 256 bits — confirmed
+by rerunning the identical call at 512, 1024, 2048, and 4096 bits: 256 bits
+gives a value that differs from 512+ bits (which all agree to the last
+digit) by ~5.5e-4 relative. This is *not* a case of Rust's analytic value
+being "more accurate than Julia's FD" — it was Rust's own supposedly-exact
+constant that hadn't actually converged.
+
+**Fix**: `Capillary.jl`'s `make_linop` now computes `dγ0`/`dnwg0_re`/`dnwg0_im`
+inside `setprecision(BigFloat, 1024) do ... end` (2x margin over where 512
+bits already converged), rather than relying on the ambient default. This
+improved *every* measured config, not just the one that exposed the bug:
+the 125 μm reference config's analytic-vs-`dispersion` agreement went from
+~1.86e-11 to ~9.6e-14, and its fixed-step full-solve `rel_solve` went from
+~7.3e-5 to ~2.7e-7 (see `test_native_zdep_linop.jl`). The 13 μm config's
+analytic-vs-ground-truth agreement went from ~3.0e-7 to ~5.8e-10, and its
+full-solve `rel_grad` (see `test_gradient.jl`) from the value that motivated
+the (now reverted) `< 0.15` tolerance down to ~1.3e-4 — back in line with
+this document's originally-intended tier.
+
+**Lesson**: "promote to BigFloat and reuse the same adaptive-FD algorithm"
+only gets the claimed precision if the promoted computation actually
+converges at whatever precision is ambient at the call site — it is not
+automatically safe just because `BigFloat` is, in principle, arbitrary
+precision. Any future use of this pattern for a new material/geometry
+should sanity-check convergence (e.g. by comparing two different explicit
+precisions) rather than trusting the default.

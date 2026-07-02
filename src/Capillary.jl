@@ -697,17 +697,27 @@ function make_linop(grid::Grid.RealGrid,
     # fed a BigFloat ω0 reuses Julia's own adaptive-FD algorithm, but with
     # the rounding floor pushed far below Float64 epsilon by the wider type
     # — no need to know γ's internal Sellmeier coefficients.
+    #
+    # Julia's *default* BigFloat precision (256 bits) is not always enough:
+    # for small-core `neff_wg` (Bessel-root waveguide term), the adaptive-FD
+    # step search can fail to converge at 256 bits and silently return a
+    # value that is wrong at the ~1e-7 relative level — found via a config
+    # (13μm core) where the "converged" 256-bit derivative disagreed with a
+    # 512-bit one by ~5.5e-4 relative, while 512→4096 bits was stable to the
+    # last digit. So the derivatives are computed at a fixed 1024-bit
+    # precision (2x the margin over where 512 already converged), scoped
+    # locally via `setprecision(BigFloat, 1024) do ... end` so it doesn't
+    # leak into the caller's ambient BigFloat precision.
     γ_of_ω(ω) = γ(wlfreq(ω)*1e6)
     γ0 = γ_of_ω(ω0)
-    dγ0 = Float64(Maths.derivative(γ_of_ω, BigFloat(ω0), 1))
-
-    # nwg0, dnwg0: the z-independent waveguide term (constant core radius),
-    # already model-correct (`neff_wg` branches :full/:reduced internally).
     nwg0 = neff_wg(mode, ω0; z=0.0)
     nwg_re_of_ω(ω) = real(neff_wg(mode, ω; z=0.0))
     nwg_im_of_ω(ω) = imag(neff_wg(mode, ω; z=0.0))
-    dnwg0_re = Float64(Maths.derivative(nwg_re_of_ω, BigFloat(ω0), 1))
-    dnwg0_im = Float64(Maths.derivative(nwg_im_of_ω, BigFloat(ω0), 1))
+    dγ0, dnwg0_re, dnwg0_im = setprecision(BigFloat, 1024) do
+        Float64(Maths.derivative(γ_of_ω, BigFloat(ω0), 1)),
+        Float64(Maths.derivative(nwg_re_of_ω, BigFloat(ω0), 1)),
+        Float64(Maths.derivative(nwg_im_of_ω, BigFloat(ω0), 1))
+    end
 
     wrapped = ZDepLinopMarcatili(linop!, densf, L, p0, p1,
                                   dspl.x, dspl.y, dspl.D,

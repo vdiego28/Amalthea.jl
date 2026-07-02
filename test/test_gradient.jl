@@ -82,21 +82,26 @@ Luna.run(Eω, grid, linop, transform, FT, output_grad_array, status_period=10)
 # builds a `ZDepLinopMarcatili` (Phase 7's analytic β1(z) closed form,
 # native-eligible), compared here against a genuinely constant-linop
 # mode (`make_const_linop`, Phase 1's precomputed-once-in-Julia β1). Both
-# native paths are individually correct, but Phase 7's β1 is deliberately
+# native paths are individually correct, and Phase 7's β1 is deliberately
 # more accurate than Julia's own adaptive-FD `Modes.dispersion` (see
 # docs/native-port/BETA1_ANALYTIC.md) — a tiny, real, per-ω-bin difference
-# that accumulates coherently over z and ω. For this small-core (13 um)
-# config the waveguide term dominates and amplifies that accumulation far
-# beyond the ~1e-4 tier BETA1_ANALYTIC.md documents for Phase 7's own
-# (125 um core) test config — confirmed via the same kerr=false-control +
-# BigFloat-ground-truth discipline used there, not assumed. Do not tighten
-# this by reverting β1 to a LUT that reproduces Julia's FD noise.
+# that accumulates coherently over z and ω, at the ~1e-4 tier
+# BETA1_ANALYTIC.md documents. (An earlier version of this test used a
+# `< 0.15` tolerance here, based on a measurement that turned out to be
+# inflated ~500x by a real bug: `Capillary.jl`'s `dγ0`/`dnwg0` derivatives
+# were computed at Julia's *default* BigFloat precision (256 bits), which
+# does not always converge for the `neff_wg` Bessel-root closure at small
+# core radius — fixed by computing them at a fixed 1024-bit precision
+# instead. Do not revert to the wider tolerance; if this fails again,
+# suspect a similar precision-convergence issue, not "the known Phase 7
+# divergence", and verify with an independent higher-order/higher-precision
+# BigFloat derivative before touching the tolerance.)
 rel_grad = norm(output_grad.data["Eω"][grid.sidx, :] - output_const.data["Eω"][grid.sidx, :]) /
            norm(output_const.data["Eω"][grid.sidx, :])
 rel_grad_array = norm(output_grad_array.data["Eω"][grid.sidx, :] - output_const.data["Eω"][grid.sidx, :]) /
                  norm(output_const.data["Eω"][grid.sidx, :])
-@test rel_grad < 0.15
-@test rel_grad_array < 0.15
+@test rel_grad < 1e-3
+@test rel_grad_array < 1e-3
 end
 
 @testset "envelope" begin
@@ -155,13 +160,16 @@ output_grad_array = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
 Luna.run(Eω, grid, linop, transform, FT, output_grad_array, status_period=10)
 
 # See the "field" testset's comment above (Phase 7 β1 deliberate divergence,
-# amplified for this small-core config) — same tolerance tier applies here.
+# now correctly at its documented ~1e-4-and-below tier after fixing the
+# BigFloat-precision bug in `Capillary.jl`). Measured envelope-grid
+# discrepancy here is ~5e-10 — tighter than the field-grid case since this
+# config's bandwidth is narrower.
 rel_grad = norm(output_grad.data["Eω"][grid.sidx, :] - output_const.data["Eω"][grid.sidx, :]) /
            norm(output_const.data["Eω"][grid.sidx, :])
 rel_grad_array = norm(output_grad_array.data["Eω"][grid.sidx, :] - output_const.data["Eω"][grid.sidx, :]) /
                  norm(output_const.data["Eω"][grid.sidx, :])
-@test rel_grad < 0.15
-@test rel_grad_array < 0.15
+@test rel_grad < 1e-7
+@test rel_grad_array < 1e-7
 end
 
 end
