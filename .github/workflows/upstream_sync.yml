@@ -1,0 +1,68 @@
+name: Check upstream sync
+
+on:
+  schedule:
+    # Weekly, Monday 06:00 UTC
+    - cron: '0 6 * * 1'
+  workflow_dispatch: {}
+
+jobs:
+  check-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        run: git remote add upstream https://github.com/LupoLab/Luna.jl.git && git fetch upstream master
+
+      - name: Diff against last-synced base
+        id: diff
+        run: |
+          # Fork base commit: the point at which Luna-Rust.jl's history diverged
+          # from upstream/master (kept in sync with BACKLOG.md's Phase A notes).
+          BASE=0a52ffb
+          NEW=$(git log --oneline ${BASE}..upstream/master -- . ':!.github' 2>/dev/null || true)
+          if [ -n "$NEW" ]; then
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "commits<<EOF"
+              echo "$NEW"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open issue on drift
+        if: steps.diff.outputs.drift == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const commits = `${{ steps.diff.outputs.commits }}`;
+            const title = 'Upstream Luna.jl has new commits not yet reviewed';
+            const body = [
+              'The scheduled upstream-sync check found commits on `LupoLab/Luna.jl@master`',
+              'that are not yet reflected in this fork (see BACKLOG.md Phase A):',
+              '',
+              '```',
+              commits,
+              '```',
+              '',
+              'Review each for functional relevance and port as needed.'
+            ].join('\n');
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: ['upstream-sync']
+            });
+            if (existing.data.some(i => i.title === title)) return;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['upstream-sync']
+            });

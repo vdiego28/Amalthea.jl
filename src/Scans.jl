@@ -93,12 +93,15 @@ struct SlurmExec <: AbstractExec
 end
 
 """
-    SSHExec(localexec, scriptfile, hostname, subdir)
+    SSHExec(localexec, scriptfile, hostname, subdir; files=String[])
 
 Execution mode which transfers the `scriptfile` file to the host given by `hostname` via SSH
 and executes the scan on that host with a mode defined by `localexec`. `subdir` gives the
 subdirectory (relative to the home directory) where scans are stored on the remote host. A
 subfolder with automatically chosen name will be created in `subdir` to store this scan.
+
+Optional keyword argument `files` is a list of auxiliary files to transfer to the remote host
+along with the script. These files will be placed in the same directory as the scan script.
 
 !!! note
     `scriptfile` must **always** be `@__FILE__`
@@ -108,14 +111,15 @@ struct SSHExec{eT} <: AbstractExec
     scriptfile::String
     hostname::String
     subdir::String
+    files::Vector{String}
 end
 
-function SSHExec(le::CondorExec, hostname, subdir)
-    SSHExec(le, le.scriptfile, hostname, subdir)
+function SSHExec(le::CondorExec, hostname, subdir; files=String[])
+    SSHExec(le, le.scriptfile, hostname, subdir, files)
 end
 
-function SSHExec(le::SlurmExec, hostname, subdir)
-    SSHExec(le, le.scriptfile, hostname, subdir)
+function SSHExec(le::SlurmExec, hostname, subdir; files=String[])
+    SSHExec(le, le.scriptfile, hostname, subdir, files)
 end
 
 struct Scan{eT}
@@ -538,6 +542,12 @@ function runscan(f, scan::Scan{<:SSHExec})
         read(Cmd(["ssh", host, "mkdir -p $remotedir"]))
         @info "Transferring file..."
         read(Cmd(["scp", script, "$host:$remotedir"]))
+        if length(scan.exec.files) > 0
+            @info "Transferring auxiliary files..."
+            for fi in scan.exec.files
+                read(Cmd(["scp", fi, "$host:$remotedir"]))
+            end
+        end
         @info "Running Luna script on remote host $host"
         read(Cmd(["ssh", host, "julia", "$remotedir/$scriptfile_esc"]), String)
     end

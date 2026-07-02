@@ -2,6 +2,114 @@
 
 Deferred work and known issues for Luna-Rust.jl. Severity: 🔴 correctness · 🟡 robustness/CI · ⚪ informational.
 
+## Improvement plan (2026-07-02 review)
+
+Phased plan from the fork-vs-upstream review (`REVIEW.md` — read it first;
+section numbers below refer to its findings). Each phase is independently
+shippable and ordered by (severity × user impact) / effort. Gate for every
+phase: full `LUNA_TEST_GROUP=All` suite green (not a subset — see the
+Phase 8 lesson in `docs/native-port/PORT_LOG.md`).
+
+### Phase A — Upstream sync (🔴, small) ✅
+The fork base is upstream master minus exactly two functional commits.
+1. ✅ Port `0a52ffb` (#428): fix `Polarisation.ellipse` —
+   `θ = angle(Q + 1im*U)/2` (the fork's `angle(aL)/2` is always 0) — and
+   restore upstream's QWP-at-π/8 regression test in
+   `test/test_polarisation.jl`.
+2. ✅ Port `0fd7ac2` (#427): re-add the `files=String[]` kwarg to `SSHExec`
+   and the auxiliary-file `scp` loop — **merged into the fork's
+   shell-escaped `Cmd`-array `runscan`, keeping the escaping** (each file
+   path goes through `Base.shell_escape_posixly` / `Cmd` like the script
+   does).
+3. ✅ `upstream` remote now points at the real `LupoLab/Luna.jl` GitHub repo
+   (was a local-disk path used only for the review). Added
+   `.github/workflows/upstream_sync.yml`, a weekly scheduled job that fetches
+   `upstream/master` and opens a `upstream-sync`-labelled issue if new
+   commits appear past the `0a52ffb` base, so the fork never drifts silently
+   again.
+
+### Phase B — Correctness & parity fixes (🔴, small-medium)
+1. `PhysData._safe_n` (REVIEW §3.1): restore complex-sqrt semantics for the
+   ~20 glass Sellmeier sites (SiO2-style `real(n2) < 0 ? sqrt(complex(n2) +
+   1e-10im) : sqrt(complex(n2))`), delete the n=1 clamp. Add a test pinning
+   a below-resonance wavelength for at least one non-SiO2 glass against
+   upstream's value.
+2. Rust ionisation `Emax` parity (REVIEW §3.3): make
+   `PptIonizationRate::rate` clamp to `rate(e_max)` instead of `Err`, so
+   `ppt_ionization_rate_vector` matches Julia's clamp and stops
+   whole-vector fallbacks + warn spam. Keep the strict error available
+   behind a constructor flag if wanted for debugging. Update
+   `test/test_ionisation_rust.jl` boundary assertions (above-Emax →
+   clamped value, not error).
+3. Density z-independence guard (REVIEW §3.4): in `RustNativeStepper`, for
+   non-z-dep phases check `densityfun` at 0, flength/2, flength; throw
+   `NativeIneligible` on mismatch. Same for the Raman density.
+4. README: qualify the Windows support claim (scans not process-safe) until
+   Phase G lands.
+
+### Phase C — Make the default workload actually native (🔴🔥, medium)
+REVIEW §3.2: default field-resolved `prop_capillary` (plasma on by default:
+`plasma = !envelope`) falls back to the Julia stepper because the native
+plasma wiring needs the `LUNA_USE_RUST_IONISATION`-gated LUT handle and
+that toggle defaults to 0.
+1. Decouple: build the Rust ionisation LUT in `IonRatePPTAccel` whenever
+   the library is present and *either* `LUNA_USE_RUST_IONISATION=1` *or*
+   the native stepper is enabled (`LUNA_USE_RUST_NATIVE≠0`). Depends on
+   B.2 (clamp parity) so behaviour is identical either way.
+2. Add a native-path regression test that runs a **default**
+   `prop_capillary` (no env toggles beyond defaults) and asserts the
+   stepper actually used is `RustNativeStepper` (e.g. a
+   `RK45.last_stepper_type[]` test hook, or assert
+   `_NATIVE_FALLBACK_WARNED[]` stayed false) — the guard that would have
+   caught §3.2.
+3. Benchmark before/after (fixed-seed default HCF run, wall time + per-step
+   cost) and record the numbers in PORT_LOG.md.
+
+### Phase D — Native scope: EnvGrid + plasma/Raman in more geometries (🟡, large)
+In dependency order, each with the established gates (single-step ≤1e-13,
+fixed-step full-solve, non-vacuousness check — TESTING.md §3):
+1. EnvGrid radial (`rhs_radial` c2c variant — mirrors Phase 2a's
+   RealGrid→EnvGrid step).
+2. Plasma in radial geometry (per-r cumtrapz; reuses the Phase 2b plasma
+   assembly per radial node).
+3. EnvGrid free-space (c2c 3-D FFTW plan — `fftw_plan_dft_3d`).
+4. Raman in radial/modal (additive term per node, reusing the resident ADE
+   solver, one oscillator state per node).
+5. z-dependent `normfun` for free-space (drop the `const_norm_free`
+   restriction).
+
+### Phase E — Native scope: modal generality (🟡, large)
+1. General mode orders: stable `besselj(n, x)` for n>1 (downward Miller
+   recurrence) in `diffraction.rs`, unlocking TE/TM/`n>1` Marcatili modes.
+2. Tapered / per-mode radius (drop the shared-constant-radius guard).
+3. `full=true` (2-D modal integral — second cubature dimension).
+4. npol=2 (polarisation-resolved modal), then EnvGrid modal.
+
+### Phase F — Native scope: Raman completions + z-dependence (🟡, medium)
+1. `thg=false` Raman (needs a resident Hilbert transform — one extra c2c
+   FFT pair on the existing plans).
+2. `RamanPolarEnv` (envelope Raman) native + the existing
+   `LUNA_USE_RUST_RAMAN` follow-ups (rotational multi-oscillator per-J
+   extraction; density-dependent τ2 via a `raman_update_coeffs` FFI).
+3. Multi-point pressure gradients (piecewise Phase 7 — per-segment analytic
+   β1 constants; `ensure_linop_at` selects the segment).
+4. Gas mixtures: per-species density vector + summed susceptibilities in
+   the native RHS (removes the `densityfun isa Real` guard).
+
+### Phase G — Platform & CI robustness (🟡, small-medium)
+1. Windows scan locking via `LockFileEx`/`UnlockFileEx` (existing item
+   below; needs a Windows CI runner to validate).
+2. GPU CI: a scheduled CUDA-equipped job running the currently
+   self-skipping GPU equivalence tests (existing item below).
+3. CI benchmark job: track the Phase C benchmark over time so native-path
+   regressions (like §3.2) show up as perf cliffs, not silence.
+
+### Phase H — Upstream contributions (⚪, small)
+Send back as PRs to LupoLab/Luna.jl: the `DataField(fpath)` λ0-forwarding
+fix, the `parse_item` eval-injection fix, the `Cmd`-array/shell-escaping
+scan hardening, and the `pointcalc!` race fix if upstream ever re-adds
+threading. Reduces future divergence surface.
+
 ## Open items
 
 ### 🟢 Native-Rust backend port (phased)
