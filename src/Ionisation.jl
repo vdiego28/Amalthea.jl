@@ -13,8 +13,11 @@ import Printf: @sprintf
 # ─── Rust FFI helpers ────────────────────────────────────────────────────────
 #
 # The PPT ionization rate can be evaluated by the Rust backend (using the same
-# cubic B-spline LUT as the Julia path) when LUNA_USE_RUST_IONISATION=1.
-# The pattern established here (opaque handle + opt-in env toggle) is the
+# cubic B-spline LUT as the Julia path) when LUNA_USE_RUST_IONISATION=1, or
+# (since Phase C, BACKLOG.md) whenever the resident native stepper is enabled
+# (LUNA_USE_RUST_NATIVE, default "1" since Phase 8) — the native plasma wiring
+# requires this handle to exist for the default field-resolved workload to
+# actually run natively. The opaque-handle pattern established here is the
 # template for subsequent kernel migrations (Raman → dispersion → QDHT → stepper).
 
 """
@@ -62,17 +65,39 @@ end
 """
     _make_rust_ionization_handle(E, rate, Emin, Emax) -> Union{Nothing, RustIonizationHandle}
 
-When `LUNA_USE_RUST_IONISATION=1` and the Rust shared library is present,
-build a Rust-side PPT ionization LUT from the already-filtered (E, rate)
-data (the same knots the Julia `CSpline` uses).  Returns `nothing` otherwise
-so the pure-Julia path is taken — no behaviour change unless the toggle is on.
+Build a Rust-side PPT ionization LUT from the already-filtered (E, rate) data
+(the same knots the Julia `CSpline` uses), when either `LUNA_USE_RUST_IONISATION=1`
+is set explicitly, or the resident native stepper is enabled (`LUNA_USE_RUST_NATIVE`
+defaults to `"1"` since Phase 8 — see `RK45.jl`).
+
+The native stepper's plasma wiring (`RustNativeStepper`'s `native_set_plasma_params`)
+*requires* this handle to exist; without it, every default field-resolved
+`prop_capillary` call (`plasma = !envelope` is the default) throws
+`NativeIneligible` and silently falls back to the Julia stepper — the native
+port's headline speedup would then never apply to the fork's own bread-and-butter
+use case (REVIEW.md §3.2 / BACKLOG.md Phase C.1). Decoupling this from the
+`LUNA_USE_RUST_IONISATION` opt-in toggle is safe only because the Rust and
+Julia paths now agree above `Emax` too (Phase B.2's clamp parity) — before
+that fix, silently switching the default ionisation backend would have
+changed strong-field behaviour without the user asking for it.
+
+Returns `nothing` when neither toggle is active, or the library/handle
+construction fails, so the pure-Julia path is taken.
 """
 function _make_rust_ionization_handle(E::AbstractVector, rate::AbstractVector,
                                        Emin::Float64, Emax::Float64)
-    get(ENV, "LUNA_USE_RUST_IONISATION", "0") == "1" || return nothing
+    use_rust_ionisation = get(ENV, "LUNA_USE_RUST_IONISATION", "0") == "1"
+    use_native = get(ENV, "LUNA_USE_RUST_NATIVE", "1") != "0"
+    (use_rust_ionisation || use_native) || return nothing
     if !isfile(_LIBLUNA_RUST)
-        @warn "LUNA_USE_RUST_IONISATION=1 but Rust lib not found at $_LIBLUNA_RUST — " *
-              "falling back to Julia.  Build it with `cargo build --release` in luna-rust/."
+        # Only warn when the user *explicitly* opted in via
+        # LUNA_USE_RUST_IONISATION=1 — the native-stepper-implied case is an
+        # opportunistic "use it if present" check, not an explicit request,
+        # so a fresh clone without a built Rust library (the common case)
+        # must not spam a warning on every IonRatePPTAccel construction.
+        use_rust_ionisation && @warn "LUNA_USE_RUST_IONISATION=1 but Rust lib not found " *
+              "at $_LIBLUNA_RUST — falling back to Julia.  Build it with " *
+              "`cargo build --release` in luna-rust/."
         return nothing
     end
     # Ensure contiguous Float64 (sub-arrays or other eltypes are collected first)

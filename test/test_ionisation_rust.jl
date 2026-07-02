@@ -26,9 +26,16 @@ using TestItems
         return
     end
 
-    # ── build reference Julia IonRatePPTAccel (toggle OFF) ────────────────────
+    # ── build reference Julia IonRatePPTAccel (both toggles OFF) ──────────────
     # We build the LUT manually so the test is hermetic (no disk caching needed)
     # and reproduces what IonRatePPTAccel(material, λ0) would do internally.
+    #
+    # Since Phase C (BACKLOG.md), the Rust ionisation LUT is built whenever
+    # EITHER `LUNA_USE_RUST_IONISATION=1` OR the native stepper is enabled
+    # (`LUNA_USE_RUST_NATIVE` defaults to `"1"` since Phase 8) — the native
+    # plasma wiring needs this handle to exist for the fork's default
+    # workload to actually run natively (REVIEW.md §3.2). So a true
+    # Julia-only reference must explicitly force BOTH toggles off.
     λ0    = 800e-9
     gas   = :He
     Emin_full = 1e9
@@ -40,14 +47,14 @@ using TestItems
         Ionisation.ionrate_PPT.(gas, λ0, E_full)
     end
 
-    # Julia-only reference (explicitly pass toggle off)
-    ir_julia = with_logger(NullLogger()) do
-        Ionisation.IonRatePPTAccel(E_full, rate_full)
+    ir_julia = withenv("LUNA_USE_RUST_IONISATION" => "0", "LUNA_USE_RUST_NATIVE" => "0") do
+        with_logger(NullLogger()) do
+            Ionisation.IonRatePPTAccel(E_full, rate_full)
+        end
     end
-    # Confirm no Rust handle was attached (toggle default = off)
     @test ir_julia.rust_handle === nothing
 
-    # ── build Rust-backed IonRatePPTAccel (toggle ON) ─────────────────────────
+    # ── build Rust-backed IonRatePPTAccel (explicit toggle) ───────────────────
     ir_rust = withenv("LUNA_USE_RUST_IONISATION" => "1") do
         with_logger(NullLogger()) do
             Ionisation.IonRatePPTAccel(E_full, rate_full)
@@ -55,6 +62,27 @@ using TestItems
     end
     @test ir_rust.rust_handle !== nothing  # handle must be non-null
     @test ir_rust.rust_handle.ptr != C_NULL
+
+    # ── Phase C: native-default alone (no explicit LUNA_USE_RUST_IONISATION)
+    # must ALSO build the handle, since LUNA_USE_RUST_NATIVE defaults to "1".
+    @testset "Native default builds the ionisation handle without the opt-in toggle" begin
+        ir_native_default = withenv("LUNA_USE_RUST_IONISATION" => nothing,
+                                     "LUNA_USE_RUST_NATIVE" => nothing) do
+            with_logger(NullLogger()) do
+                Ionisation.IonRatePPTAccel(E_full, rate_full)
+            end
+        end
+        @test ir_native_default.rust_handle !== nothing
+        @test ir_native_default.rust_handle.ptr != C_NULL
+
+        ir_native_explicit_off = withenv("LUNA_USE_RUST_IONISATION" => nothing,
+                                          "LUNA_USE_RUST_NATIVE" => "0") do
+            with_logger(NullLogger()) do
+                Ionisation.IonRatePPTAccel(E_full, rate_full)
+            end
+        end
+        @test ir_native_explicit_off.rust_handle === nothing
+    end
 
     # ── test field array spanning Emin..Emax ──────────────────────────────────
     # Both paths are cubic splines fitted to ln(rate); we expect agreement to

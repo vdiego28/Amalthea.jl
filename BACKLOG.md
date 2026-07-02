@@ -58,23 +58,37 @@ The fork base is upstream master minus exactly two functional commits.
 Gate: `LUNA_TEST_GROUP=All` — 46598 passed, 12 broken (pre-existing), 0
 failed/errored.
 
-### Phase C — Make the default workload actually native (🔴🔥, medium)
+### Phase C — Make the default workload actually native (🔴🔥, medium) ✅
 REVIEW §3.2: default field-resolved `prop_capillary` (plasma on by default:
 `plasma = !envelope`) falls back to the Julia stepper because the native
 plasma wiring needs the `LUNA_USE_RUST_IONISATION`-gated LUT handle and
 that toggle defaults to 0.
-1. Decouple: build the Rust ionisation LUT in `IonRatePPTAccel` whenever
-   the library is present and *either* `LUNA_USE_RUST_IONISATION=1` *or*
-   the native stepper is enabled (`LUNA_USE_RUST_NATIVE≠0`). Depends on
-   B.2 (clamp parity) so behaviour is identical either way.
-2. Add a native-path regression test that runs a **default**
-   `prop_capillary` (no env toggles beyond defaults) and asserts the
-   stepper actually used is `RustNativeStepper` (e.g. a
-   `RK45.last_stepper_type[]` test hook, or assert
-   `_NATIVE_FALLBACK_WARNED[]` stayed false) — the guard that would have
-   caught §3.2.
-3. Benchmark before/after (fixed-seed default HCF run, wall time + per-step
-   cost) and record the numbers in PORT_LOG.md.
+1. ✅ Decoupled: `Ionisation._make_rust_ionization_handle` now builds the
+   Rust ionisation LUT whenever the library is present and *either*
+   `LUNA_USE_RUST_IONISATION=1` *or* the native stepper is enabled
+   (`LUNA_USE_RUST_NATIVE≠0`, the default since Phase 8). Depended on B.2
+   (clamp parity), already done, so behaviour is identical either way. The
+   missing-library `@warn` stays conditional on the *explicit* toggle only
+   (not the native-implied case), so a fresh clone without a built Rust
+   library doesn't get warning spam on every `IonRatePPTAccel` construction.
+2. ✅ Added `RK45._LAST_STEPPER_TYPE`, a test hook set at the end of every
+   `solve_precon` call to the concrete stepper type used (more reliable
+   than `_NATIVE_FALLBACK_WARNED[]`, which is a one-time-per-session flag
+   that can't distinguish "no fallback in this call" from "no fallback
+   anywhere yet this session"). New
+   `test/test_native_default_workload.jl` runs a **default**
+   `prop_capillary` (no env toggles at all) and asserts
+   `RK45._LAST_STEPPER_TYPE[] <: RK45.RustNativeStepper` — the regression
+   test that would have caught §3.2.
+3. ✅ Benchmarked (fixed-seed default HCF run, `docs/native-port/PORT_LOG.md`
+   2026-07-02 Phase C entry): **~3.5x wall-time speedup** (0.305s → 0.087s
+   for 10 accepted steps) on the exact out-of-the-box config a new user
+   gets — previously 0x speedup (silent Julia fallback) despite
+   `LUNA_USE_RUST_NATIVE` defaulting on since Phase 8.
+
+Gate: all 7 test groups green — 46602 passed, 12 broken (pre-existing), 0
+failed/errored (run as parallel per-group jobs, not a single sequential
+`All` invocation).
 
 ### Phase D — Native scope: EnvGrid + plasma/Raman in more geometries (🟡, large)
 In dependency order, each with the established gates (single-step ≤1e-13,

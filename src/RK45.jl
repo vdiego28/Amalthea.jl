@@ -27,6 +27,17 @@ scan that repeatedly hits the same ineligible-for-native configuration.
 """
 const _NATIVE_FALLBACK_WARNED = Ref(false)
 
+"""
+Records the concrete stepper type used by the most recent `solve_precon`
+call (`RustNativeStepper`, `RustPreconStepper`, or `PreconStepper`). A test
+hook only — `_NATIVE_FALLBACK_WARNED` alone can't answer "did *this* call use
+the native path", since it's a one-time-per-session flag that stays `true`
+forever after the first fallback anywhere in a test run (e.g. a deliberate
+NativeIneligible test earlier in the same session). See
+`test/test_native_default_workload.jl` (BACKLOG.md Phase C.2).
+"""
+const _LAST_STEPPER_TYPE = Ref{Any}(nothing)
+
 function solve_precon(f!, linop, y0, t, dt, tmax;
                     rtol=1e-6, atol=1e-10, safety=0.9, max_dt=Inf, min_dt=0, locextrap=true, norm=weaknorm,
                     kwargs...)
@@ -74,6 +85,7 @@ function solve_precon(f!, linop, y0, t, dt, tmax;
         stepper = PreconStepper(f!, linop, y0, t, dt,
                       rtol=rtol, atol=atol, safety=safety, max_dt=max_dt, min_dt=min_dt, locextrap=locextrap, norm=norm)
     end
+    _LAST_STEPPER_TYPE[] = typeof(stepper)
     return solve(stepper, tmax; kwargs...)
 end
 
@@ -934,12 +946,20 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         rc == 0 || error("native_set_mode_avg_params failed: $rc")
 
         # Wire plasma if present and a Rust ionization handle is available.
-        # Requires LUNA_USE_RUST_IONISATION=1. If not eligible, the WHOLE
-        # construction must fail (NativeIneligible → solve_precon falls back
-        # to the Julia stepper) rather than silently continuing without
-        # plasma — continuing native-minus-plasma would be wrong physics
-        # with only a log line to notice it, which became unacceptable once
-        # native became the default (Phase 8) rather than opt-in.
+        # Since Phase C (BACKLOG.md), `IonRatePPTAccel` builds this handle
+        # whenever the Rust library is present and EITHER
+        # `LUNA_USE_RUST_IONISATION=1` OR the native stepper itself is
+        # enabled (`LUNA_USE_RUST_NATIVE` defaults to `"1"` since Phase 8) —
+        # decoupling it from the opt-in kernel toggle so the fork's default
+        # field-resolved workload (`plasma = !envelope`) actually runs
+        # natively out of the box (REVIEW.md §3.2). If the handle is still
+        # missing here (library absent, or the user explicitly forced both
+        # toggles off), the WHOLE construction must fail (NativeIneligible →
+        # solve_precon falls back to the Julia stepper) rather than silently
+        # continuing without plasma — continuing native-minus-plasma would be
+        # wrong physics with only a log line to notice it, which became
+        # unacceptable once native became the default (Phase 8) rather than
+        # opt-in.
         for r in f!.resp
             if r isa Luna.Nonlinear.PlasmaCumtrapz
                 irf = r.ratefunc
@@ -952,9 +972,10 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                         r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt)
                     rc == 0 || throw(NativeIneligible("native_set_plasma_params returned $rc"))
                 else
-                    throw(NativeIneligible("plasma detected but LUNA_USE_RUST_IONISATION not " *
-                          "set or ratefunc not IonRatePPTAccel — set LUNA_USE_RUST_IONISATION=1 " *
-                          "to make this config eligible for the native path."))
+                    throw(NativeIneligible("plasma detected but no Rust ionisation handle is " *
+                          "available (library missing, or both LUNA_USE_RUST_IONISATION and " *
+                          "LUNA_USE_RUST_NATIVE were explicitly disabled), or ratefunc is not " *
+                          "an IonRatePPTAccel — this config is not eligible for the native path."))
                 end
                 break  # only one plasma response expected
             end

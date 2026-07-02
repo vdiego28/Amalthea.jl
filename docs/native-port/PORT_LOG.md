@@ -1082,3 +1082,65 @@ comparison to legitimately execute on different backends:**
 scan-queue `flock` no-op, GPU CI coverage) are pre-existing, unrelated items —
 see `BACKLOG.md`.
 
+## 2026-07-02 — Phase C: decouple ionisation LUT build from LUNA_USE_RUST_IONISATION
+
+**Context:** the fork-vs-upstream review (`REVIEW.md` §3.2) found that Phase 8's
+default flip didn't actually make the fork's flagship default workload run
+natively. `prop_capillary` defaults to `plasma = !envelope`, so every default
+field-resolved run includes plasma — but `RustNativeStepper`'s plasma wiring
+requires `IonRatePPTAccel.rust_handle`, which `Ionisation._make_rust_ionization_handle`
+only built when `LUNA_USE_RUST_IONISATION=1` was set explicitly. That toggle
+defaults to `"0"`, so the out-of-the-box config (`LUNA_USE_RUST_NATIVE=1`,
+`LUNA_USE_RUST_IONISATION=0`) threw `NativeIneligible` from inside
+`RustNativeStepper` and silently fell back to the Julia stepper for the
+fork's bread-and-butter use case — the native port's headline speedup never
+applied unless a user knew to flip a second, unrelated-looking toggle.
+
+**Fix:** `_make_rust_ionization_handle` now builds the handle whenever the
+Rust library is present and EITHER `LUNA_USE_RUST_IONISATION=1` OR
+`LUNA_USE_RUST_NATIVE` is enabled (default `"1"` since Phase 8). This was
+only safe to do *after* Phase B.2 (Rust `PptIonizationRate::rate` clamping
+to `rate(e_max)` instead of erroring above the LUT bound, matching Julia) —
+before that fix, silently switching the default ionisation backend for every
+user could have changed strong-field behaviour they never opted into.
+
+**Gotcha:** the missing-library `@warn` in `_make_rust_ionization_handle` had
+to stay conditional on the *explicit* `LUNA_USE_RUST_IONISATION=1` opt-in,
+not the native-implied case — otherwise every ordinary user on a fresh
+clone without a built Rust library (the common case, since native defaulting
+on doesn't require Rust to exist) would get a warning spammed on every
+single `IonRatePPTAccel` construction. Caught before running the test suite
+by re-reading the warn condition, not by a failing test.
+
+**Test hook:** added `RK45._LAST_STEPPER_TYPE`, a `Ref` set at the end of
+every `solve_precon` call to the concrete stepper type actually used.
+`_NATIVE_FALLBACK_WARNED` (the existing one-time-per-session flag) can't
+answer "did *this* call use native" once any earlier test in the same
+session deliberately exercised a `NativeIneligible` fallback — it stays
+`true` forever after the first one. `test/test_native_default_workload.jl`
+calls `prop_capillary` with every native/ionisation env var unset (the exact
+out-of-the-box config) and asserts `RK45._LAST_STEPPER_TYPE[] <:
+RK45.RustNativeStepper` — this is the regression test that would have caught
+§3.2 (confirmed failing against pre-Phase-C code, passing after).
+
+**Benchmark** (fixed-seed default HCF run: 125μm radius, 15cm He capillary
+at 1 bar, 800nm/30fs/1μJ pulse, `saveN=50`, `rng=MersenneTwister(0)`,
+plasma+Kerr on via defaults, both paths warmed up once to exclude
+JIT/FFTW-planning compile time from the timed run):
+
+| Path | Wall time (10 accepted steps) | Per-step |
+|---|---|---|
+| Julia stepper (`LUNA_USE_RUST_NATIVE=0`, pre-Phase-C default behaviour) | 0.305 s | ~30.5 ms |
+| Native stepper (post-Phase-C default) | 0.087 s | ~8.7 ms |
+
+**~3.5x wall-time speedup** on the exact configuration a new user gets by
+running `prop_capillary` with no environment variables set — previously
+0x (silent Julia fallback, no speedup at all despite `LUNA_USE_RUST_NATIVE`
+defaulting on since Phase 8).
+
+**Tests:** `rust` group green (41969 passed, 0 failed) including the new
+`test_native_default_workload.jl` and `test_ionisation_rust.jl`'s new
+Phase-C assertions (native-default-alone builds the handle; explicit
+`LUNA_USE_RUST_NATIVE=0` still yields `rust_handle === nothing`). Full
+`LUNA_TEST_GROUP=All` gate result recorded once run (see BACKLOG.md).
+
