@@ -719,6 +719,33 @@ struct NativeIneligible <: Exception
 end
 Base.showerror(io::IO, e::NativeIneligible) = print(io, "NativeIneligible: ", e.msg)
 
+"""
+    _check_density_zindependent(densityfun, flength)
+
+Guard against silently freezing a z-varying `densityfun` at `z=0`. The
+high-level `prop_capillary`/`prop_gnlse` interface can't hit this — a z-
+varying fill always produces either a function-typed linop (rejected above,
+see the `f!` check) or a `ZDepLinopMarcatili` (handled by the dedicated
+z-dependent path, which re-evaluates `densityfun(z)` every stage). But the
+low-level API allows pairing a constant `Array{ComplexF64}` linop with a
+z-varying `densityfun` directly — a combination Julia's own `TransModeAvg`
+handles correctly (it calls `densityfun(z)` fresh every stage) but which the
+non-z-dep native paths below bake into a `z=0` constant. Sample at three
+points (0, `flength/2`, `flength` when finite; otherwise 0, 1, 2 as a cheap
+non-constness probe, safe because a genuinely constant `densityfun` ignores
+its argument) and refuse eligibility on any mismatch.
+"""
+function _check_density_zindependent(densityfun, flength)
+    probes = isfinite(flength) ? (0.0, flength/2, flength) : (0.0, 1.0, 2.0)
+    vals = densityfun.(probes)
+    d0 = vals[1]
+    all(v -> isapprox(v, d0; rtol=1e-10), vals) ||
+        throw(NativeIneligible("densityfun(z) is not z-independent (density at " *
+              "z=$probes → $vals) but this native RHS path bakes density(0) into a " *
+              "constant kerr_fac/plasma/Raman coefficient — only the dedicated " *
+              "z-dependent linop path (ZDepLinopMarcatili) supports a z-varying density."))
+end
+
 struct NativeStepResult
     ok::Cint
     dt::Float64
@@ -889,6 +916,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             γ3 != 0.0 && break
         end
 
+        is_zdep_mode_avg || _check_density_zindependent(f!.densityfun, flength)
         density = f!.densityfun(0.0)
         kerr_fac = density * Luna.PhysData.ε_0 * γ3
         nlscale = Luna.NonlinearRHS.nlscale
@@ -1064,6 +1092,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                   "(plasma, Raman, ...), or a lone non-Kerr response, are not wired " *
                   "for this geometry."))
 
+        _check_density_zindependent(f!.densityfun, flength)
         density = f!.densityfun(0.0)
         kerr_fac = density * Luna.PhysData.ε_0 * γ3
 
@@ -1150,6 +1179,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                   "(plasma, Raman, ...), or a lone non-Kerr response, are not wired " *
                   "for this geometry."))
 
+        _check_density_zindependent(f!.densityfun, flength)
         density = f!.densityfun(0.0)
         kerr_fac = density * Luna.PhysData.ε_0 * γ3
 
@@ -1204,6 +1234,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                   "(plasma, Raman, ...), or a lone non-Kerr response, are not wired " *
                   "for this geometry."))
 
+        _check_density_zindependent(f!.densityfun, flength)
         density = f!.densityfun(0.0)
         kerr_fac = density * Luna.PhysData.ε_0 * γ3
 

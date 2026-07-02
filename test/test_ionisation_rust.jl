@@ -8,6 +8,7 @@ using TestItems
 @testitem "Rust PPT ionization equivalence" tags=[:rust] begin
     import Test: @test, @testset
     using Luna
+    import Logging
     import Logging: with_logger, NullLogger
 
     # ── locate the shared library ──────────────────────────────────────────────
@@ -91,14 +92,28 @@ using TestItems
         @test all(iszero, out_lo_rust)
     end
 
-    # ── above-cutoff: Rust falls back to Julia path (both clamp) ─────────────
-    @testset "Above-cutoff clamps (no error)" begin
+    # ── above-cutoff: Rust's own PptIonizationRate::rate clamps to rate(Emax),
+    # matching Julia's IonRatePPTAccel, instead of erroring and silently
+    # falling back to the Julia path (the fallback-and-warn-spam bug fixed in
+    # BACKLOG.md Phase B.2). Assert both the value and that no fallback
+    # warning fires (Logging.with_logger + a custom logger that records
+    # whether any @warn was emitted).
+    @testset "Above-cutoff clamps (no error, no fallback)" begin
         out_hi_julia = Vector{Float64}(undef, 3)
         out_hi_rust  = Vector{Float64}(undef, 3)
         E_hi = fill(ir_julia.Emax * 1.5, 3)
         ir_julia(out_hi_julia, E_hi)
-        ir_rust(out_hi_rust,   E_hi)
-        # The Rust -2 error code triggers a fallback to Julia, so outputs agree
+
+        warned = Ref(false)
+        logger = Logging.SimpleLogger(IOBuffer())
+        with_logger(logger) do
+            ir_rust(out_hi_rust, E_hi)
+        end
+        # Direct check on the Rust handle: no fallback warning means the Rust
+        # vector call itself succeeded (returned 0), not a Julia fallback.
+        take!(logger.stream) |> String |> s -> (warned[] = occursin("falling back", s))
+        @test !warned[]
         @test all(out_hi_rust .≈ out_hi_julia)
+        @test out_hi_rust[1] ≈ exp(ir_julia.spline(ir_julia.Emax))
     end
 end

@@ -19,6 +19,14 @@ end
     @test PhysData.ref_index(:SiO2, PhysData.eV_to_m(0.91018)) ≈ 1.44621
     @test real(PhysData.ref_index(:SiO2, PhysData.eV_to_m(121.6))) ≈ 0.9865
     @test imag(PhysData.ref_index(:SiO2, PhysData.eV_to_m(121.6))) ≈ 0.0085
+    # BK7 below-resonance (n^2 < 0 at 70 nm): must return a complex index like
+    # upstream's sqrt(complex(n2)), not the fork's now-removed n=1 clamp.
+    # Imaginary part pinned against upstream's plain sqrt(complex(n2)) value
+    # (1.9243793740918915); the fork's SiO2-style +1e-10im regularisation
+    # perturbs only the real part, negligibly.
+    n_bk7 = PhysData.ref_index(:BK7, 70e-9, lookup=false)
+    @test isapprox(imag(n_bk7), 1.9243793740918915, rtol=1e-10)
+    @test abs(real(n_bk7)) < 1e-8
 end
 
 @testset "Function equivalence" begin

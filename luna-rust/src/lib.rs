@@ -241,8 +241,17 @@ mod tests {
         let expected = rate_fn(mid_e);
         assert!((mid_rate - expected).abs() / expected < 1e-3); // within spline accuracy
         
-        // Out of bounds: should return error
-        assert!(ppt.rate(6.0e9).is_err());
+        // Out of bounds (non-strict, the default): clamps to rate(e_max),
+        // matching Julia's IonRatePPTAccel rather than erroring — the
+        // adaptive stepper legitimately probes rejected trial points above
+        // e_max, so a hard error there is a usability bug (BACKLOG Phase B.2).
+        let hi_rate = ppt.rate(6.0e9).unwrap();
+        let e_max_rate = ppt.rate(e_max).unwrap();
+        assert_eq!(hi_rate, e_max_rate);
+
+        // Strict mode (opt-in, for debugging) restores the hard error.
+        let ppt_strict = PptIonizationRate::new(e_min, e_max, n_points, rate_fn).strict(true);
+        assert!(ppt_strict.rate(6.0e9).is_err());
     }
 
     #[test]

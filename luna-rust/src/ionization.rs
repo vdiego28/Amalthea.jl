@@ -173,6 +173,12 @@ pub struct PptIonizationRate {
     pub spline_lut: CubicSplineLUT,
     pub e_min: f64, // Lower-bound cutoff boundary to prevent Keldysh divergence
     pub e_max: f64,
+    /// When `false` (the default), `rate()` clamps fields above `e_max` to
+    /// `rate(e_max)` — matching Julia's `IonRatePPTAccel`, which the adaptive
+    /// stepper relies on when it probes rejected trial points above the
+    /// lookup table's upper bound. Set `true` (via [`Self::strict`]) to
+    /// restore the old hard-error behaviour for debugging.
+    pub strict: bool,
 }
 
 impl PptIonizationRate {
@@ -188,8 +194,15 @@ impl PptIonizationRate {
             let rate = ppt_rate_fun(e);
             if rate > 0.0 { rate.ln() } else { -100.0 } // clamp minimum log-rate
         });
-        
-        Self { spline_lut, e_min, e_max }
+
+        Self { spline_lut, e_min, e_max, strict: false }
+    }
+
+    /// Opt into the old strict behaviour: `rate()` errors above `e_max`
+    /// instead of clamping to `rate(e_max)`. Intended for debugging only.
+    pub fn strict(mut self, strict: bool) -> Self {
+        self.strict = strict;
+        self
     }
 
     /// Create from pre-sampled (E, rate) pairs supplied by the caller (e.g. Julia).
@@ -207,25 +220,32 @@ impl PptIonizationRate {
             if r > 0.0 { r.ln() } else { -100.0 }
         }).collect();
         let spline_lut = CubicSplineLUT::from_samples(e_values, &ln_rates);
-        Self { spline_lut, e_min, e_max }
+        Self { spline_lut, e_min, e_max, strict: false }
     }
 
-    /// Calculates the ionization rate with strict cutoff checks
+    /// Calculates the ionization rate. Fields below `e_min` return 0 (Keldysh
+    /// calculation diverges there); fields above `e_max` clamp to `rate(e_max)`
+    /// (matching Julia's `IonRatePPTAccel` — the adaptive stepper legitimately
+    /// probes rejected trial points above the table's upper bound), unless
+    /// [`Self::strict`] was set, in which case they return `Err`.
     pub fn rate(&self, field_strength: f64) -> Result<f64, String> {
         let abs_e = field_strength.abs();
-        
+
         if abs_e < self.e_min {
             // Cutoff region: rate is physically negligible and Keldysh calculation diverges
             return Ok(0.0);
         }
-        
+
         if abs_e > self.e_max {
-            return Err(format!(
-                "Electric field amplitude {:.2e} V/m exceeds PPT lookup table upper bound {:.2e} V/m",
-                abs_e, self.e_max
-            ));
+            if self.strict {
+                return Err(format!(
+                    "Electric field amplitude {:.2e} V/m exceeds PPT lookup table upper bound {:.2e} V/m",
+                    abs_e, self.e_max
+                ));
+            }
+            return self.rate(self.e_max);
         }
-        
+
         match self.spline_lut.evaluate(abs_e) {
             Some(ln_rate) => Ok(ln_rate.exp()),
             None => Ok(0.0), // fallback safety

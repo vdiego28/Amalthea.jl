@@ -28,24 +28,35 @@ The fork base is upstream master minus exactly two functional commits.
    commits appear past the `0a52ffb` base, so the fork never drifts silently
    again.
 
-### Phase B — Correctness & parity fixes (🔴, small-medium)
-1. `PhysData._safe_n` (REVIEW §3.1): restore complex-sqrt semantics for the
-   ~20 glass Sellmeier sites (SiO2-style `real(n2) < 0 ? sqrt(complex(n2) +
-   1e-10im) : sqrt(complex(n2))`), delete the n=1 clamp. Add a test pinning
-   a below-resonance wavelength for at least one non-SiO2 glass against
-   upstream's value.
-2. Rust ionisation `Emax` parity (REVIEW §3.3): make
-   `PptIonizationRate::rate` clamp to `rate(e_max)` instead of `Err`, so
-   `ppt_ionization_rate_vector` matches Julia's clamp and stops
-   whole-vector fallbacks + warn spam. Keep the strict error available
-   behind a constructor flag if wanted for debugging. Update
-   `test/test_ionisation_rust.jl` boundary assertions (above-Emax →
-   clamped value, not error).
-3. Density z-independence guard (REVIEW §3.4): in `RustNativeStepper`, for
-   non-z-dep phases check `densityfun` at 0, flength/2, flength; throw
-   `NativeIneligible` on mismatch. Same for the Raman density.
-4. README: qualify the Windows support claim (scans not process-safe) until
-   Phase G lands.
+### Phase B — Correctness & parity fixes (🔴, small-medium) ✅
+1. ✅ `PhysData._safe_n` (REVIEW §3.1): restored complex-sqrt semantics for
+   all ~20 glass Sellmeier sites — `_safe_n(n2) = real(n2) < 0 ?
+   sqrt(complex(n2) + 1e-10im) : sqrt(complex(n2))`, replacing the n=1
+   clamp (deleted). `test/test_physdata.jl` now pins BK7 at 70nm
+   (below-resonance, n²≈-3.70) against the value implied by upstream's
+   plain `sqrt(complex(n2))`.
+2. ✅ Rust ionisation `Emax` parity (REVIEW §3.3): `PptIonizationRate::rate`
+   now clamps to `rate(e_max)` by default (matching Julia's
+   `IonRatePPTAccel`), so `ppt_ionization_rate_vector` no longer triggers
+   whole-vector fallbacks + warn spam above `Emax`. The old strict-error
+   behaviour is still available via a `.strict(true)` builder method for
+   debugging. `test/test_ionisation_rust.jl` and
+   `luna-rust/src/lib.rs::test_ppt_ionization_cutoff` updated to assert the
+   clamp (and the opt-in strict error).
+3. ✅ Density z-independence guard (REVIEW §3.4): `RustNativeStepper` now
+   calls `_check_density_zindependent(f!.densityfun, flength)` before
+   baking `densityfun(0)` into a constant, for all four non-z-dep native
+   paths (mode-averaged, radial, modal, free-space) — samples at
+   `(0, flength/2, flength)` when `flength` is finite, else `(0, 1, 2)` as a
+   cheap non-constness probe. Throws `NativeIneligible` on mismatch instead
+   of silently freezing a z-varying density (covers the Raman density too,
+   since it reads the same `densityfun`). New test
+   `test/test_native_density_guard.jl`.
+4. ✅ README: qualified the Windows support claim (scans not process-safe)
+   until Phase G lands.
+
+Gate: `LUNA_TEST_GROUP=All` — 46598 passed, 12 broken (pre-existing), 0
+failed/errored.
 
 ### Phase C — Make the default workload actually native (🔴🔥, medium)
 REVIEW §3.2: default field-resolved `prop_capillary` (plasma on by default:

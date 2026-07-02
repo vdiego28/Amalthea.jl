@@ -10,8 +10,7 @@ import Luna: Maths, Utils
 
 include("data/lookup_tables.jl")
 
-_safe_n(n2::Real) = n2 < 1 ? one(n2) : sqrt(n2)
-_safe_n(n2::Number) = sqrt(n2)
+_safe_n(n2::Number) = real(n2) < 0 ? sqrt(complex(n2) + 1e-10im) : sqrt(complex(n2))
 
 
 "Speed of light"
@@ -327,7 +326,7 @@ function sellmeier_glass(material::Symbol)
             n2 = (1 + 0.6961663/(1-(0.0684043/μm)^2)
                     + 0.4079426/(1-(0.1162414/μm)^2)
                     + 0.8974794/(1-(9.896161/μm)^2))
-            return real(n2) < 0 ? sqrt(complex(n2) + 1e-10im) : sqrt(complex(n2))
+            return _safe_n(n2)
         end
     elseif material == :BK7
         # ref index info (SCHOTT catalogue)
