@@ -93,8 +93,25 @@ failed/errored (run as parallel per-group jobs, not a single sequential
 ### Phase D — Native scope: EnvGrid + plasma/Raman in more geometries (🟡, large)
 In dependency order, each with the established gates (single-step ≤1e-13,
 fixed-step full-solve, non-vacuousness check — TESTING.md §3):
-1. EnvGrid radial (`rhs_radial` c2c variant — mirrors Phase 2a's
-   RealGrid→EnvGrid step).
+1. ✅ **EnvGrid radial** — `rhs_radial_env` in `luna-rust/src/native.rs`
+   (mirrors `rhs_mode_avg_env`'s c2c `to_time!`/`to_freq!` convention:
+   half-spectrum zero-pad, `no/n` scale, 3/4 `Kerr_env` SVEA factor — applied
+   per r-column, reusing the resident `QdhtFfiHandle::apply_cplx`). New
+   `radial_eto_c`/`radial_pto_c` complex buffers in `NativeSim`, allocated by
+   `native_set_radial_params` based on `sim.is_real` (already generalized:
+   `n_spec_over`/`radial_eoo`/`radial_poo` needed no changes). Dispatch on
+   `sim.is_real` at both `rhs_radial` call sites (`set_field`,
+   RK-stage loop) — same pattern as the existing mode-averaged real/env
+   split. `RK45.jl`'s radial block: dropped the `is_real_grid ||
+   NativeIneligible` guard (M array, FFI buffer sizing, and the `linop isa
+   Array{ComplexF64}` native-path check all already generalized to either
+   grid type without further changes). New `test/test_native_radial_env.jl`:
+   single-step 5.1e-17, full-solve 1.6e-15 (both far under the ~1e-12 QDHT
+   double-transform floor, MATH.md §3.2), non-vacuousness confirmed (Kerr
+   changes the Julia-only result by 6.8e-5 at a stronger test field — the
+   equivalence tests themselves intentionally use a much weaker field where
+   Kerr's own contribution is below the FP-noise floor, so vacuousness is
+   checked separately rather than folded into those same runs).
 2. Plasma in radial geometry (per-r cumtrapz; reuses the Phase 2b plasma
    assembly per radial node).
 3. EnvGrid free-space (c2c 3-D FFTW plan — `fftw_plan_dft_3d`).
@@ -102,6 +119,9 @@ fixed-step full-solve, non-vacuousness check — TESTING.md §3):
    solver, one oscillator state per node).
 5. z-dependent `normfun` for free-space (drop the `const_norm_free`
    restriction).
+
+Gate (D.1): all 7 test groups green — 46605 passed, 12 broken (pre-existing),
+0 failed/errored.
 
 ### Phase E — Native scope: modal generality (🟡, large)
 1. General mode orders: stable `besselj(n, x)` for n>1 (downward Miller

@@ -1078,13 +1078,14 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         rc == 0 || error("native_set_zdep_mode_avg_params failed: $rc")
     end
 
-    # Set parameters if radial (TransRadial) — Phase 3 gate: RealGrid + scalar
-    # Kerr only. See docs/native-port/MATH.md §3.2 for the design (precomputed
-    # normalization array M, resident QdhtFfiHandle reused directly).
+    # Set parameters if radial (TransRadial) — Phase 3 gate: scalar Kerr only,
+    # RealGrid or EnvGrid (EnvGrid added Phase D.1, BACKLOG.md — `rhs_radial_env`
+    # in native.rs, dispatched on `sim.is_real` exactly like mode-averaged's
+    # real/env split). See docs/native-port/MATH.md §3.2 for the design
+    # (precomputed normalization array M, resident QdhtFfiHandle reused
+    # directly); `M`'s length (`n_spec`) and the FFI's internal buffer sizing
+    # both already generalize to either grid type without further changes here.
     if is_radial
-        is_real_grid || throw(NativeIneligible("EnvGrid radial not yet supported " *
-                               "(Phase 3 gate is RealGrid-only)"))
-
         HT = f!.QDHT
         n_r = HT.N
         n % n_r == 0 || error("RustNativeStepper: field length $n not divisible by QDHT.N=$n_r")

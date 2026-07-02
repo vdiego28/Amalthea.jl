@@ -191,6 +191,15 @@ pub struct NativeSim {
     pub radial_pto: Vec<f64>,
     pub radial_eoo: Vec<Complex<f64>>,
     pub radial_poo: Vec<Complex<f64>>,
+    /// EnvGrid (c2c) counterparts of `radial_eto`/`radial_pto` — only
+    /// allocated (non-empty) when `is_real == false`. Time-domain buffers
+    /// are complex for EnvGrid (unlike RealGrid's real `radial_eto`/`radial_pto`),
+    /// so they need their own storage rather than reinterpreting the real
+    /// ones. `radial_eoo`/`radial_poo` (frequency-domain) are already
+    /// `Complex<f64>` and are reused as-is for both grid types — see
+    /// MATH.md §3.2's EnvGrid follow-up note.
+    pub radial_eto_c: Vec<Complex<f64>>,
+    pub radial_pto_c: Vec<Complex<f64>>,
 
     // ── Phase 4: Raman (RealGrid, thg=true, additive term in rhs_mode_avg_real) ──
     pub has_raman: bool,
@@ -392,6 +401,8 @@ impl NativeSim {
             radial_pto: Vec::new(),
             radial_eoo: Vec::new(),
             radial_poo: Vec::new(),
+            radial_eto_c: Vec::new(),
+            radial_pto_c: Vec::new(),
             has_raman: false,
             raman_solver: None,
             raman_density: 0.0,
@@ -748,6 +759,119 @@ impl NativeSim {
 
         // ── Step 7: normalization — ks[idx] *= M (folds norm_radial + ωwin) ──────
         for i in 0..(n_spec * n_r) {
+            self.ks[idx][i] *= self.radial_m[i];
+        }
+    }
+
+    /// EnvGrid (c2c) counterpart of `rhs_radial` — Phase D.1 (BACKLOG.md),
+    /// MATH.md §3.2's deferred EnvGrid-radial follow-up. Mirrors
+    /// `rhs_mode_avg_env`'s c2c `to_time!`/`to_freq!` convention
+    /// (half-spectrum zero-pad, `no/n` scale, 3/4 `Kerr_env` SVEA factor —
+    /// `Nonlinear.jl:121` `KerrScalarEnv!`) applied per r-column, and reuses
+    /// the resident `QdhtFfiHandle`'s `apply_cplx` instead of `apply_real`.
+    ///
+    /// All 2-D buffers are column-major `(n_time, n_r)` exactly like
+    /// `rhs_radial` (see that function's doc for the layout invariant),
+    /// except elements are `Complex<f64>` (`radial_eto_c`/`radial_pto_c`)
+    /// rather than `f64` — `radial_eoo`/`radial_poo` (frequency-domain) are
+    /// already `Complex<f64>` and are shared with the RealGrid path as-is.
+    fn rhs_radial_env(&mut self, idx: usize, eomega: &[Complex<f64>]) {
+        let n_r = self.n_r;
+        let n = self.n_spec;   // = n_time for EnvGrid (c2c: Nω = Nt)
+        let no = self.n_time_over;
+        let half = n / 2;
+
+        // ── Step 1: to_time! per r-column (EnvGrid c2c, half-spectrum copy-both) ──
+        let scale_fwd = no as f64 / n as f64;
+        self.radial_eoo.fill(Complex::new(0.0, 0.0));
+        for r in 0..n_r {
+            let in_col = &eomega[r * n..(r + 1) * n];
+            let out_col = &mut self.radial_eoo[r * no..(r + 1) * no];
+            for i in 0..half {
+                out_col[i] = in_col[i] * scale_fwd;
+            }
+            for i in 0..half {
+                out_col[no - half + i] = in_col[n - half + i] * scale_fwd;
+            }
+        }
+        if let Some(ref fft) = self.fft_c2c_over {
+            for r in 0..n_r {
+                let spec_start = r * no;
+                let time_start = r * no;
+                let spec_col = &mut self.radial_eoo[spec_start..spec_start + no];
+                let time_col = &mut self.radial_eto_c[time_start..time_start + no];
+                fft.inverse(spec_col, time_col);
+            }
+            let inv_nto = self.fft_norm_over;
+            for v in &mut self.radial_eto_c { *v *= inv_nto; }
+        }
+
+        // ── Step 2: QDHT ldiv! (k → r), complex ──────────────────────────────────
+        let scale_inv = self.qdht_scale_inv;
+        if let Some(ref mut qdht) = self.qdht {
+            // Safety: `Complex<f64>` is `#[repr(C)]` (two contiguous `f64`s),
+            // same idiom as `rhs_modal`'s `ks[idx]` reinterpretation above.
+            let buf = unsafe {
+                std::slice::from_raw_parts_mut(
+                    self.radial_eto_c.as_mut_ptr() as *mut f64,
+                    2 * self.radial_eto_c.len())
+            };
+            qdht.apply_cplx(buf, no, scale_inv);
+        }
+
+        // ── Step 3: Kerr_env: Pto += (3/4)*kerr_fac · |E|² · E, pointwise (t,r) ───
+        let kf = Complex::new(0.75 * self.kerr_fac, 0.0);
+        self.radial_pto_c.fill(Complex::new(0.0, 0.0));
+        for i in 0..(no * n_r) {
+            let e = self.radial_eto_c[i];
+            self.radial_pto_c[i] += kf * e.norm_sqr() * e;
+        }
+
+        // ── Step 4: time-window apodization per r-column ─────────────────────────
+        for r in 0..n_r {
+            let start = r * no;
+            for t in 0..no {
+                self.radial_pto_c[start + t] *= self.towin[t];
+            }
+        }
+
+        // ── Step 5: QDHT mul! (r → k), complex ───────────────────────────────────
+        let scale_fwd_q = self.qdht_scale_fwd;
+        if let Some(ref mut qdht) = self.qdht {
+            let buf = unsafe {
+                std::slice::from_raw_parts_mut(
+                    self.radial_pto_c.as_mut_ptr() as *mut f64,
+                    2 * self.radial_pto_c.len())
+            };
+            qdht.apply_cplx(buf, no, scale_fwd_q);
+        }
+
+        // ── Step 6: to_freq! per r-column (EnvGrid c2c) ──────────────────────────
+        let scale_inv2 = n as f64 / no as f64;
+        if let Some(ref fft) = self.fft_c2c_over {
+            for r in 0..n_r {
+                let time_start = r * no;
+                let spec_start = r * no;
+                let time_col = &mut self.radial_pto_c[time_start..time_start + no];
+                let spec_col = &mut self.radial_poo[spec_start..spec_start + no];
+                fft.forward(time_col, spec_col);
+            }
+        }
+        self.ks[idx].fill(Complex::new(0.0, 0.0));
+        for r in 0..n_r {
+            let in_start = r * no;
+            let out_start = r * n;
+            for i in 0..half {
+                self.ks[idx][out_start + i] = self.radial_poo[in_start + i] * scale_inv2;
+            }
+            for i in 0..half {
+                self.ks[idx][out_start + n - half + i] =
+                    self.radial_poo[in_start + no - half + i] * scale_inv2;
+            }
+        }
+
+        // ── Step 7: normalization — ks[idx] *= M (folds norm_radial + ωwin) ──────
+        for i in 0..(n * n_r) {
             self.ks[idx][i] *= self.radial_m[i];
         }
     }
@@ -1204,7 +1328,11 @@ pub unsafe extern "C" fn set_field(
         sim.rhs_modal(0, &field);
     } else if sim.is_radial {
         let field = sim.field.clone();
-        sim.rhs_radial(0, &field);
+        if sim.is_real {
+            sim.rhs_radial(0, &field);
+        } else {
+            sim.rhs_radial_env(0, &field);
+        }
     } else if !sim.beta.is_empty() {
         let field = sim.field.clone();
         if sim.is_real {
@@ -1648,9 +1776,11 @@ pub unsafe extern "C" fn native_set_plasma_params(
 
 /// Wire the radial (`TransRadial`) RHS: resident QDHT + scalar Kerr.
 ///
-/// Must be called **after** `native_set_fftw_plans` (which must be called with
-/// `is_real=1` — Phase 3's first gate is RealGrid-only). Sets `sim.is_radial`,
-/// so this determines the RHS branch `native_step` takes.
+/// Must be called **after** `native_set_fftw_plans`, which determines
+/// `sim.is_real` and therefore which RHS variant (`rhs_radial` for RealGrid,
+/// `rhs_radial_env` for EnvGrid — Phase D.1, MATH.md §3.2 follow-up) this
+/// call wires the buffers for. Sets `sim.is_radial`, so this determines the
+/// RHS branch `native_step` takes.
 ///
 /// # Arguments
 /// * `n_time`/`n_time_over` — grid.t / grid.to lengths.
@@ -1711,10 +1841,19 @@ pub unsafe extern "C" fn native_set_radial_params(
         .map(|(&r, &i)| Complex::new(r, i))
         .collect();
 
-    s.radial_eto = vec![0.0; n_time_over * n_r];
-    s.radial_pto = vec![0.0; n_time_over * n_r];
     s.radial_eoo = vec![Complex::new(0.0, 0.0); s.n_spec_over * n_r];
     s.radial_poo = vec![Complex::new(0.0, 0.0); s.n_spec_over * n_r];
+    if s.is_real {
+        s.radial_eto = vec![0.0; n_time_over * n_r];
+        s.radial_pto = vec![0.0; n_time_over * n_r];
+        s.radial_eto_c = Vec::new();
+        s.radial_pto_c = Vec::new();
+    } else {
+        s.radial_eto = Vec::new();
+        s.radial_pto = Vec::new();
+        s.radial_eto_c = vec![Complex::new(0.0, 0.0); n_time_over * n_r];
+        s.radial_pto_c = vec![Complex::new(0.0, 0.0); n_time_over * n_r];
+    }
 
     0
 }
@@ -2120,7 +2259,11 @@ pub unsafe extern "C" fn native_step(
             s.ensure_linop_at(t + dt_prop);
             let mut ystage_prop = s.ystage.clone();
             apply_prop(&mut ystage_prop, &s.linop, dt_prop);
-            s.rhs_radial(ii + 1, &ystage_prop);
+            if s.is_real {
+                s.rhs_radial(ii + 1, &ystage_prop);
+            } else {
+                s.rhs_radial_env(ii + 1, &ystage_prop);
+            }
             apply_prop(&mut s.ks[ii + 1], &s.linop, -dt_prop);
         } else if s.n_time_over > 0 && (s.fft_r2c_over.is_some() || s.fft_c2c_over.is_some()) {
             let dt_prop = DP_NODES[ii] * dt;
