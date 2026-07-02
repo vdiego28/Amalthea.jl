@@ -67,7 +67,36 @@ Standard Dormand-Prince 5(4) (7 stages, the coefficients live in
 - **Embedded 4th-order** solution gives the error estimate `yerr = y5 - y4`.
 - **Dense output**: 4th-order interpolation (`src/RK45.jl:260-278`) using the
   stage derivatives `ks[1..7]` and a cubic-in-σ coefficient table, so `saveN`
-  output points are produced without extra RHS evals.
+  output points are produced without extra RHS evals. **This is a hard
+  requirement, not an optional accuracy nicety**: Phases 0-7's
+  `RustNativeStepper` used *linear* interpolation between accepted steps as a
+  stopgap (no per-step FFI round-trip needed) — invisible while every
+  native-specific test drove the stepper via raw `solve()`/`step!()` calls
+  with no dense-output sampling, but responsible for nearly every
+  general-purpose test failure once Phase 8 made native the default (any
+  `saveN`/`MemoryOutput` config resamples between steps). Fixed in Phase 8 by
+  exporting the 7 resident stages (`get_ks_stage`) and porting the same
+  `interpC` quartic formula Julia-side — see PORT_LOG's Phase 8 entry.
+
+### 2.1a Per-step external field mutation must be pushed back to Rust (Phase 8)
+`Luna.run`'s `stepfun` callback (grid frequency/time windowing) mutates the
+field **after** each accepted step, and for `PreconStepper` that mutation is
+free (it's the same live array used as the next step's starting state). A
+resident-field design has no such freebie: `RustNativeStepper`'s `native_step`
+starts every call from Rust's *own* internally-tracked field, not from
+whatever Julia last wrote into the FFI-shared buffer. Any code path that
+mutates the field between `step!` calls (currently: `stepfun`'s windowing)
+**must** be followed by a call that pushes the change back into the resident
+state, or it is silently discarded — this bit Phase 8 badly (see PORT_LOG).
+The fix is `_native_field_resync!(s)` (`src/RK45.jl`, a no-op for every
+stepper except `RustNativeStepper`), called right after `stepfun` in the
+generic `solve(s, tmax; stepfun, ...)` loop, via a new `native_resync_field`
+FFI. It deliberately does **not** recompute the FSAL stage-0 RHS (unlike the
+construction-time `set_field`, which correctly does, for the no-history
+initial-condition case) — Julia's own `PreconStepper` doesn't re-evaluate the
+nonlinear RHS after windowing either, it only re-propagates the FSAL-carried
+last stage linearly into the new frame, and matching that (not "improving" on
+it) is what reproduces Julia's number.
 
 ### 2.2 Lund PI step controller
 The accepted/rejected decision uses a normalized error `err = norm(yerr, y, yn,

@@ -20,11 +20,19 @@ function solve(f!, y0, t, dt, tmax;
     return solve(stepper, tmax; kwargs...)
 end
 
+"""
+One-time-per-session flag for the Phase 8 default-flip fallback warning —
+avoids spamming a `@warn` on every `solve_precon` call in, e.g., a parameter
+scan that repeatedly hits the same ineligible-for-native configuration.
+"""
+const _NATIVE_FALLBACK_WARNED = Ref(false)
+
 function solve_precon(f!, linop, y0, t, dt, tmax;
                     rtol=1e-6, atol=1e-10, safety=0.9, max_dt=Inf, min_dt=0, locextrap=true, norm=weaknorm,
                     kwargs...)
     use_rust = get(ENV, "LUNA_USE_RUST_STEPPER", "0") == "1"
-    use_native = get(ENV, "LUNA_USE_RUST_NATIVE", "0") == "1"
+    # Phase 8: native is the default (LUNA_USE_RUST_NATIVE=0 opts back out).
+    use_native = get(ENV, "LUNA_USE_RUST_NATIVE", "1") == "1"
     # Constant linop (Phases 1-6) or the narrow z-dependent case Phase 7 supports
     # (graded-core, constant-radius MarcatiliMode — see Capillary.jl / MATH.md
     # §3.5). Any other z-dependent linop (a bare `Function`, e.g. multimode or
@@ -32,19 +40,69 @@ function solve_precon(f!, linop, y0, t, dt, tmax;
     # through to the non-native paths below exactly as before Phase 7 — no
     # behavior change for configurations outside the new narrow scope.
     native_ok = linop isa Array{ComplexF64} || linop isa Luna.Capillary.ZDepLinopMarcatili
+    stepper = nothing
     if use_native && isfile(_LIBLUNA_RUST_RK45) && eltype(y0) == ComplexF64 && native_ok
-        stepper = RustNativeStepper(f!, linop, y0, t, dt,
-                      rtol=rtol, atol=atol, safety=safety, max_dt=max_dt, min_dt=min_dt, locextrap=locextrap, norm=norm,
-                      flength=tmax)
-    elseif use_rust && isfile(_LIBLUNA_RUST_RK45) && eltype(y0) == ComplexF64
+        # Any scope restriction accumulated across Phases 1-7 (EnvGrid
+        # variants, full=true modal, thg=false Raman, an ineligible extra
+        # response, ...) throws `NativeIneligible` from deep inside the
+        # constructor — caught here and treated as "fall back to the Julia
+        # stepper for this call", not a crash, now that native is the
+        # default rather than opt-in (Phase 8). A genuine bug (a nonzero FFI
+        # return code, a shape/invariant mismatch, `init_native_sim`
+        # returning `C_NULL`, ...) is a *different* exception type and
+        # still propagates and crashes loudly, as before.
+        try
+            stepper = RustNativeStepper(f!, linop, y0, t, dt,
+                          rtol=rtol, atol=atol, safety=safety, max_dt=max_dt, min_dt=min_dt, locextrap=locextrap, norm=norm,
+                          flength=tmax)
+        catch e
+            e isa NativeIneligible || rethrow()
+            if !_NATIVE_FALLBACK_WARNED[]
+                @warn "LUNA_USE_RUST_NATIVE: falling back to the Julia stepper for a " *
+                      "config outside the native port's current scope ($(e.msg)). This " *
+                      "warning prints once per session; every other config still uses " *
+                      "the resident Rust stepper. Set LUNA_USE_RUST_NATIVE=0 to disable " *
+                      "the native path entirely."
+                _NATIVE_FALLBACK_WARNED[] = true
+            end
+        end
+    end
+    if isnothing(stepper) && use_rust && isfile(_LIBLUNA_RUST_RK45) && eltype(y0) == ComplexF64
         stepper = RustPreconStepper(f!, linop, y0, t, dt,
                       rtol=rtol, atol=atol, safety=safety, max_dt=max_dt, min_dt=min_dt, locextrap=locextrap, norm=norm)
-    else
+    elseif isnothing(stepper)
         stepper = PreconStepper(f!, linop, y0, t, dt,
                       rtol=rtol, atol=atol, safety=safety, max_dt=max_dt, min_dt=min_dt, locextrap=locextrap, norm=norm)
     end
     return solve(stepper, tmax; kwargs...)
 end
+
+"""
+    _native_field_resync!(s)
+
+No-op for every stepper except `RustNativeStepper` (defined alongside it,
+below). `stepfun` (windowing: `Eω .*= grid.ωwin`, time-domain `twin`, ...) is
+called every accepted step and mutates `s.yn` in place — for `PreconStepper`
+that's the actual live state array, so the mutation carries forward into the
+next step for free. For `RustNativeStepper`, `s.yn` is just a Julia-side
+buffer that `native_step` *overwrites* at the top of every call from Rust's
+own resident `field` (see `native.rs::native_step` — it does not read back
+whatever Julia last wrote into the passed pointer). Left unsynced, every
+`Luna.run`-driven simulation silently drops the windowing for the native
+path entirely — invisible in every native-specific phase test (they all call
+`solve()`/`step!()` directly, bypassing `stepfun`), but present in every real
+simulation via `Interface.jl`/`Luna.run`. Fixed by pushing the
+just-windowed `s.yn` back into Rust's resident field after every accepted
+step, via `native_resync_field` — a lighter sibling of the construction-time
+`set_field` FFI that updates only the resident `field` buffer and, crucially,
+does NOT recompute the FSAL stage-0 RHS: Julia's own `PreconStepper` doesn't
+re-evaluate the nonlinear RHS after windowing either (it keeps the
+FSAL-carried last stage and only re-propagates it linearly into the new
+interaction-picture frame — see `native_resync_field`'s doc comment in
+`native.rs`), so recomputing k0 fresh here would introduce a new, undisclosed
+divergence from Julia rather than fix the existing one.
+"""
+_native_field_resync!(s) = nothing
 
 function solve(s, tmax; stepfun=donothing!, output=false, outputN=201,
                         status_period=1, repeat_limit=10)
@@ -89,6 +147,7 @@ function solve(s, tmax; stepfun=donothing!, output=false, outputN=201,
                 end
             end
             stepfun(s.yn, s.tn, s.dtn, t -> interpolate(s, t))
+            _native_field_resync!(s)
             repeated = 0
         else
             repeated += 1
@@ -634,6 +693,32 @@ end
 
 # ─── Rust native interaction-picture Stepper FFI (LUNA_USE_RUST_NATIVE=1) ───────
 
+"""
+    NativeIneligible(msg)
+
+Thrown by `RustNativeStepper`'s constructor when the requested geometry/
+config is outside the native port's current scope (any of the per-phase
+narrowing restrictions documented in `docs/native-port/MATH.md` — EnvGrid
+variants, `full=true` modal, `thg=false` Raman, an unsupported/ineligible
+extra response such as plasma or Raman on a Kerr-only geometry, ...).
+
+This is a **distinct exception type from a bare `error()`** specifically so
+`solve_precon` (Phase 8, default-flip) can catch *this* and silently fall
+back to the Julia stepper, while letting a genuine bug (an FFI call
+returning a nonzero error code, a shape/invariant mismatch, `init_native_sim`
+returning `C_NULL`, ...) propagate and crash loudly as before. Before Phase
+8, native was opt-in only, so a scope-restriction `error()` reaching the user
+meant they had deliberately turned on `LUNA_USE_RUST_NATIVE` for an
+unsupported config — a crash with an instructive message was the right
+behavior. Now that native is the default, the exact same situation must be
+reachable by any ordinary user just running a simulation, so it can no
+longer be a crash: it must fall back quietly (with one warning) instead.
+"""
+struct NativeIneligible <: Exception
+    msg::String
+end
+Base.showerror(io::IO, e::NativeIneligible) = print(io, "NativeIneligible: ", e.msg)
+
 struct NativeStepResult
     ok::Cint
     dt::Float64
@@ -715,10 +800,9 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     n = length(y0)
     is_zdep_mode_avg = linop isa Luna.Capillary.ZDepLinopMarcatili
     if is_zdep_mode_avg
-        isfinite(flength) || error("RustNativeStepper: z-dependent linop requires a " *
+        isfinite(flength) || throw(NativeIneligible("z-dependent linop requires a " *
                   "finite `flength` (propagation length) to build the resident z-LUTs " *
-                  "— got flength=$flength. This should always be `tmax`/`grid.zmax` " *
-                  "when called from `solve_precon` (Phase 7 gate — see MATH.md §3.5).")
+                  "— got flength=$flength."))
         handle = RustNativeSimHandle(linop, n)
     else
         handle = RustNativeSimHandle(linop)
@@ -731,7 +815,33 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     is_modal = f! isa Luna.NonlinearRHS.TransModal
     is_free = f! isa Luna.NonlinearRHS.TransFree
 
+    # `f! === nothing` is the deliberate bare-stepper case (Phase 0's own
+    # tests construct it directly via the single-arg convenience method
+    # below to exercise the resident FFT/RK machinery with no RHS at all).
+    # Any *other* unrecognized `f!` (e.g. a raw ad-hoc closure, as RK45.jl's
+    # own low-level unit tests use to test the Julia solver plumbing
+    # directly) must not silently fall through: none of the
+    # `native_set_*_params` calls below would ever run for it, so the
+    # native RHS would end up configured with zero nonlinearity — silently
+    # wrong physics, not a crash. Reject it up front instead.
+    isnothing(f!) || is_mode_avg || is_radial || is_modal || is_free ||
+        throw(NativeIneligible("f! is not one of TransModeAvg/TransRadial/" *
+              "TransModal/TransFree — the native resident stepper only supports " *
+              "Luna's own NonlinearRHS pipeline types."))
+
     if is_mode_avg || is_radial || is_modal || is_free
+        # Gas mixtures (`MarcatiliMode(a, (gas1,gas2,...), (p1,p2,...))`) give
+        # `densityfun(z)` a per-species Vector return type and a nested
+        # tuple-of-tuples `resp` (one response tuple per component) — neither
+        # shape is handled by the native RHS setup below (it expects a
+        # scalar density and a flat response tuple), and nothing upstream
+        # rejects it. Left unguarded this silently computes a Vector
+        # `kerr_fac`/`beta` that only fails much later at the FFI boundary
+        # with an opaque `MethodError`. Reject it here instead, with a
+        # message that says what's actually unsupported.
+        f!.densityfun(0.0) isa Real || throw(NativeIneligible("densityfun(z) returned " *
+              "a non-scalar value — gas mixtures are not yet supported by the native path."))
+
         grid = f!.grid
         is_real_grid = grid isa Luna.Grid.RealGrid   # EnvGrid uses c2c FFTs
         n_time = length(grid.t)
@@ -796,8 +906,12 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         rc == 0 || error("native_set_mode_avg_params failed: $rc")
 
         # Wire plasma if present and a Rust ionization handle is available.
-        # Requires LUNA_USE_RUST_IONISATION=1; if not set, plasma is silently
-        # skipped by the native path (wrong physics — warn the user).
+        # Requires LUNA_USE_RUST_IONISATION=1. If not eligible, the WHOLE
+        # construction must fail (NativeIneligible → solve_precon falls back
+        # to the Julia stepper) rather than silently continuing without
+        # plasma — continuing native-minus-plasma would be wrong physics
+        # with only a log line to notice it, which became unacceptable once
+        # native became the default (Phase 8) rather than opt-in.
         for r in f!.resp
             if r isa Luna.Nonlinear.PlasmaCumtrapz
                 irf = r.ratefunc
@@ -808,11 +922,11 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                         (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64),
                         handle.ptr, irf.rust_handle.ptr,
                         r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt)
-                    rc == 0 || @warn "native_set_plasma_params returned $rc; plasma uses Julia fallback"
+                    rc == 0 || throw(NativeIneligible("native_set_plasma_params returned $rc"))
                 else
-                    @warn "LUNA_USE_RUST_NATIVE: plasma detected but LUNA_USE_RUST_IONISATION not set " *
-                          "or not IonRatePPTAccel — native path will skip plasma (incorrect physics). " *
-                          "Set LUNA_USE_RUST_IONISATION=1 to enable native plasma."
+                    throw(NativeIneligible("plasma detected but LUNA_USE_RUST_IONISATION not " *
+                          "set or ratefunc not IonRatePPTAccel — set LUNA_USE_RUST_IONISATION=1 " *
+                          "to make this config eligible for the native path."))
                 end
                 break  # only one plasma response expected
             end
@@ -824,36 +938,53 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # `Interface._make_rust_raman_handle_from_response` (the existing
         # `LUNA_USE_RUST_RAMAN` FFI wiring): all-SDO `CombinedRamanResponse`
         # with density-independent τ2. Scope: `thg=true` only (E² intensity,
-        # no Hilbert transform) — see docs/native-port/MATH.md §5.3.
+        # no Hilbert transform) — see docs/native-port/MATH.md §5.3. As with
+        # plasma above, an ineligible Raman response must fail the whole
+        # construction (NativeIneligible), not silently continue without it.
         for r in f!.resp
             if r isa Luna.Nonlinear.RamanPolarField
                 if !r.thg
-                    @warn "LUNA_USE_RUST_NATIVE: RamanPolarField has thg=false — native " *
-                          "Raman path only supports thg=true (E² intensity); native path " *
-                          "will skip Raman (incorrect physics)."
-                    break
+                    throw(NativeIneligible("RamanPolarField has thg=false — native Raman " *
+                          "path only supports thg=true (E² intensity)."))
                 end
                 rr = r.r
                 eligible = rr isa Luna.Raman.CombinedRamanResponse &&
                     all(ri isa Luna.Raman.RamanRespSingleDampedOscillator for ri in rr.Rs) &&
                     all(abs(ri.τ2ρ(1.0) - ri.τ2ρ(2.0)) < 1e-10 * abs(ri.τ2ρ(1.0)) for ri in rr.Rs)
-                if eligible
-                    omegas    = Float64[ri.Ω for ri in rr.Rs]
-                    gammas    = Float64[1.0 / ri.τ2ρ(1.0) for ri in rr.Rs]
-                    couplings = Float64[ri.K for ri in rr.Rs]
-                    raman_density = f!.densityfun(0.0)
-                    rc = ccall((:native_set_raman_params, _LIBLUNA_RUST_RK45), Cint,
-                        (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Csize_t, Float64, Float64),
-                        handle.ptr, omegas, gammas, couplings, Csize_t(length(omegas)),
-                        r.dt, raman_density)
-                    rc == 0 || @warn "native_set_raman_params returned $rc; Raman uses Julia fallback"
-                else
-                    @warn "LUNA_USE_RUST_NATIVE: Raman response present but not eligible for " *
-                          "the native path (needs all-SDO CombinedRamanResponse with " *
-                          "density-independent τ2) — native path will skip Raman (incorrect physics)."
-                end
+                eligible || throw(NativeIneligible("Raman response present but not eligible " *
+                      "for the native path (needs all-SDO CombinedRamanResponse with " *
+                      "density-independent τ2)."))
+                omegas    = Float64[ri.Ω for ri in rr.Rs]
+                gammas    = Float64[1.0 / ri.τ2ρ(1.0) for ri in rr.Rs]
+                couplings = Float64[ri.K for ri in rr.Rs]
+                raman_density = f!.densityfun(0.0)
+                rc = ccall((:native_set_raman_params, _LIBLUNA_RUST_RK45), Cint,
+                    (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Csize_t, Float64, Float64),
+                    handle.ptr, omegas, gammas, couplings, Csize_t(length(omegas)),
+                    r.dt, raman_density)
+                rc == 0 || throw(NativeIneligible("native_set_raman_params returned $rc"))
                 break  # only one Raman response expected
             end
+        end
+
+        # Any response type not recognized by the three checks above (Kerr
+        # via the γ3 field scan, `PlasmaCumtrapz`, `RamanPolarField`) must
+        # fail the whole construction too — e.g. `RamanPolarEnv` (envelope
+        # Raman, the response `Interface.makeresponse` attaches for
+        # EnvGrid/GNLSE configs) matches none of those `isa` checks, so
+        # without this it would silently slip through with no wiring and no
+        # error: exactly the silent-wrong-physics gap this file's
+        # `NativeIneligible` conversion (Phase 8) exists to close. Found via
+        # `test_gnlse.jl`'s "Soliton shift" test once native became the
+        # default — that test's self-frequency-shift numbers depend
+        # entirely on Raman, so silently dropping it produced a completely
+        # different (not just numerically close) result.
+        is_kerr_resp(r) = any(occursin("γ3", string(fld)) for fld in fieldnames(typeof(r)))
+        for r in f!.resp
+            is_kerr_resp(r) || r isa Luna.Nonlinear.PlasmaCumtrapz ||
+                r isa Luna.Nonlinear.RamanPolarField ||
+                throw(NativeIneligible("response type $(typeof(r)) is not wired for " *
+                      "the native mode-averaged path."))
         end
     end
 
@@ -902,8 +1033,8 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     # Kerr only. See docs/native-port/MATH.md §3.2 for the design (precomputed
     # normalization array M, resident QdhtFfiHandle reused directly).
     if is_radial
-        is_real_grid || error("RustNativeStepper: EnvGrid radial not yet supported " *
-                               "(Phase 3 gate is RealGrid-only)")
+        is_real_grid || throw(NativeIneligible("EnvGrid radial not yet supported " *
+                               "(Phase 3 gate is RealGrid-only)"))
 
         HT = f!.QDHT
         n_r = HT.N
@@ -927,10 +1058,11 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             end
             γ3 != 0.0 && break
         end
-        length(f!.resp) == 1 ||
-            @warn "RustNativeStepper (radial): only single-response (Kerr-only) is " *
-                  "verified by the native path; extra responses (plasma, Raman, ...) " *
-                  "are ignored — physics will be wrong if any are present."
+        length(f!.resp) == 1 && γ3 != 0.0 ||
+            throw(NativeIneligible("radial: only single-response Kerr-only is " *
+                  "supported by the native path (Phase 3 gate); extra responses " *
+                  "(plasma, Raman, ...), or a lone non-Kerr response, are not wired " *
+                  "for this geometry."))
 
         density = f!.densityfun(0.0)
         kerr_fac = density * Luna.PhysData.ε_0 * γ3
@@ -962,40 +1094,36 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     # `kind=:HE, n=1` modes only, Kerr-only. See MATH.md §3.3 for the design
     # (libcubature reuse, closed-form N(m), the numerically-probed norm!).
     if is_modal
-        is_real_grid || error("RustNativeStepper: EnvGrid modal not yet supported " *
-                               "(Phase 5 gate is RealGrid-only)")
-        f!.full && error("RustNativeStepper: full=true (2-D modal integral) not yet " *
-                          "supported (Phase 5 gate is full=false — the radial modal " *
-                          "integral Luna selects for HE,n=1 mode collections, " *
-                          "Interface.needfull)")
-        isnothing(f!.Emω_noise) || error("RustNativeStepper: modified shot-noise " *
-                          "(Emω_noise) not yet supported for the native modal path")
+        is_real_grid || throw(NativeIneligible("EnvGrid modal not yet supported " *
+                               "(Phase 5 gate is RealGrid-only)"))
+        f!.full && throw(NativeIneligible("full=true (2-D modal integral) not yet " *
+                          "supported (Phase 5 gate is full=false)"))
+        isnothing(f!.Emω_noise) || throw(NativeIneligible("modified shot-noise " *
+                          "(Emω_noise) not yet supported for the native modal path"))
 
         modes = f!.ts.ms
         n_modes = length(modes)
         npol = f!.ts.npol
-        npol == 1 || error("RustNativeStepper: native modal path only supports " *
-                  "npol=1 (single polarisation component — components=:x or :y, " *
-                  "i.e. polarisation=:linear/:x/:y with non-vector modes). The " *
-                  "KerrVector! (npol=2, components=:xy — circular/elliptical " *
-                  "polarisation) code path is implemented in native.rs but not yet " *
-                  "verified against the Julia oracle and is gated off here until it " *
-                  "is (Phase 5 gate — see MATH.md §3.3).")
+        npol == 1 || throw(NativeIneligible("native modal path only supports " *
+                  "npol=1 (single polarisation component). The KerrVector! " *
+                  "(npol=2, circular/elliptical polarisation) code path is " *
+                  "implemented in native.rs but not yet verified against the " *
+                  "Julia oracle (Phase 5 gate — see MATH.md §3.3)."))
 
         all(m -> m isa Luna.Capillary.MarcatiliMode, modes) ||
-            error("RustNativeStepper: native modal path only supports MarcatiliMode " *
-                  "(Phase 5 gate)")
+            throw(NativeIneligible("native modal path only supports MarcatiliMode " *
+                  "(Phase 5 gate)"))
         all(m -> m.kind == :HE && m.n == 1, modes) ||
-            error("RustNativeStepper: native modal path only supports kind=:HE, n=1 " *
-                  "modes (needs only besselj(0,·)/besselj(1,·) — Phase 5 gate; general " *
-                  "n needs a general-order Bessel routine, deferred, see MATH.md §3.3)")
+            throw(NativeIneligible("native modal path only supports kind=:HE, n=1 " *
+                  "modes (Phase 5 gate; general n needs a general-order Bessel " *
+                  "routine, deferred, see MATH.md §3.3)"))
         all(m -> m.a isa Number, modes) ||
-            error("RustNativeStepper: native modal path only supports constant-radius " *
-                  "modes (Phase 5 gate; tapered/z-dependent radius deferred)")
+            throw(NativeIneligible("native modal path only supports constant-radius " *
+                  "modes (Phase 5 gate; tapered/z-dependent radius deferred)"))
 
         a = Float64(modes[1].a)
         all(m -> Float64(m.a) == a, modes) ||
-            error("RustNativeStepper: all modes must share the same core radius")
+            throw(NativeIneligible("all modes must share the same core radius"))
 
         unm = Float64[m.unm for m in modes]
         invsqrtn = Float64[1.0 / sqrt(Luna.Modes.N(m, z=0.0)) for m in modes]
@@ -1016,10 +1144,11 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             end
             γ3 != 0.0 && break
         end
-        length(f!.resp) == 1 ||
-            @warn "RustNativeStepper (modal): only single-response (Kerr-only) is " *
-                  "verified by the native path; extra responses (plasma, Raman, ...) " *
-                  "are ignored — physics will be wrong if any are present."
+        length(f!.resp) == 1 && γ3 != 0.0 ||
+            throw(NativeIneligible("modal: only single-response Kerr-only is " *
+                  "supported by the native path (Phase 5 gate); extra responses " *
+                  "(plasma, Raman, ...), or a lone non-Kerr response, are not wired " *
+                  "for this geometry."))
 
         density = f!.densityfun(0.0)
         kerr_fac = density * Luna.PhysData.ε_0 * γ3
@@ -1049,10 +1178,10 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     # library handle native_set_fftw_plans already loaded (no new dlopen) —
     # only a new 3-D plan is created. See MATH.md §3.4.
     if is_free
-        is_real_grid || error("RustNativeStepper: EnvGrid free-space not yet " *
-                               "supported (Phase 6 gate is RealGrid-only)")
-        isnothing(f!.Et_noise) || error("RustNativeStepper: modified shot-noise " *
-                          "(Et_noise) not yet supported for the native free-space path")
+        is_real_grid || throw(NativeIneligible("EnvGrid free-space not yet " *
+                               "supported (Phase 6 gate is RealGrid-only)"))
+        isnothing(f!.Et_noise) || throw(NativeIneligible("modified shot-noise " *
+                          "(Et_noise) not yet supported for the native free-space path"))
 
         n_y = length(f!.xygrid.y)
         n_x = length(f!.xygrid.x)
@@ -1069,11 +1198,11 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             end
             γ3 != 0.0 && break
         end
-        length(f!.resp) == 1 ||
-            @warn "RustNativeStepper (free-space): only single-response " *
-                  "(Kerr-only) is verified by the native path; extra responses " *
-                  "(plasma, Raman, ...) are ignored — physics will be wrong if " *
-                  "any are present."
+        length(f!.resp) == 1 && γ3 != 0.0 ||
+            throw(NativeIneligible("free-space: only single-response Kerr-only " *
+                  "is supported by the native path (Phase 6 gate); extra responses " *
+                  "(plasma, Raman, ...), or a lone non-Kerr response, are not wired " *
+                  "for this geometry."))
 
         density = f!.densityfun(0.0)
         kerr_fac = density * Luna.PhysData.ε_0 * γ3
@@ -1138,6 +1267,13 @@ function step!(s::RustNativeStepper)
     return s.ok
 end
 
+function _native_field_resync!(s::RustNativeStepper)
+    rc = ccall((:native_resync_field, _LIBLUNA_RUST_RK45), Cint,
+          (Ptr{Cvoid}, Ptr{ComplexF64}, Csize_t),
+          s._handle.ptr, pointer(s.yn), Csize_t(length(s.yn)))
+    rc == 0 || error("native_resync_field (post-stepfun resync) failed: $rc")
+end
+
 function interpolate(s::RustNativeStepper, ti::Float64)
     if ti > s.tn
         error("Attempting to extrapolate!")
@@ -1147,10 +1283,40 @@ function interpolate(s::RustNativeStepper, ti::Float64)
     elseif ti == s.tn
         return s.yn
     end
-    # Linear interpolation in the interaction picture (both y and yn are in IP).
-    # Full DOPRI5 dense output would require exporting k-stages from Rust via FFI.
-    σ = (ti - s.t) / (s.tn - s.t)
-    return @. s.y + σ * (s.yn - s.y)
+    # Same quartic dense output as PreconStepper/RustPreconStepper (interpC,
+    # all 7 RK stages), not linear — the propagation itself already matches
+    # Julia to ~1e-15, but the earlier linear-only interpolation between
+    # accepted steps was measurably lower-order than Julia's, which showed
+    # up as a ~1-2% error in any densely-sampled output (MemoryOutput,
+    # i.e. essentially every general-purpose test) despite the underlying
+    # solve being correct (see PORT_LOG Phase 8). The 7 stages live in
+    # Rust's resident `ks` buffer (never transferred per-step, unlike
+    # PreconStepper where Julia owns them already) — fetched here via
+    # `get_ks_stage`, one call per stage, only on the (rare, relative to
+    # step!) dense-output path.
+    n = length(s.yn)
+    σ = (ti - s.t) / s.dt
+    σ2 = σ^2; σ3 = σ2*σ; σ4 = σ3*σ
+    b = ntuple(ii -> σ*interpC[1,ii] + σ2*interpC[2,ii] + σ3*interpC[3,ii] + σ4*interpC[4,ii], Val(7))
+    # `similar`/`zero`, not `zeros(ComplexF64, n)` — `RustNativeStepper{T}` is
+    # generic over `T<:AbstractArray`, and modal/multi-mode geometries use a
+    # `Matrix{ComplexF64}` field (n_ω x n_modes), not a flat vector; a flat
+    # `Vector` buffer here would silently broadcast-mismatch against `s.y`.
+    yi = zero(s.yn)
+    kbuf = similar(s.yn)
+    for ii = 1:7
+        rc = ccall((:get_ks_stage, _LIBLUNA_RUST_RK45), Cint,
+              (Ptr{Cvoid}, Csize_t, Ptr{ComplexF64}, Csize_t),
+              s._handle.ptr, Csize_t(ii - 1), kbuf, Csize_t(n))
+        rc == 0 || error("get_ks_stage failed: $rc")
+        yi .+= kbuf .* b[ii]
+    end
+    out = @. s.y + s.dt * yi
+    rc = ccall((:native_apply_prop, _LIBLUNA_RUST_RK45), Cint,
+          (Ptr{Cvoid}, Ptr{ComplexF64}, Csize_t, Float64, Float64),
+          s._handle.ptr, out, Csize_t(n), s.t, ti)
+    rc == 0 || error("native_apply_prop failed: $rc")
+    return out
 end
 
 end

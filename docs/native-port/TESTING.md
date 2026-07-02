@@ -1,8 +1,8 @@
 # Native-Rust Backend Port — Testing & Equivalence
 
-> Status: design doc for the phased port. Phases 0-6 are implemented and
-> passing (see `docs/native-port/PORT_LOG.md`); Phase 7 (z-dependent linop)
-> is next.
+> Status: design doc for the phased port. Phases 0-8 are implemented and
+> passing (see `docs/native-port/PORT_LOG.md`) — the native-Rust backend
+> port is complete.
 > Companion docs: [ARCHITECTURE.md](ARCHITECTURE.md), [MATH.md](MATH.md),
 > [PORT_LOG.md](PORT_LOG.md).
 
@@ -80,6 +80,7 @@ tier than its math allows is hiding a bug.
 | **method/spline** | `~1e-8` | LUT/spline interpolation or a different-but-equivalent algorithm | PPT ionization (`test_ionisation_rust.jl`) |
 | **FFT-method + floor** | `~1e-6` | FFT method differences **and** the run-to-run nondeterminism floor (§3) | RK45 stepper (`test_stepper_rust.jl`) |
 | **deliberate divergence** | `~1e-4` (config-dependent) | Rust computes a *more accurate* value than Julia's own oracle on purpose, and the resulting small systematic (non-random) offset accumulates coherently over propagation length/bandwidth | Phase 7 β1(z) (`test_native_zdep_linop.jl`, see `BETA1_ANALYTIC.md`) |
+| **different backend** | `~1e-8`-`1e-6` (config-dependent) | Two configs in the *same* comparison legitimately execute on different steppers (one `NativeIneligible`, one not) — as of Phase 8 this is possible for the first time, since native is the default rather than opt-in | `test_mixtures.jl` (mixture vs single-gas), `test_tapers.jl` (Function-radius vs constant-radius) |
 
 This last tier is different in kind from the others: it is not "we haven't
 converged Rust to match Julia yet," it is "Rust and Julia will never
@@ -168,7 +169,7 @@ coincidence of regime, not immunity to the same mechanism).
 | 5 | ✅ done | modal + overlap cubature (`HE,n=1`, `full=false`, Kerr-only) | `test/test_native_modal.jl` | 1.4e-19 (achieved; ~1e-10 tier) | 4.0e-16 (achieved; fixed dt) |
 | 6 | ✅ done | free-space 3-D FFT (RealGrid, const_norm_free, Kerr-only) | `test/test_native_free.jl` | 7.05e-18 (achieved) | 5.01e-17 (achieved; fixed dt) |
 | 7 | ✅ done | z-dependent linop (mode-avg, graded-core, two-point pressure gradient) | `test/test_native_zdep_linop.jl` | <1e-9 (β1 vs BigFloat truth, achieved); ~1e-12 (`dtn`/`err`, achieved) | <1e-3 tier (measured ~7.3e-5, deliberate-divergence, see §2) |
-| 8 | ⬜ | default-flip: existing suite green with native as default | full suite | — | existing |
+| 8 | ✅ done | default-flip: existing suite green with native as default | `test/test_native_phase8.jl` + full suite | — | 46590 pass / 0 fail / 0 error / 12 broken (pre-existing), 46602 total |
 
 Phase 5's single-step tier is documented looser (~1e-10) than the FFTW-only
 phases, not because cubature node placement is algorithm-dependent — it binds
@@ -205,6 +206,17 @@ agreement is ~1e-12); it is specifically the *coherent accumulation* of
 multi-step propagation, that produces the wider full-run number. A
 narrower-bandwidth or shorter-fibre config would show a smaller number
 without any code change.
+
+Phase 8's gate is the widest in *scope* (the entire suite, not a phase-specific
+subset) but not in *tolerance* — most of its failures turned out to be real
+bugs (see PORT_LOG), fixed properly rather than tolerance-widened. Only two
+tests legitimately needed a tolerance change, and for a reason specific to
+Phase 8: a config comparison where the two sides now execute on genuinely
+different backends (native vs `NativeIneligible`-fallback Julia) for the
+first time — see the "different backend" tier above. Before reaching for
+that tier on any future test failure, check first whether both sides of the
+comparison are actually eligible for the same backend; if they are, a
+failure is a real bug, not a tolerance problem.
 
 ## 5. Commands
 

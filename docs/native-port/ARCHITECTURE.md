@@ -1,8 +1,8 @@
 # Native-Rust Backend Port — Architecture
 
-> Status: design doc for the phased port. Phases 0-7 are implemented and
-> passing (see `docs/native-port/PORT_LOG.md` for the latest entry); Phase 8
-> (default-flip) is next.
+> Status: design doc for the phased port. Phases 0-8 are implemented and
+> passing (see `docs/native-port/PORT_LOG.md` for the latest entry) — the
+> native-Rust backend port is complete.
 > Companion docs: [MATH.md](MATH.md), [TESTING.md](TESTING.md),
 > [PORT_LOG.md](PORT_LOG.md), [BETA1_ANALYTIC.md](BETA1_ANALYTIC.md). Agent
 > workflow: [`AGENTS.md`](../../AGENTS.md).
@@ -120,11 +120,22 @@ round-trip, and is explicitly rejected.
 ### 4.3 Keep the Julia pipeline as a whole-pipeline fallback (default-on + warn)
 Once the field is resident, there is no natural per-op fallback — it is
 native-loop vs. the old Julia loop, chosen once at `solve` time. We keep the
-entire Julia pipeline reachable (when the `.so` is missing, or via an explicit
-opt-out) and emit a **one-time `@warn`** on fallback. Two reasons:
-1. Portability — CPU-only / unbuilt-lib installs keep working.
+entire Julia pipeline reachable and emit a **one-time `@warn`** on fallback.
+Three reasons:
+1. Portability — CPU-only / unbuilt-lib installs keep working (`.so` missing).
 2. **The Julia path is the equivalence oracle.** Every test compares native
    output against it; deleting it would delete the test baseline.
+3. **Scope restrictions.** Phases 1-7 each cover a narrow slice of Luna's
+   configuration space (specific grid types, response combinations, mode
+   kinds, ...). As implemented (Phase 8), `RustNativeStepper`'s constructor
+   throws a `NativeIneligible` exception for anything outside that slice;
+   `solve_precon` catches *only* that type and falls back to `PreconStepper`
+   — any other exception (a genuine FFI error, an invariant violation) still
+   propagates and crashes, unchanged. This is why native-eligibility is a
+   runtime, per-`solve` decision (`RK45.jl`'s `native_ok`/`NativeIneligible`
+   catch), not a static, config-time one: the same call site must route
+   both the common case (fast, native) and the long tail of narrow-scope
+   configs (correct, Julia) through one function.
 
 ### 4.4 Phase ordering by `Trans*` complexity
 Mode-averaged is the simplest geometry (1 inverse + 1 forward FFT, no spatial
@@ -142,8 +153,8 @@ independently shippable and independently testable.
 | Raman (`RamanPolar`) | `src/Nonlinear.jl:357` | 4 | ✅ done | ADE already Rust, made resident |
 | `TransModal` + overlap cubature | `src/NonlinearRHS.jl:421` | 5 | ✅ done | narrow scope: `libcubature` reused (dlopen, not reimplemented), `HE,n=1`/`full=false`/Kerr-only |
 | `TransFree` (3D FFT) | `src/NonlinearRHS.jl:826` | 6 | ✅ done | joint 3-D FFTW plan (same libfftw3, new plan rank); RealGrid + const_norm_free + Kerr-only |
-| z-dependent linop assembly | `src/LinearOps.jl:77,185,337` | 7 | ⬜ next | free-space/radial/modal |
-| Default-flip + cleanup | — | 8 | ⬜ | native becomes default |
+| z-dependent linop assembly | `src/LinearOps.jl:77,185,337` | 7 | ✅ done | narrow scope: mode-averaged, graded-core constant-radius `MarcatiliMode` (`Capillary.gradient`, two-point pressure gradient) only; radial/modal/free-space z-dependent `nfun` deferred — see MATH.md §3.5 |
+| Default-flip + cleanup | — | 8 | ✅ done | `LUNA_USE_RUST_NATIVE` defaults to `"1"`; every scope restriction now a catchable `NativeIneligible` → Julia fallback instead of a crash |
 
 ## 6. Out of scope (stays Julia indefinitely)
 - The high-level `Interface.jl` / `Output.jl` / `Grid.jl` / `Fields.jl` setup

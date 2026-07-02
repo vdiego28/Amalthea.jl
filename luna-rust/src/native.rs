@@ -1216,6 +1216,46 @@ pub unsafe extern "C" fn set_field(
     0
 }
 
+/// Like `set_field`, but does NOT recompute the FSAL stage-0 RHS.
+///
+/// Used by `RK45.jl`'s post-`stepfun` resync (Phase 8): after an accepted
+/// step, Julia's `stepfun` callback (`Luna.run`'s grid windowing —
+/// `Eω .*= grid.ωwin`, then a time-domain `twin`) mutates the field in
+/// place. Julia's own `PreconStepper` reference behaviour does *not*
+/// re-evaluate the nonlinear RHS after windowing either: it keeps the
+/// FSAL-carried last stage and merely re-expresses it in the new
+/// interaction-picture frame via a *linear* re-propagation
+/// (`evaluate!(s::PreconStepper)`'s `s.prop!(s.ks[1], s.t, s.tn)`).
+/// `native_step` already performs the equivalent FSAL-carry + relinearize
+/// internally (`ks[0] = ks[6]` then `apply_prop`, at the top of the next
+/// call) — recomputing k0 fresh here (as `set_field` does, correctly, for
+/// the brand-new-initial-condition case where no FSAL history exists yet)
+/// would silently diverge from Julia's established approximation instead
+/// of matching it. This function only updates the resident `field` buffer
+/// that the *next* step reads its starting point from.
+///
+/// Returns 0 on success, -1 on null/length mismatch.
+///
+/// # Safety
+/// `sim` must be valid; `data` must be valid for `n` `ComplexF64` reads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_resync_field(
+    sim: *mut NativeSim,
+    data: *const c_double,
+    n: size_t,
+) -> i32 {
+    if sim.is_null() || data.is_null() {
+        return -1;
+    }
+    let sim = unsafe { &mut *sim };
+    if n != sim.n {
+        return -1;
+    }
+    let src = unsafe { std::slice::from_raw_parts(data as *const Complex<f64>, n) };
+    sim.field.copy_from_slice(src);
+    0
+}
+
 /// Copy the resident field buffer back out to Julia (`n` `ComplexF64`).
 ///
 /// Returns 0 on success, -1 on null/length mismatch.
@@ -1256,6 +1296,45 @@ pub unsafe extern "C" fn get_ks_stage(
     }
     let dst = unsafe { std::slice::from_raw_parts_mut(data as *mut Complex<f64>, n) };
     dst.copy_from_slice(&sim.ks[idx]);
+    0
+}
+
+/// Apply the interaction-picture linear propagator `exp(linop(t2)*(t2-t1))`
+/// to `y` in place (`n` `ComplexF64`), evaluating the (possibly
+/// z-dependent) linop at `t2` — the later time, matching
+/// `RK45.jl::make_prop!`'s non-constant-linop convention exactly.
+///
+/// Used by `RK45.jl::interpolate(s::RustNativeStepper, ti)` to port
+/// Julia's `PreconStepper`'s quartic dense output (`interpC`, all 7 RK
+/// stages) to the native path: the polynomial correction is computed
+/// relative to the step's start time `s.t`, then re-expressed at the
+/// query time `ti` via this propagator, exactly mirroring
+/// `interpolate(s::PreconStepper, ti)`'s trailing `s.prop!(out, s.t, ti)`
+/// call. Before this, the native path only had linear dense output between
+/// accepted steps (see PORT_LOG Phase 8) — correct only at the endpoints.
+///
+/// Returns 0 on success, -1 on null/length mismatch.
+///
+/// # Safety
+/// `sim` must be valid; `y` must be valid for `n` `ComplexF64` reads/writes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_apply_prop(
+    sim: *mut NativeSim,
+    y: *mut c_double,
+    n: size_t,
+    t1: f64,
+    t2: f64,
+) -> i32 {
+    if sim.is_null() || y.is_null() {
+        return -1;
+    }
+    let sim = unsafe { &mut *sim };
+    if n != sim.n {
+        return -1;
+    }
+    let slice = unsafe { std::slice::from_raw_parts_mut(y as *mut Complex<f64>, n) };
+    sim.ensure_linop_at(t2);
+    apply_prop(slice, &sim.linop, t2 - t1);
     0
 }
 

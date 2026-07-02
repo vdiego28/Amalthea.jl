@@ -119,9 +119,34 @@ full-`solve` ~1e-6 vs the Julia oracle — see TESTING.md §3 nondeterminism flo
   Scope: RealGrid, Kerr-only, two-point gradient only (multi-point gradient
   and radial/free-space/modal z-dependent `nfun` deferred — see MATH.md
   §3.5). Test `test/test_native_zdep_linop.jl`. ✔
-- ⬜ **Phase 8 — Default-flip + cleanup.** `LUNA_USE_RUST_NATIVE` becomes default;
-  Julia loop retained as fallback with one-time `@warn`; per-kernel toggles kept
-  for differential debugging. *Gate:* full existing suite green with native default.
+- ✅ **Phase 8 — Default-flip + cleanup.** `LUNA_USE_RUST_NATIVE` default flipped
+  to `"1"`; every Phases 1-7 scope restriction converted from a hard `error()`
+  to a new `NativeIneligible` exception, caught by `solve_precon` and silently
+  (one-time `@warn`) falls back to the Julia stepper — native being opt-in
+  used to make a scope-restriction crash the right behavior; being default
+  makes it a user-facing regression instead, so it must fall back. Running
+  the *entire* test suite (not just the phase-specific groups) surfaced four
+  real, pre-existing gaps invisible while native was opt-in: an unrecognized
+  `f!` silently ran with zero nonlinearity (`test_rk45.jl`'s raw closures);
+  gas mixtures crashed with a `MethodError` instead of falling back
+  (non-scalar `densityfun`); `RamanPolarEnv` (GNLSE/envelope Raman) silently
+  vanished (no `isa` branch matched it — closed generally with a catch-all,
+  not a special case); and, most significantly, the resident field never saw
+  `Luna.run`'s per-step windowing at all (`native_step` overwrites `s.yn`
+  from Rust's own state, discarding whatever Julia wrote into the pointer
+  between calls) — invisible because no native-specific test drives the
+  stepper through `Luna.run`, fixed via a new `native_resync_field` FFI
+  called after `stepfun`. A related, separate bug (dense output between
+  accepted steps was linear, not Julia's quartic `interpC`) explained nearly
+  every remaining general-suite failure at once — fixed via a new
+  `get_ks_stage`-based `interpolate(s::RustNativeStepper)` and
+  `native_apply_prop` FFI. Full details, including the tolerance-vs-bug
+  triage for each affected general-purpose test, in `PORT_LOG.md`. Test
+  `test/test_native_phase8.jl`. Gate met: `LUNA_TEST_GROUP=All` — 46590
+  passed, 0 failed, 0 errored, 12 broken (pre-existing), with the baseline
+  (`LUNA_USE_RUST_NATIVE=0`) independently confirmed 100% green first. ✔
+
+**Native-Rust backend port (Phases 0-8) complete.**
 
 ### 🟡 Wire remaining Rust kernels into the Julia pipeline
 PPT ionization is now wired (opt-in via `LUNA_USE_RUST_IONISATION=1`).

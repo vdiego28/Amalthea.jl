@@ -3,6 +3,7 @@ using TestItems
 @testitem "Mixtures" tags=[:io] begin
 using Luna
 import Test: @test, @testset
+import LinearAlgebra: norm
 
 @testset "refractive index" begin
 @testset "$gi" for gi in PhysData.gas
@@ -71,6 +72,16 @@ output_mix = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
 Luna.run(Eω, grid, linop, transform, FT, output_mix)
 
 
-@test all(output_mix.data["Eω"][grid.sidx, :] .== output_single.data["Eω"][grid.sidx, :])
+# Gas mixtures give `densityfun(z)` a per-species Vector return, which the
+# native mode-averaged path's `RustNativeStepper` rejects as
+# `NativeIneligible` (falls back to the Julia stepper — see RK45.jl); the
+# single-gas config above has a scalar `densityfun(z)` and is native-eligible.
+# So under Phase 8's native-by-default, these two runs legitimately execute
+# on different backends, and can only be expected to agree to the
+# established native-vs-Julia method tolerance (~1e-13, Phase 1), not
+# bit-for-bit as before Phase 8 (when both always ran in pure Julia).
+rel = norm(output_mix.data["Eω"][grid.sidx, :] - output_single.data["Eω"][grid.sidx, :]) /
+      norm(output_single.data["Eω"][grid.sidx, :])
+@test rel < 1e-8
 end
 end

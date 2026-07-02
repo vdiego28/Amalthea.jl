@@ -168,9 +168,12 @@ RealGrid, `const_norm_free`, Kerr-only — a genuine joint 3-D FFTW plan, same
 libfftw3 binary, new plan rank only), and Phase 7 (z-dependent linop,
 mode-averaged graded-core constant-radius `MarcatiliMode` built via
 `Capillary.gradient` — a two-point pressure-gradient capillary, Kerr-only)
-are complete. Phase 8 (default-flip) is next. Full design docs, phase
-checklist, and math reference live under
-`docs/native-port/{ARCHITECTURE,MATH,TESTING,PORT_LOG,BETA1_ANALYTIC}.md`
+and Phase 8 (default-flip: `LUNA_USE_RUST_NATIVE` now defaults to `"1"`;
+every Phases 1-7 scope restriction converted to a catchable
+`NativeIneligible` exception so an out-of-scope config falls back to the
+Julia stepper instead of crashing) are complete — **the native-Rust backend
+port is done.** Full design docs, phase checklist, and math reference live
+under `docs/native-port/{ARCHITECTURE,MATH,TESTING,PORT_LOG,BETA1_ANALYTIC}.md`
 and `AGENTS.md` (repo root) — read those before touching this code; they
 are the source of truth for phase status, not this section.
 
@@ -188,6 +191,28 @@ bandwidth. Confirmed (not assumed) via a `kerr=false` control run showing
 the identical magnitude, proving it's the β1 method difference and nothing
 in the RHS. Don't "fix" this by reverting to a LUT that reproduces Julia's
 FD noise — see `BETA1_ANALYTIC.md` for the full reasoning.
+
+**Non-obvious gotcha (Phase 8, foundational — applies to every phase, not
+just Phase 8's own scope):** the resident field never saw `Luna.run`'s
+per-step windowing (`stepfun`'s `Eω .*= grid.ωwin`, time-domain `twin`) until
+Phase 8. `native_step` starts every call by overwriting the passed buffer
+from Rust's own internally-tracked `field`, never reading back whatever
+Julia last wrote into it — so windowing applied between `step!` calls was
+silently discarded on the native path, always, since Phase 1. Invisible
+because every native-specific phase test drives the stepper via raw
+`solve()`/`step!()` calls, bypassing `stepfun` entirely; only surfaced once
+Phase 8 made native the default for the general test suite (which always
+goes through `Luna.run`). Fixed by a new `_native_field_resync!(s)` hook,
+called right after `stepfun` in `RK45.jl`'s generic `solve` loop, pushing the
+windowed field back via a new `native_resync_field` FFI — deliberately
+*not* recomputing the FSAL stage-0 RHS (unlike the construction-time
+`set_field`), because Julia's own `PreconStepper` doesn't re-evaluate the
+nonlinear RHS after windowing either. A related but separate bug (dense
+output between accepted steps was linear, not Julia's quartic `interpC`)
+explained nearly every remaining general-suite failure at once — fixed via
+a new `get_ks_stage`/`native_apply_prop`-based `interpolate`. See
+`PORT_LOG.md`'s Phase 8 entry for the full postmortem and how each was
+isolated.
 
 **Non-obvious gotcha (Phase 2, worth knowing before writing any new full-solve
 equivalence test):** the embedded RK45 error estimate is a near-total
