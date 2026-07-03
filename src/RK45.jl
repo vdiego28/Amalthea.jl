@@ -1081,8 +1081,10 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     # Set parameters if radial (TransRadial) — Phase 3 gate: scalar Kerr only,
     # RealGrid or EnvGrid (EnvGrid added Phase D.1, BACKLOG.md — `rhs_radial_env`
     # in native.rs, dispatched on `sim.is_real` exactly like mode-averaged's
-    # real/env split). See docs/native-port/MATH.md §3.2 for the design
-    # (precomputed normalization array M, resident QdhtFfiHandle reused
+    # real/env split). Phase D.2 (BACKLOG.md) adds plasma alongside Kerr
+    # (`apply_plasma_radial` in native.rs, RealGrid only — Julia has no
+    # EnvGrid plasma either). See docs/native-port/MATH.md §3.2 for the
+    # design (precomputed normalization array M, resident QdhtFfiHandle reused
     # directly); `M`'s length (`n_spec`) and the FFI's internal buffer sizing
     # both already generalize to either grid type without further changes here.
     if is_radial
@@ -1108,11 +1110,19 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             end
             γ3 != 0.0 && break
         end
-        length(f!.resp) == 1 && γ3 != 0.0 ||
-            throw(NativeIneligible("radial: only single-response Kerr-only is " *
-                  "supported by the native path (Phase 3 gate); extra responses " *
-                  "(plasma, Raman, ...), or a lone non-Kerr response, are not wired " *
-                  "for this geometry."))
+        # Phase D.2: allow Kerr + a plasma response (any other response type,
+        # or a lone non-Kerr response, remains out of scope — Raman/radial is
+        # still deferred to Phase D.4).
+        is_kerr_resp_radial(r) = any(occursin("γ3", string(fld)) for fld in fieldnames(typeof(r)))
+        for r in f!.resp
+            is_kerr_resp_radial(r) || r isa Luna.Nonlinear.PlasmaCumtrapz ||
+                throw(NativeIneligible("radial: only Kerr and/or plasma responses are " *
+                      "supported by the native path (Phase D.2 gate); Raman and other " *
+                      "responses are not yet wired for this geometry."))
+        end
+        γ3 != 0.0 ||
+            throw(NativeIneligible("radial: no Kerr response found (γ3=0) — the native " *
+                  "radial path requires a Kerr response."))
 
         _check_density_zindependent(f!.densityfun, flength)
         density = f!.densityfun(0.0)
@@ -1136,6 +1146,32 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             towin, kerr_fac,
             real.(M), imag.(M))
         rc == 0 || error("native_set_radial_params failed: $rc")
+
+        # Wire plasma if present and a Rust ionisation handle is available —
+        # same decoupled-from-LUNA_USE_RUST_IONISATION eligibility as the
+        # mode-averaged wiring above (Phase C, BACKLOG.md). Must fail the
+        # whole construction (NativeIneligible), not silently continue
+        # without plasma, for the same silent-wrong-physics reason.
+        for r in f!.resp
+            if r isa Luna.Nonlinear.PlasmaCumtrapz
+                irf = r.ratefunc
+                if irf isa Luna.Ionisation.IonRatePPTAccel &&
+                        !isnothing(irf.rust_handle) &&
+                        irf.rust_handle.ptr != C_NULL
+                    rc = ccall((:native_set_plasma_params, _LIBLUNA_RUST_RK45), Cint,
+                        (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64),
+                        handle.ptr, irf.rust_handle.ptr,
+                        r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt)
+                    rc == 0 || throw(NativeIneligible("native_set_plasma_params returned $rc"))
+                else
+                    throw(NativeIneligible("plasma detected but no Rust ionisation handle is " *
+                          "available (library missing, or both LUNA_USE_RUST_IONISATION and " *
+                          "LUNA_USE_RUST_NATIVE were explicitly disabled), or ratefunc is not " *
+                          "an IonRatePPTAccel — this config is not eligible for the native path."))
+                end
+                break  # only one plasma response expected
+            end
+        end
     end
 
     # Set parameters if modal (TransModal) — Phase 5 gate: RealGrid,

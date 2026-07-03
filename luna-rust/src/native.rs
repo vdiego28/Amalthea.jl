@@ -583,6 +583,74 @@ impl NativeSim {
         }
     }
 
+    /// Radial counterpart of `apply_plasma_real` — Phase D.2 (BACKLOG.md),
+    /// MATH.md §3.2's deferred plasma-radial follow-up. Same cumtrapz ×3
+    /// formula (`PlasmaScalar!`, Nonlinear.jl:194-206), applied independently
+    /// per r-column: `NonlinearRHS.jl`'s `Et_to_Pt!` for `TransRadial` calls
+    /// each response with a 1-D view of one r-column (`idcs` iterates the r
+    /// dimension), so `PlasmaCumtrapz` always sees a scalar field here —
+    /// there is no coupling between radial nodes in the plasma response
+    /// itself (only the QDHT couples r-columns, and that happens before/after
+    /// this step, not within it). Scratch buffers (`plas_*`) are sized
+    /// `n_time_over*n_r` by `native_set_plasma_params` when `is_radial`.
+    ///
+    /// # Safety
+    /// `plasma_ion_ptr` must be non-null and valid.
+    fn apply_plasma_radial(&mut self) {
+        let n_time_over = self.n_time_over;
+        let n_r = self.n_r;
+        let dt = self.plasma_dt;
+        // SAFETY: pointer set by `native_set_plasma_params`; Julia owns the handle
+        // and keeps it alive for the lifetime of the stepper.
+        let ion = unsafe { &*self.plasma_ion_ptr };
+
+        for r in 0..n_r {
+            let start = r * n_time_over;
+            let end = start + n_time_over;
+
+            // 1. ionization rate W(|E(t)|)
+            for i in start..end {
+                let e_abs = self.radial_eto[i].abs();
+                self.plas_rate[i] = ion.rate(e_abs)
+                    .unwrap_or_else(|_| ion.rate(ion.e_max).unwrap_or(0.0));
+            }
+
+            // 2. cumtrapz(fraction, rate, dt) → raw integral ∫₀ᵗ W dτ, per column
+            cumtrapz_slice_f64(&self.plas_rate[start..end], &mut self.plas_fraction[start..end], dt);
+
+            // 3. ρ(t) = preionfrac + 1 − exp(−∫W)
+            for i in start..end {
+                self.plas_fraction[i] =
+                    self.plasma_preionfrac + 1.0 - (-self.plas_fraction[i]).exp();
+            }
+
+            // 4. phase[i] = ρ[i] * e_ratio * E[i]
+            for i in start..end {
+                self.plas_phase[i] = self.plas_fraction[i] * self.plasma_e_ratio * self.radial_eto[i];
+            }
+
+            // 5. cumtrapz(J, phase, dt) → free-electron current, per column
+            cumtrapz_slice_f64(&self.plas_phase[start..end], &mut self.plas_j[start..end], dt);
+
+            // 6. ionization loss current: J[i] += Ip * W[i] * (1−ρ[i]) / E[i]
+            for i in start..end {
+                let e = self.radial_eto[i];
+                if e.abs() > 0.0 {
+                    self.plas_j[i] +=
+                        self.plasma_ionpot * self.plas_rate[i] * (1.0 - self.plas_fraction[i]) / e;
+                }
+            }
+
+            // 7. cumtrapz(P, J, dt) → plasma polarisation, per column
+            cumtrapz_slice_f64(&self.plas_j[start..end], &mut self.plas_p[start..end], dt);
+        }
+
+        // 8. add P(t,r) to radial_pto
+        for i in 0..(n_time_over * n_r) {
+            self.radial_pto[i] += self.plas_p[i];
+        }
+    }
+
     /// Raman polarisation via the resident time-domain ADE solver (`thg=true`:
     /// intensity = E², no Hilbert transform), added to `self.pto` in-place.
     /// Reproduces `(R::RamanPolar)(out, Et, ρ)` for `RamanPolarField`
@@ -721,6 +789,11 @@ impl NativeSim {
         for i in 0..(n_time_over * n_r) {
             let e = self.radial_eto[i];
             self.radial_pto[i] += self.kerr_fac * e * e * e;
+        }
+
+        // ── Step 3b: Plasma polarisation (if enabled), per r-column ──────────────
+        if self.has_plasma {
+            self.apply_plasma_radial();
         }
 
         // ── Step 4: time-window apodization per r-column (reuses 1-D towin) ──────
@@ -1740,7 +1813,11 @@ pub unsafe extern "C" fn native_set_zdep_mode_avg_params(
 ///
 /// `ion_ptr` is a raw pointer to a `PptIonizationRate` already constructed by Julia
 /// (via `init_ppt_ionization_lut`). Julia owns it; this call just borrows it for the
-/// lifetime of the `NativeSim`. Must be called **after** `native_set_mode_avg_params`.
+/// lifetime of the `NativeSim`. Must be called **after** `native_set_mode_avg_params`
+/// (mode-averaged) or `native_set_radial_params` (radial, Phase D.2 — BACKLOG.md)
+/// so `s.n_time_over`/`s.n_r` are already sized; the `plas_*` scratch buffers are
+/// sized `n_time_over` for mode-averaged or `n_time_over*n_r` for radial based on
+/// `s.is_radial`.
 ///
 /// Returns 0 on success, -1 on null args, -2 if called before mode-avg params are set.
 ///
@@ -1758,7 +1835,10 @@ pub unsafe extern "C" fn native_set_plasma_params(
 ) -> i32 {
     if sim.is_null() || ion_ptr.is_null() { return -1; }
     let s = unsafe { &mut *sim };
-    let n = s.n_time_over;
+    // Radial (Phase D.2): one independent plasma state per r-column, laid out
+    // column-major `(n_time_over, n_r)` exactly like `radial_eto`/`radial_pto`
+    // — `native_set_radial_params` must run first so `s.n_r` is already set.
+    let n = if s.is_radial { s.n_time_over * s.n_r } else { s.n_time_over };
     if n == 0 { return -2; }
     s.plasma_ion_ptr   = ion_ptr;
     s.plasma_ionpot    = ionpot;

@@ -112,8 +112,27 @@ fixed-step full-solve, non-vacuousness check — TESTING.md §3):
    equivalence tests themselves intentionally use a much weaker field where
    Kerr's own contribution is below the FP-noise floor, so vacuousness is
    checked separately rather than folded into those same runs).
-2. Plasma in radial geometry (per-r cumtrapz; reuses the Phase 2b plasma
-   assembly per radial node).
+2. ✅ **Plasma in radial geometry** — `apply_plasma_radial` in
+   `luna-rust/src/native.rs`: the exact mode-averaged `apply_plasma_real`
+   cumtrapz ×3 formula (ionization rate → cumtrapz → ρ(t) → phase → cumtrapz
+   → current J with ionization-loss term → cumtrapz → polarisation P),
+   applied independently per r-column into column-major `plas_*` scratch
+   buffers sized `n_time_over*n_r` — matches `Et_to_Pt!`'s per-r-column
+   dispatch for `TransRadial` (`PlasmaCumtrapz` always sees a scalar field
+   in this geometry, so there's no cross-r coupling in the plasma response
+   itself). `native_set_plasma_params` buffer sizing now branches on
+   `s.is_radial`. `RK45.jl`'s radial eligibility guard relaxed from
+   Kerr-only to Kerr-and/or-plasma (`NativeIneligible` still rejects Raman
+   or any other response, deferred to Phase D.4), plus the same
+   plasma-handle-eligibility wiring already used for mode-averaged (Phase C).
+   New `test/test_native_radial_plasma.jl`: single-step 8.3e-14, full-solve
+   5.1e-12 (both well under the ~1e-12 QDHT floor caveat), non-vacuousness
+   confirmed via an independent, much stronger Julia-only-compared field
+   (1.79e-5) — decoupled from the equivalence tests' field strength because
+   PPT's extreme field-sensitivity makes the single-step tolerance and the
+   non-vacuousness threshold pull in opposite directions at the same energy
+   (see the test file's comments for the full reasoning and the numbers
+   that ruled out a single shared field strength).
 3. EnvGrid free-space (c2c 3-D FFTW plan — `fftw_plan_dft_3d`).
 4. Raman in radial/modal (additive term per node, reusing the resident ADE
    solver, one oscillator state per node).
@@ -122,6 +141,9 @@ fixed-step full-solve, non-vacuousness check — TESTING.md §3):
 
 Gate (D.1): all 7 test groups green — 46605 passed, 12 broken (pre-existing),
 0 failed/errored.
+
+Gate (D.2): all 7 test groups green — 46608 passed, 12 broken (pre-existing),
+0 failed/errored (rust group: 41975/41975, includes 3 new tests).
 
 ### Phase E — Native scope: modal generality (🟡, large)
 1. General mode orders: stable `besselj(n, x)` for n>1 (downward Miller
