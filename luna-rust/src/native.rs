@@ -350,6 +350,43 @@ pub struct NativeSim {
     /// mirrors Julia's `make_prop!`'s `lastt2` memoization (a
     /// forward/backward `prop!` pair always shares one evaluation).
     pub zdep_last_z: f64,
+
+    // ── Phase D.5: z-dependent linop + normfun — free-space (`TransFree`),
+    // two-point pressure gradient — see `LinearOps.ZDepLinopFree` /
+    // `NonlinearRHS.ZDepNormFree`. No waveguide term (unlike Phase 7's
+    // Marcatili case): `n(ω;z) = sqrt(1+γ(λ(ω))·ρ(z))` is the whole index,
+    // so both `self.linop` (`LinearOps._fill_linop_xy!`) and `self.free_m`
+    // (`NonlinearRHS.norm_free`) are recomputed here from the same
+    // per-(ω,k⊥) `k²(ω;z)-k⊥²` quantity every RK stage.
+    pub is_zdep_free: bool,
+    pub zdep_free_flength: f64,
+    pub zdep_free_p0: f64,
+    pub zdep_free_p1: f64,
+    pub zdep_free_dens_lut: Option<HermiteSpline>,
+    /// `γ(λ(ω))` per spectral bin (0 outside `sidx`), length `n_spec`.
+    pub zdep_free_gamma: Vec<f64>,
+    pub zdep_free_omega: Vec<f64>,
+    /// `grid.ωwin` per spectral bin — free-space doesn't otherwise store
+    /// this (the constant-linop path folds it into `free_m` once and
+    /// discards it), so it needs its own field here for the per-stage recompute.
+    pub zdep_free_omegawin: Vec<f64>,
+    /// `k⊥² = kx²+ky²`, flattened column-major `(n_y,n_x)` (iy fastest) —
+    /// matches `free_m`'s own `(n_spec,n_y,n_x)` flatten order.
+    pub zdep_free_kperp2: Vec<f64>,
+    /// `grid.sidx`, length `n_spec` — free-space's own `self.sidx` field is
+    /// never populated (only `native_set_mode_avg_params` fills it), so
+    /// this needs its own copy for the sidx-gated `k2` default.
+    pub zdep_free_sidx: Vec<bool>,
+    /// β1(z) reference frequency (`wlfreq(grid.referenceλ)`, matching
+    /// `LinearOps.make_linop`'s own β1 evaluation point).
+    pub zdep_free_omega0: f64,
+    pub zdep_free_gamma0: f64,
+    pub zdep_free_dgamma0: f64,
+    /// `ε₀·γ3`, density factored out — see `zdep_kerr_fac_per_dens`'s doc
+    /// for why this must be rescaled by `dens(z)` every call, not baked in
+    /// once at construction.
+    pub zdep_free_kerr_fac_per_dens: f64,
+    pub zdep_free_last_z: f64,
 }
 
 impl NativeSim {
@@ -471,6 +508,22 @@ impl NativeSim {
             zdep_dnwg0: Complex::new(0.0, 0.0),
             zdep_kerr_fac_per_dens: 0.0,
             zdep_last_z: f64::NAN,
+
+            is_zdep_free: false,
+            zdep_free_flength: 0.0,
+            zdep_free_p0: 0.0,
+            zdep_free_p1: 0.0,
+            zdep_free_dens_lut: None,
+            zdep_free_gamma: Vec::new(),
+            zdep_free_omega: Vec::new(),
+            zdep_free_omegawin: Vec::new(),
+            zdep_free_kperp2: Vec::new(),
+            zdep_free_sidx: Vec::new(),
+            zdep_free_omega0: 0.0,
+            zdep_free_gamma0: 0.0,
+            zdep_free_dgamma0: 0.0,
+            zdep_free_kerr_fac_per_dens: 0.0,
+            zdep_free_last_z: f64::NAN,
         }
     }
 
@@ -1425,6 +1478,96 @@ impl NativeSim {
         self.kerr_fac = self.zdep_kerr_fac_per_dens * dens;
         self.zdep_last_z = z;
     }
+
+    /// Recompute `self.linop` and `self.free_m` in place for propagation
+    /// position `z` — the free-space (`TransFree`) counterpart of
+    /// `ensure_linop_at`, Phase D.5 (BACKLOG.md). No-op if `is_zdep_free` is
+    /// false or `z` matches the last call (same memoization rationale).
+    ///
+    /// Unlike `ensure_linop_at` there is no waveguide term: `n(ω;z) =
+    /// sqrt(1+γ(λ(ω))·ρ(z))` is the whole index, so `k²(ω;z) = n(ω;z)²·
+    /// (ω/c)²` is computed once per ω and reused for both the linop fill
+    /// (`LinearOps._fill_linop_xy!`'s formula) and the nonlinear norm fill
+    /// (`NonlinearRHS.norm_free`'s formula) at every (ω,k⊥) pair — the two
+    /// Julia functions duplicate the same `k²-k⊥²` computation with
+    /// different post-processing, so this method does too, rather than
+    /// factoring out a shared helper Julia itself doesn't have (keeping the
+    /// two formulas visibly side-by-side made the transcription easier to
+    /// verify against both Julia sources independently).
+    fn ensure_free_norm_at(&mut self, z: f64) {
+        if !self.is_zdep_free { return; }
+        if self.zdep_free_last_z == z { return; }
+
+        // Closed-form z -> pressure (TwoPointGradient.p(z)), same formula
+        // and boundary clamp as `ensure_linop_at`.
+        let zc = z.clamp(0.0, self.zdep_free_flength);
+        let p0 = self.zdep_free_p0;
+        let p1 = self.zdep_free_p1;
+        let l = self.zdep_free_flength;
+        let pressure = if zc >= l {
+            p1
+        } else if zc <= 0.0 {
+            p0
+        } else {
+            (p0 * p0 + zc / l * (p1 * p1 - p0 * p0)).sqrt()
+        };
+        let dens = self.zdep_free_dens_lut.as_ref().unwrap().eval(pressure);
+        const C: f64 = 299_792_458.0;
+        const MU_0: f64 = 1.25663706212e-6;
+
+        // β1(z) = (n0(z) + ω0·dn0/dω(z))/c, with n0(z)=sqrt(1+γ0·ρ(z)) and
+        // dn0/dω(z) = dγ0·ρ(z)/(2·n0(z)) — see `LinearOps.ZDepLinopFree`'s
+        // doc for the derivation (no waveguide term, unlike Phase 7).
+        let n0 = (1.0 + self.zdep_free_gamma0 * dens).sqrt();
+        let dn0 = self.zdep_free_dgamma0 * dens / (2.0 * n0);
+        let beta1 = (n0 + self.zdep_free_omega0 * dn0) / C;
+
+        let n_spec = self.n_spec;
+        let n_cols = self.n_y * self.n_x;
+
+        // Per-ω k²(ω;z), honoring the sidx-gated default exactly like
+        // Julia's `k2 = zero(grid.ω); k2[grid.sidx] .= ...` (leaving k2=0,
+        // not (n=1)²(ω/c)², outside sidx — γ alone being 0 there isn't
+        // enough to reproduce this).
+        let mut k2 = vec![0.0f64; n_spec];
+        for iw in 0..n_spec {
+            if self.zdep_free_sidx[iw] {
+                let omega = self.zdep_free_omega[iw];
+                k2[iw] = (1.0 + self.zdep_free_gamma[iw] * dens) * (omega / C).powi(2);
+            }
+        }
+
+        for col in 0..n_cols {
+            let kp2 = self.zdep_free_kperp2[col];
+            for iw in 0..n_spec {
+                let idx = iw + n_spec * col;
+                let omega = self.zdep_free_omega[iw];
+                let bsq = k2[iw] - kp2;
+
+                // ── linop (LinearOps._fill_linop_xy!) ──────────────────────
+                self.linop[idx] = if bsq < 0.0 {
+                    let atten = (-bsq).sqrt().min(200.0);
+                    Complex::new(-atten, beta1 * omega)
+                } else {
+                    Complex::new(0.0, beta1 * omega - bsq.sqrt())
+                };
+
+                // ── nonlinear norm (NonlinearRHS.norm_free) ─────────────────
+                let normval = if omega == 0.0 || bsq <= 0.0 {
+                    1.0
+                } else {
+                    bsq.sqrt() / (MU_0 * omega)
+                };
+                let owin = self.zdep_free_omegawin[iw];
+                self.free_m[idx] = Complex::new(0.0, -owin * omega) / (2.0 * normval);
+            }
+        }
+
+        // TransFree calls `t.densityfun(z)` fresh every RK stage
+        // (NonlinearRHS.jl), so `kerr_fac` must be rescaled here too.
+        self.kerr_fac = self.zdep_free_kerr_fac_per_dens * dens;
+        self.zdep_free_last_z = z;
+    }
 }
 
 /// C `integrand_v` callback for `pcubature_v` — reconstructs `&mut NativeSim`
@@ -2371,6 +2514,74 @@ pub unsafe extern "C" fn native_set_free_params(
     0
 }
 
+/// Wire the z-dependent linop + normfun for free-space (`TransFree`), a
+/// two-point pressure-gradient gas cell — Phase D.5 (BACKLOG.md). Mirrors
+/// `native_set_zdep_mode_avg_params` (see that function's doc for the
+/// `dspl`-transfer rationale) but for `LinearOps.ZDepLinopFree`/
+/// `NonlinearRHS.ZDepNormFree`'s free-space metadata: no waveguide term,
+/// and `gamma`/`omega`/`omegawin` are `n_spec`-length (not `s.n`-length —
+/// free-space's field spans `n_spec*n_y*n_x`, but the z-dependence only
+/// varies per spectral bin, reused identically across every spatial column).
+///
+/// Must be called **after** `native_set_free_params` (needs `n_spec`/`n_y`/
+/// `n_x` to size `kperp2` and validate array lengths), before `set_field`.
+///
+/// Returns 0 on success, -1 on null/mismatched args, -2 if `dspl` has fewer
+/// than 2 knots, -3 if called before `native_set_free_params`.
+///
+/// # Safety
+/// `sim` must be valid; every pointer argument must be valid for its stated length.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_set_free_zdep_params(
+    sim: *mut NativeSim,
+    flength: c_double,
+    p0: c_double,
+    p1: c_double,
+    n_dspl: size_t,
+    dspl_x: *const c_double,
+    dspl_y: *const c_double,
+    dspl_d: *const c_double,
+    gamma: *const c_double,
+    omega: *const c_double,
+    omegawin: *const c_double,
+    kperp2: *const c_double,
+    sidx: *const u8,
+    eps0_gamma3: c_double,
+    omega0: c_double,
+    gamma0: c_double,
+    dgamma0: c_double,
+) -> i32 {
+    if sim.is_null() || dspl_x.is_null() || dspl_y.is_null() || dspl_d.is_null()
+        || gamma.is_null() || omega.is_null() || omegawin.is_null() || kperp2.is_null()
+        || sidx.is_null() {
+        return -1;
+    }
+    if n_dspl < 2 { return -2; }
+    let s = unsafe { &mut *sim };
+    if s.n_spec == 0 || s.n_y == 0 || s.n_x == 0 { return -3; }
+
+    let dspl_x_v = unsafe { std::slice::from_raw_parts(dspl_x, n_dspl) }.to_vec();
+    let dspl_y_v = unsafe { std::slice::from_raw_parts(dspl_y, n_dspl) }.to_vec();
+    let dspl_d_v = unsafe { std::slice::from_raw_parts(dspl_d, n_dspl) }.to_vec();
+
+    s.zdep_free_flength = flength;
+    s.zdep_free_p0 = p0;
+    s.zdep_free_p1 = p1;
+    s.zdep_free_dens_lut = Some(HermiteSpline::from_parts(dspl_x_v, dspl_y_v, dspl_d_v));
+    s.zdep_free_gamma = unsafe { std::slice::from_raw_parts(gamma, s.n_spec) }.to_vec();
+    s.zdep_free_omega = unsafe { std::slice::from_raw_parts(omega, s.n_spec) }.to_vec();
+    s.zdep_free_omegawin = unsafe { std::slice::from_raw_parts(omegawin, s.n_spec) }.to_vec();
+    s.zdep_free_kperp2 = unsafe { std::slice::from_raw_parts(kperp2, s.n_y * s.n_x) }.to_vec();
+    s.zdep_free_sidx = unsafe { std::slice::from_raw_parts(sidx, s.n_spec) }.iter().map(|&b| b != 0).collect();
+    s.zdep_free_kerr_fac_per_dens = eps0_gamma3;
+    s.zdep_free_omega0 = omega0;
+    s.zdep_free_gamma0 = gamma0;
+    s.zdep_free_dgamma0 = dgamma0;
+    s.zdep_free_last_z = f64::NAN;
+    s.is_zdep_free = true;
+    0
+}
+
 // ── Dormand-Prince constants (matching ffi.rs) ──────────────────────────────
 const DP_B: [[f64; 6]; 6] = [
     [1.0/5.0,          0.0,              0.0,              0.0,             0.0,              0.0],
@@ -2481,6 +2692,7 @@ pub unsafe extern "C" fn native_step(
     
     // prop!(s.ks[1], s.t, s.tn)  — linop evaluated at the later time, t_new
     s.ensure_linop_at(t_new);
+    s.ensure_free_norm_at(t_new);
     apply_prop(&mut s.ks[0], &s.linop, t_new - t_old);
     
     let dt = dtn;
@@ -2502,6 +2714,7 @@ pub unsafe extern "C" fn native_step(
         if s.is_free {
             let dt_prop = DP_NODES[ii] * dt;
             s.ensure_linop_at(t + dt_prop);
+            s.ensure_free_norm_at(t + dt_prop);
             let mut ystage_prop = s.ystage.clone();
             apply_prop(&mut ystage_prop, &s.linop, dt_prop);
             if s.is_real {
@@ -2585,12 +2798,14 @@ pub unsafe extern "C" fn native_step(
         let (left, right) = s.ks.split_at_mut(6);
         left[0].copy_from_slice(&right[0]); // FSAL
         s.ensure_linop_at(tn_new);
+        s.ensure_free_norm_at(tn_new);
         apply_prop(yn_sl, &s.linop, tn_new - t);
         s.field.copy_from_slice(yn_sl);
     } else {
         yn_sl.copy_from_slice(&s.field);
         tn_new = t_new;
         s.ensure_linop_at(tn_new);
+        s.ensure_free_norm_at(tn_new);
         apply_prop(yn_sl, &s.linop, tn_new - t); // no-op since t == tn_new
     }
     

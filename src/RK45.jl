@@ -50,7 +50,8 @@ function solve_precon(f!, linop, y0, t, dt, tmax;
     # radial/free-space/modal `nfun(ω;z)`) is NOT recognized here, so it falls
     # through to the non-native paths below exactly as before Phase 7 — no
     # behavior change for configurations outside the new narrow scope.
-    native_ok = linop isa Array{ComplexF64} || linop isa Luna.Capillary.ZDepLinopMarcatili
+    native_ok = linop isa Array{ComplexF64} || linop isa Luna.Capillary.ZDepLinopMarcatili ||
+                linop isa Luna.LinearOps.ZDepLinopFree
     stepper = nothing
     if use_native && isfile(_LIBLUNA_RUST_RK45) && eltype(y0) == ComplexF64 && native_ok
         # Any scope restriction accumulated across Phases 1-7 (EnvGrid
@@ -838,7 +839,8 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                             locextrap=true, norm=weaknorm, flength=Inf)
     n = length(y0)
     is_zdep_mode_avg = linop isa Luna.Capillary.ZDepLinopMarcatili
-    if is_zdep_mode_avg
+    is_zdep_free_linop = linop isa Luna.LinearOps.ZDepLinopFree
+    if is_zdep_mode_avg || is_zdep_free_linop
         isfinite(flength) || throw(NativeIneligible("z-dependent linop requires a " *
                   "finite `flength` (propagation length) to build the resident z-LUTs " *
                   "— got flength=$flength."))
@@ -1344,7 +1346,11 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     # branches on `sim.is_real` (set by `native_set_fftw_plans`, called earlier)
     # exactly like the radial Phase D.1 EnvGrid extension. Reuses the FFTW
     # library handle native_set_fftw_plans already loaded (no new dlopen) —
-    # only a new 3-D plan is created. See MATH.md §3.4.
+    # only a new 3-D plan is created. Phase D.5 (BACKLOG.md) drops the
+    # z-invariant restriction for a two-point pressure-gradient gas cell —
+    # `normfun isa NonlinearRHS.ZDepNormFree` (and `linop isa
+    # LinearOps.ZDepLinopFree`, checked by `native_ok` above) — wiring an
+    # additional `native_set_free_zdep_params` call. See MATH.md §3.4.
     if is_free
         isnothing(f!.Et_noise) || throw(NativeIneligible("modified shot-noise " *
                           "(Et_noise) not yet supported for the native free-space path"))
@@ -1370,13 +1376,23 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                   "(plasma, Raman, ...), or a lone non-Kerr response, are not wired " *
                   "for this geometry."))
 
-        _check_density_zindependent(f!.densityfun, flength)
+        is_zdep_free = f!.normfun isa Luna.NonlinearRHS.ZDepNormFree
+        if is_zdep_free
+            linop isa Luna.LinearOps.ZDepLinopFree ||
+                throw(NativeIneligible("free-space: a z-dependent normfun (ZDepNormFree) " *
+                      "requires a matching z-dependent linop (ZDepLinopFree) — got " *
+                      "$(typeof(linop))."))
+        else
+            _check_density_zindependent(f!.densityfun, flength)
+        end
         density = f!.densityfun(0.0)
         kerr_fac = density * Luna.PhysData.ε_0 * γ3
 
         # Precompute M[iω,iky,ikx] = ωwin[iω]·(-i·ω[iω]) / (2·normfun(0.0)[iω,iky,ikx]).
-        # Folds norm_free + ωwin into one array. Valid only for a z-invariant
-        # normfun (const_norm_free) — see MATH.md §3.4.
+        # Folds norm_free + ωwin into one array. For the z-dependent case this
+        # is just the z=0 seed value — `native_set_free_zdep_params` below
+        # (via `ensure_free_norm_at`) overwrites it before first use, since
+        # `zdep_free_last_z` starts at NaN.
         normarr = f!.normfun(0.0)
         ω = f!.grid.ω
         ωwin = f!.grid.ωwin
@@ -1391,6 +1407,21 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             towin, kerr_fac,
             real.(M), imag.(M))
         rc == 0 || error("native_set_free_params failed: $rc")
+
+        if is_zdep_free
+            w = linop
+            eps0_gamma3 = Luna.PhysData.ε_0 * γ3
+            rc = ccall((:native_set_free_zdep_params, _LIBLUNA_RUST_RK45), Cint,
+                (Ptr{Cvoid}, Float64, Float64, Float64,
+                 Csize_t, Ptr{Float64}, Ptr{Float64}, Ptr{Float64},
+                 Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Ptr{UInt8},
+                 Float64, Float64, Float64, Float64),
+                handle.ptr, w.L, w.p0, w.p1,
+                Csize_t(length(w.dspl_x)), w.dspl_x, w.dspl_y, w.dspl_d,
+                w.gamma, w.omega, ωwin, w.kperp2, UInt8.(w.sidx),
+                eps0_gamma3, w.ω0, w.γ0, w.dγ0)
+            rc == 0 || throw(NativeIneligible("native_set_free_zdep_params returned $rc"))
+        end
     end
 
     # Copy initial field to Rust

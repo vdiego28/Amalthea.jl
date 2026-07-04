@@ -90,7 +90,7 @@ Gate: all 7 test groups green — 46602 passed, 12 broken (pre-existing), 0
 failed/errored (run as parallel per-group jobs, not a single sequential
 `All` invocation).
 
-### Phase D — Native scope: EnvGrid + plasma/Raman in more geometries (🟡, large)
+### Phase D — Native scope: EnvGrid + plasma/Raman in more geometries (✅, large)
 In dependency order, each with the established gates (single-step ≤1e-13,
 fixed-step full-solve, non-vacuousness check — TESTING.md §3):
 1. ✅ **EnvGrid radial** — `rhs_radial_env` in `luna-rust/src/native.rs`
@@ -193,8 +193,44 @@ fixed-step full-solve, non-vacuousness check — TESTING.md §3):
    relative to Kerr at a single step, i.e. below FP noise; these two new
    geometries' larger non-vacuousness effects make the method-difference
    floor visible for the first time.
-5. z-dependent `normfun` for free-space (drop the `const_norm_free`
-   restriction).
+5. ✅ **z-dependent `normfun` for free-space** — drops the `const_norm_free`
+   restriction for a two-point pressure-gradient gas cell. Turned out to
+   require a z-dependent *linop* too (physically inseparable from the
+   nonlinear norm: both derive from the same `n(ω;z)`), making this a
+   Phase-7-scale addition rather than a small drop-the-restriction change —
+   confirmed via `advisor` before implementing, since the original BACKLOG
+   wording undersold the scope. The index law is exact, not approximate:
+   `n(ω;z) = sqrt(1+γ(λ(ω))·ρ(z))`, confirmed directly from
+   `PhysData.ref_index_fun`'s source before writing any Rust. New
+   `LinearOps.ZDepLinopFree` (mirrors `Capillary.ZDepLinopMarcatili` — same
+   `dspl.x/y/D` density-spline transfer rationale, same `TwoPointGradient`
+   closed form) + `NonlinearRHS.ZDepNormFree`, built together by
+   `LinearOps.make_linop_free_gradient`/`NonlinearRHS.norm_free_gradient`
+   (mirrors `Capillary.gradient`'s `(coren, dens)` return shape). Unlike
+   Phase 7's Marcatili case there is no waveguide term, so β1(z) reduces to
+   `(n0(z)+ω0·dn0/dω(z))/c` with `dn0/dω(z) = dγ0·ρ(z)/(2·n0(z))` — still
+   needs the same BigFloat-derivative trick for `γ0`/`dγ0` (γ is an opaque
+   per-gas closure), but no `nwg`/`neff` complex-branch logic. New
+   `luna-rust/src/native.rs` method `ensure_free_norm_at` (free-space
+   counterpart of `ensure_linop_at`) recomputes **both** `self.linop`
+   (`LinearOps._fill_linop_xy!`'s formula) and `self.free_m`
+   (`NonlinearRHS.norm_free`'s formula) from one shared per-(ω,k⊥)
+   `k²(ω;z)-k⊥²`, wired into all 4 `ensure_linop_at` call sites in
+   `native_step`'s stage loop. New `native_set_free_zdep_params` FFI setter
+   (transfers `dspl`, `γ(ω)`, `ω`, `ωwin`, `k⊥²`, `sidx`, and the 4 β1
+   constants — `sidx` needed its own `zdep_free_sidx` field since
+   free-space's generic `self.sidx` is only ever populated by
+   `native_set_mode_avg_params`, an easy miss caught by an index-out-of-
+   bounds panic on the first native run, not a silent wrong-answer). New
+   `test/test_native_free_zdep.jl`: single-step 2.7e-11, full-solve 1.4e-10
+   — far tighter than Phase 7's ~1e-4 gate, because Julia's own FD-based β1
+   (`PhysData.dispersion_func`) happens to have much lower noise for this
+   simple index law than for Marcatili's full `neff`; non-vacuousness
+   confirmed by comparing against a constant-`p0` cell over the same length
+   (20% relative difference, since p1=3·p0 here — not folded into the
+   equivalence tests, which need a much smaller gradient to stay within the
+   Rust-vs-Julia agreement floor for other reasons already documented at
+   other phases).
 
 Gate (D.1): all 7 test groups green — 46605 passed, 12 broken (pre-existing),
 0 failed/errored.
@@ -207,6 +243,10 @@ Gate (D.3): all 7 test groups green — 46611 passed, 12 broken (pre-existing),
 
 Gate (D.4): all 7 test groups green — 46617 passed, 12 broken (pre-existing),
 0 failed/errored (rust group: 41984/41984, includes 6 new tests).
+
+Gate (D.5): all 7 test groups green — 46620 passed, 12 broken (pre-existing),
+0 failed/errored (rust group: 41987/41987, includes 3 new tests). **Phase D
+complete** (D.1-D.5 all ✅).
 
 ### Phase E — Native scope: modal generality (🟡, large)
 1. General mode orders: stable `besselj(n, x)` for n>1 (downward Miller

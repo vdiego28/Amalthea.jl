@@ -891,4 +891,39 @@ function norm_free(grid, xygrid, nfun)
     end
 end
 
+# `ZDepNormFree` mirrors `LinearOps.ZDepLinopFree` (BACKLOG.md Phase D.5) —
+# see that struct's doc for the shared design rationale. `norm!` behaves
+# identically everywhere an ordinary z-dependent normfun is used (only
+# `RustNativeStepper` inspects the wrapper type); `gamma` is the metadata
+# the native path needs to recompute the norm array `self.free_m` every RK
+# stage, from the same `k²(ω;z)-k⊥²` quantity `ZDepLinopFree` recomputes for
+# `self.linop`.
+struct ZDepNormFree{F, D}
+    norm!::F
+    densf::D
+    gamma::Vector{Float64}   # γ(λ_μm(ω)) per ω, 0 outside sidx — same law as ZDepLinopFree
+end
+(w::ZDepNormFree)(z) = w.norm!(z)
+
+"""
+    norm_free_gradient(grid, xygrid, gas, densf)
+
+Convenience constructor (mirrors [`norm_free`](@ref)) for a free-space
+two-point pressure-gradient gas cell — BACKLOG.md Phase D.5. `densf(z)`
+should be the *same* density function
+[`LinearOps.make_linop_free_gradient`](@ref) returns, so the linop and
+nonlinear-norm paths share an identical density profile.
+"""
+function norm_free_gradient(grid, xygrid, gas::Symbol, densf)
+    γ = PhysData.sellmeier_gas(gas)
+    nfun(ω; z) = sqrt(1 + γ(wlfreq(ω)*1e6)*densf(z))
+    normfun = norm_free(grid, xygrid, nfun)
+    n_full = length(grid.ω)
+    gamma_arr = zeros(n_full)
+    for iω in (1:n_full)[grid.sidx]
+        gamma_arr[iω] = γ(wlfreq(grid.ω[iω])*1e6)
+    end
+    ZDepNormFree(normfun, densf, gamma_arr)
+end
+
 end

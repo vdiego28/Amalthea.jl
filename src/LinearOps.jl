@@ -3,6 +3,7 @@ import FFTW
 import Hankel
 import Luna: Modes, Grid, PhysData, Maths
 import Luna.PhysData: wlfreq
+import ..Luna
 
 #=================================================#
 #===============    FREE SPACE     ===============#
@@ -71,6 +72,87 @@ function make_linop(grid::Grid.RealGrid, xygrid::Grid.FreeGrid, nfun)
         k2[grid.sidx] .= (nfun.(grid.ω[grid.sidx]; z=z) .* grid.ω[grid.sidx] ./ PhysData.c).^2
         _fill_linop_xy!(out, grid, β1, k2, kperp2, idcs)
     end
+end
+
+# `ZDepLinopFree` mirrors `Capillary.ZDepLinopMarcatili` (see that struct's
+# doc for the full rationale — density spline transfer, why β1 needs a
+# closed form rather than a LUT) for the free-space (`TransFree`) geometry —
+# BACKLOG.md Phase D.5. `linop!` behaves identically everywhere an ordinary
+# z-dependent linop is used (only `RustNativeStepper` inspects the wrapper
+# type); the extra fields are the metadata the native resident path needs
+# to recompute `self.linop` AND the nonlinear norm array `self.free_m` from
+# the same per-(ω,k⊥) `k²(ω;z)-k⊥²` quantity every RK stage (`docs/native-
+# port/MATH.md §3.4`'s deferred z-dependent-normfun follow-up).
+#
+# Unlike `ZDepLinopMarcatili` there is no waveguide term (`nwg`) — free-space
+# has no cladding, so `n(ω;z) = sqrt(1 + γ(λ(ω))·ρ(z))` is the *whole* index,
+# and β1(z) = (n₀(z) + ω₀·dn₀/dω(z))/c with dn₀/dω(z) = dγ₀·ρ(z)/(2·n₀(z)) —
+# both computable from just `γ₀=γ(λ(ω₀))` and `dγ₀=dγ/dω|_{ω₀}` (the same
+# BigFloat-derivative trick `Capillary.make_linop`'s Phase 7 specialization
+# already uses, reused verbatim here since `γ` is the same kind of opaque
+# per-gas Sellmeier closure).
+struct ZDepLinopFree{F, D}
+    linop!::F
+    densf::D          # dens(z) = dspl(pfun(z))
+    L::Float64
+    p0::Float64
+    p1::Float64
+    dspl_x::Vector{Float64}
+    dspl_y::Vector{Float64}
+    dspl_d::Vector{Float64}
+    gamma::Vector{Float64}   # γ(λ_μm(ω)) per ω, 0 outside sidx
+    omega::Vector{Float64}
+    kperp2::Vector{Float64}  # flattened (n_y,n_x), column-major (iy fastest)
+    sidx::BitVector
+    n_y::Int
+    n_x::Int
+    ω0::Float64
+    γ0::Float64
+    dγ0::Float64
+end
+(w::ZDepLinopFree)(out, z) = w.linop!(out, z)
+
+"""
+    make_linop_free_gradient(grid, xygrid, gas, L, p0, p1; T=PhysData.roomtemp)
+
+Convenience constructor (mirrors [`Capillary.gradient`](@ref)) for a
+free-space two-point pressure-gradient gas cell: builds the ordinary
+z-dependent `linop!` (`make_linop`) and wraps it in a [`ZDepLinopFree`](@ref)
+carrying the metadata `RustNativeStepper`'s Phase D.5 native path needs.
+Returns `(wrapped_linop, densf)` — `densf(z)` should also be passed as the
+`densityfun` for `Luna.setup`/`TransFree` construction, and to
+[`NonlinearRHS.norm_free_gradient`](@ref) so the linop and nonlinear-norm
+paths share an identical density profile (not just numerically equal —
+the same spline object).
+"""
+function make_linop_free_gradient(grid::Grid.RealGrid, xygrid::Grid.FreeGrid,
+                                   gas::Symbol, L, p0, p1; T=PhysData.roomtemp)
+    γ = PhysData.sellmeier_gas(gas)
+    dspl = PhysData.densityspline(gas, Pmin=p0==p1 ? 0 : min(p0, p1), Pmax=max(p0, p1); T)
+    pfun = Luna.Capillary.TwoPointGradient(Float64(L), Float64(p0), Float64(p1))
+    densf(z) = dspl(pfun(z))
+    nfun(ω; z) = sqrt(1 + γ(wlfreq(ω)*1e6)*densf(z))
+    linop! = make_linop(grid, xygrid, nfun)
+
+    n_full = length(grid.ω)
+    gamma_arr = zeros(n_full)
+    for iω in (1:n_full)[grid.sidx]
+        gamma_arr[iω] = γ(wlfreq(grid.ω[iω])*1e6)
+    end
+    kperp2 = vec(Float64.(@. (xygrid.kx^2)' + xygrid.ky^2))
+
+    ω0 = wlfreq(grid.referenceλ)
+    γ_of_ω(ω) = γ(wlfreq(ω)*1e6)
+    γ0 = γ_of_ω(ω0)
+    dγ0 = setprecision(BigFloat, 1024) do
+        Float64(Maths.derivative(γ_of_ω, BigFloat(ω0), 1))
+    end
+
+    wrapped = ZDepLinopFree(linop!, densf, Float64(L), Float64(p0), Float64(p1),
+                             dspl.x, dspl.y, dspl.D, gamma_arr,
+                             collect(Float64, grid.ω), kperp2, BitVector(grid.sidx),
+                             length(xygrid.y), length(xygrid.x), ω0, γ0, dγ0)
+    return wrapped, densf
 end
 
 # Internal routine -- function barrier aids with JIT compilation
