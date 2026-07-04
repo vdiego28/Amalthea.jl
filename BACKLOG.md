@@ -156,8 +156,43 @@ fixed-step full-solve, non-vacuousness check — TESTING.md §3):
    RealGrid free-space test, but `EnvGrid`+`Kerr_env`): single-step 2.9e-17,
    full-solve 4.7e-16, non-vacuousness confirmed (Kerr changes the
    Julia-only result by 4.6e-4 at an independent stronger field).
-4. Raman in radial/modal (additive term per node, reusing the resident ADE
-   solver, one oscillator state per node).
+4. ✅ **Raman in radial/modal** — additive term reusing the resident
+   `TimeDomainRamanSolver` ADE solver (`RealGrid`, `thg=true`, all-SDO
+   `CombinedRamanResponse` with density-independent τ2 — same eligibility
+   criteria as the existing mode-averaged Phase 4 wiring). `solve()` resets
+   its oscillator state at entry (`raman.rs`), so it is stateless across
+   calls — the *same* resident solver instance can be reused sequentially
+   across spatial locations with no cross-location leakage, resolving what
+   first looked like an architectural blocker for modal (adaptive-cubature
+   node positions move between calls) but isn't, since nothing persists
+   between nodes anyway. Radial: new `apply_raman_radial` in
+   `luna-rust/src/native.rs`, mirroring `apply_plasma_radial`'s per-r-column
+   dispatch (`Et_to_Pt!` always sees a scalar field per column for
+   `TransRadial`); `native_set_raman_params` now branches on `s.is_radial`
+   to size its scratch buffers `n_time_over*n_r` instead of `n_time_over`.
+   Modal: the Raman ADE solve is inlined directly into
+   `rhs_modal_pointcalc` (per-node, npol=1 scalar field only), right before
+   the existing towin apodization step — `modal_integrand_v` already calls
+   `rhs_modal_pointcalc` sequentially per quadrature node, so the shared
+   `n_time_over`-sized buffers (the same ones mode-averaged uses) are safe
+   to reuse without a modal-specific branch in `native_set_raman_params`.
+   `RK45.jl`: both the radial and modal eligibility blocks now accept an
+   optional `RamanPolarField` alongside Kerr (radial: alongside an optional
+   plasma response too), each with its own Raman-wiring block copied from
+   the mode-averaged pattern (same FFI call, same eligibility checks).
+   New `test/test_native_radial_raman.jl` and `test/test_native_modal_raman.jl`
+   (both :N2, vibration-only SDO Raman): single-step ~1e-7/1e-8, full-solve
+   ~2.3e-7/1.0e-6 (Rust vs Julia), non-vacuousness ~1.2e-3/7.0e-4 (Raman vs
+   no-Raman, Julia-only). Both tolerances are markedly looser than the
+   ~1e-12/1e-13 Kerr/plasma radial and modal gates: Julia's oracle
+   `RamanPolarField` here has no `rust_handle`, so it takes its own
+   FFT-convolution path, while the resident native path always uses the
+   O(Nt) exponential-ADE integrator — a genuine method difference (not a
+   summation-order floor) that Phase 4's original mode-averaged Raman test
+   never actually exercised, because Raman's contribution there was ~2e-16
+   relative to Kerr at a single step, i.e. below FP noise; these two new
+   geometries' larger non-vacuousness effects make the method-difference
+   floor visible for the first time.
 5. z-dependent `normfun` for free-space (drop the `const_norm_free`
    restriction).
 
@@ -169,6 +204,9 @@ Gate (D.2): all 7 test groups green — 46608 passed, 12 broken (pre-existing),
 
 Gate (D.3): all 7 test groups green — 46611 passed, 12 broken (pre-existing),
 0 failed/errored (rust group: 41978/41978, includes 3 new tests).
+
+Gate (D.4): all 7 test groups green — 46617 passed, 12 broken (pre-existing),
+0 failed/errored (rust group: 41984/41984, includes 6 new tests).
 
 ### Phase E — Native scope: modal generality (🟡, large)
 1. General mode orders: stable `besselj(n, x)` for n>1 (downward Miller

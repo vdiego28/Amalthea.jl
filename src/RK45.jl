@@ -1110,15 +1110,19 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             end
             γ3 != 0.0 && break
         end
-        # Phase D.2: allow Kerr + a plasma response (any other response type,
-        # or a lone non-Kerr response, remains out of scope — Raman/radial is
-        # still deferred to Phase D.4).
+        # Phase D.2 allows Kerr + a plasma response; Phase D.4 (BACKLOG.md)
+        # adds Raman (`RamanPolarField`, RealGrid `thg=true` only — same
+        # eligibility criteria as the mode-averaged Raman wiring below: an
+        # all-SDO `CombinedRamanResponse` with density-independent τ2). Any
+        # other response type (e.g. `RamanPolarEnv`, EnvGrid's envelope
+        # Raman) remains out of scope.
         is_kerr_resp_radial(r) = any(occursin("γ3", string(fld)) for fld in fieldnames(typeof(r)))
         for r in f!.resp
             is_kerr_resp_radial(r) || r isa Luna.Nonlinear.PlasmaCumtrapz ||
-                throw(NativeIneligible("radial: only Kerr and/or plasma responses are " *
-                      "supported by the native path (Phase D.2 gate); Raman and other " *
-                      "responses are not yet wired for this geometry."))
+                r isa Luna.Nonlinear.RamanPolarField ||
+                throw(NativeIneligible("radial: only Kerr, plasma, and/or Raman " *
+                      "(RealGrid, thg=true) responses are supported by the native path " *
+                      "(Phase D.4 gate)."))
         end
         γ3 != 0.0 ||
             throw(NativeIneligible("radial: no Kerr response found (γ3=0) — the native " *
@@ -1170,6 +1174,37 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                           "an IonRatePPTAccel — this config is not eligible for the native path."))
                 end
                 break  # only one plasma response expected
+            end
+        end
+
+        # Wire Raman if present and eligible — Phase D.4 (BACKLOG.md). Same
+        # eligibility criteria and FFI call as the mode-averaged wiring
+        # above; `native_set_raman_params` sizes its scratch buffers as
+        # `n_time_over*n_r` when `s.is_radial` (already set by
+        # `native_set_radial_params`, called earlier in this block).
+        for r in f!.resp
+            if r isa Luna.Nonlinear.RamanPolarField
+                if !r.thg
+                    throw(NativeIneligible("RamanPolarField has thg=false — native Raman " *
+                          "path only supports thg=true (E² intensity)."))
+                end
+                rr = r.r
+                eligible = rr isa Luna.Raman.CombinedRamanResponse &&
+                    all(ri isa Luna.Raman.RamanRespSingleDampedOscillator for ri in rr.Rs) &&
+                    all(abs(ri.τ2ρ(1.0) - ri.τ2ρ(2.0)) < 1e-10 * abs(ri.τ2ρ(1.0)) for ri in rr.Rs)
+                eligible || throw(NativeIneligible("Raman response present but not eligible " *
+                      "for the native path (needs all-SDO CombinedRamanResponse with " *
+                      "density-independent τ2)."))
+                omegas    = Float64[ri.Ω for ri in rr.Rs]
+                gammas    = Float64[1.0 / ri.τ2ρ(1.0) for ri in rr.Rs]
+                couplings = Float64[ri.K for ri in rr.Rs]
+                raman_density = f!.densityfun(0.0)
+                rc = ccall((:native_set_raman_params, _LIBLUNA_RUST_RK45), Cint,
+                    (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Csize_t, Float64, Float64),
+                    handle.ptr, omegas, gammas, couplings, Csize_t(length(omegas)),
+                    r.dt, raman_density)
+                rc == 0 || throw(NativeIneligible("native_set_raman_params returned $rc"))
+                break  # only one Raman response expected
             end
         end
     end
@@ -1231,11 +1266,19 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             end
             γ3 != 0.0 && break
         end
-        length(f!.resp) == 1 && γ3 != 0.0 ||
-            throw(NativeIneligible("modal: only single-response Kerr-only is " *
-                  "supported by the native path (Phase 5 gate); extra responses " *
-                  "(plasma, Raman, ...), or a lone non-Kerr response, are not wired " *
-                  "for this geometry."))
+        # Phase 5 gate is Kerr-only; Phase D.4 (BACKLOG.md) adds Raman
+        # (RealGrid, thg=true, npol=1 — same per-node scalar-field scope as
+        # Kerr here) alongside it. Any other response type remains ineligible.
+        is_kerr_resp_modal(r) = any(occursin("γ3", string(fld)) for fld in fieldnames(typeof(r)))
+        for r in f!.resp
+            is_kerr_resp_modal(r) || r isa Luna.Nonlinear.RamanPolarField ||
+                throw(NativeIneligible("modal: only Kerr and/or Raman (RealGrid, " *
+                      "thg=true) responses are supported by the native path " *
+                      "(Phase D.4 gate)."))
+        end
+        γ3 != 0.0 ||
+            throw(NativeIneligible("modal: no Kerr response found (γ3=0) — the " *
+                  "native modal path requires a Kerr response."))
 
         _check_density_zindependent(f!.densityfun, flength)
         density = f!.densityfun(0.0)
@@ -1259,6 +1302,40 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             towin, kerr_fac, real.(nlfac), imag.(nlfac),
             lib_path, f!.rtol, f!.atol, Csize_t(f!.mfcn))
         rc == 0 || error("native_set_modal_params failed: $rc")
+
+        # Wire Raman if present and eligible — Phase D.4 (BACKLOG.md). Same
+        # eligibility criteria and FFI call as mode-averaged/radial above;
+        # `native_set_raman_params` sizes its scratch buffers as
+        # `n_time_over` (the `else` branch — modal is neither mode-averaged
+        # nor radial, and `rhs_modal_pointcalc` reuses one shared buffer
+        # sequentially across quadrature nodes, exactly like mode-averaged's
+        # single per-call buffer — see native.rs's `apply_raman_radial` doc
+        # for why the same solver instance is safe to reuse this way).
+        for r in f!.resp
+            if r isa Luna.Nonlinear.RamanPolarField
+                if !r.thg
+                    throw(NativeIneligible("RamanPolarField has thg=false — native Raman " *
+                          "path only supports thg=true (E² intensity)."))
+                end
+                rr = r.r
+                eligible = rr isa Luna.Raman.CombinedRamanResponse &&
+                    all(ri isa Luna.Raman.RamanRespSingleDampedOscillator for ri in rr.Rs) &&
+                    all(abs(ri.τ2ρ(1.0) - ri.τ2ρ(2.0)) < 1e-10 * abs(ri.τ2ρ(1.0)) for ri in rr.Rs)
+                eligible || throw(NativeIneligible("Raman response present but not eligible " *
+                      "for the native path (needs all-SDO CombinedRamanResponse with " *
+                      "density-independent τ2)."))
+                omegas    = Float64[ri.Ω for ri in rr.Rs]
+                gammas    = Float64[1.0 / ri.τ2ρ(1.0) for ri in rr.Rs]
+                couplings = Float64[ri.K for ri in rr.Rs]
+                raman_density = f!.densityfun(0.0)
+                rc = ccall((:native_set_raman_params, _LIBLUNA_RUST_RK45), Cint,
+                    (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Csize_t, Float64, Float64),
+                    handle.ptr, omegas, gammas, couplings, Csize_t(length(omegas)),
+                    r.dt, raman_density)
+                rc == 0 || throw(NativeIneligible("native_set_raman_params returned $rc"))
+                break  # only one Raman response expected
+            end
+        end
     end
 
     # Set parameters if free-space (TransFree) — Phase 6 gate: RealGrid,

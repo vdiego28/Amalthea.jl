@@ -683,6 +683,37 @@ impl NativeSim {
         }
     }
 
+    /// Radial counterpart of `apply_raman_real` — Phase D.4 (BACKLOG.md).
+    /// Same `thg=true` scalar-intensity ADE solve, applied independently per
+    /// r-column: `Et_to_Pt!` for `TransRadial` calls each response with a
+    /// 1-D view of one r-column, so `RamanPolarField` sees a scalar field
+    /// here exactly like `PlasmaCumtrapz` (see `apply_plasma_radial`'s doc).
+    /// `solve()` resets its oscillator state at entry, so the single
+    /// resident `raman_solver` can be reused sequentially across columns —
+    /// no per-column solver instance is needed. Scratch buffers
+    /// (`raman_intensity`/`raman_p`) are sized `n_time_over*n_r` by
+    /// `native_set_raman_params` when `is_radial`.
+    fn apply_raman_radial(&mut self) {
+        let n_time_over = self.n_time_over;
+        let n_r = self.n_r;
+        let rho = self.raman_density;
+
+        for r in 0..n_r {
+            let start = r * n_time_over;
+            let end = start + n_time_over;
+            for i in start..end {
+                let e = self.radial_eto[i];
+                self.raman_intensity[i] = e * e;
+            }
+            if let Some(ref mut solver) = self.raman_solver {
+                solver.solve(&self.raman_intensity[start..end], &mut self.raman_p[start..end]);
+            }
+            for i in start..end {
+                self.radial_pto[i] += rho * self.radial_eto[i] * self.raman_p[i];
+            }
+        }
+    }
+
     /// EnvGrid mode-averaged RHS: Kerr_env (|E|²·E) via c2c FFTW plans.
     /// Reproduces `TransModeAvg` for `ComplexF64` fields (src/NonlinearRHS.jl:531).
     fn rhs_mode_avg_env(&mut self, idx: usize, eomega: &[Complex<f64>]) {
@@ -807,6 +838,11 @@ impl NativeSim {
         // ── Step 3b: Plasma polarisation (if enabled), per r-column ──────────────
         if self.has_plasma {
             self.apply_plasma_radial();
+        }
+
+        // ── Step 3c: Raman polarisation (if enabled), per r-column ────────────────
+        if self.has_raman {
+            self.apply_raman_radial();
         }
 
         // ── Step 4: time-window apodization per r-column (reuses 1-D towin) ──────
@@ -1085,6 +1121,27 @@ impl NativeSim {
                 let sq = ex * ex + ey * ey;
                 self.modal_pr[i] += fac * sq * ex;
                 self.modal_pr[n_time_over + i] += fac * sq * ey;
+            }
+        }
+
+        // ── Raman polarisation (if enabled), npol=1 scalar field only ────────────
+        // Phase D.4 (BACKLOG.md): same `apply_raman_real` ADE-solve formula,
+        // applied per quadrature node — `rhs_modal_pointcalc` is called
+        // sequentially per node (see `modal_integrand_v`'s doc), so the
+        // single resident `raman_solver` (which resets its own state at
+        // solve-entry) can be reused across nodes with no cross-node
+        // leakage, exactly like `apply_raman_radial`'s per-r-column reuse.
+        if self.has_raman {
+            let rho = self.raman_density;
+            for i in 0..n_time_over {
+                let e = self.modal_er[i];
+                self.raman_intensity[i] = e * e;
+            }
+            if let Some(ref mut solver) = self.raman_solver {
+                solver.solve(&self.raman_intensity[..n_time_over], &mut self.raman_p[..n_time_over]);
+            }
+            for i in 0..n_time_over {
+                self.modal_pr[i] += rho * self.modal_er[i] * self.raman_p[i];
             }
         }
 
@@ -2032,10 +2089,12 @@ pub unsafe extern "C" fn native_set_radial_params(
 }
 
 /// Wire the Raman ADE solver as an additive term in `rhs_mode_avg_real`
-/// (RealGrid, `thg=true` only — see MATH.md §5.3).
+/// or, since Phase D.4 (BACKLOG.md), `rhs_radial` (RealGrid, `thg=true`
+/// only — see MATH.md §5.3).
 ///
-/// Must be called **after** `native_set_mode_avg_params` (needs `n_time_over`
-/// to size the scratch buffers), before `set_field`.
+/// Must be called **after** `native_set_mode_avg_params` or
+/// `native_set_radial_params` (needs `n_time_over`/`n_r`/`is_radial` to size
+/// the scratch buffers), before `set_field`.
 ///
 /// # Arguments
 /// * `omega`/`gamma`/`coupling` — per-oscillator SDO parameters (`Ω`,
@@ -2076,10 +2135,18 @@ pub unsafe extern "C" fn native_set_raman_params(
         .map(|i| RamanOscillator { omega: omega_sl[i], gamma: gamma_sl[i], coupling: coupling_sl[i] })
         .collect();
 
+    // Radial (Phase D.4): one time-march per r-column, laid out column-major
+    // `(n_time_over, n_r)` like `radial_eto`/`plas_*` — `solve()` resets its
+    // internal oscillator state at entry (see `raman.rs`), so the *same*
+    // solver instance can be called once per r-column with no cross-column
+    // state leakage; only the scratch buffers need the extra width.
+    let n = if s.is_radial { s.n_time_over * s.n_r } else { s.n_time_over };
+    if n == 0 { return -2; }
+
     s.raman_solver = Some(TimeDomainRamanSolver::new(oscillators, dt));
     s.raman_density = density;
-    s.raman_intensity = vec![0.0; s.n_time_over];
-    s.raman_p = vec![0.0; s.n_time_over];
+    s.raman_intensity = vec![0.0; n];
+    s.raman_p = vec![0.0; n];
     s.has_raman = true;
 
     0
