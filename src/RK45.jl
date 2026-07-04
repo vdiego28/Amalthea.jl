@@ -1262,12 +1262,13 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     end
 
     # Set parameters if free-space (TransFree) — Phase 6 gate: RealGrid,
-    # const_norm_free (z-invariant), scalar Kerr only. Reuses the FFTW
+    # const_norm_free (z-invariant), scalar Kerr only. Phase D.3 (BACKLOG.md)
+    # adds EnvGrid (c2c 3-D FFTW plan, `ComplexFft3d`) — `native_set_free_params`
+    # branches on `sim.is_real` (set by `native_set_fftw_plans`, called earlier)
+    # exactly like the radial Phase D.1 EnvGrid extension. Reuses the FFTW
     # library handle native_set_fftw_plans already loaded (no new dlopen) —
     # only a new 3-D plan is created. See MATH.md §3.4.
     if is_free
-        is_real_grid || throw(NativeIneligible("EnvGrid free-space not yet " *
-                               "supported (Phase 6 gate is RealGrid-only)"))
         isnothing(f!.Et_noise) || throw(NativeIneligible("modified shot-noise " *
                           "(Et_noise) not yet supported for the native free-space path"))
 

@@ -133,7 +133,29 @@ fixed-step full-solve, non-vacuousness check — TESTING.md §3):
    non-vacuousness threshold pull in opposite directions at the same energy
    (see the test file's comments for the full reasoning and the numbers
    that ruled out a single shared field strength).
-3. EnvGrid free-space (c2c 3-D FFTW plan — `fftw_plan_dft_3d`).
+3. ✅ **EnvGrid free-space** — new `ComplexFft3d` c2c 3-D FFTW plan wrapper
+   (`luna-rust/src/fftw.rs`, `fftw_plan_dft_3d`, FFTW_FORWARD/FFTW_BACKWARD,
+   same Julia column-major `(n_t,n_y,n_x)` / FFTW-reversed-dims convention as
+   the existing `RealFft3d`, validated against a live `FFTW.fft` Julia
+   reference the same way `RealFft3d` was), plus a new `rhs_free_env` method
+   in `luna-rust/src/native.rs` mirroring `rhs_free`'s 7-step per-(y,x)-column
+   zero-pad → joint 3-D inverse FFT → flat Kerr multiply → per-column towin →
+   joint 3-D forward FFT → per-column truncate → normalize pipeline, but
+   reusing `rhs_radial_env`'s c2c "copy-both" half-spectrum convention for the
+   per-column zero-pad/truncate steps and the 3/4 `Kerr_env` SVEA factor
+   instead of RealGrid Kerr's plain cube. `native_set_free_params` now
+   branches on `sim.is_real` to build either the real (`RealFft3d`) or
+   complex (`ComplexFft3d`) plan and scratch buffers (`free_eto_c`/
+   `free_pto_c` for the complex path); `set_field` and the RK-stage loop
+   dispatch on `sim.is_real` between `rhs_free`/`rhs_free_env`, same pattern
+   as every other real/env split in this port. `RK45.jl`'s free-space block:
+   dropped the `is_real_grid || NativeIneligible` guard (the γ3-detection
+   loop, density-z-independence check, and `M`-array precomputation all
+   already generalize to `Kerr_env` closures without changes). New
+   `test/test_native_free_env.jl` (same `Nx≠Ny` geometry as Phase 6's
+   RealGrid free-space test, but `EnvGrid`+`Kerr_env`): single-step 2.9e-17,
+   full-solve 4.7e-16, non-vacuousness confirmed (Kerr changes the
+   Julia-only result by 4.6e-4 at an independent stronger field).
 4. Raman in radial/modal (additive term per node, reusing the resident ADE
    solver, one oscillator state per node).
 5. z-dependent `normfun` for free-space (drop the `const_norm_free`
@@ -144,6 +166,9 @@ Gate (D.1): all 7 test groups green — 46605 passed, 12 broken (pre-existing),
 
 Gate (D.2): all 7 test groups green — 46608 passed, 12 broken (pre-existing),
 0 failed/errored (rust group: 41975/41975, includes 3 new tests).
+
+Gate (D.3): all 7 test groups green — 46611 passed, 12 broken (pre-existing),
+0 failed/errored (rust group: 41978/41978, includes 3 new tests).
 
 ### Phase E — Native scope: modal generality (🟡, large)
 1. General mode orders: stable `besselj(n, x)` for n>1 (downward Miller

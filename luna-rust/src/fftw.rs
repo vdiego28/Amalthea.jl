@@ -143,6 +143,8 @@ type PlanR2c3d =
     unsafe extern "C" fn(c_int, c_int, c_int, *mut f64, *mut FftwComplex, c_uint) -> FftwPlan;
 type PlanC2r3d =
     unsafe extern "C" fn(c_int, c_int, c_int, *mut FftwComplex, *mut f64, c_uint) -> FftwPlan;
+type PlanDft3d =
+    unsafe extern "C" fn(c_int, c_int, c_int, *mut FftwComplex, *mut FftwComplex, c_int, c_uint) -> FftwPlan;
 type ExecDft = unsafe extern "C" fn(FftwPlan, *mut FftwComplex, *mut FftwComplex);
 type ExecR2c = unsafe extern "C" fn(FftwPlan, *mut f64, *mut FftwComplex);
 type ExecC2r = unsafe extern "C" fn(FftwPlan, *mut FftwComplex, *mut f64);
@@ -156,6 +158,7 @@ pub struct FftwApi {
     plan_c2r_1d: PlanC2r1d,
     plan_r2c_3d: PlanR2c3d,
     plan_c2r_3d: PlanC2r3d,
+    plan_dft_3d: PlanDft3d,
     exec_dft: ExecDft,
     exec_r2c: ExecR2c,
     exec_c2r: ExecC2r,
@@ -195,6 +198,7 @@ impl FftwApi {
         let plan_c2r_1d = sym!("fftw_plan_dft_c2r_1d", PlanC2r1d);
         let plan_r2c_3d = sym!("fftw_plan_dft_r2c_3d", PlanR2c3d);
         let plan_c2r_3d = sym!("fftw_plan_dft_c2r_3d", PlanC2r3d);
+        let plan_dft_3d = sym!("fftw_plan_dft_3d", PlanDft3d);
         let exec_dft = sym!("fftw_execute_dft", ExecDft);
         let exec_r2c = sym!("fftw_execute_dft_r2c", ExecR2c);
         let exec_c2r = sym!("fftw_execute_dft_c2r", ExecC2r);
@@ -207,6 +211,7 @@ impl FftwApi {
             plan_c2r_1d,
             plan_r2c_3d,
             plan_c2r_3d,
+            plan_dft_3d,
             exec_dft,
             exec_r2c,
             exec_c2r,
@@ -412,6 +417,74 @@ impl Drop for RealFft3d {
     }
 }
 
+/// A complex↔complex 3-D plan pair (`TransFree`'s `plan_fft(x, (1,2,3))` —
+/// EnvGrid free-space, Phase D.3). Same buffer/dimension-order convention as
+/// [`RealFft3d`]: Julia column-major `(n_t, n_y, n_x)`, FFTW dims passed
+/// reversed as `(n_x, n_y, n_t)`. Unlike `RealFft3d`'s r2c/c2r pair, both
+/// directions here are full-length (no conjugate-symmetric halving) and a
+/// single `fftw_plan_dft_3d` per direction (FFTW_FORWARD/FFTW_BACKWARD)
+/// suffices — c2c multi-dim plans support `FFTW_PRESERVE_INPUT` with
+/// `FFTW_ESTIMATE`/`FFTW_MEASURE` (unlike c2r), but callers still treat the
+/// input as scratch to match every other native RHS's copy-before-inverse
+/// convention in this port.
+pub struct ComplexFft3d {
+    n_t: usize,
+    n_y: usize,
+    n_x: usize,
+    fwd: FftwPlan,
+    inv: FftwPlan,
+    destroy_plan: DestroyPlan,
+    exec_dft: ExecDft,
+}
+
+impl ComplexFft3d {
+    pub fn new(api: &FftwApi, n_t: usize, n_y: usize, n_x: usize, flags: c_uint) -> Self {
+        let ntot = n_t * n_y * n_x;
+        let mut a = vec![[0.0f64; 2]; ntot];
+        let mut b = vec![[0.0f64; 2]; ntot];
+        let f = flags | FFTW_UNALIGNED;
+        let _guard = PLANNER_LOCK.lock().unwrap();
+        let fwd = unsafe {
+            (api.plan_dft_3d)(n_x as c_int, n_y as c_int, n_t as c_int,
+                              a.as_mut_ptr(), b.as_mut_ptr(), FFTW_FORWARD, f)
+        };
+        let inv = unsafe {
+            (api.plan_dft_3d)(n_x as c_int, n_y as c_int, n_t as c_int,
+                              a.as_mut_ptr(), b.as_mut_ptr(), FFTW_BACKWARD, f)
+        };
+        ComplexFft3d { n_t, n_y, n_x, fwd, inv, destroy_plan: api.destroy_plan, exec_dft: api.exec_dft }
+    }
+
+    /// `out = fft(inp, (1,2,3))` (unnormalized).
+    pub fn forward(&self, inp: &mut [Complex<f64>], out: &mut [Complex<f64>]) {
+        let ntot = self.n_t * self.n_y * self.n_x;
+        assert_eq!(inp.len(), ntot);
+        assert_eq!(out.len(), ntot);
+        unsafe {
+            (self.exec_dft)(self.fwd, inp.as_mut_ptr() as *mut FftwComplex,
+                            out.as_mut_ptr() as *mut FftwComplex);
+        }
+    }
+
+    /// `out = ifft_unnormalized(inp, (1,2,3))` (caller divides by `n_t*n_y*n_x`).
+    pub fn inverse(&self, inp: &mut [Complex<f64>], out: &mut [Complex<f64>]) {
+        let ntot = self.n_t * self.n_y * self.n_x;
+        assert_eq!(inp.len(), ntot);
+        assert_eq!(out.len(), ntot);
+        unsafe {
+            (self.exec_dft)(self.inv, inp.as_mut_ptr() as *mut FftwComplex,
+                            out.as_mut_ptr() as *mut FftwComplex);
+        }
+    }
+}
+
+impl Drop for ComplexFft3d {
+    fn drop(&mut self) {
+        let _guard = PLANNER_LOCK.lock().unwrap();
+        unsafe { (self.destroy_plan)(self.fwd); (self.destroy_plan)(self.inv); }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,6 +598,50 @@ mod tests {
         let norm = (n_t * n_y * n_x) as f64;
         for i in 0..back.len() {
             assert!((back[i] / norm - x[i]).abs() < 1e-9, "r2c_3d roundtrip mismatch at {i}");
+        }
+    }
+
+    /// Cross-validates `ComplexFft3d`'s dimension order against
+    /// `FFTW.fft(reshape(ComplexF64.(1:24), 4,3,2), (1,2,3))` (Phase D.3,
+    /// BACKLOG.md) — the complex counterpart of `r2c_3d_matches_julia_reference`.
+    /// Full-length spectrum (no conjugate-symmetric halving), so all 24
+    /// entries are checked against the Julia reference, not just 6.
+    #[test]
+    fn c2c_3d_matches_julia_reference() {
+        let api = match try_api() {
+            Some(a) => a,
+            None => { eprintln!("skip c2c_3d_matches_julia_reference: no FFTW found"); return; }
+        };
+        let (n_t, n_y, n_x) = (4usize, 3usize, 2usize);
+        let plan = ComplexFft3d::new(&api, n_t, n_y, n_x, FFTW_ESTIMATE);
+
+        let mut x: Vec<Complex<f64>> = (1..=24).map(|v| Complex::new(v as f64, 0.0)).collect();
+        let orig = x.clone();
+        let ntot = n_t * n_y * n_x;
+        let mut spec = vec![Complex::new(0.0, 0.0); ntot];
+        plan.forward(&mut x, &mut spec);
+
+        // Julia: FFTW.fft(x, (1,2,3))[i,j,k], column-major (n_t,n_y,n_x).
+        let expected: [(usize, usize, usize, f64, f64); 6] = [
+            (0, 0, 0, 300.0, 0.0),
+            (1, 0, 0, -12.0, 12.0),
+            (2, 0, 0, -12.0, 0.0),
+            (0, 1, 0, -48.0, 27.712812921102035),
+            (0, 2, 0, -48.0, -27.712812921102035),
+            (0, 0, 1, -144.0, 0.0),
+        ];
+        for (i, j, k, re, im) in expected {
+            let idx = i + n_t * (j + n_y * k);
+            let got = spec[idx];
+            assert!((got.re - re).abs() < 1e-9 && (got.im - im).abs() < 1e-9,
+                "c2c_3d mismatch at ({i},{j},{k}): got {got}, expected {re}+{im}i");
+        }
+
+        let mut back = vec![Complex::new(0.0, 0.0); ntot];
+        plan.inverse(&mut spec, &mut back);
+        let norm = ntot as f64;
+        for i in 0..ntot {
+            assert!((back[i] / norm - orig[i]).norm() < 1e-9, "c2c_3d roundtrip mismatch at {i}");
         }
     }
 }

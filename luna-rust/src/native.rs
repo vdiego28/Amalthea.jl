@@ -97,7 +97,7 @@
 
 use num_complex::Complex;
 use libc::{c_char, c_double, c_int, c_uint, size_t, c_void};
-use crate::fftw::{FftwApi, ComplexFft1d, RealFft1d, RealFft3d};
+use crate::fftw::{FftwApi, ComplexFft1d, RealFft1d, RealFft3d, ComplexFft3d};
 use crate::ffi::QdhtFfiHandle;
 use crate::spline::HermiteSpline;
 use crate::raman::{TimeDomainRamanSolver, RamanOscillator};
@@ -258,6 +258,10 @@ pub struct NativeSim {
     pub n_y: usize,
     pub n_x: usize,
     pub fft_r2c_3d: Option<RealFft3d>,
+    /// EnvGrid (c2c) counterpart of `fft_r2c_3d` — Phase D.3 (BACKLOG.md).
+    /// Only one of `fft_r2c_3d`/`fft_c2c_3d` is `Some`, selected by `is_real`
+    /// at `native_set_free_params` time, same split as the radial pair.
+    pub fft_c2c_3d: Option<ComplexFft3d>,
     /// Precomputed `ωwin[iω]·(-i·ω[iω])/(2·normfun(z)[iω,iky,ikx])`, flattened
     /// column-major `(n_spec, n_y, n_x)` — folds `norm_free` + `ωwin` into one
     /// elementwise multiply, exactly like Phase 3's radial `M` array. Valid
@@ -272,6 +276,12 @@ pub struct NativeSim {
     pub free_pto: Vec<f64>,
     pub free_eoo: Vec<Complex<f64>>,
     pub free_poo: Vec<Complex<f64>>,
+    /// EnvGrid (c2c) counterparts of `free_eto`/`free_pto` — only allocated
+    /// (non-empty) when `is_real == false`, same split as `radial_eto_c`/
+    /// `radial_pto_c` (Phase D.1). `free_eoo`/`free_poo` (frequency-domain)
+    /// are already `Complex<f64>` and reused as-is for both grid types.
+    pub free_eto_c: Vec<Complex<f64>>,
+    pub free_pto_c: Vec<Complex<f64>>,
 
     // ── Phase 7: z-dependent linop — mode-averaged, graded-core constant-
     // radius MarcatiliMode, two-point pressure gradient — see MATH.md §3.5.
@@ -434,12 +444,15 @@ impl NativeSim {
             n_y: 0,
             n_x: 0,
             fft_r2c_3d: None,
+            fft_c2c_3d: None,
             free_m: Vec::new(),
             free_fft_norm_over: 1.0,
             free_eto: Vec::new(),
             free_pto: Vec::new(),
             free_eoo: Vec::new(),
             free_poo: Vec::new(),
+            free_eto_c: Vec::new(),
+            free_pto_c: Vec::new(),
             is_zdep_mode_avg: false,
             zdep_flength: 0.0,
             zdep_grad_p0: 0.0,
@@ -1192,6 +1205,82 @@ impl NativeSim {
         }
     }
 
+    /// EnvGrid (c2c) counterpart of `rhs_free` — Phase D.3 (BACKLOG.md).
+    /// Mirrors `rhs_radial_env`'s c2c `to_time!`/`to_freq!` convention
+    /// (half-spectrum zero-pad, `no/n` scale, 3/4 `Kerr_env` SVEA factor)
+    /// applied per `(y,x)` column for the zero-pad/truncate/window steps,
+    /// but — like `rhs_free`'s real-grid Kerr step — the joint 3-D
+    /// transform and the flat elementwise Kerr multiply act over the whole
+    /// `(t,y,x)` volume at once, not per column.
+    fn rhs_free_env(&mut self, idx: usize, eomega: &[Complex<f64>]) {
+        let n = self.n_spec;    // = n_time for EnvGrid (c2c: Nω = Nt)
+        let no = self.n_time_over;
+        let half = n / 2;
+        let n_cols = self.n_y * self.n_x;
+
+        // ── Step 1: to_time! per (y,x) column (EnvGrid c2c, half-spectrum copy-both) ──
+        let scale_fwd = no as f64 / n as f64;
+        self.free_eoo.fill(Complex::new(0.0, 0.0));
+        for c in 0..n_cols {
+            let in_col = &eomega[c * n..(c + 1) * n];
+            let out_col = &mut self.free_eoo[c * no..(c + 1) * no];
+            for i in 0..half {
+                out_col[i] = in_col[i] * scale_fwd;
+            }
+            for i in 0..half {
+                out_col[no - half + i] = in_col[n - half + i] * scale_fwd;
+            }
+        }
+
+        // ── Step 2: ONE joint 3-D inverse transform (ω,ky,kx) → (t,y,x) ──────────
+        if let Some(ref fft) = self.fft_c2c_3d {
+            fft.inverse(&mut self.free_eoo, &mut self.free_eto_c);
+            let inv_nto = self.free_fft_norm_over;
+            for v in &mut self.free_eto_c { *v *= inv_nto; }
+        }
+
+        // ── Step 3: Kerr_env: Pto += (3/4)*kerr_fac · |E|² · E, flat over volume ──
+        let kf = Complex::new(0.75 * self.kerr_fac, 0.0);
+        self.free_pto_c.fill(Complex::new(0.0, 0.0));
+        for i in 0..(no * n_cols) {
+            let e = self.free_eto_c[i];
+            self.free_pto_c[i] += kf * e.norm_sqr() * e;
+        }
+
+        // ── Step 4: towin apodization per (y,x) column ───────────────────────────
+        for c in 0..n_cols {
+            let start = c * no;
+            for t in 0..no {
+                self.free_pto_c[start + t] *= self.towin[t];
+            }
+        }
+
+        // ── Step 5: ONE joint 3-D forward transform (t,y,x) → (ω,ky,kx) ──────────
+        if let Some(ref fft) = self.fft_c2c_3d {
+            fft.forward(&mut self.free_pto_c, &mut self.free_poo);
+        }
+
+        // ── Step 6: to_freq! per (y,x) column (EnvGrid c2c, truncate) ────────────
+        let scale_inv2 = n as f64 / no as f64;
+        self.ks[idx].fill(Complex::new(0.0, 0.0));
+        for c in 0..n_cols {
+            let in_start = c * no;
+            let out_start = c * n;
+            for i in 0..half {
+                self.ks[idx][out_start + i] = self.free_poo[in_start + i] * scale_inv2;
+            }
+            for i in 0..half {
+                self.ks[idx][out_start + n - half + i] =
+                    self.free_poo[in_start + no - half + i] * scale_inv2;
+            }
+        }
+
+        // ── Step 7: normalization — ks[idx] *= M (folds norm_free + ωwin) ────────
+        for i in 0..(n * n_cols) {
+            self.ks[idx][i] *= self.free_m[i];
+        }
+    }
+
     /// Recompute `self.linop` in place for propagation position `z`, for the
     /// z-dependent mode-averaged (Phase 7) case. No-op for Phases 1-6 (the
     /// constant-linop geometries) and a no-op if `z` matches the last call
@@ -1395,7 +1484,11 @@ pub unsafe extern "C" fn set_field(
     
     if sim.is_free {
         let field = sim.field.clone();
-        sim.rhs_free(0, &field);
+        if sim.is_real {
+            sim.rhs_free(0, &field);
+        } else {
+            sim.rhs_free_env(0, &field);
+        }
     } else if sim.is_modal {
         let field = sim.field.clone();
         sim.rhs_modal(0, &field);
@@ -2156,11 +2249,6 @@ pub unsafe extern "C" fn native_set_free_params(
 
     let n_spec_over_tmp = if s.is_real { n_time_over / 2 + 1 } else { n_time_over };
 
-    let fft3d = match s.fftw_api.as_ref() {
-        Some(api) => RealFft3d::new(api, n_time_over, n_y, n_x, flags),
-        None => return -2,
-    };
-
     s.is_free = true;
     s.n_time = n_time;
     s.n_time_over = n_time_over;
@@ -2168,8 +2256,34 @@ pub unsafe extern "C" fn native_set_free_params(
     s.n_spec_over = n_spec_over_tmp;
     s.n_y = n_y;
     s.n_x = n_x;
-    s.fft_r2c_3d = Some(fft3d);
     s.free_fft_norm_over = 1.0 / (n_time_over * n_y * n_x) as f64;
+
+    // Phase D.3: EnvGrid free-space uses a c2c 3-D plan (ComplexFft3d) and
+    // complex time-domain buffers; RealGrid (Phase 6) keeps the r2c plan and
+    // real time-domain buffers — same split as native_set_radial_params.
+    if s.is_real {
+        let fft3d = match s.fftw_api.as_ref() {
+            Some(api) => RealFft3d::new(api, n_time_over, n_y, n_x, flags),
+            None => return -2,
+        };
+        s.fft_r2c_3d = Some(fft3d);
+        s.fft_c2c_3d = None;
+        s.free_eto = vec![0.0; n_time_over * n_cols];
+        s.free_pto = vec![0.0; n_time_over * n_cols];
+        s.free_eto_c = Vec::new();
+        s.free_pto_c = Vec::new();
+    } else {
+        let fft3d = match s.fftw_api.as_ref() {
+            Some(api) => ComplexFft3d::new(api, n_time_over, n_y, n_x, flags),
+            None => return -2,
+        };
+        s.fft_c2c_3d = Some(fft3d);
+        s.fft_r2c_3d = None;
+        s.free_eto = Vec::new();
+        s.free_pto = Vec::new();
+        s.free_eto_c = vec![Complex::new(0.0, 0.0); n_time_over * n_cols];
+        s.free_pto_c = vec![Complex::new(0.0, 0.0); n_time_over * n_cols];
+    }
 
     if !towin.is_null() {
         s.towin = unsafe { std::slice::from_raw_parts(towin, n_time_over) }.to_vec();
@@ -2184,8 +2298,6 @@ pub unsafe extern "C" fn native_set_free_params(
         .map(|(&r, &i)| Complex::new(r, i))
         .collect();
 
-    s.free_eto = vec![0.0; n_time_over * n_cols];
-    s.free_pto = vec![0.0; n_time_over * n_cols];
     s.free_eoo = vec![Complex::new(0.0, 0.0); s.n_spec_over * n_cols];
     s.free_poo = vec![Complex::new(0.0, 0.0); s.n_spec_over * n_cols];
 
@@ -2325,7 +2437,11 @@ pub unsafe extern "C" fn native_step(
             s.ensure_linop_at(t + dt_prop);
             let mut ystage_prop = s.ystage.clone();
             apply_prop(&mut ystage_prop, &s.linop, dt_prop);
-            s.rhs_free(ii + 1, &ystage_prop);
+            if s.is_real {
+                s.rhs_free(ii + 1, &ystage_prop);
+            } else {
+                s.rhs_free_env(ii + 1, &ystage_prop);
+            }
             apply_prop(&mut s.ks[ii + 1], &s.linop, -dt_prop);
         } else if s.is_modal {
             let dt_prop = DP_NODES[ii] * dt;
