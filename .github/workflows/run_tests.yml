@@ -129,6 +129,66 @@ jobs:
           # Disable strict HDF5 file locking ONLY on Windows runners
           HDF5_USE_FILE_LOCKING: ${{ runner.os == 'Windows' && 'FALSE' || 'TRUE' }}
 
+  benchmark:
+    name: Native-path benchmark (regression guard)
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "luna-rust"
+
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1'
+          arch: 'default'
+
+      - name: Cache Julia packages
+        uses: julia-actions/cache@v3
+
+      - name: Install dependencies and build
+        env:
+          PYTHON: # remove PYTHON env variable to make sure packages are installed
+        uses: julia-actions/julia-buildpkg@v1
+        with:
+          ignore-no-cache: true
+
+      # BACKLOG.md Phase G.3 — a lone dedicated job (not part of the sharded
+      # test matrix) so a slow/noisy shared runner can't contaminate the
+      # timing with unrelated load. test/benchmark_native_default.jl hard-
+      # asserts the fork's flagship default field-resolved workload (no env
+      # toggles) actually picks RustNativeStepper — the Phase C / REVIEW.md
+      # §3.2 regression, which showed up as a silent 0x-speedup fallback
+      # with no CI failure at all until this job existed — then writes
+      # native's own fixed-dt per-step wall time to a JSON file.
+      - name: Run native-path benchmark
+        run: julia --project test/benchmark_native_default.jl
+
+      # Publishes to the gh-pages branch and tracks the value over commits;
+      # comments + fails the job if a new measurement regresses sharply
+      # against recent history. Only runs on push to main (not PRs) so PR
+      # runs on forks/branches never need gh-pages write access and the
+      # tracked history stays free of unmerged-branch noise.
+      - name: Store benchmark result and check for regressions
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: 'customSmallerIsBetter'
+          output-file-path: test/benchmark_result.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          alert-threshold: '150%'
+          comment-on-alert: true
+          fail-on-alert: true
+
   python-test:
     name: Python API Test (ubuntu-latest)
     runs-on: ubuntu-latest

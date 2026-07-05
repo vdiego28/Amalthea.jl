@@ -33,3 +33,6 @@ htmlcov/
 .idea/
 *.swp
 *~
+
+# Generated CI benchmark output (test/benchmark_native_default.jl)
+test/benchmark_result.json
