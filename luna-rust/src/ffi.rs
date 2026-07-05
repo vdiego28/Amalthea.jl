@@ -55,42 +55,58 @@ impl QdhtFfiHandle {
     /// (where multiplication is along the r axis, independently for each time t).
     pub fn apply_real(&mut self, data: &mut [f64], n_time: usize, scale: f64) {
         let n_r = self.n_r;
-        self.ensure_capacity(n_time);
         let block = n_r * n_time;
+        self.ensure_capacity(n_time);
 
-        // Step 1: Transpose data (col-major n_time×n_r) → scratch[0..block] (row-major A_rm)
-        // A_rm[t * n_r + s] = data[t + n_time * s]
-        for s in 0..n_r {
-            let col_start = n_time * s;
-            for t in 0..n_time {
-                self.scratch[t * n_r + s] = data[t + col_start];
+        if let Ok(api) = crate::blas::get_blas_api() {
+            // Use BLAS-3 dgemm directly on the col-major array
+            self.scratch[..block].copy_from_slice(&data[..block]);
+            unsafe {
+                (api.cblas_dgemm)(
+                    crate::blas::CBLAS_COL_MAJOR,
+                    crate::blas::CBLAS_NO_TRANS,
+                    crate::blas::CBLAS_NO_TRANS,
+                    n_time as libc::c_int,
+                    n_r as libc::c_int,
+                    n_r as libc::c_int,
+                    scale,
+                    self.scratch.as_ptr(),
+                    n_time as libc::c_int,
+                    self.t_row_major.as_ptr(),
+                    n_r as libc::c_int,
+                    0.0,
+                    data.as_mut_ptr(),
+                    n_time as libc::c_int,
+                );
             }
-        }
-
-        // Step 2: B_rm = T_rm @ A_rm (parallel over t)
-        // scratch[block + t*n_r + r] = scale × dot(T_rm[r,:], scratch[t*n_r..])
-        {
-            let t_rm = self.t_row_major.as_slice();
-            let (a_rm, b_rm) = self.scratch[..2 * block].split_at_mut(block);
-            use rayon::prelude::*;
-            b_rm.par_chunks_mut(n_r).zip(a_rm.par_chunks(n_r)).for_each(|(b_row, a_row)| {
-                for r in 0..n_r {
-                    let t_row = &t_rm[r * n_r .. (r + 1) * n_r];
-                    let mut sum = 0.0f64;
-                    for s in 0..n_r {
-                        sum += t_row[s] * a_row[s];
-                    }
-                    b_row[r] = scale * sum;
+        } else {
+            // Fallback to Rayon
+            for s in 0..n_r {
+                let col_start = n_time * s;
+                for t in 0..n_time {
+                    self.scratch[t * n_r + s] = data[t + col_start];
                 }
-            });
-        }
-
-        // Step 3: Transpose scratch[block..2*block] (row-major B_rm) → data (col-major)
-        // data[t + n_time * r] = scratch[block + t * n_r + r]
-        for r in 0..n_r {
-            let col_start = n_time * r;
-            for t in 0..n_time {
-                data[t + col_start] = self.scratch[block + t * n_r + r];
+            }
+            {
+                let t_rm = self.t_row_major.as_slice();
+                let (a_rm, b_rm) = self.scratch[..2 * block].split_at_mut(block);
+                use rayon::prelude::*;
+                b_rm.par_chunks_mut(n_r).zip(a_rm.par_chunks(n_r)).for_each(|(b_row, a_row)| {
+                    for r in 0..n_r {
+                        let t_row = &t_rm[r * n_r .. (r + 1) * n_r];
+                        let mut sum = 0.0f64;
+                        for s in 0..n_r {
+                            sum += t_row[s] * a_row[s];
+                        }
+                        b_row[r] = scale * sum;
+                    }
+                });
+            }
+            for r in 0..n_r {
+                let col_start = n_time * r;
+                for t in 0..n_time {
+                    data[t + col_start] = self.scratch[block + t * n_r + r];
+                }
             }
         }
     }
@@ -103,55 +119,72 @@ impl QdhtFfiHandle {
     ///   Im(A[t, r]) = `data[2*t + 1 + 2*n_time*r]`
     pub fn apply_cplx(&mut self, data: &mut [f64], n_time: usize, scale: f64) {
         let n_r = self.n_r;
+        let block2 = 2 * n_r * n_time; // total f64 elements
         self.ensure_capacity(n_time);
-        let block = n_r * n_time;
 
-        // Step 1: De-interleave + transpose into A_rm_re and A_rm_im
-        // scratch[0..block]         = A_rm_re  (real parts,  row-major)
-        // scratch[block..2*block]   = A_rm_im  (imag parts,  row-major)
-        for s in 0..n_r {
-            let col_f = 2 * n_time * s;  // float index of start of column s
-            for t in 0..n_time {
-                self.scratch[t * n_r + s]         = data[2 * t     + col_f];
-                self.scratch[block + t * n_r + s] = data[2 * t + 1 + col_f];
+        if let Ok(api) = crate::blas::get_blas_api() {
+            // Use BLAS-3 dgemm directly on the col-major complex array
+            // Interleaved complex arrays act exactly as a 2*n_time x n_r real array.
+            self.scratch[..block2].copy_from_slice(&data[..block2]);
+            unsafe {
+                (api.cblas_dgemm)(
+                    crate::blas::CBLAS_COL_MAJOR,
+                    crate::blas::CBLAS_NO_TRANS,
+                    crate::blas::CBLAS_NO_TRANS,
+                    (2 * n_time) as libc::c_int,
+                    n_r as libc::c_int,
+                    n_r as libc::c_int,
+                    scale,
+                    self.scratch.as_ptr(),
+                    (2 * n_time) as libc::c_int,
+                    self.t_row_major.as_ptr(),
+                    n_r as libc::c_int,
+                    0.0,
+                    data.as_mut_ptr(),
+                    (2 * n_time) as libc::c_int,
+                );
             }
-        }
-
-        // Step 2: B_rm_re / B_rm_im = T_rm @ A_rm_re / A_rm_im (parallel over t)
-        // scratch[2*block..3*block] = B_rm_re
-        // scratch[3*block..4*block] = B_rm_im
-        {
-            let t_rm = self.t_row_major.as_slice();
-            let (lo, hi) = self.scratch[..4 * block].split_at_mut(2 * block);
-            let (a_re, a_im) = lo.split_at_mut(block);
-            let (b_re, b_im) = hi.split_at_mut(block);
-            use rayon::prelude::*;
-            b_re.par_chunks_mut(n_r)
-                .zip(b_im.par_chunks_mut(n_r))
-                .zip(a_re.par_chunks(n_r))
-                .zip(a_im.par_chunks(n_r))
-                .for_each(|(((br, bi), ar), ai)| {
+        } else {
+            // Fallback to Rayon
+            let block = n_r * n_time;
+            for s in 0..n_r {
+                let col_f = 2 * n_time * s;
+                for t in 0..n_time {
+                    self.scratch[t * n_r + s]         = data[2 * t     + col_f];
+                    self.scratch[block + t * n_r + s] = data[2 * t + 1 + col_f];
+                }
+            }
+            {
+                let t_rm = self.t_row_major.as_slice();
+                let (a_rm, temp) = self.scratch[..4 * block].split_at_mut(2 * block);
+                let (a_rm_re, a_rm_im) = a_rm.split_at_mut(block);
+                let (b_rm_re, b_rm_im) = temp.split_at_mut(block);
+                use rayon::prelude::*;
+                b_rm_re.par_chunks_mut(n_r)
+                    .zip(b_rm_im.par_chunks_mut(n_r))
+                    .zip(a_rm_re.par_chunks(n_r))
+                    .zip(a_rm_im.par_chunks(n_r))
+                    .for_each(|(((b_row_re, b_row_im), a_row_re), a_row_im)| {
                     for r in 0..n_r {
                         let t_row = &t_rm[r * n_r .. (r + 1) * n_r];
-                        let mut sr = 0.0f64;
-                        let mut si = 0.0f64;
+                        let mut sum_re = 0.0f64;
+                        let mut sum_im = 0.0f64;
                         for s in 0..n_r {
-                            let tv = t_row[s];
-                            sr += tv * ar[s];
-                            si += tv * ai[s];
+                            let ts = t_row[s];
+                            sum_re += ts * a_row_re[s];
+                            sum_im += ts * a_row_im[s];
                         }
-                        br[r] = scale * sr;
-                        bi[r] = scale * si;
+                        b_row_re[r] = scale * sum_re;
+                        b_row_im[r] = scale * sum_im;
                     }
                 });
-        }
-
-        // Step 3: Transpose + re-interleave B_rm_re/im → data (col-major ComplexF64)
-        for r in 0..n_r {
-            let col_f = 2 * n_time * r;
-            for t in 0..n_time {
-                data[2 * t     + col_f] = self.scratch[2 * block + t * n_r + r];
-                data[2 * t + 1 + col_f] = self.scratch[3 * block + t * n_r + r];
+            }
+            for r in 0..n_r {
+                let col_f = 2 * n_time * r;
+                for t in 0..n_time {
+                    data[2 * t     + col_f] = self.scratch[2 * block + t * n_r + r];
+                    data[2 * t + 1 + col_f] = self.scratch[3 * block + t * n_r + r];
+                }
             }
         }
     }
@@ -1117,5 +1150,24 @@ unsafe fn precon_step_inner(
             ok: ok_final as i32, dt, t, tn: tn_new, dtn: dtn_new, err, errlast: errlast_new,
         };
         0
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn init_blas_path(path_ptr: *const libc::c_char) -> c_int {
+    if path_ptr.is_null() {
+        return -1;
+    }
+    let c_str = unsafe { std::ffi::CStr::from_ptr(path_ptr) };
+    if let Ok(s) = c_str.to_str() {
+        match crate::blas::init_blas_api(std::path::Path::new(s)) {
+            Ok(_) => 0,
+            Err(e) => {
+                eprintln!("Luna-Rust BLAS loader error: {}", e);
+                -1
+            }
+        }
+    } else {
+        -1
     }
 }

@@ -622,6 +622,59 @@ therefore not process-safe and may race on the shared HDF5 queue file.
 (CUDA/Vulkan dispatch, GPU QDHT/Raman/ionization) are never exercised in CI.
 - **Fix:** add a GPU-equipped CI runner (or a scheduled job) that actually executes them.
 
+### 🔴 GPU-resident stepper (Track S3, `CudaNativeSim`) — uncommitted, bug fixed, gated behind explicit opt-in, still unverified on real hardware
+A prior agent pass (2026-07-05, see `GEMINI_SUGGESTIONS.md` and `docs/native-port/GPU.md`)
+left a large uncommitted working-tree diff implementing three of `SUGGESTIONS.md`'s
+performance ideas. Reviewed and tested (full `rust` gate: 42004/42004, no regression) —
+findings below.
+- ✅ **GPU PPT ionization clamp parity** (`kernels.cu`/`ionization.rs`): the CPU-side
+  `strict` clamp-vs-error behavior (`Ionisation.jl`/`ionization.rs::rate`) was missing from
+  the CUDA kernel (`ppt_ionization_kernel` unconditionally errored above `e_max`). Now takes
+  `strict` as an argument and clamps `abs_e = e_max` when `strict == 0`, matching the CPU
+  path exactly. Verified correct by inspection against `ionization.rs`'s own `strict` field.
+- 🟡 **BLAS-3 QDHT** (`ffi.rs`, new `blas.rs`): `QdhtFfiHandle::apply_real`/`apply_cplx` now
+  call `cblas_dgemm` via a runtime-`dlopen`ed BLAS (`init_blas_path`, new FFI export) when
+  available, falling back to the existing Rayon path otherwise. Safe (inert until called) —
+  but **no Julia-side caller exists** (`grep` for `init_blas_path` in `src/*.jl` finds
+  nothing), so this is currently dead code, not a wired optimization.
+- 🟠 **GPU-resident stepper V1** (`native.rs`: `NativeSim` → `NativeBackend` trait +
+  `Box<dyn NativeBackend>`, `CpuNativeSim` = the renamed original; new `cuda_native.rs`:
+  `CudaNativeSim`, scoped to mode-averaged RealGrid Kerr(+plasma) only, all other
+  `set_*_params` return `-1` matching `docs/native-port/GPU.md`'s stated V1 scope):
+  - **Bug found and fixed (2026-07-05):** `CudaNativeSim::step` ran the 6 internal RK
+    stages via `rk45_accumulate_stage_kernel` (`DP_B`, the intra-stage a-coefficients) but
+    never performed the final 5th-order solution accumulation the CPU reference does in
+    `native.rs` (`let b0 = dt*DP_B5[0]; ...` block, ~line 2521) — it just re-propagated the
+    untouched old field, silently dropping the entire nonlinear RK contribution on every
+    accepted step. Fixed by adding one more `rk45_accumulate_stage_fn` launch, in place on
+    `field_d`, using `DP_B5` weights, gated on `locextrap != 0` exactly like the CPU
+    reference, right before the existing final `apply_prop` call. Compiles clean, all 37
+    Rust unit tests and the full `rust` Julia gate (42004/42004) still pass — **but this
+    fix has still never executed on real CUDA hardware** (only checked for logical parity
+    against `CpuNativeSim::step`, not numerically verified end-to-end).
+  - **Opt-in gate added:** `init_cuda_native_sim` (the only FFI entry point that constructs
+    a `CudaNativeSim`) now refuses to initialize — returns null and prints a warning to
+    stderr — unless `LUNA_USE_RUST_CUDA_NATIVE=1` is set, and prints a second warning on
+    successful opt-in. Deliberately stricter than the usual `LUNA_USE_RUST_*` toggles
+    (which default-on once verified): this one requires explicit opt-in until verified on
+    real GPU hardware. Covered by `test_cuda_native_sim_ffi_gated_by_env_var` in `lib.rs`.
+  - **Not wired to Julia at all**: no `src/*.jl` file references `init_cuda_native_sim` or
+    the CUDA path; `RK45.jl`'s native dispatch is untouched. Purely additive scaffolding —
+    zero risk to the existing (CPU) native-port default, doubly so now with the opt-in gate.
+  - **Untestable on this machine**: no `nvcc` in `PATH` or at `/usr/local/cuda/bin/nvcc`
+    (only the NVIDIA driver is present), so `build.rs` falls back to a dummy PTX and
+    `CudaNativeSim::new` fails to load real kernels — `lib.rs`'s
+    `test_cuda_native_sim_basic` self-skips (confirmed via `--nocapture`), so the GPU path
+    has never actually executed on real hardware here.
+  - Design-doc deviation: `docs/native-port/GPU.md` §4 specifies an `enum { Cpu, Gpu }`
+    dispatch ("no `Box<dyn>`... avoids dynamic dispatch overhead") but the implementation
+    uses `Box<dyn NativeBackend>` instead — functionally fine, just not what was designed.
+  - **Do not wire this into `RK45.jl`/the runtime dispatcher until it's been run and
+    verified against the Julia oracle on real CUDA hardware** (per
+    `[[feedback_verify_actual_gate_not_subset]]` — a GPU path is a gate of its own, not a
+    subset of the CPU gate that happens to pass). The env-var gate is a stopgap, not a
+    substitute for that verification.
+
 ## Informational / no action planned
 
 - ⚪ `deps/build.jl` forwards `ENV["RUSTFLAGS"]` (defaulting to `""` if unset),

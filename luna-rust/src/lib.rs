@@ -1,3 +1,4 @@
+pub mod cuda_native;
 pub mod grid;
 pub mod ffi;
 pub mod fftw;
@@ -14,6 +15,7 @@ pub mod stepper;
 pub mod dispatch;
 pub mod io;
 pub mod scans;
+pub mod blas;
 
 #[cfg(test)]
 mod tests {
@@ -395,6 +397,60 @@ mod tests {
         for val in y.iter() {
             assert!((val.re - (-0.05f64).exp()).abs() < 1e-3);
         }
+    }
+
+    #[test]
+    fn test_cuda_native_sim_basic() {
+        use crate::cuda_native::CudaNativeSim;
+        use crate::native::NativeBackend;
+        
+        let n = 256;
+        let mut sim_res = CudaNativeSim::new(n);
+        if sim_res.is_err() {
+            println!("Skipping CUDA test (no GPU or CUDA toolkit available)");
+            return;
+        }
+        let mut sim = sim_res.unwrap();
+        
+        let mut initial_field = vec![Complex::new(1.0, 0.0); n];
+        unsafe {
+            sim.set_field(initial_field.as_ptr() as *const libc::c_double, n);
+            
+            // Dummy step call
+            let mut yn = vec![Complex::new(0.0, 0.0); n];
+            let mut result = crate::native::NativeStepResult {
+                ok: 0, dt: 0.0, t: 0.0, tn: 0.0, dtn: 0.0,
+                err: 0.0, errlast: 0.0,
+            };
+            
+            sim.step(yn.as_mut_ptr(), 0.0, 1.0, 1.0, 1e-4, 1e-4, 0.9, 1.0, 1e-3, 0.0, 0, &mut result as *mut _);
+            
+            // The step does actual GPU integration now.
+            // Since kerr_fac is 0 and linop is 0, the step will just be an identity mapping
+            // But we can check that it didn't crash and ok=1.
+            assert_eq!(result.ok, 1);
+            assert_eq!(result.dtn, 1.0);
+        }
+    }
+
+    #[test]
+    fn test_cuda_native_sim_ffi_gated_by_env_var() {
+        // Serialize with other env-var-mutating tests in this process.
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap();
+
+        unsafe { std::env::remove_var("LUNA_USE_RUST_CUDA_NATIVE"); }
+        let p = unsafe { crate::native::init_cuda_native_sim(256) };
+        assert!(p.is_null(), "init_cuda_native_sim must refuse without the opt-in env var");
+
+        unsafe { std::env::set_var("LUNA_USE_RUST_CUDA_NATIVE", "1"); }
+        // Still expected to be null on this machine (no real CUDA toolkit/PTX), but must not
+        // panic or crash now that opt-in is granted.
+        let p2 = unsafe { crate::native::init_cuda_native_sim(256) };
+        if !p2.is_null() {
+            unsafe { crate::native::free_native_sim(p2); }
+        }
+        unsafe { std::env::remove_var("LUNA_USE_RUST_CUDA_NATIVE"); }
     }
 
     #[test]

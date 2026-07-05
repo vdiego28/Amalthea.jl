@@ -109,7 +109,7 @@ use std::ffi::CStr;
 ///
 /// Buffers are sized to `n` (the spectral length `Nω`) at construction and are
 /// never reallocated during the solve — the hot loop is allocation-free.
-pub struct NativeSim {
+pub struct CpuNativeSim {
     /// Spectral length `Nω` (`Nt÷2+1` for RealGrid, `Nt` for EnvGrid).
     pub n: usize,
     /// The propagated spectral field `Eω` (the RK state vector `y`).
@@ -461,10 +461,10 @@ pub struct NativeSim {
     pub zdep_modal_last_z: f64,
 }
 
-impl NativeSim {
+impl CpuNativeSim {
     fn new(n: usize, linop: &[Complex<f64>]) -> Self {
         let z = || vec![Complex::new(0.0, 0.0); n];
-        NativeSim {
+        CpuNativeSim {
             n,
             field: z(),
             linop: linop.to_vec(),
@@ -1179,7 +1179,7 @@ impl NativeSim {
                 cubature.hcubature_v_2d(
                     fdim,
                     modal_integrand_v_full,
-                    self as *mut NativeSim as *mut c_void,
+                    self as *mut CpuNativeSim as *mut c_void,
                     [0.0, 0.0], [self.modal_a, 2.0 * std::f64::consts::PI],
                     self.modal_maxevals,
                     self.modal_atol, self.modal_rtol,
@@ -1191,7 +1191,7 @@ impl NativeSim {
                 cubature.pcubature_v(
                     fdim,
                     modal_integrand_v,
-                    self as *mut NativeSim as *mut c_void,
+                    self as *mut CpuNativeSim as *mut c_void,
                     0.0, self.modal_a,
                     self.modal_maxevals,
                     self.modal_atol, self.modal_rtol,
@@ -1825,7 +1825,7 @@ unsafe extern "C" fn modal_integrand_v(
     fval: *mut c_double,
 ) -> c_int {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let sim = unsafe { &mut *(fdata as *mut NativeSim) };
+        let sim = unsafe { &mut *(fdata as *mut CpuNativeSim) };
         let npt = npt as usize;
         let fdim = fdim as usize;
         let xs = unsafe { std::slice::from_raw_parts(x, npt) };
@@ -1876,7 +1876,7 @@ unsafe extern "C" fn modal_integrand_v_full(
     fval: *mut c_double,
 ) -> c_int {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let sim = unsafe { &mut *(fdata as *mut NativeSim) };
+        let sim = unsafe { &mut *(fdata as *mut CpuNativeSim) };
         let npt = npt as usize;
         let fdim = fdim as usize;
         let xs = unsafe { std::slice::from_raw_parts(x, 2 * npt) };
@@ -1914,56 +1914,30 @@ fn cumtrapz_slice_f64(src: &[f64], dst: &mut [f64], dt: f64) {
 /// # Safety
 /// `linop` must be non-null and valid for `n` `ComplexF64` (= `2*n` `f64`) reads
 /// for the duration of this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn init_native_sim(
-    linop: *const c_double,
-    n: size_t,
-) -> *mut NativeSim {
-    if linop.is_null() || n == 0 {
-        return std::ptr::null_mut();
-    }
-    // ComplexF64 is two contiguous f64 (re, im); reinterpret the f64* as Complex.
-    let linop_sl = unsafe {
-        std::slice::from_raw_parts(linop as *const Complex<f64>, n)
-    };
-    let result = std::panic::catch_unwind(|| NativeSim::new(n, linop_sl));
-    match result {
-        Ok(h) => Box::into_raw(Box::new(h)),
-        Err(e) => {
-            eprintln!("init_native_sim: panic: {:?}", e);
-            std::ptr::null_mut()
-        }
-    }
+pub trait NativeBackend {
+    unsafe fn set_field(&mut self, data: *const c_double, n: size_t) -> i32;
+    unsafe fn resync_field(&mut self, data: *const c_double, n: size_t) -> i32;
+    unsafe fn get_field(&self, data: *mut c_double, n: size_t) -> i32;
+    unsafe fn get_ks_stage(&self, idx: size_t, data: *mut c_double, n: size_t) -> i32;
+    unsafe fn apply_prop(&mut self, y: *mut c_double, n: size_t, t1: f64, t2: f64) -> i32;
+    unsafe fn debug_linop_at(&mut self, z: c_double, data: *mut c_double, n: size_t) -> i32;
+    unsafe fn debug_beta1_at(&mut self, z: c_double, out_dens: *mut c_double, out_beta1: *mut c_double) -> i32;
+    unsafe fn set_fftw_plans(&mut self, lib_path: *const c_char, n_time: size_t, n_time_over: size_t, is_real: c_int, flags: c_uint) -> i32;
+    unsafe fn set_mode_avg_params(&mut self, n_time: size_t, n_time_over: size_t, towin: *const c_double, owin: *const c_double, sidx: *const u8, pre_re: *const c_double, pre_im: *const c_double, beta: *const c_double, kerr_fac: c_double, nlscale: c_double, sqrt_aeff: c_double) -> i32;
+    unsafe fn set_zdep_mode_avg_params(&mut self, flength: c_double, p0: c_double, p1: c_double, n_dspl: size_t, dspl_x: *const c_double, dspl_y: *const c_double, dspl_d: *const c_double, gamma: *const c_double, nwg_re: *const c_double, nwg_im: *const c_double, omega: *const c_double, model: c_uint, loss_on: c_uint, eps0_gamma3: c_double, omega0: c_double, gamma0: c_double, dgamma0: c_double, nwg0_re: c_double, nwg0_im: c_double, dnwg0_re: c_double, dnwg0_im: c_double) -> i32;
+    unsafe fn set_plasma_params(&mut self, ion_ptr: *const crate::ionization::PptIonizationRate, ionpot: c_double, e_ratio: c_double, preionfrac: c_double, dt: c_double) -> i32;
+    unsafe fn set_radial_params(&mut self, n_time: size_t, n_time_over: size_t, n_r: size_t, t_matrix: *const c_double, scale_fwd: c_double, scale_inv: c_double, towin: *const c_double, kerr_fac: c_double, m_re: *const c_double, m_im: *const c_double) -> i32;
+    unsafe fn set_raman_params(&mut self, omega: *const c_double, gamma: *const c_double, coupling: *const c_double, n_osc: size_t, dt: c_double, density: c_double) -> i32;
+    unsafe fn set_modal_params(&mut self, n_time: size_t, n_time_over: size_t, n_modes: size_t, npol: size_t, a: c_double, unm: *const c_double, inv_sqrt_n: *const c_double, order: *const i32, kind: *const u8, phi: *const c_double, full: u8, pol_select: *const u8, towin: *const c_double, kerr_fac: c_double, nlfac_re: *const c_double, nlfac_im: *const c_double, lib_path: *const c_char, rtol: c_double, atol: c_double, maxevals: size_t) -> i32;
+    unsafe fn set_free_params(&mut self, n_time: size_t, n_time_over: size_t, n_y: size_t, n_x: size_t, flags: c_uint, towin: *const c_double, kerr_fac: c_double, m_re: *const c_double, m_im: *const c_double) -> i32;
+    unsafe fn set_free_zdep_params(&mut self, flength: c_double, p0: c_double, p1: c_double, n_dspl: size_t, dspl_x: *const c_double, dspl_y: *const c_double, dspl_d: *const c_double, gamma: *const c_double, omega: *const c_double, omegawin: *const c_double, kperp2: *const c_double, sidx: *const u8, eps0_gamma3: c_double, omega0: c_double, gamma0: c_double, dgamma0: c_double) -> i32;
+    unsafe fn set_modal_zdep_params(&mut self, flength: c_double, a0: c_double, n_a: size_t, a_x: *const c_double, a_y: *const c_double, a_d: *const c_double, omega: *const c_double, sidx: *const u8, model: u8, loss_on: u8, eco: *const c_double, vn_re: *const c_double, vn_im: *const c_double, omega0: c_double, ref_mode: size_t, eco0: *const c_double, deco0: *const c_double, v0_re: *const c_double, v0_im: *const c_double, dv0_re: *const c_double, dv0_im: *const c_double) -> i32;
+    unsafe fn step(&mut self, yn: *mut Complex<f64>, t_old: f64, t_new: f64, dtn: f64, rtol: f64, atol: f64, safety: f64, max_dt: f64, min_dt: f64, errlast_in: f64, locextrap: i32, result: *mut NativeStepResult) -> i32;
 }
+pub struct NativeSim { pub backend: Box<dyn NativeBackend> }
+impl NativeBackend for CpuNativeSim {
+    unsafe fn set_field(&mut self, data: *const c_double, n: size_t) -> i32 {        let sim = self;
 
-/// Free a `NativeSim`. Passing null is a no-op.
-///
-/// # Safety
-/// `ptr` must be a valid, non-aliased pointer from [`init_native_sim`] that has
-/// not already been freed.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn free_native_sim(ptr: *mut NativeSim) {
-    if !ptr.is_null() {
-        unsafe { drop(Box::from_raw(ptr)); }
-    }
-}
-
-/// Copy `n` `ComplexF64` from Julia into the resident field buffer.
-///
-/// Returns 0 on success, -1 on null/length mismatch.
-///
-/// # Safety
-/// `sim` must be valid; `data` must be valid for `n` `ComplexF64` reads.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn set_field(
-    sim: *mut NativeSim,
-    data: *const c_double,
-    n: size_t,
-) -> i32 {
-    if sim.is_null() || data.is_null() {
-        return -1;
-    }
-    let sim = unsafe { &mut *sim };
     if n != sim.n {
         return -1;
     }
@@ -1997,39 +1971,8 @@ pub unsafe extern "C" fn set_field(
     }
     0
 }
+    unsafe fn resync_field(&mut self, data: *const c_double, n: size_t) -> i32 {        let sim = self;
 
-/// Like `set_field`, but does NOT recompute the FSAL stage-0 RHS.
-///
-/// Used by `RK45.jl`'s post-`stepfun` resync (Phase 8): after an accepted
-/// step, Julia's `stepfun` callback (`Luna.run`'s grid windowing —
-/// `Eω .*= grid.ωwin`, then a time-domain `twin`) mutates the field in
-/// place. Julia's own `PreconStepper` reference behaviour does *not*
-/// re-evaluate the nonlinear RHS after windowing either: it keeps the
-/// FSAL-carried last stage and merely re-expresses it in the new
-/// interaction-picture frame via a *linear* re-propagation
-/// (`evaluate!(s::PreconStepper)`'s `s.prop!(s.ks[1], s.t, s.tn)`).
-/// `native_step` already performs the equivalent FSAL-carry + relinearize
-/// internally (`ks[0] = ks[6]` then `apply_prop`, at the top of the next
-/// call) — recomputing k0 fresh here (as `set_field` does, correctly, for
-/// the brand-new-initial-condition case where no FSAL history exists yet)
-/// would silently diverge from Julia's established approximation instead
-/// of matching it. This function only updates the resident `field` buffer
-/// that the *next* step reads its starting point from.
-///
-/// Returns 0 on success, -1 on null/length mismatch.
-///
-/// # Safety
-/// `sim` must be valid; `data` must be valid for `n` `ComplexF64` reads.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn native_resync_field(
-    sim: *mut NativeSim,
-    data: *const c_double,
-    n: size_t,
-) -> i32 {
-    if sim.is_null() || data.is_null() {
-        return -1;
-    }
-    let sim = unsafe { &mut *sim };
     if n != sim.n {
         return -1;
     }
@@ -2037,23 +1980,8 @@ pub unsafe extern "C" fn native_resync_field(
     sim.field.copy_from_slice(src);
     0
 }
+    unsafe fn get_field(&self, data: *mut c_double, n: size_t) -> i32 {        let sim = self;
 
-/// Copy the resident field buffer back out to Julia (`n` `ComplexF64`).
-///
-/// Returns 0 on success, -1 on null/length mismatch.
-///
-/// # Safety
-/// `sim` must be valid; `data` must be valid for `n` `ComplexF64` writes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn get_field(
-    sim: *const NativeSim,
-    data: *mut c_double,
-    n: size_t,
-) -> i32 {
-    if sim.is_null() || data.is_null() {
-        return -1;
-    }
-    let sim = unsafe { &*sim };
     if n != sim.n {
         return -1;
     }
@@ -2061,18 +1989,8 @@ pub unsafe extern "C" fn get_field(
     dst.copy_from_slice(&sim.field);
     0
 }
+    unsafe fn get_ks_stage(&self, idx: size_t, data: *mut c_double, n: size_t) -> i32 {        let sim = self;
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn get_ks_stage(
-    sim: *const NativeSim,
-    idx: size_t,
-    data: *mut c_double,
-    n: size_t,
-) -> i32 {
-    if sim.is_null() || data.is_null() {
-        return -1;
-    }
-    let sim = unsafe { &*sim };
     if idx >= 7 || n != sim.n {
         return -1;
     }
@@ -2080,37 +1998,8 @@ pub unsafe extern "C" fn get_ks_stage(
     dst.copy_from_slice(&sim.ks[idx]);
     0
 }
+    unsafe fn apply_prop(&mut self, y: *mut c_double, n: size_t, t1: f64, t2: f64) -> i32 {        let sim = self;
 
-/// Apply the interaction-picture linear propagator `exp(linop(t2)*(t2-t1))`
-/// to `y` in place (`n` `ComplexF64`), evaluating the (possibly
-/// z-dependent) linop at `t2` — the later time, matching
-/// `RK45.jl::make_prop!`'s non-constant-linop convention exactly.
-///
-/// Used by `RK45.jl::interpolate(s::RustNativeStepper, ti)` to port
-/// Julia's `PreconStepper`'s quartic dense output (`interpC`, all 7 RK
-/// stages) to the native path: the polynomial correction is computed
-/// relative to the step's start time `s.t`, then re-expressed at the
-/// query time `ti` via this propagator, exactly mirroring
-/// `interpolate(s::PreconStepper, ti)`'s trailing `s.prop!(out, s.t, ti)`
-/// call. Before this, the native path only had linear dense output between
-/// accepted steps (see PORT_LOG Phase 8) — correct only at the endpoints.
-///
-/// Returns 0 on success, -1 on null/length mismatch.
-///
-/// # Safety
-/// `sim` must be valid; `y` must be valid for `n` `ComplexF64` reads/writes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn native_apply_prop(
-    sim: *mut NativeSim,
-    y: *mut c_double,
-    n: size_t,
-    t1: f64,
-    t2: f64,
-) -> i32 {
-    if sim.is_null() || y.is_null() {
-        return -1;
-    }
-    let sim = unsafe { &mut *sim };
     if n != sim.n {
         return -1;
     }
@@ -2119,42 +2008,16 @@ pub unsafe extern "C" fn native_apply_prop(
     apply_prop(slice, &sim.linop, t2 - t1);
     0
 }
+    unsafe fn debug_linop_at(&mut self, z: c_double, data: *mut c_double, n: size_t) -> i32 {        let sim = self;
 
-
-/// Debug getter (mirrors `get_field`/`get_ks_stage`): force `ensure_linop_at(z)`
-/// and copy out the resulting `self.linop`. Used only by Rust-vs-Julia
-/// diagnostic scripts for Phase 7 (z-dependent linop) — not part of the hot
-/// loop.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn native_debug_linop_at(
-    sim: *mut NativeSim,
-    z: c_double,
-    data: *mut c_double,
-    n: size_t,
-) -> i32 {
-    if sim.is_null() || data.is_null() { return -1; }
-    let sim = unsafe { &mut *sim };
     if n != sim.n { return -1; }
     sim.ensure_linop_at(z);
     let dst = unsafe { std::slice::from_raw_parts_mut(data as *mut Complex<f64>, n) };
     dst.copy_from_slice(&sim.linop);
     0
 }
+    unsafe fn debug_beta1_at(&mut self, z: c_double, out_dens: *mut c_double, out_beta1: *mut c_double) -> i32 {        let sim = self;
 
-/// Debug getter (Phase 7 diagnostics, used by `test_native_zdep_linop.jl`'s
-/// unit test): force `ensure_linop_at(z)` and report `[dens, beta1]` at that
-/// z, so the analytic β1(z) closed form (`docs/native-port/BETA1_ANALYTIC.md`)
-/// can be checked directly against a BigFloat ground truth, independent of
-/// the full linop/RHS machinery.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn native_debug_beta1_at(
-    sim: *mut NativeSim,
-    z: c_double,
-    out_dens: *mut c_double,
-    out_beta1: *mut c_double,
-) -> i32 {
-    if sim.is_null() || out_dens.is_null() || out_beta1.is_null() { return -1; }
-    let sim = unsafe { &mut *sim };
     sim.ensure_linop_at(z);
     let zc = z.clamp(0.0, sim.zdep_flength);
     let p0 = sim.zdep_grad_p0;
@@ -2182,18 +2045,8 @@ pub unsafe extern "C" fn native_debug_beta1_at(
     }
     0
 }
+    unsafe fn set_fftw_plans(&mut self, lib_path: *const c_char, n_time: size_t, n_time_over: size_t, is_real: c_int, flags: c_uint) -> i32 {        let sim = self;
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn native_set_fftw_plans(
-    sim: *mut NativeSim,
-    lib_path: *const c_char,
-    n_time: size_t,
-    n_time_over: size_t,
-    is_real: c_int,
-    flags: c_uint,
-) -> i32 {
-    if sim.is_null() || lib_path.is_null() { return -1; }
-    let sim = unsafe { &mut *sim };
     
     let path_str = unsafe { CStr::from_ptr(lib_path).to_str().unwrap_or("") };
     let api = match FftwApi::load(Some(path_str)) {
@@ -2219,24 +2072,8 @@ pub unsafe extern "C" fn native_set_fftw_plans(
     sim.fftw_api = Some(api);
     0
 }
+    unsafe fn set_mode_avg_params(&mut self, n_time: size_t, n_time_over: size_t, towin: *const c_double, owin: *const c_double, sidx: *const u8, pre_re: *const c_double, pre_im: *const c_double, beta: *const c_double, kerr_fac: c_double, nlscale: c_double, sqrt_aeff: c_double) -> i32 {        let s = self;
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn native_set_mode_avg_params(
-    sim: *mut NativeSim,
-    n_time: size_t,
-    n_time_over: size_t,
-    towin: *const c_double,
-    owin: *const c_double,
-    sidx: *const u8,
-    pre_re: *const c_double,
-    pre_im: *const c_double,
-    beta: *const c_double,
-    kerr_fac: c_double,
-    nlscale: c_double,
-    sqrt_aeff: c_double,
-) -> i32 {
-    if sim.is_null() { return -1; }
-    let s = unsafe { &mut *sim };
     s.n_time = n_time;
     s.n_time_over = n_time_over;
     s.n_spec = s.n;
@@ -2291,6 +2128,720 @@ pub unsafe extern "C" fn native_set_mode_avg_params(
     s.nlscale = nlscale;
     s.sqrt_aeff = sqrt_aeff;
     0
+}
+    unsafe fn set_zdep_mode_avg_params(&mut self, flength: c_double, p0: c_double, p1: c_double, n_dspl: size_t, dspl_x: *const c_double, dspl_y: *const c_double, dspl_d: *const c_double, gamma: *const c_double, nwg_re: *const c_double, nwg_im: *const c_double, omega: *const c_double, model: c_uint, loss_on: c_uint, eps0_gamma3: c_double, omega0: c_double, gamma0: c_double, dgamma0: c_double, nwg0_re: c_double, nwg0_im: c_double, dnwg0_re: c_double, dnwg0_im: c_double) -> i32 {        let s = self;
+
+    if s.sidx.len() != s.n { return -3; }
+
+    let dspl_x_v = unsafe { std::slice::from_raw_parts(dspl_x, n_dspl) }.to_vec();
+    let dspl_y_v = unsafe { std::slice::from_raw_parts(dspl_y, n_dspl) }.to_vec();
+    let dspl_d_v = unsafe { std::slice::from_raw_parts(dspl_d, n_dspl) }.to_vec();
+
+    s.zdep_flength = flength;
+    s.zdep_grad_p0 = p0;
+    s.zdep_grad_p1 = p1;
+    s.zdep_dens_lut = Some(HermiteSpline::from_parts(dspl_x_v, dspl_y_v, dspl_d_v));
+    s.zdep_gamma = unsafe { std::slice::from_raw_parts(gamma, s.n) }.to_vec();
+    s.zdep_nwg_re = unsafe { std::slice::from_raw_parts(nwg_re, s.n) }.to_vec();
+    s.zdep_nwg_im = unsafe { std::slice::from_raw_parts(nwg_im, s.n) }.to_vec();
+    s.zdep_omega = unsafe { std::slice::from_raw_parts(omega, s.n) }.to_vec();
+    s.zdep_model = if model == 0 { 0 } else { 1 };
+    s.zdep_loss_on = loss_on != 0;
+    s.zdep_kerr_fac_per_dens = eps0_gamma3;
+    s.zdep_omega0 = omega0;
+    s.zdep_gamma0 = gamma0;
+    s.zdep_dgamma0 = dgamma0;
+    s.zdep_nwg0 = Complex::new(nwg0_re, nwg0_im);
+    s.zdep_dnwg0 = Complex::new(dnwg0_re, dnwg0_im);
+    s.zdep_last_z = f64::NAN;
+    s.is_zdep_mode_avg = true;
+    0
+}
+    unsafe fn set_plasma_params(&mut self, ion_ptr: *const crate::ionization::PptIonizationRate, ionpot: c_double, e_ratio: c_double, preionfrac: c_double, dt: c_double) -> i32 {        let s = self;
+
+    // Radial (Phase D.2): one independent plasma state per r-column, laid out
+    // column-major `(n_time_over, n_r)` exactly like `radial_eto`/`radial_pto`
+    // — `native_set_radial_params` must run first so `s.n_r` is already set.
+    let n = if s.is_radial { s.n_time_over * s.n_r } else { s.n_time_over };
+    if n == 0 { return -2; }
+    s.plasma_ion_ptr   = ion_ptr;
+    s.plasma_ionpot    = ionpot;
+    s.plasma_e_ratio   = e_ratio;
+    s.plasma_preionfrac = preionfrac;
+    s.plasma_dt        = dt;
+    s.plas_rate     = vec![0.0; n];
+    s.plas_fraction = vec![0.0; n];
+    s.plas_phase    = vec![0.0; n];
+    s.plas_j        = vec![0.0; n];
+    s.plas_p        = vec![0.0; n];
+    s.has_plasma    = true;
+    0
+}
+    unsafe fn set_radial_params(&mut self, n_time: size_t, n_time_over: size_t, n_r: size_t, t_matrix: *const c_double, scale_fwd: c_double, scale_inv: c_double, towin: *const c_double, kerr_fac: c_double, m_re: *const c_double, m_im: *const c_double) -> i32 {        let s = self;
+
+    if n_r == 0 || s.n % n_r != 0 { return -1; }
+    let n_spec = s.n / n_r;
+
+    s.is_radial = true;
+    s.n_r = n_r;
+    s.n_time = n_time;
+    s.n_time_over = n_time_over;
+    s.n_spec = n_spec;
+    s.n_spec_over = if s.is_real { n_time_over / 2 + 1 } else { n_time_over };
+
+    let t_mat_sl = unsafe { std::slice::from_raw_parts(t_matrix, n_r * n_r) };
+    s.qdht = Some(QdhtFfiHandle::new(t_mat_sl, n_r, scale_fwd, scale_inv, n_time_over));
+    s.qdht_scale_fwd = scale_fwd;
+    s.qdht_scale_inv = scale_inv;
+
+    if !towin.is_null() {
+        s.towin = unsafe { std::slice::from_raw_parts(towin, n_time_over) }.to_vec();
+    } else {
+        s.towin = vec![1.0; n_time_over];
+    }
+    s.kerr_fac = kerr_fac;
+
+    let m_re_sl = unsafe { std::slice::from_raw_parts(m_re, n_spec * n_r) };
+    let m_im_sl = unsafe { std::slice::from_raw_parts(m_im, n_spec * n_r) };
+    s.radial_m = m_re_sl.iter().zip(m_im_sl.iter())
+        .map(|(&r, &i)| Complex::new(r, i))
+        .collect();
+
+    s.radial_eoo = vec![Complex::new(0.0, 0.0); s.n_spec_over * n_r];
+    s.radial_poo = vec![Complex::new(0.0, 0.0); s.n_spec_over * n_r];
+    if s.is_real {
+        s.radial_eto = vec![0.0; n_time_over * n_r];
+        s.radial_pto = vec![0.0; n_time_over * n_r];
+        s.radial_eto_c = Vec::new();
+        s.radial_pto_c = Vec::new();
+    } else {
+        s.radial_eto = Vec::new();
+        s.radial_pto = Vec::new();
+        s.radial_eto_c = vec![Complex::new(0.0, 0.0); n_time_over * n_r];
+        s.radial_pto_c = vec![Complex::new(0.0, 0.0); n_time_over * n_r];
+    }
+
+    0
+}
+    unsafe fn set_raman_params(&mut self, omega: *const c_double, gamma: *const c_double, coupling: *const c_double, n_osc: size_t, dt: c_double, density: c_double) -> i32 {        let s = self;
+
+    if s.n_time_over == 0 { return -2; }
+
+    let omega_sl = unsafe { std::slice::from_raw_parts(omega, n_osc) };
+    let gamma_sl = unsafe { std::slice::from_raw_parts(gamma, n_osc) };
+    let coupling_sl = unsafe { std::slice::from_raw_parts(coupling, n_osc) };
+
+    let oscillators: Vec<RamanOscillator> = (0..n_osc)
+        .map(|i| RamanOscillator { omega: omega_sl[i], gamma: gamma_sl[i], coupling: coupling_sl[i] })
+        .collect();
+
+    // Radial (Phase D.4): one time-march per r-column, laid out column-major
+    // `(n_time_over, n_r)` like `radial_eto`/`plas_*` — `solve()` resets its
+    // internal oscillator state at entry (see `raman.rs`), so the *same*
+    // solver instance can be called once per r-column with no cross-column
+    // state leakage; only the scratch buffers need the extra width.
+    let n = if s.is_radial { s.n_time_over * s.n_r } else { s.n_time_over };
+    if n == 0 { return -2; }
+
+    s.raman_solver = Some(TimeDomainRamanSolver::new(oscillators, dt));
+    s.raman_density = density;
+    s.raman_intensity = vec![0.0; n];
+    s.raman_p = vec![0.0; n];
+    s.has_raman = true;
+
+    0
+}
+    unsafe fn set_modal_params(&mut self, n_time: size_t, n_time_over: size_t, n_modes: size_t, npol: size_t, a: c_double, unm: *const c_double, inv_sqrt_n: *const c_double, order: *const i32, kind: *const u8, phi: *const c_double, full: u8, pol_select: *const u8, towin: *const c_double, kerr_fac: c_double, nlfac_re: *const c_double, nlfac_im: *const c_double, lib_path: *const c_char, rtol: c_double, atol: c_double, maxevals: size_t) -> i32 {        let s = self;
+
+    if n_modes == 0 || npol == 0 || (npol != 1 && npol != 2) || s.n % n_modes != 0 {
+        return -1;
+    }
+    let n_spec = s.n / n_modes;
+
+    let path_str = unsafe { CStr::from_ptr(lib_path).to_str().unwrap_or("") };
+    let cubature = match CubatureApi::load(path_str) {
+        Ok(api) => api,
+        Err(e) => {
+            eprintln!("native_set_modal_params: failed to load libcubature: {}", e);
+            return -2;
+        }
+    };
+
+    s.is_modal = true;
+    s.n_time = n_time;
+    s.n_time_over = n_time_over;
+    s.n_modes = n_modes;
+    s.npol = npol;
+    s.n_spec = n_spec;
+    s.n_spec_over = if s.is_real { n_time_over / 2 + 1 } else { n_time_over };
+    s.modal_a = a;
+
+    s.modal_unm = unsafe { std::slice::from_raw_parts(unm, n_modes) }.to_vec();
+    s.modal_inv_sqrt_n = unsafe { std::slice::from_raw_parts(inv_sqrt_n, n_modes) }.to_vec();
+    s.modal_order = unsafe { std::slice::from_raw_parts(order, n_modes) }.to_vec();
+    s.modal_kind = unsafe { std::slice::from_raw_parts(kind, n_modes) }.to_vec();
+    s.modal_phi = unsafe { std::slice::from_raw_parts(phi, n_modes) }.to_vec();
+    s.modal_full = full != 0;
+    s.modal_pol_select = unsafe { std::slice::from_raw_parts(pol_select, npol) }.to_vec();
+
+    if !towin.is_null() {
+        s.towin = unsafe { std::slice::from_raw_parts(towin, n_time_over) }.to_vec();
+    } else {
+        s.towin = vec![1.0; n_time_over];
+    }
+    s.modal_kerr_fac = kerr_fac;
+
+    let re_sl = unsafe { std::slice::from_raw_parts(nlfac_re, n_spec) };
+    let im_sl = unsafe { std::slice::from_raw_parts(nlfac_im, n_spec) };
+    s.modal_nlfac = re_sl.iter().zip(im_sl.iter())
+        .map(|(&r, &i)| Complex::new(r, i))
+        .collect();
+
+    s.cubature = Some(cubature);
+    s.modal_rtol = rtol;
+    s.modal_atol = atol;
+    s.modal_maxevals = maxevals;
+
+    s.modal_ems = vec![0.0; n_modes * npol];
+    s.modal_erw = vec![Complex::new(0.0, 0.0); n_spec * npol];
+    s.modal_erwo = vec![Complex::new(0.0, 0.0); s.n_spec_over * npol];
+    s.modal_er = vec![0.0; n_time_over * npol];
+    s.modal_pr = vec![0.0; n_time_over * npol];
+    s.modal_prwo = vec![Complex::new(0.0, 0.0); s.n_spec_over * npol];
+    s.modal_prw = vec![Complex::new(0.0, 0.0); n_spec * npol];
+    s.modal_emega = vec![Complex::new(0.0, 0.0); s.n];
+
+    0
+}
+    unsafe fn set_free_params(&mut self, n_time: size_t, n_time_over: size_t, n_y: size_t, n_x: size_t, flags: c_uint, towin: *const c_double, kerr_fac: c_double, m_re: *const c_double, m_im: *const c_double) -> i32 {        let s = self;
+
+    if n_y == 0 || n_x == 0 { return -1; }
+    let n_cols = n_y * n_x;
+    if s.n % n_cols != 0 { return -1; }
+    let n_spec = s.n / n_cols;
+
+    let n_spec_over_tmp = if s.is_real { n_time_over / 2 + 1 } else { n_time_over };
+
+    s.is_free = true;
+    s.n_time = n_time;
+    s.n_time_over = n_time_over;
+    s.n_spec = n_spec;
+    s.n_spec_over = n_spec_over_tmp;
+    s.n_y = n_y;
+    s.n_x = n_x;
+    s.free_fft_norm_over = 1.0 / (n_time_over * n_y * n_x) as f64;
+
+    // Phase D.3: EnvGrid free-space uses a c2c 3-D plan (ComplexFft3d) and
+    // complex time-domain buffers; RealGrid (Phase 6) keeps the r2c plan and
+    // real time-domain buffers — same split as native_set_radial_params.
+    if s.is_real {
+        let fft3d = match s.fftw_api.as_ref() {
+            Some(api) => RealFft3d::new(api, n_time_over, n_y, n_x, flags),
+            None => return -2,
+        };
+        s.fft_r2c_3d = Some(fft3d);
+        s.fft_c2c_3d = None;
+        s.free_eto = vec![0.0; n_time_over * n_cols];
+        s.free_pto = vec![0.0; n_time_over * n_cols];
+        s.free_eto_c = Vec::new();
+        s.free_pto_c = Vec::new();
+    } else {
+        let fft3d = match s.fftw_api.as_ref() {
+            Some(api) => ComplexFft3d::new(api, n_time_over, n_y, n_x, flags),
+            None => return -2,
+        };
+        s.fft_c2c_3d = Some(fft3d);
+        s.fft_r2c_3d = None;
+        s.free_eto = Vec::new();
+        s.free_pto = Vec::new();
+        s.free_eto_c = vec![Complex::new(0.0, 0.0); n_time_over * n_cols];
+        s.free_pto_c = vec![Complex::new(0.0, 0.0); n_time_over * n_cols];
+    }
+
+    if !towin.is_null() {
+        s.towin = unsafe { std::slice::from_raw_parts(towin, n_time_over) }.to_vec();
+    } else {
+        s.towin = vec![1.0; n_time_over];
+    }
+    s.kerr_fac = kerr_fac;
+
+    let m_re_sl = unsafe { std::slice::from_raw_parts(m_re, n_spec * n_cols) };
+    let m_im_sl = unsafe { std::slice::from_raw_parts(m_im, n_spec * n_cols) };
+    s.free_m = m_re_sl.iter().zip(m_im_sl.iter())
+        .map(|(&r, &i)| Complex::new(r, i))
+        .collect();
+
+    s.free_eoo = vec![Complex::new(0.0, 0.0); s.n_spec_over * n_cols];
+    s.free_poo = vec![Complex::new(0.0, 0.0); s.n_spec_over * n_cols];
+
+    0
+}
+    unsafe fn set_free_zdep_params(&mut self, flength: c_double, p0: c_double, p1: c_double, n_dspl: size_t, dspl_x: *const c_double, dspl_y: *const c_double, dspl_d: *const c_double, gamma: *const c_double, omega: *const c_double, omegawin: *const c_double, kperp2: *const c_double, sidx: *const u8, eps0_gamma3: c_double, omega0: c_double, gamma0: c_double, dgamma0: c_double) -> i32 {        let s = self;
+
+    if s.n_spec == 0 || s.n_y == 0 || s.n_x == 0 { return -3; }
+
+    let dspl_x_v = unsafe { std::slice::from_raw_parts(dspl_x, n_dspl) }.to_vec();
+    let dspl_y_v = unsafe { std::slice::from_raw_parts(dspl_y, n_dspl) }.to_vec();
+    let dspl_d_v = unsafe { std::slice::from_raw_parts(dspl_d, n_dspl) }.to_vec();
+
+    s.zdep_free_flength = flength;
+    s.zdep_free_p0 = p0;
+    s.zdep_free_p1 = p1;
+    s.zdep_free_dens_lut = Some(HermiteSpline::from_parts(dspl_x_v, dspl_y_v, dspl_d_v));
+    s.zdep_free_gamma = unsafe { std::slice::from_raw_parts(gamma, s.n_spec) }.to_vec();
+    s.zdep_free_omega = unsafe { std::slice::from_raw_parts(omega, s.n_spec) }.to_vec();
+    s.zdep_free_omegawin = unsafe { std::slice::from_raw_parts(omegawin, s.n_spec) }.to_vec();
+    s.zdep_free_kperp2 = unsafe { std::slice::from_raw_parts(kperp2, s.n_y * s.n_x) }.to_vec();
+    s.zdep_free_sidx = unsafe { std::slice::from_raw_parts(sidx, s.n_spec) }.iter().map(|&b| b != 0).collect();
+    s.zdep_free_kerr_fac_per_dens = eps0_gamma3;
+    s.zdep_free_omega0 = omega0;
+    s.zdep_free_gamma0 = gamma0;
+    s.zdep_free_dgamma0 = dgamma0;
+    s.zdep_free_last_z = f64::NAN;
+    s.is_zdep_free = true;
+    0
+}
+    unsafe fn set_modal_zdep_params(&mut self, flength: c_double, a0: c_double, n_a: size_t, a_x: *const c_double, a_y: *const c_double, a_d: *const c_double, omega: *const c_double, sidx: *const u8, model: u8, loss_on: u8, eco: *const c_double, vn_re: *const c_double, vn_im: *const c_double, omega0: c_double, ref_mode: size_t, eco0: *const c_double, deco0: *const c_double, v0_re: *const c_double, v0_im: *const c_double, dv0_re: *const c_double, dv0_im: *const c_double) -> i32 {        let s = self;
+
+    if s.n_spec == 0 || s.n_modes == 0 { return -3; }
+    let n_spec = s.n_spec;
+    let n_modes = s.n_modes;
+
+    let a_x_v = unsafe { std::slice::from_raw_parts(a_x, n_a) }.to_vec();
+    let a_y_v = unsafe { std::slice::from_raw_parts(a_y, n_a) }.to_vec();
+    let a_d_v = unsafe { std::slice::from_raw_parts(a_d, n_a) }.to_vec();
+
+    s.zdep_modal_flength = flength;
+    s.zdep_modal_a0 = a0;
+    s.zdep_modal_inv_sqrt_n0 = s.modal_inv_sqrt_n.clone();
+    s.zdep_modal_a_lut = Some(HermiteSpline::from_parts(a_x_v, a_y_v, a_d_v));
+    s.zdep_modal_omega = unsafe { std::slice::from_raw_parts(omega, n_spec) }.to_vec();
+    s.zdep_modal_sidx = unsafe { std::slice::from_raw_parts(sidx, n_spec) }.iter().map(|&b| b != 0).collect();
+    s.zdep_modal_model = model;
+    s.zdep_modal_loss_on = loss_on != 0;
+    s.zdep_modal_eco = unsafe { std::slice::from_raw_parts(eco, n_spec * n_modes) }.to_vec();
+    s.zdep_modal_vn_re = unsafe { std::slice::from_raw_parts(vn_re, n_spec * n_modes) }.to_vec();
+    s.zdep_modal_vn_im = unsafe { std::slice::from_raw_parts(vn_im, n_spec * n_modes) }.to_vec();
+    s.zdep_modal_omega0 = omega0;
+    s.zdep_modal_ref_mode = ref_mode;
+    s.zdep_modal_eco0 = unsafe { std::slice::from_raw_parts(eco0, n_modes) }.to_vec();
+    s.zdep_modal_deco0 = unsafe { std::slice::from_raw_parts(deco0, n_modes) }.to_vec();
+    s.zdep_modal_v0_re = unsafe { std::slice::from_raw_parts(v0_re, n_modes) }.to_vec();
+    s.zdep_modal_v0_im = unsafe { std::slice::from_raw_parts(v0_im, n_modes) }.to_vec();
+    s.zdep_modal_dv0_re = unsafe { std::slice::from_raw_parts(dv0_re, n_modes) }.to_vec();
+    s.zdep_modal_dv0_im = unsafe { std::slice::from_raw_parts(dv0_im, n_modes) }.to_vec();
+    s.zdep_modal_last_z = f64::NAN;
+    s.is_zdep_modal = true;
+    0
+}
+    unsafe fn step(&mut self, yn: *mut Complex<f64>, t_old: f64, t_new: f64, dtn: f64, rtol: f64, atol: f64, safety: f64, max_dt: f64, min_dt: f64, errlast_in: f64, locextrap: i32, result: *mut NativeStepResult) -> i32 {        let s = self;
+
+    let n = s.n;
+    
+    // Evaluate!
+    // y is in s.field. yn comes in via pointer, but we also maintain yn locally in Rust?
+    // Wait, in `PreconStepper` y is `s.field`. yn is passed in.
+    let yn_sl = unsafe { std::slice::from_raw_parts_mut(yn, n) };
+    
+    // s.yn .= s.y -> but wait, `s.field` is `y`.
+    yn_sl.copy_from_slice(&s.field);
+    
+    // prop!(s.ks[1], s.t, s.tn)  — linop evaluated at the later time, t_new
+    s.ensure_linop_at(t_new);
+    s.ensure_free_norm_at(t_new);
+    s.ensure_modal_linop_at(t_new);
+    apply_prop(&mut s.ks[0], &s.linop, t_new - t_old);
+    
+    let dt = dtn;
+    let t = t_new;
+    
+    for ii in 0..6 {
+        s.ystage.copy_from_slice(&s.field);
+        let (ks_slice, _) = s.ks.split_at(ii + 1);
+        for (j, k_j) in ks_slice.iter().enumerate() {
+            let bij = DP_B[ii][j];
+            if bij != 0.0 {
+                let scale = dt * bij;
+                for (y, k) in s.ystage.iter_mut().zip(k_j.iter()) {
+                    y.re += scale * k.re;
+                    y.im += scale * k.im;
+                }
+            }
+        }
+        
+        if s.is_free {
+            let dt_prop = DP_NODES[ii] * dt;
+            s.ensure_linop_at(t + dt_prop);
+            s.ensure_free_norm_at(t + dt_prop);
+            let mut ystage_prop = s.ystage.clone();
+            apply_prop(&mut ystage_prop, &s.linop, dt_prop);
+            if s.is_real {
+                s.rhs_free(ii + 1, &ystage_prop);
+            } else {
+                s.rhs_free_env(ii + 1, &ystage_prop);
+            }
+            apply_prop(&mut s.ks[ii + 1], &s.linop, -dt_prop);
+        } else if s.is_modal {
+            let dt_prop = DP_NODES[ii] * dt;
+            s.ensure_linop_at(t + dt_prop);
+            s.ensure_modal_linop_at(t + dt_prop);
+            let mut ystage_prop = s.ystage.clone();
+            apply_prop(&mut ystage_prop, &s.linop, dt_prop);
+            s.rhs_modal(ii + 1, &ystage_prop);
+            apply_prop(&mut s.ks[ii + 1], &s.linop, -dt_prop);
+        } else if s.is_radial {
+            let dt_prop = DP_NODES[ii] * dt;
+            s.ensure_linop_at(t + dt_prop);
+            let mut ystage_prop = s.ystage.clone();
+            apply_prop(&mut ystage_prop, &s.linop, dt_prop);
+            if s.is_real {
+                s.rhs_radial(ii + 1, &ystage_prop);
+            } else {
+                s.rhs_radial_env(ii + 1, &ystage_prop);
+            }
+            apply_prop(&mut s.ks[ii + 1], &s.linop, -dt_prop);
+        } else if s.n_time_over > 0 && (s.fft_r2c_over.is_some() || s.fft_c2c_over.is_some()) {
+            let dt_prop = DP_NODES[ii] * dt;
+            s.ensure_linop_at(t + dt_prop);
+            let mut ystage_prop = s.ystage.clone();
+            apply_prop(&mut ystage_prop, &s.linop, dt_prop);
+            if s.is_real {
+                s.rhs_mode_avg_real(ii + 1, &ystage_prop);
+            } else {
+                s.rhs_mode_avg_env(ii + 1, &ystage_prop);
+            }
+            apply_prop(&mut s.ks[ii + 1], &s.linop, -dt_prop);
+        } else {
+            for k in 0..n {
+                s.ks[ii+1][k] = Complex::new(0.0, 0.0);
+            }
+        }
+    }
+    
+    if locextrap != 0 {
+        let b0 = dt * DP_B5[0];
+        let b1 = dt * DP_B5[1];
+        let b2 = dt * DP_B5[2];
+        let b3 = dt * DP_B5[3];
+        let b4 = dt * DP_B5[4];
+        let b5 = dt * DP_B5[5];
+        let b6 = dt * DP_B5[6];
+        
+        let (ks_slice, _) = s.ks.split_at(7);
+        let (ks0, ks1, ks2, ks3, ks4, ks5, ks6) = (&ks_slice[0], &ks_slice[1], &ks_slice[2], &ks_slice[3], &ks_slice[4], &ks_slice[5], &ks_slice[6]);
+        
+        for (((((yn, f), k0), k1), k2), (((k3, k4), k5), k6)) in yn_sl.iter_mut().zip(&s.field)
+            .zip(ks0).zip(ks1).zip(ks2)
+            .zip(ks3.iter().zip(ks4).zip(ks5).zip(ks6)) {
+            yn.re = f.re + b0 * k0.re + b1 * k1.re + b2 * k2.re + b3 * k3.re + b4 * k4.re + b5 * k5.re + b6 * k6.re;
+            yn.im = f.im + b0 * k0.im + b1 * k1.im + b2 * k2.im + b3 * k3.im + b4 * k4.im + b5 * k5.im + b6 * k6.im;
+        }
+    }
+    
+    // Error estimate
+    let e0 = dt * DP_ERREST[0];
+    let e1 = dt * DP_ERREST[1];
+    let e2 = dt * DP_ERREST[2];
+    let e3 = dt * DP_ERREST[3];
+    let e4 = dt * DP_ERREST[4];
+    let e5 = dt * DP_ERREST[5];
+    let e6 = dt * DP_ERREST[6];
+
+    let (ks_slice, _) = s.ks.split_at(7);
+    let (ks0, ks1, ks2, ks3, ks4, ks5, ks6) = (&ks_slice[0], &ks_slice[1], &ks_slice[2], &ks_slice[3], &ks_slice[4], &ks_slice[5], &ks_slice[6]);
+    
+    for ((((y, k0), k1), k2), (((k3, k4), k5), k6)) in s.yerr.iter_mut()
+        .zip(ks0).zip(ks1).zip(ks2)
+        .zip(ks3.iter().zip(ks4).zip(ks5).zip(ks6)) {
+        y.re = e0 * k0.re + e1 * k1.re + e2 * k2.re + e3 * k3.re + e4 * k4.re + e5 * k5.re + e6 * k6.re;
+        y.im = e0 * k0.im + e1 * k1.im + e2 * k2.im + e3 * k3.im + e4 * k4.im + e5 * k5.im + e6 * k6.im;
+    }
+    
+    let err = weaknorm_c64(&s.yerr, &s.field, yn_sl, rtol, atol);
+    let ok = err <= 1.0;
+    
+    let (dtn_new, errlast_new, ok_final) = 
+        stepcontrol_pi(ok, err, errlast_in, dt, safety, max_dt, min_dt);
+        
+    let tn_new;
+    if ok_final {
+        tn_new = t + dt;
+        let (left, right) = s.ks.split_at_mut(6);
+        left[0].copy_from_slice(&right[0]); // FSAL
+        s.ensure_linop_at(tn_new);
+        s.ensure_free_norm_at(tn_new);
+        s.ensure_modal_linop_at(tn_new);
+        apply_prop(yn_sl, &s.linop, tn_new - t);
+        s.field.copy_from_slice(yn_sl);
+    } else {
+        yn_sl.copy_from_slice(&s.field);
+        tn_new = t_new;
+        s.ensure_linop_at(tn_new);
+        s.ensure_free_norm_at(tn_new);
+        s.ensure_modal_linop_at(tn_new);
+        apply_prop(yn_sl, &s.linop, tn_new - t); // no-op since t == tn_new
+    }
+    
+    unsafe {
+        *result = NativeStepResult {
+            ok: ok_final as i32, dt, t, tn: tn_new, dtn: dtn_new, err, errlast: errlast_new,
+        };
+    }
+    
+    0
+}
+}
+
+/// GPU-resident stepper V1 (`CudaNativeSim`) is experimental and unverified against the
+/// Julia oracle on real CUDA hardware (see `BACKLOG.md`'s "GPU-resident stepper" entry).
+/// Refuses to initialize unless this env var is explicitly set, so it can never be reached
+/// by accident via default dispatch.
+const CUDA_NATIVE_OPT_IN_VAR: &str = "LUNA_USE_RUST_CUDA_NATIVE";
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn init_cuda_native_sim(n: size_t) -> *mut NativeSim {
+    use crate::cuda_native::CudaNativeSim;
+    if n == 0 {
+        return std::ptr::null_mut();
+    }
+    if std::env::var(CUDA_NATIVE_OPT_IN_VAR).as_deref() != Ok("1") {
+        eprintln!(
+            "Luna-Rust warning: GPU-resident stepper (CudaNativeSim) is experimental and \
+             not verified against the Julia oracle on real CUDA hardware — refusing to \
+             initialize. Set {}=1 to opt in at your own risk (see BACKLOG.md).",
+            CUDA_NATIVE_OPT_IN_VAR
+        );
+        return std::ptr::null_mut();
+    }
+    eprintln!(
+        "Luna-Rust warning: {}=1 — using the experimental, unverified GPU-resident stepper. \
+         Do not trust results without independently checking them against the Julia/CPU path.",
+        CUDA_NATIVE_OPT_IN_VAR
+    );
+    match CudaNativeSim::new(n) {
+        Ok(backend) => {
+            let sim = NativeSim {
+                backend: Box::new(backend),
+            };
+            Box::into_raw(Box::new(sim))
+        }
+        Err(e) => {
+            eprintln!("Failed to initialize CudaNativeSim: {}", e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn init_native_sim(
+    linop: *const c_double,
+    n: size_t,
+) -> *mut NativeSim {
+    if linop.is_null() || n == 0 {
+        return std::ptr::null_mut();
+    }
+    // ComplexF64 is two contiguous f64 (re, im); reinterpret the f64* as Complex.
+    let linop_sl = unsafe {
+        std::slice::from_raw_parts(linop as *const Complex<f64>, n)
+    };
+    let result = std::panic::catch_unwind(|| CpuNativeSim::new(n, linop_sl));
+    match result {
+        Ok(h) => Box::into_raw(Box::new(NativeSim { backend: Box::new(h) })),
+        Err(e) => {
+            eprintln!("init_native_sim: panic: {:?}", e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Free a `NativeSim`. Passing null is a no-op.
+///
+/// # Safety
+/// `ptr` must be a valid, non-aliased pointer from [`init_native_sim`] that has
+/// not already been freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn free_native_sim(ptr: *mut NativeSim) {
+    if !ptr.is_null() {
+        unsafe { drop(Box::from_raw(ptr)); }
+    }
+}
+
+/// Copy `n` `ComplexF64` from Julia into the resident field buffer.
+///
+/// Returns 0 on success, -1 on null/length mismatch.
+///
+/// # Safety
+/// `sim` must be valid; `data` must be valid for `n` `ComplexF64` reads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn set_field(
+    sim: *mut NativeSim,
+    data: *const c_double,
+    n: size_t,
+) -> i32 {
+    if sim.is_null() { return -1; }
+    let s = unsafe { &mut *sim };
+    unsafe { s.backend.set_field(data, n) }
+}
+
+/// Like `set_field`, but does NOT recompute the FSAL stage-0 RHS.
+///
+/// Used by `RK45.jl`'s post-`stepfun` resync (Phase 8): after an accepted
+/// step, Julia's `stepfun` callback (`Luna.run`'s grid windowing —
+/// `Eω .*= grid.ωwin`, then a time-domain `twin`) mutates the field in
+/// place. Julia's own `PreconStepper` reference behaviour does *not*
+/// re-evaluate the nonlinear RHS after windowing either: it keeps the
+/// FSAL-carried last stage and merely re-expresses it in the new
+/// interaction-picture frame via a *linear* re-propagation
+/// (`evaluate!(s::PreconStepper)`'s `s.prop!(s.ks[1], s.t, s.tn)`).
+/// `native_step` already performs the equivalent FSAL-carry + relinearize
+/// internally (`ks[0] = ks[6]` then `apply_prop`, at the top of the next
+/// call) — recomputing k0 fresh here (as `set_field` does, correctly, for
+/// the brand-new-initial-condition case where no FSAL history exists yet)
+/// would silently diverge from Julia's established approximation instead
+/// of matching it. This function only updates the resident `field` buffer
+/// that the *next* step reads its starting point from.
+///
+/// Returns 0 on success, -1 on null/length mismatch.
+///
+/// # Safety
+/// `sim` must be valid; `data` must be valid for `n` `ComplexF64` reads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_resync_field(
+    sim: *mut NativeSim,
+    data: *const c_double,
+    n: size_t,
+) -> i32 {
+    if sim.is_null() { return -1; }
+    let s = unsafe { &mut *sim };
+    unsafe { s.backend.resync_field(data, n) }
+}
+
+/// Copy the resident field buffer back out to Julia (`n` `ComplexF64`).
+///
+/// Returns 0 on success, -1 on null/length mismatch.
+///
+/// # Safety
+/// `sim` must be valid; `data` must be valid for `n` `ComplexF64` writes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn get_field(
+    sim: *const NativeSim,
+    data: *mut c_double,
+    n: size_t,
+) -> i32 {
+    if sim.is_null() { return -1; }
+    let s = unsafe { & *sim };
+    unsafe { s.backend.get_field(data, n) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn get_ks_stage(
+    sim: *const NativeSim,
+    idx: size_t,
+    data: *mut c_double,
+    n: size_t,
+) -> i32 {
+    if sim.is_null() { return -1; }
+    let s = unsafe { & *sim };
+    unsafe { s.backend.get_ks_stage(idx, data, n) }
+}
+
+/// Apply the interaction-picture linear propagator `exp(linop(t2)*(t2-t1))`
+/// to `y` in place (`n` `ComplexF64`), evaluating the (possibly
+/// z-dependent) linop at `t2` — the later time, matching
+/// `RK45.jl::make_prop!`'s non-constant-linop convention exactly.
+///
+/// Used by `RK45.jl::interpolate(s::RustNativeStepper, ti)` to port
+/// Julia's `PreconStepper`'s quartic dense output (`interpC`, all 7 RK
+/// stages) to the native path: the polynomial correction is computed
+/// relative to the step's start time `s.t`, then re-expressed at the
+/// query time `ti` via this propagator, exactly mirroring
+/// `interpolate(s::PreconStepper, ti)`'s trailing `s.prop!(out, s.t, ti)`
+/// call. Before this, the native path only had linear dense output between
+/// accepted steps (see PORT_LOG Phase 8) — correct only at the endpoints.
+///
+/// Returns 0 on success, -1 on null/length mismatch.
+///
+/// # Safety
+/// `sim` must be valid; `y` must be valid for `n` `ComplexF64` reads/writes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_apply_prop(
+    sim: *mut NativeSim,
+    y: *mut c_double,
+    n: size_t,
+    t1: f64,
+    t2: f64,
+) -> i32 {
+    if sim.is_null() { return -1; }
+    let s = unsafe { &mut *sim };
+    unsafe { s.backend.apply_prop(y, n, t1, t2) }
+}
+
+
+/// Debug getter (mirrors `get_field`/`get_ks_stage`): force `ensure_linop_at(z)`
+/// and copy out the resulting `self.linop`. Used only by Rust-vs-Julia
+/// diagnostic scripts for Phase 7 (z-dependent linop) — not part of the hot
+/// loop.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_debug_linop_at(
+    sim: *mut NativeSim,
+    z: c_double,
+    data: *mut c_double,
+    n: size_t,
+) -> i32 {
+    if sim.is_null() { return -1; }
+    let s = unsafe { &mut *sim };
+    unsafe { s.backend.debug_linop_at(z, data, n) }
+}
+
+/// Debug getter (Phase 7 diagnostics, used by `test_native_zdep_linop.jl`'s
+/// unit test): force `ensure_linop_at(z)` and report `[dens, beta1]` at that
+/// z, so the analytic β1(z) closed form (`docs/native-port/BETA1_ANALYTIC.md`)
+/// can be checked directly against a BigFloat ground truth, independent of
+/// the full linop/RHS machinery.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_debug_beta1_at(
+    sim: *mut NativeSim,
+    z: c_double,
+    out_dens: *mut c_double,
+    out_beta1: *mut c_double,
+) -> i32 {
+    if sim.is_null() { return -1; }
+    let s = unsafe { &mut *sim };
+    unsafe { s.backend.debug_beta1_at(z, out_dens, out_beta1) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_set_fftw_plans(
+    sim: *mut NativeSim,
+    lib_path: *const c_char,
+    n_time: size_t,
+    n_time_over: size_t,
+    is_real: c_int,
+    flags: c_uint,
+) -> i32 {
+    if sim.is_null() { return -1; }
+    let s = unsafe { &mut *sim };
+    unsafe { s.backend.set_fftw_plans(lib_path, n_time, n_time_over, is_real, flags) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_set_mode_avg_params(
+    sim: *mut NativeSim,
+    n_time: size_t,
+    n_time_over: size_t,
+    towin: *const c_double,
+    owin: *const c_double,
+    sidx: *const u8,
+    pre_re: *const c_double,
+    pre_im: *const c_double,
+    beta: *const c_double,
+    kerr_fac: c_double,
+    nlscale: c_double,
+    sqrt_aeff: c_double,
+) -> i32 {
+    if sim.is_null() { return -1; }
+    let s = unsafe { &mut *sim };
+    unsafe { s.backend.set_mode_avg_params(n_time, n_time_over, towin, owin, sidx, pre_re, pre_im, beta, kerr_fac, nlscale, sqrt_aeff) }
 }
 
 /// Wire the z-dependent linop path (Phase 7 — mode-averaged, graded-core
@@ -2357,37 +2908,9 @@ pub unsafe extern "C" fn native_set_zdep_mode_avg_params(
     dnwg0_re: c_double,
     dnwg0_im: c_double,
 ) -> i32 {
-    if sim.is_null() || dspl_x.is_null() || dspl_y.is_null() || dspl_d.is_null()
-        || gamma.is_null() || nwg_re.is_null() || nwg_im.is_null() || omega.is_null() {
-        return -1;
-    }
-    if n_dspl < 2 { return -2; }
+    if sim.is_null() { return -1; }
     let s = unsafe { &mut *sim };
-    if s.sidx.len() != s.n { return -3; }
-
-    let dspl_x_v = unsafe { std::slice::from_raw_parts(dspl_x, n_dspl) }.to_vec();
-    let dspl_y_v = unsafe { std::slice::from_raw_parts(dspl_y, n_dspl) }.to_vec();
-    let dspl_d_v = unsafe { std::slice::from_raw_parts(dspl_d, n_dspl) }.to_vec();
-
-    s.zdep_flength = flength;
-    s.zdep_grad_p0 = p0;
-    s.zdep_grad_p1 = p1;
-    s.zdep_dens_lut = Some(HermiteSpline::from_parts(dspl_x_v, dspl_y_v, dspl_d_v));
-    s.zdep_gamma = unsafe { std::slice::from_raw_parts(gamma, s.n) }.to_vec();
-    s.zdep_nwg_re = unsafe { std::slice::from_raw_parts(nwg_re, s.n) }.to_vec();
-    s.zdep_nwg_im = unsafe { std::slice::from_raw_parts(nwg_im, s.n) }.to_vec();
-    s.zdep_omega = unsafe { std::slice::from_raw_parts(omega, s.n) }.to_vec();
-    s.zdep_model = if model == 0 { 0 } else { 1 };
-    s.zdep_loss_on = loss_on != 0;
-    s.zdep_kerr_fac_per_dens = eps0_gamma3;
-    s.zdep_omega0 = omega0;
-    s.zdep_gamma0 = gamma0;
-    s.zdep_dgamma0 = dgamma0;
-    s.zdep_nwg0 = Complex::new(nwg0_re, nwg0_im);
-    s.zdep_dnwg0 = Complex::new(dnwg0_re, dnwg0_im);
-    s.zdep_last_z = f64::NAN;
-    s.is_zdep_mode_avg = true;
-    0
+    unsafe { s.backend.set_zdep_mode_avg_params(flength, p0, p1, n_dspl, dspl_x, dspl_y, dspl_d, gamma, nwg_re, nwg_im, omega, model, loss_on, eps0_gamma3, omega0, gamma0, dgamma0, nwg0_re, nwg0_im, dnwg0_re, dnwg0_im) }
 }
 
 /// Wire the PPT ionization handle for the plasma cumtrapz path (RealGrid only).
@@ -2414,25 +2937,9 @@ pub unsafe extern "C" fn native_set_plasma_params(
     preionfrac: c_double,
     dt: c_double,
 ) -> i32 {
-    if sim.is_null() || ion_ptr.is_null() { return -1; }
+    if sim.is_null() { return -1; }
     let s = unsafe { &mut *sim };
-    // Radial (Phase D.2): one independent plasma state per r-column, laid out
-    // column-major `(n_time_over, n_r)` exactly like `radial_eto`/`radial_pto`
-    // — `native_set_radial_params` must run first so `s.n_r` is already set.
-    let n = if s.is_radial { s.n_time_over * s.n_r } else { s.n_time_over };
-    if n == 0 { return -2; }
-    s.plasma_ion_ptr   = ion_ptr;
-    s.plasma_ionpot    = ionpot;
-    s.plasma_e_ratio   = e_ratio;
-    s.plasma_preionfrac = preionfrac;
-    s.plasma_dt        = dt;
-    s.plas_rate     = vec![0.0; n];
-    s.plas_fraction = vec![0.0; n];
-    s.plas_phase    = vec![0.0; n];
-    s.plas_j        = vec![0.0; n];
-    s.plas_p        = vec![0.0; n];
-    s.has_plasma    = true;
-    0
+    unsafe { s.backend.set_plasma_params(ion_ptr, ionpot, e_ratio, preionfrac, dt) }
 }
 
 /// Wire the radial (`TransRadial`) RHS: resident QDHT + scalar Kerr.
@@ -2472,51 +2979,9 @@ pub unsafe extern "C" fn native_set_radial_params(
     m_re: *const c_double,
     m_im: *const c_double,
 ) -> i32 {
-    if sim.is_null() || t_matrix.is_null() || m_re.is_null() || m_im.is_null() { return -1; }
+    if sim.is_null() { return -1; }
     let s = unsafe { &mut *sim };
-    if n_r == 0 || s.n % n_r != 0 { return -1; }
-    let n_spec = s.n / n_r;
-
-    s.is_radial = true;
-    s.n_r = n_r;
-    s.n_time = n_time;
-    s.n_time_over = n_time_over;
-    s.n_spec = n_spec;
-    s.n_spec_over = if s.is_real { n_time_over / 2 + 1 } else { n_time_over };
-
-    let t_mat_sl = unsafe { std::slice::from_raw_parts(t_matrix, n_r * n_r) };
-    s.qdht = Some(QdhtFfiHandle::new(t_mat_sl, n_r, scale_fwd, scale_inv, n_time_over));
-    s.qdht_scale_fwd = scale_fwd;
-    s.qdht_scale_inv = scale_inv;
-
-    if !towin.is_null() {
-        s.towin = unsafe { std::slice::from_raw_parts(towin, n_time_over) }.to_vec();
-    } else {
-        s.towin = vec![1.0; n_time_over];
-    }
-    s.kerr_fac = kerr_fac;
-
-    let m_re_sl = unsafe { std::slice::from_raw_parts(m_re, n_spec * n_r) };
-    let m_im_sl = unsafe { std::slice::from_raw_parts(m_im, n_spec * n_r) };
-    s.radial_m = m_re_sl.iter().zip(m_im_sl.iter())
-        .map(|(&r, &i)| Complex::new(r, i))
-        .collect();
-
-    s.radial_eoo = vec![Complex::new(0.0, 0.0); s.n_spec_over * n_r];
-    s.radial_poo = vec![Complex::new(0.0, 0.0); s.n_spec_over * n_r];
-    if s.is_real {
-        s.radial_eto = vec![0.0; n_time_over * n_r];
-        s.radial_pto = vec![0.0; n_time_over * n_r];
-        s.radial_eto_c = Vec::new();
-        s.radial_pto_c = Vec::new();
-    } else {
-        s.radial_eto = Vec::new();
-        s.radial_pto = Vec::new();
-        s.radial_eto_c = vec![Complex::new(0.0, 0.0); n_time_over * n_r];
-        s.radial_pto_c = vec![Complex::new(0.0, 0.0); n_time_over * n_r];
-    }
-
-    0
+    unsafe { s.backend.set_radial_params(n_time, n_time_over, n_r, t_matrix, scale_fwd, scale_inv, towin, kerr_fac, m_re, m_im) }
 }
 
 /// Wire the Raman ADE solver as an additive term in `rhs_mode_avg_real`
@@ -2552,35 +3017,9 @@ pub unsafe extern "C" fn native_set_raman_params(
     dt: c_double,
     density: c_double,
 ) -> i32 {
-    if sim.is_null() || omega.is_null() || gamma.is_null() || coupling.is_null() || n_osc == 0 {
-        return -1;
-    }
+    if sim.is_null() { return -1; }
     let s = unsafe { &mut *sim };
-    if s.n_time_over == 0 { return -2; }
-
-    let omega_sl = unsafe { std::slice::from_raw_parts(omega, n_osc) };
-    let gamma_sl = unsafe { std::slice::from_raw_parts(gamma, n_osc) };
-    let coupling_sl = unsafe { std::slice::from_raw_parts(coupling, n_osc) };
-
-    let oscillators: Vec<RamanOscillator> = (0..n_osc)
-        .map(|i| RamanOscillator { omega: omega_sl[i], gamma: gamma_sl[i], coupling: coupling_sl[i] })
-        .collect();
-
-    // Radial (Phase D.4): one time-march per r-column, laid out column-major
-    // `(n_time_over, n_r)` like `radial_eto`/`plas_*` — `solve()` resets its
-    // internal oscillator state at entry (see `raman.rs`), so the *same*
-    // solver instance can be called once per r-column with no cross-column
-    // state leakage; only the scratch buffers need the extra width.
-    let n = if s.is_radial { s.n_time_over * s.n_r } else { s.n_time_over };
-    if n == 0 { return -2; }
-
-    s.raman_solver = Some(TimeDomainRamanSolver::new(oscillators, dt));
-    s.raman_density = density;
-    s.raman_intensity = vec![0.0; n];
-    s.raman_p = vec![0.0; n];
-    s.has_raman = true;
-
-    0
+    unsafe { s.backend.set_raman_params(omega, gamma, coupling, n_osc, dt, density) }
 }
 
 /// Wire the modal (`TransModal`) RHS: resident `libcubature` (`pcubature_v`,
@@ -2649,71 +3088,9 @@ pub unsafe extern "C" fn native_set_modal_params(
     atol: c_double,
     maxevals: size_t,
 ) -> i32 {
-    if sim.is_null() || unm.is_null() || inv_sqrt_n.is_null() || order.is_null()
-        || kind.is_null() || phi.is_null()
-        || pol_select.is_null() || nlfac_re.is_null() || nlfac_im.is_null() || lib_path.is_null() {
-        return -1;
-    }
+    if sim.is_null() { return -1; }
     let s = unsafe { &mut *sim };
-    if n_modes == 0 || npol == 0 || (npol != 1 && npol != 2) || s.n % n_modes != 0 {
-        return -1;
-    }
-    let n_spec = s.n / n_modes;
-
-    let path_str = unsafe { CStr::from_ptr(lib_path).to_str().unwrap_or("") };
-    let cubature = match CubatureApi::load(path_str) {
-        Ok(api) => api,
-        Err(e) => {
-            eprintln!("native_set_modal_params: failed to load libcubature: {}", e);
-            return -2;
-        }
-    };
-
-    s.is_modal = true;
-    s.n_time = n_time;
-    s.n_time_over = n_time_over;
-    s.n_modes = n_modes;
-    s.npol = npol;
-    s.n_spec = n_spec;
-    s.n_spec_over = if s.is_real { n_time_over / 2 + 1 } else { n_time_over };
-    s.modal_a = a;
-
-    s.modal_unm = unsafe { std::slice::from_raw_parts(unm, n_modes) }.to_vec();
-    s.modal_inv_sqrt_n = unsafe { std::slice::from_raw_parts(inv_sqrt_n, n_modes) }.to_vec();
-    s.modal_order = unsafe { std::slice::from_raw_parts(order, n_modes) }.to_vec();
-    s.modal_kind = unsafe { std::slice::from_raw_parts(kind, n_modes) }.to_vec();
-    s.modal_phi = unsafe { std::slice::from_raw_parts(phi, n_modes) }.to_vec();
-    s.modal_full = full != 0;
-    s.modal_pol_select = unsafe { std::slice::from_raw_parts(pol_select, npol) }.to_vec();
-
-    if !towin.is_null() {
-        s.towin = unsafe { std::slice::from_raw_parts(towin, n_time_over) }.to_vec();
-    } else {
-        s.towin = vec![1.0; n_time_over];
-    }
-    s.modal_kerr_fac = kerr_fac;
-
-    let re_sl = unsafe { std::slice::from_raw_parts(nlfac_re, n_spec) };
-    let im_sl = unsafe { std::slice::from_raw_parts(nlfac_im, n_spec) };
-    s.modal_nlfac = re_sl.iter().zip(im_sl.iter())
-        .map(|(&r, &i)| Complex::new(r, i))
-        .collect();
-
-    s.cubature = Some(cubature);
-    s.modal_rtol = rtol;
-    s.modal_atol = atol;
-    s.modal_maxevals = maxevals;
-
-    s.modal_ems = vec![0.0; n_modes * npol];
-    s.modal_erw = vec![Complex::new(0.0, 0.0); n_spec * npol];
-    s.modal_erwo = vec![Complex::new(0.0, 0.0); s.n_spec_over * npol];
-    s.modal_er = vec![0.0; n_time_over * npol];
-    s.modal_pr = vec![0.0; n_time_over * npol];
-    s.modal_prwo = vec![Complex::new(0.0, 0.0); s.n_spec_over * npol];
-    s.modal_prw = vec![Complex::new(0.0, 0.0); n_spec * npol];
-    s.modal_emega = vec![Complex::new(0.0, 0.0); s.n];
-
-    0
+    unsafe { s.backend.set_modal_params(n_time, n_time_over, n_modes, npol, a, unm, inv_sqrt_n, order, kind, phi, full, pol_select, towin, kerr_fac, nlfac_re, nlfac_im, lib_path, rtol, atol, maxevals) }
 }
 
 /// Wire the free-space (`TransFree`) RHS: resident joint 3-D FFTW plan +
@@ -2755,68 +3132,9 @@ pub unsafe extern "C" fn native_set_free_params(
     m_re: *const c_double,
     m_im: *const c_double,
 ) -> i32 {
-    if sim.is_null() || m_re.is_null() || m_im.is_null() { return -1; }
+    if sim.is_null() { return -1; }
     let s = unsafe { &mut *sim };
-    if n_y == 0 || n_x == 0 { return -1; }
-    let n_cols = n_y * n_x;
-    if s.n % n_cols != 0 { return -1; }
-    let n_spec = s.n / n_cols;
-
-    let n_spec_over_tmp = if s.is_real { n_time_over / 2 + 1 } else { n_time_over };
-
-    s.is_free = true;
-    s.n_time = n_time;
-    s.n_time_over = n_time_over;
-    s.n_spec = n_spec;
-    s.n_spec_over = n_spec_over_tmp;
-    s.n_y = n_y;
-    s.n_x = n_x;
-    s.free_fft_norm_over = 1.0 / (n_time_over * n_y * n_x) as f64;
-
-    // Phase D.3: EnvGrid free-space uses a c2c 3-D plan (ComplexFft3d) and
-    // complex time-domain buffers; RealGrid (Phase 6) keeps the r2c plan and
-    // real time-domain buffers — same split as native_set_radial_params.
-    if s.is_real {
-        let fft3d = match s.fftw_api.as_ref() {
-            Some(api) => RealFft3d::new(api, n_time_over, n_y, n_x, flags),
-            None => return -2,
-        };
-        s.fft_r2c_3d = Some(fft3d);
-        s.fft_c2c_3d = None;
-        s.free_eto = vec![0.0; n_time_over * n_cols];
-        s.free_pto = vec![0.0; n_time_over * n_cols];
-        s.free_eto_c = Vec::new();
-        s.free_pto_c = Vec::new();
-    } else {
-        let fft3d = match s.fftw_api.as_ref() {
-            Some(api) => ComplexFft3d::new(api, n_time_over, n_y, n_x, flags),
-            None => return -2,
-        };
-        s.fft_c2c_3d = Some(fft3d);
-        s.fft_r2c_3d = None;
-        s.free_eto = Vec::new();
-        s.free_pto = Vec::new();
-        s.free_eto_c = vec![Complex::new(0.0, 0.0); n_time_over * n_cols];
-        s.free_pto_c = vec![Complex::new(0.0, 0.0); n_time_over * n_cols];
-    }
-
-    if !towin.is_null() {
-        s.towin = unsafe { std::slice::from_raw_parts(towin, n_time_over) }.to_vec();
-    } else {
-        s.towin = vec![1.0; n_time_over];
-    }
-    s.kerr_fac = kerr_fac;
-
-    let m_re_sl = unsafe { std::slice::from_raw_parts(m_re, n_spec * n_cols) };
-    let m_im_sl = unsafe { std::slice::from_raw_parts(m_im, n_spec * n_cols) };
-    s.free_m = m_re_sl.iter().zip(m_im_sl.iter())
-        .map(|(&r, &i)| Complex::new(r, i))
-        .collect();
-
-    s.free_eoo = vec![Complex::new(0.0, 0.0); s.n_spec_over * n_cols];
-    s.free_poo = vec![Complex::new(0.0, 0.0); s.n_spec_over * n_cols];
-
-    0
+    unsafe { s.backend.set_free_params(n_time, n_time_over, n_y, n_x, flags, towin, kerr_fac, m_re, m_im) }
 }
 
 /// Wire the z-dependent linop + normfun for free-space (`TransFree`), a
@@ -2856,35 +3174,9 @@ pub unsafe extern "C" fn native_set_free_zdep_params(
     gamma0: c_double,
     dgamma0: c_double,
 ) -> i32 {
-    if sim.is_null() || dspl_x.is_null() || dspl_y.is_null() || dspl_d.is_null()
-        || gamma.is_null() || omega.is_null() || omegawin.is_null() || kperp2.is_null()
-        || sidx.is_null() {
-        return -1;
-    }
-    if n_dspl < 2 { return -2; }
+    if sim.is_null() { return -1; }
     let s = unsafe { &mut *sim };
-    if s.n_spec == 0 || s.n_y == 0 || s.n_x == 0 { return -3; }
-
-    let dspl_x_v = unsafe { std::slice::from_raw_parts(dspl_x, n_dspl) }.to_vec();
-    let dspl_y_v = unsafe { std::slice::from_raw_parts(dspl_y, n_dspl) }.to_vec();
-    let dspl_d_v = unsafe { std::slice::from_raw_parts(dspl_d, n_dspl) }.to_vec();
-
-    s.zdep_free_flength = flength;
-    s.zdep_free_p0 = p0;
-    s.zdep_free_p1 = p1;
-    s.zdep_free_dens_lut = Some(HermiteSpline::from_parts(dspl_x_v, dspl_y_v, dspl_d_v));
-    s.zdep_free_gamma = unsafe { std::slice::from_raw_parts(gamma, s.n_spec) }.to_vec();
-    s.zdep_free_omega = unsafe { std::slice::from_raw_parts(omega, s.n_spec) }.to_vec();
-    s.zdep_free_omegawin = unsafe { std::slice::from_raw_parts(omegawin, s.n_spec) }.to_vec();
-    s.zdep_free_kperp2 = unsafe { std::slice::from_raw_parts(kperp2, s.n_y * s.n_x) }.to_vec();
-    s.zdep_free_sidx = unsafe { std::slice::from_raw_parts(sidx, s.n_spec) }.iter().map(|&b| b != 0).collect();
-    s.zdep_free_kerr_fac_per_dens = eps0_gamma3;
-    s.zdep_free_omega0 = omega0;
-    s.zdep_free_gamma0 = gamma0;
-    s.zdep_free_dgamma0 = dgamma0;
-    s.zdep_free_last_z = f64::NAN;
-    s.is_zdep_free = true;
-    0
+    unsafe { s.backend.set_free_zdep_params(flength, p0, p1, n_dspl, dspl_x, dspl_y, dspl_d, gamma, omega, omegawin, kperp2, sidx, eps0_gamma3, omega0, gamma0, dgamma0) }
 }
 
 /// Wire the z-dependent modal linop — tapered/per-mode radius, BACKLOG.md
@@ -2938,48 +3230,13 @@ pub unsafe extern "C" fn native_set_modal_zdep_params(
     dv0_re: *const c_double,
     dv0_im: *const c_double,
 ) -> i32 {
-    if sim.is_null() || a_x.is_null() || a_y.is_null() || a_d.is_null()
-        || omega.is_null() || sidx.is_null() || eco.is_null()
-        || vn_re.is_null() || vn_im.is_null() || eco0.is_null() || deco0.is_null()
-        || v0_re.is_null() || v0_im.is_null() || dv0_re.is_null() || dv0_im.is_null() {
-        return -1;
-    }
-    if n_a < 2 { return -2; }
+    if sim.is_null() { return -1; }
     let s = unsafe { &mut *sim };
-    if s.n_spec == 0 || s.n_modes == 0 { return -3; }
-    let n_spec = s.n_spec;
-    let n_modes = s.n_modes;
-
-    let a_x_v = unsafe { std::slice::from_raw_parts(a_x, n_a) }.to_vec();
-    let a_y_v = unsafe { std::slice::from_raw_parts(a_y, n_a) }.to_vec();
-    let a_d_v = unsafe { std::slice::from_raw_parts(a_d, n_a) }.to_vec();
-
-    s.zdep_modal_flength = flength;
-    s.zdep_modal_a0 = a0;
-    s.zdep_modal_inv_sqrt_n0 = s.modal_inv_sqrt_n.clone();
-    s.zdep_modal_a_lut = Some(HermiteSpline::from_parts(a_x_v, a_y_v, a_d_v));
-    s.zdep_modal_omega = unsafe { std::slice::from_raw_parts(omega, n_spec) }.to_vec();
-    s.zdep_modal_sidx = unsafe { std::slice::from_raw_parts(sidx, n_spec) }.iter().map(|&b| b != 0).collect();
-    s.zdep_modal_model = model;
-    s.zdep_modal_loss_on = loss_on != 0;
-    s.zdep_modal_eco = unsafe { std::slice::from_raw_parts(eco, n_spec * n_modes) }.to_vec();
-    s.zdep_modal_vn_re = unsafe { std::slice::from_raw_parts(vn_re, n_spec * n_modes) }.to_vec();
-    s.zdep_modal_vn_im = unsafe { std::slice::from_raw_parts(vn_im, n_spec * n_modes) }.to_vec();
-    s.zdep_modal_omega0 = omega0;
-    s.zdep_modal_ref_mode = ref_mode;
-    s.zdep_modal_eco0 = unsafe { std::slice::from_raw_parts(eco0, n_modes) }.to_vec();
-    s.zdep_modal_deco0 = unsafe { std::slice::from_raw_parts(deco0, n_modes) }.to_vec();
-    s.zdep_modal_v0_re = unsafe { std::slice::from_raw_parts(v0_re, n_modes) }.to_vec();
-    s.zdep_modal_v0_im = unsafe { std::slice::from_raw_parts(v0_im, n_modes) }.to_vec();
-    s.zdep_modal_dv0_re = unsafe { std::slice::from_raw_parts(dv0_re, n_modes) }.to_vec();
-    s.zdep_modal_dv0_im = unsafe { std::slice::from_raw_parts(dv0_im, n_modes) }.to_vec();
-    s.zdep_modal_last_z = f64::NAN;
-    s.is_zdep_modal = true;
-    0
+    unsafe { s.backend.set_modal_zdep_params(flength, a0, n_a, a_x, a_y, a_d, omega, sidx, model, loss_on, eco, vn_re, vn_im, omega0, ref_mode, eco0, deco0, v0_re, v0_im, dv0_re, dv0_im) }
 }
 
 // ── Dormand-Prince constants (matching ffi.rs) ──────────────────────────────
-const DP_B: [[f64; 6]; 6] = [
+pub const DP_B: [[f64; 6]; 6] = [
     [1.0/5.0,          0.0,              0.0,              0.0,             0.0,              0.0],
     [3.0/40.0,         9.0/40.0,         0.0,              0.0,             0.0,              0.0],
     [44.0/45.0,       -56.0/15.0,        32.0/9.0,         0.0,             0.0,              0.0],
@@ -2987,11 +3244,11 @@ const DP_B: [[f64; 6]; 6] = [
     [9017.0/3168.0,   -355.0/33.0,       46732.0/5247.0,   49.0/176.0,    -5103.0/18656.0,   0.0],
     [35.0/384.0,       0.0,              500.0/1113.0,     125.0/192.0,   -2187.0/6784.0,    11.0/84.0],
 ];
-const DP_B5: [f64; 7]     = [5179.0/57600.0, 0.0, 7571.0/16695.0, 393.0/640.0,
+pub const DP_B5: [f64; 7]     = [5179.0/57600.0, 0.0, 7571.0/16695.0, 393.0/640.0,
                               -92097.0/339200.0, 187.0/2100.0, 1.0/40.0];
-const DP_ERREST: [f64; 7] = [-71.0/57600.0, 0.0, 71.0/16695.0, -71.0/1920.0,
+pub const DP_ERREST: [f64; 7] = [-71.0/57600.0, 0.0, 71.0/16695.0, -71.0/1920.0,
                                17253.0/339200.0, -22.0/525.0, 1.0/40.0];
-const DP_NODES: [f64; 6]  = [1.0/5.0, 3.0/10.0, 4.0/5.0, 8.0/9.0, 1.0, 1.0];
+pub const DP_NODES: [f64; 6]  = [1.0/5.0, 3.0/10.0, 4.0/5.0, 8.0/9.0, 1.0, 1.0];
 
 #[repr(C)]
 pub struct NativeStepResult {
@@ -3022,7 +3279,7 @@ fn weaknorm_c64(y_err: &[Complex<f64>], y: &[Complex<f64>], yn: &[Complex<f64>],
     syerr.sqrt() / rtol / errwt
 }
 
-fn stepcontrol_pi(ok: bool, err: f64, errlast: f64, dt: f64,
+pub(crate) fn stepcontrol_pi(ok: bool, err: f64, errlast: f64, dt: f64,
                   safety: f64, max_dt: f64, min_dt: f64)
     -> (f64, f64, bool)
 {
@@ -3074,148 +3331,9 @@ pub unsafe extern "C" fn native_step(
     locextrap: i32,
     result: *mut NativeStepResult,
 ) -> i32 {
-    if sim.is_null() || yn.is_null() || result.is_null() { return -1; }
+    if sim.is_null() { return -1; }
     let s = unsafe { &mut *sim };
-    let n = s.n;
-    
-    // Evaluate!
-    // y is in s.field. yn comes in via pointer, but we also maintain yn locally in Rust?
-    // Wait, in `PreconStepper` y is `s.field`. yn is passed in.
-    let yn_sl = unsafe { std::slice::from_raw_parts_mut(yn, n) };
-    
-    // s.yn .= s.y -> but wait, `s.field` is `y`.
-    yn_sl.copy_from_slice(&s.field);
-    
-    // prop!(s.ks[1], s.t, s.tn)  — linop evaluated at the later time, t_new
-    s.ensure_linop_at(t_new);
-    s.ensure_free_norm_at(t_new);
-    s.ensure_modal_linop_at(t_new);
-    apply_prop(&mut s.ks[0], &s.linop, t_new - t_old);
-    
-    let dt = dtn;
-    let t = t_new;
-    
-    for ii in 0..6 {
-        s.ystage.copy_from_slice(&s.field);
-        for jj in 0..=ii {
-            let bij = DP_B[ii][jj];
-            if bij != 0.0 {
-                let scale = dt * bij;
-                for k in 0..n {
-                    s.ystage[k].re += scale * s.ks[jj][k].re;
-                    s.ystage[k].im += scale * s.ks[jj][k].im;
-                }
-            }
-        }
-        
-        if s.is_free {
-            let dt_prop = DP_NODES[ii] * dt;
-            s.ensure_linop_at(t + dt_prop);
-            s.ensure_free_norm_at(t + dt_prop);
-            let mut ystage_prop = s.ystage.clone();
-            apply_prop(&mut ystage_prop, &s.linop, dt_prop);
-            if s.is_real {
-                s.rhs_free(ii + 1, &ystage_prop);
-            } else {
-                s.rhs_free_env(ii + 1, &ystage_prop);
-            }
-            apply_prop(&mut s.ks[ii + 1], &s.linop, -dt_prop);
-        } else if s.is_modal {
-            let dt_prop = DP_NODES[ii] * dt;
-            s.ensure_linop_at(t + dt_prop);
-            s.ensure_modal_linop_at(t + dt_prop);
-            let mut ystage_prop = s.ystage.clone();
-            apply_prop(&mut ystage_prop, &s.linop, dt_prop);
-            s.rhs_modal(ii + 1, &ystage_prop);
-            apply_prop(&mut s.ks[ii + 1], &s.linop, -dt_prop);
-        } else if s.is_radial {
-            let dt_prop = DP_NODES[ii] * dt;
-            s.ensure_linop_at(t + dt_prop);
-            let mut ystage_prop = s.ystage.clone();
-            apply_prop(&mut ystage_prop, &s.linop, dt_prop);
-            if s.is_real {
-                s.rhs_radial(ii + 1, &ystage_prop);
-            } else {
-                s.rhs_radial_env(ii + 1, &ystage_prop);
-            }
-            apply_prop(&mut s.ks[ii + 1], &s.linop, -dt_prop);
-        } else if s.n_time_over > 0 && (s.fft_r2c_over.is_some() || s.fft_c2c_over.is_some()) {
-            let dt_prop = DP_NODES[ii] * dt;
-            s.ensure_linop_at(t + dt_prop);
-            let mut ystage_prop = s.ystage.clone();
-            apply_prop(&mut ystage_prop, &s.linop, dt_prop);
-            if s.is_real {
-                s.rhs_mode_avg_real(ii + 1, &ystage_prop);
-            } else {
-                s.rhs_mode_avg_env(ii + 1, &ystage_prop);
-            }
-            apply_prop(&mut s.ks[ii + 1], &s.linop, -dt_prop);
-        } else {
-            for k in 0..n {
-                s.ks[ii+1][k] = Complex::new(0.0, 0.0);
-            }
-        }
-    }
-    
-    if locextrap != 0 {
-        yn_sl.copy_from_slice(&s.field);
-        for jj in 0..7 {
-            let b = DP_B5[jj];
-            if b != 0.0 {
-                let scale = dt * b;
-                for k in 0..n {
-                    yn_sl[k].re += scale * s.ks[jj][k].re;
-                    yn_sl[k].im += scale * s.ks[jj][k].im;
-                }
-            }
-        }
-    }
-    
-    // Error estimate
-    for k in 0..n { s.yerr[k] = Complex::new(0.0, 0.0); }
-    for ii in 0..7 {
-        let e = DP_ERREST[ii];
-        if e != 0.0 {
-            let scale = dt * e;
-            for k in 0..n {
-                s.yerr[k].re += scale * s.ks[ii][k].re;
-                s.yerr[k].im += scale * s.ks[ii][k].im;
-            }
-        }
-    }
-    
-    let err = weaknorm_c64(&s.yerr, &s.field, yn_sl, rtol, atol);
-    let ok = err <= 1.0;
-    
-    let (dtn_new, errlast_new, ok_final) = 
-        stepcontrol_pi(ok, err, errlast_in, dt, safety, max_dt, min_dt);
-        
-    let tn_new;
-    if ok_final {
-        tn_new = t + dt;
-        let (left, right) = s.ks.split_at_mut(6);
-        left[0].copy_from_slice(&right[0]); // FSAL
-        s.ensure_linop_at(tn_new);
-        s.ensure_free_norm_at(tn_new);
-        s.ensure_modal_linop_at(tn_new);
-        apply_prop(yn_sl, &s.linop, tn_new - t);
-        s.field.copy_from_slice(yn_sl);
-    } else {
-        yn_sl.copy_from_slice(&s.field);
-        tn_new = t_new;
-        s.ensure_linop_at(tn_new);
-        s.ensure_free_norm_at(tn_new);
-        s.ensure_modal_linop_at(tn_new);
-        apply_prop(yn_sl, &s.linop, tn_new - t); // no-op since t == tn_new
-    }
-    
-    unsafe {
-        *result = NativeStepResult {
-            ok: ok_final as i32, dt, t, tn: tn_new, dtn: dtn_new, err, errlast: errlast_new,
-        };
-    }
-    
-    0
+    unsafe { s.backend.step(yn, t_old, t_new, dtn, rtol, atol, safety, max_dt, min_dt, errlast_in, locextrap, result) }
 }
 
 #[cfg(test)]

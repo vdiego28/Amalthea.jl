@@ -293,7 +293,8 @@ impl PptIonizationRate {
         let mut n_t_val = n_t as libc::c_int;
         let mut d_err_ptr = d_err.dptr;
         
-        let mut args: [*mut libc::c_void; 8] = [
+        let mut strict_val = if self.strict { 1 as libc::c_int } else { 0 as libc::c_int };
+        let mut args: [*mut libc::c_void; 9] = [
             &mut d_fields_ptr as *mut _ as *mut libc::c_void,
             &mut d_rates_ptr as *mut _ as *mut libc::c_void,
             &mut d_segments_ptr as *mut _ as *mut libc::c_void,
@@ -302,6 +303,7 @@ impl PptIonizationRate {
             &mut num_segments_val as *mut _ as *mut libc::c_void,
             &mut n_t_val as *mut _ as *mut libc::c_void,
             &mut d_err_ptr as *mut _ as *mut libc::c_void,
+            &mut strict_val as *mut _ as *mut libc::c_void,
         ];
         
         let block_size = 256;

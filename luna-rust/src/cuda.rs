@@ -126,8 +126,51 @@ pub struct CudaDriverApi {
     pub cuMemFree_v2: unsafe extern "C" fn(dptr: CUdeviceptr) -> CUresult,
     pub cuMemcpyHtoD_v2: unsafe extern "C" fn(dstDevice: CUdeviceptr, srcHost: *const libc::c_void, ByteCount: libc::size_t) -> CUresult,
     pub cuMemcpyDtoH_v2: unsafe extern "C" fn(dstHost: *mut libc::c_void, srcDevice: CUdeviceptr, ByteCount: libc::size_t) -> CUresult,
+    pub cuMemcpyDtoD_v2: unsafe extern "C" fn(dstDevice: CUdeviceptr, srcDevice: CUdeviceptr, ByteCount: libc::size_t) -> CUresult,
     pub cuCtxGetCurrent: unsafe extern "C" fn(pctx: *mut CUcontext) -> CUresult,
     pub cuCtxSetCurrent: unsafe extern "C" fn(ctx: CUcontext) -> CUresult,
+}
+
+#[allow(non_camel_case_types)]
+pub type cufftHandle = libc::c_int;
+#[allow(non_camel_case_types)]
+pub type cufftResult = libc::c_int;
+#[allow(non_camel_case_types)]
+pub type cufftType = libc::c_int;
+pub const CUFFT_D2Z: cufftType = 106;
+pub const CUFFT_Z2D: cufftType = 108;
+pub const CUFFT_Z2Z: cufftType = 105;
+
+pub struct CufftApi {
+    _lib: Library,
+    pub cufftPlan1d: unsafe extern "C" fn(plan: *mut cufftHandle, nx: libc::c_int, type_: cufftType, batch: libc::c_int) -> cufftResult,
+    pub cufftDestroy: unsafe extern "C" fn(plan: cufftHandle) -> cufftResult,
+    pub cufftExecD2Z: unsafe extern "C" fn(plan: cufftHandle, idata: *mut f64, odata: *mut libc::c_void) -> cufftResult,
+    pub cufftExecZ2D: unsafe extern "C" fn(plan: cufftHandle, idata: *mut libc::c_void, odata: *mut f64) -> cufftResult,
+    pub cufftExecZ2Z: unsafe extern "C" fn(plan: cufftHandle, idata: *mut libc::c_void, odata: *mut libc::c_void, direction: libc::c_int) -> cufftResult,
+}
+
+pub fn get_cufft_api() -> Result<&'static CufftApi, String> {
+    static API: OnceLock<Result<CufftApi, String>> = OnceLock::new();
+    API.get_or_init(|| unsafe {
+        let names = &[
+            "libcufft.so.11",
+            "libcufft.so.10",
+            "libcufft.so",
+            "cufft64_11.dll",
+            "cufft64_10.dll",
+            "cufft.dll",
+        ];
+        let lib = Library::load(names)?;
+        Ok(CufftApi {
+            cufftPlan1d: std::mem::transmute(lib.get_symbol("cufftPlan1d")?),
+            cufftDestroy: std::mem::transmute(lib.get_symbol("cufftDestroy")?),
+            cufftExecD2Z: std::mem::transmute(lib.get_symbol("cufftExecD2Z")?),
+            cufftExecZ2D: std::mem::transmute(lib.get_symbol("cufftExecZ2D")?),
+            cufftExecZ2Z: std::mem::transmute(lib.get_symbol("cufftExecZ2Z")?),
+            _lib: lib,
+        })
+    }).as_ref().map_err(|e| e.clone())
 }
 
 pub struct CublasApi {
@@ -168,6 +211,7 @@ pub fn get_driver_api() -> Result<&'static CudaDriverApi, String> {
             cuMemFree_v2: std::mem::transmute(lib.get_symbol("cuMemFree_v2")?),
             cuMemcpyHtoD_v2: std::mem::transmute(lib.get_symbol("cuMemcpyHtoD_v2")?),
             cuMemcpyDtoH_v2: std::mem::transmute(lib.get_symbol("cuMemcpyDtoH_v2")?),
+            cuMemcpyDtoD_v2: std::mem::transmute(lib.get_symbol("cuMemcpyDtoD_v2")?),
             cuCtxGetCurrent: std::mem::transmute(lib.get_symbol("cuCtxGetCurrent")?),
             cuCtxSetCurrent: std::mem::transmute(lib.get_symbol("cuCtxSetCurrent")?),
             _lib: lib,
@@ -204,6 +248,13 @@ pub struct GpuContext {
     pub module: CUmodule,
     pub raman_fn: CUfunction,
     pub ppt_fn: CUfunction,
+    pub apply_prop_fn: CUfunction,
+    pub rk45_accumulate_stage_fn: CUfunction,
+    pub rk45_accumulate_error_fn: CUfunction,
+    pub weaknorm_elem_fn: CUfunction,
+    pub weaknorm_reduce_fn: CUfunction,
+    pub rhs_mode_avg_real_fn: CUfunction,
+    pub rhs_mode_avg_env_fn: CUfunction,
 }
 
 unsafe impl Send for GpuContext {}
@@ -297,20 +348,40 @@ pub fn init_gpu_context() -> Result<&'static GpuContext, String> {
             let mut ppt_fn = std::ptr::null_mut();
             let fn_name_ppt = CString::new("ppt_ionization_kernel").unwrap();
             res = (driver.cuModuleGetFunction)(&mut ppt_fn, module, fn_name_ppt.as_ptr());
-            if res != 0 {
-                (driver.cuModuleUnload)(module);
-                (cublas.cublasDestroy_v2)(cublas_handle);
-                (driver.cuCtxDestroy_v2)(context);
-                return Err(format!("cuModuleGetFunction for ppt_ionization_kernel failed: {}", res));
-            }
+            if res != 0 { return Err("cuModuleGetFunction failed".to_string()); }
+
+            let mut apply_prop_fn = std::ptr::null_mut();
+            res = (driver.cuModuleGetFunction)(&mut apply_prop_fn, module, CString::new("apply_prop_kernel").unwrap().as_ptr());
+            if res != 0 { return Err("cuModuleGetFunction apply_prop_kernel failed".to_string()); }
             
+            let mut rk45_accumulate_stage_fn = std::ptr::null_mut();
+            res = (driver.cuModuleGetFunction)(&mut rk45_accumulate_stage_fn, module, CString::new("rk45_accumulate_stage_kernel").unwrap().as_ptr());
+            if res != 0 { return Err("cuModuleGetFunction rk45_accumulate_stage_kernel failed".to_string()); }
+
+            let mut rk45_accumulate_error_fn = std::ptr::null_mut();
+            res = (driver.cuModuleGetFunction)(&mut rk45_accumulate_error_fn, module, CString::new("rk45_accumulate_error_kernel").unwrap().as_ptr());
+            if res != 0 { return Err("cuModuleGetFunction rk45_accumulate_error_kernel failed".to_string()); }
+
+            let mut weaknorm_elem_fn = std::ptr::null_mut();
+            res = (driver.cuModuleGetFunction)(&mut weaknorm_elem_fn, module, CString::new("weaknorm_elem_kernel").unwrap().as_ptr());
+            if res != 0 { return Err("cuModuleGetFunction weaknorm_elem_kernel failed".to_string()); }
+
+            let mut weaknorm_reduce_fn = std::ptr::null_mut();
+            res = (driver.cuModuleGetFunction)(&mut weaknorm_reduce_fn, module, CString::new("weaknorm_reduce_kernel").unwrap().as_ptr());
+            if res != 0 { return Err("cuModuleGetFunction weaknorm_reduce_kernel failed".to_string()); }
+
+            let mut rhs_mode_avg_real_fn = std::ptr::null_mut();
+            res = (driver.cuModuleGetFunction)(&mut rhs_mode_avg_real_fn, module, CString::new("rhs_mode_avg_real_kernel").unwrap().as_ptr());
+            if res != 0 { return Err("cuModuleGetFunction rhs_mode_avg_real_kernel failed".to_string()); }
+
+            let mut rhs_mode_avg_env_fn = std::ptr::null_mut();
+            res = (driver.cuModuleGetFunction)(&mut rhs_mode_avg_env_fn, module, CString::new("rhs_mode_avg_env_kernel").unwrap().as_ptr());
+            if res != 0 { return Err("cuModuleGetFunction rhs_mode_avg_env_kernel failed".to_string()); }
+
             Ok(GpuContext {
-                device,
-                context,
-                cublas_handle,
-                module,
-                raman_fn,
-                ppt_fn,
+                device, context, cublas_handle, module, raman_fn, ppt_fn,
+                apply_prop_fn, rk45_accumulate_stage_fn, rk45_accumulate_error_fn,
+                weaknorm_elem_fn, weaknorm_reduce_fn, rhs_mode_avg_real_fn, rhs_mode_avg_env_fn
             })
         }
     }).as_ref().map_err(|e| e.clone())
@@ -366,6 +437,19 @@ impl GpuBuffer {
         let res = unsafe { (driver.cuMemcpyDtoH_v2)(dst.as_mut_ptr() as *mut libc::c_void, self.dptr, bytes) };
         if res != 0 {
             return Err(format!("cuMemcpyDtoH_v2 failed: {}", res));
+        }
+        Ok(())
+    }
+
+    /// Copies data from another `GpuBuffer` to this one
+    pub fn copy_from_device(&mut self, src: &GpuBuffer) -> Result<(), String> {
+        let driver = get_driver_api()?;
+        if self.size != src.size {
+            return Err("Size mismatch in copy_from_device".to_string());
+        }
+        let res = unsafe { (driver.cuMemcpyDtoD_v2)(self.dptr, src.dptr, self.size) };
+        if res != 0 {
+            return Err(format!("cuMemcpyDtoD_v2 failed: {}", res));
         }
         Ok(())
     }

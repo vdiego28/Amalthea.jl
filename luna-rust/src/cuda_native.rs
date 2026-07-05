@@ -1,0 +1,415 @@
+use crate::native::{NativeBackend, NativeStepResult};
+use crate::cuda::{
+    activate_context, get_cufft_api, get_driver_api, get_gpu_context, cufftHandle, GpuBuffer,
+    CUFFT_Z2D, CUFFT_D2Z, CUFFT_Z2Z
+};
+use num_complex::Complex;
+use std::ffi::{c_char, c_double, c_int, c_uint};
+use libc::size_t;
+
+pub struct CudaNativeSim {
+    pub n: usize,
+    pub n_time: usize,
+    pub n_time_over: usize,
+
+    pub field_d: GpuBuffer,
+    pub linop_d: GpuBuffer,
+    pub ks_d: [GpuBuffer; 7],
+    pub ystage_d: GpuBuffer,
+    pub yerr_d: GpuBuffer,
+    pub out_sq_d: GpuBuffer,
+    pub reduced_d: GpuBuffer,
+
+    pub eto_d: GpuBuffer,
+    pub pto_d: GpuBuffer,
+    pub eoo_d: GpuBuffer,
+    pub poo_d: GpuBuffer,
+    pub towin_d: GpuBuffer,
+    pub kerr_fac: c_double,
+
+    pub fft_r2c: cufftHandle,
+}
+
+impl CudaNativeSim {
+    pub fn new(n: usize) -> Result<Self, String> {
+        let field_d = GpuBuffer::alloc(n * 16)?;
+        let linop_d = GpuBuffer::alloc(n * 16)?;
+        
+        let ks_d = [
+            GpuBuffer::alloc(n * 16)?, GpuBuffer::alloc(n * 16)?,
+            GpuBuffer::alloc(n * 16)?, GpuBuffer::alloc(n * 16)?,
+            GpuBuffer::alloc(n * 16)?, GpuBuffer::alloc(n * 16)?,
+            GpuBuffer::alloc(n * 16)?
+        ];
+        
+        let ystage_d = GpuBuffer::alloc(n * 16)?;
+        let yerr_d = GpuBuffer::alloc(n * 16)?;
+        let out_sq_d = GpuBuffer::alloc(n * 8)?;
+        
+        let reduced_d = GpuBuffer::alloc(1024 * 8)?;
+
+        let eto_d = GpuBuffer::alloc(8)?;
+        let pto_d = GpuBuffer::alloc(8)?;
+        let eoo_d = GpuBuffer::alloc(16)?;
+        let poo_d = GpuBuffer::alloc(16)?;
+        let towin_d = GpuBuffer::alloc(8)?;
+
+        Ok(Self {
+            n,
+            n_time: 0,
+            n_time_over: 0,
+            field_d,
+            linop_d,
+            ks_d,
+            ystage_d,
+            yerr_d,
+            out_sq_d,
+            reduced_d,
+            eto_d,
+            pto_d,
+            eoo_d,
+            poo_d,
+            towin_d,
+            kerr_fac: 0.0,
+            fft_r2c: 0,
+        })
+    }
+}
+
+impl NativeBackend for CudaNativeSim {
+    unsafe fn set_field(&mut self, data: *const c_double, n: size_t) -> i32 {
+        let slice = std::slice::from_raw_parts(data as *const Complex<f64>, n);
+        self.field_d.copy_to_device(slice).unwrap();
+        0
+    }
+
+    unsafe fn resync_field(&mut self, data: *const c_double, n: size_t) -> i32 {
+        let slice = std::slice::from_raw_parts_mut(data as *mut Complex<f64>, n);
+        self.field_d.copy_to_host(slice).unwrap();
+        0
+    }
+
+    unsafe fn get_field(&self, data: *mut c_double, n: size_t) -> i32 {
+        let slice = std::slice::from_raw_parts_mut(data as *mut Complex<f64>, n);
+        self.field_d.copy_to_host(slice).unwrap();
+        0
+    }
+
+    unsafe fn get_ks_stage(&self, idx: size_t, data: *mut c_double, n: size_t) -> i32 {
+        if idx < 7 {
+            let slice = std::slice::from_raw_parts_mut(data as *mut Complex<f64>, n);
+            self.ks_d[idx].copy_to_host(slice).unwrap();
+            0
+        } else {
+            -1
+        }
+    }
+
+    unsafe fn apply_prop(&mut self, _y: *mut c_double, _n: size_t, _t1: f64, _t2: f64) -> i32 {
+        // Not used manually in CudaNativeSim (managed internally via cuLaunchKernel)
+        -1
+    }
+
+    unsafe fn debug_linop_at(&mut self, _z: c_double, _data: *mut c_double, _n: size_t) -> i32 { -1 }
+
+    unsafe fn debug_beta1_at(&mut self, _z: c_double, _out_dens: *mut c_double, _out_beta1: *mut c_double) -> i32 { -1 }
+
+    unsafe fn set_fftw_plans(&mut self, _lib_path: *const c_char, _n_time: size_t, _n_time_over: size_t, _is_real: c_int, _flags: c_uint) -> i32 {
+        0 // Replaced by cuFFT
+    }
+
+    unsafe fn set_mode_avg_params(&mut self, n_time: size_t, n_time_over: size_t, towin: *const c_double, _owin: *const c_double, _sidx: *const u8, _pre_re: *const c_double, _pre_im: *const c_double, _beta: *const c_double, kerr_fac: c_double, _nlscale: c_double, _sqrt_aeff: c_double) -> i32 {
+        self.n_time = n_time;
+        self.n_time_over = n_time_over;
+        self.kerr_fac = kerr_fac;
+        
+        self.eto_d = GpuBuffer::alloc(n_time * 8).unwrap();
+        self.pto_d = GpuBuffer::alloc(n_time * 8).unwrap();
+        
+        let slice = std::slice::from_raw_parts(towin, n_time);
+        self.towin_d = GpuBuffer::alloc(n_time * 8).unwrap();
+        self.towin_d.copy_to_device(slice).unwrap();
+        
+        if let Ok(cufft) = get_cufft_api() {
+            if self.fft_r2c != 0 {
+                (cufft.cufftDestroy)(self.fft_r2c);
+            }
+            let mut plan = 0;
+            (cufft.cufftPlan1d)(&mut plan, n_time as i32, CUFFT_D2Z, 1);
+            self.fft_r2c = plan;
+        } else {
+            eprintln!("Warning: cuFFT not available, mode_avg_params will fail during step");
+        }
+        0
+    }
+
+    unsafe fn set_zdep_mode_avg_params(&mut self, _flength: c_double, _p0: c_double, _p1: c_double, _n_dspl: size_t, _dspl_x: *const c_double, _dspl_y: *const c_double, _dspl_d: *const c_double, _gamma: *const c_double, _nwg_re: *const c_double, _nwg_im: *const c_double, _omega: *const c_double, _model: c_uint, _loss_on: c_uint, _eps0_gamma3: c_double, _omega0: c_double, _gamma0: c_double, _dgamma0: c_double, _nwg0_re: c_double, _nwg0_im: c_double, _dnwg0_re: c_double, _dnwg0_im: c_double) -> i32 { -1 }
+
+    unsafe fn set_plasma_params(&mut self, _ion_ptr: *const crate::ionization::PptIonizationRate, _ionpot: c_double, _e_ratio: c_double, _preionfrac: c_double, _dt: c_double) -> i32 { -1 }
+
+    unsafe fn set_radial_params(&mut self, _n_time: size_t, _n_time_over: size_t, _n_r: size_t, _t_matrix: *const c_double, _scale_fwd: c_double, _scale_inv: c_double, _towin: *const c_double, _kerr_fac: c_double, _m_re: *const c_double, _m_im: *const c_double) -> i32 { -1 }
+
+    unsafe fn set_raman_params(&mut self, _omega: *const c_double, _gamma: *const c_double, _coupling: *const c_double, _n_osc: size_t, _dt: c_double, _density: c_double) -> i32 { -1 }
+
+    unsafe fn set_modal_params(&mut self, _n_time: size_t, _n_time_over: size_t, _n_modes: size_t, _npol: size_t, _a: c_double, _unm: *const c_double, _inv_sqrt_n: *const c_double, _order: *const i32, _kind: *const u8, _phi: *const c_double, _full: u8, _pol_select: *const u8, _towin: *const c_double, _kerr_fac: c_double, _nlfac_re: *const c_double, _nlfac_im: *const c_double, _lib_path: *const c_char, _rtol: c_double, _atol: c_double, _maxevals: size_t) -> i32 { -1 }
+
+    unsafe fn set_free_params(&mut self, _n_time: size_t, _n_time_over: size_t, _n_y: size_t, _n_x: size_t, _flags: c_uint, _towin: *const c_double, _kerr_fac: c_double, _m_re: *const c_double, _m_im: *const c_double) -> i32 { -1 }
+
+    unsafe fn set_free_zdep_params(&mut self, _flength: c_double, _p0: c_double, _p1: c_double, _n_dspl: size_t, _dspl_x: *const c_double, _dspl_y: *const c_double, _dspl_d: *const c_double, _gamma: *const c_double, _omega: *const c_double, _omegawin: *const c_double, _kperp2: *const c_double, _sidx: *const u8, _eps0_gamma3: c_double, _omega0: c_double, _gamma0: c_double, _dgamma0: c_double) -> i32 { -1 }
+
+    unsafe fn set_modal_zdep_params(&mut self, _flength: c_double, _a0: c_double, _n_a: size_t, _a_x: *const c_double, _a_y: *const c_double, _a_d: *const c_double, _omega: *const c_double, _sidx: *const u8, _model: u8, _loss_on: u8, _eco: *const c_double, _vn_re: *const c_double, _vn_im: *const c_double, _omega0: c_double, _ref_mode: size_t, _eco0: *const c_double, _deco0: *const c_double, _v0_re: *const c_double, _v0_im: *const c_double, _dv0_re: *const c_double, _dv0_im: *const c_double) -> i32 { -1 }
+
+    unsafe fn step(&mut self, yn: *mut Complex<f64>, _t_old: f64, _t_new: f64, _dtn: f64, _rtol: f64, _atol: f64, _safety: f64, _max_dt: f64, _min_dt: f64, _errlast_in: f64, _locextrap: i32, result: *mut NativeStepResult) -> i32 {
+        let ctx = match get_gpu_context() {
+            Some(c) => c,
+            None => return -1,
+        };
+        let driver = get_driver_api().unwrap();
+        let cufft = get_cufft_api().unwrap();
+        
+        let block_size = 256;
+        let grid_size = (self.n as u32 + block_size - 1) / block_size;
+        
+        let mut dt = _dtn;
+        let t = _t_new;
+
+        // 1. apply_prop(ks[0], dt_prev) - shifts ks[0] to t_new
+        let mut apply_args_k0: [*mut libc::c_void; 4] = [
+            &mut self.ks_d[0].dptr as *mut _ as *mut _,
+            &mut self.linop_d.dptr as *mut _ as *mut _,
+            &mut self.n as *mut _ as *mut _,
+            &mut {_t_new - _t_old} as *mut _ as *mut _,
+        ];
+        (driver.cuLaunchKernel)(
+            ctx.apply_prop_fn, grid_size, 1, 1, block_size, 1, 1, 0, std::ptr::null_mut(),
+            apply_args_k0.as_mut_ptr(), std::ptr::null_mut()
+        );
+
+        for ii in 0..6 {
+            self.ystage_d.copy_from_device(&self.field_d).unwrap();
+            
+            let mut b = crate::native::DP_B[ii];
+            let mut rk_args: [*mut libc::c_void; 18] = [
+                &mut self.ystage_d.dptr as *mut _ as *mut _,
+                &mut self.field_d.dptr as *mut _ as *mut _,
+                &mut self.ks_d[0].dptr as *mut _ as *mut _,
+                &mut self.ks_d[1].dptr as *mut _ as *mut _,
+                &mut self.ks_d[2].dptr as *mut _ as *mut _,
+                &mut self.ks_d[3].dptr as *mut _ as *mut _,
+                &mut self.ks_d[4].dptr as *mut _ as *mut _,
+                &mut self.ks_d[5].dptr as *mut _ as *mut _,
+                &mut self.ks_d[6].dptr as *mut _ as *mut _,
+                &mut b[0] as *mut _ as *mut _,
+                &mut b[1] as *mut _ as *mut _,
+                &mut b[2] as *mut _ as *mut _,
+                &mut b[3] as *mut _ as *mut _,
+                &mut b[4] as *mut _ as *mut _,
+                &mut b[5] as *mut _ as *mut _,
+                &mut 0.0f64 as *mut _ as *mut _, // b6 is zero since DP_B is length 6
+                &mut self.n as *mut _ as *mut _,
+                &mut dt as *mut _ as *mut _,
+            ];
+            (driver.cuLaunchKernel)(
+                ctx.rk45_accumulate_stage_fn, grid_size, 1, 1, block_size, 1, 1, 0, std::ptr::null_mut(),
+                rk_args.as_mut_ptr(), std::ptr::null_mut()
+            );
+            
+            // TODO: Z-Dependent Linear Operator: recalculate `linop_d` at `t + dt_prop` for tapered fibers.
+            // Currently assuming `linop_d` is static across the step.
+            
+            let mut dt_prop = crate::native::DP_NODES[ii] * dt;
+            let mut apply_args_prop: [*mut libc::c_void; 4] = [
+                &mut self.ystage_d.dptr as *mut _ as *mut _,
+                &mut self.linop_d.dptr as *mut _ as *mut _,
+                &mut self.n as *mut _ as *mut _,
+                &mut dt_prop as *mut _ as *mut _,
+            ];
+            (driver.cuLaunchKernel)(
+                ctx.apply_prop_fn, grid_size, 1, 1, block_size, 1, 1, 0, std::ptr::null_mut(),
+                apply_args_prop.as_mut_ptr(), std::ptr::null_mut()
+            );
+
+            if self.n_time_over > 0 && self.fft_r2c != 0 {
+                // FFT C2R (D2Z) -> ystage_d to eto_d
+                (cufft.cufftExecZ2D)(self.fft_r2c, self.ystage_d.dptr as *mut _, self.eto_d.dptr as *mut _);
+
+                let n_time_u32 = self.n_time as u32;
+                let grid_size_t = (n_time_u32 + block_size - 1) / block_size;
+                let mut kerr_args: [*mut libc::c_void; 5] = [
+                    &mut self.eto_d.dptr as *mut _ as *mut _,
+                    &mut self.pto_d.dptr as *mut _ as *mut _,
+                    &mut self.towin_d.dptr as *mut _ as *mut _,
+                    &mut self.kerr_fac as *mut _ as *mut _,
+                    &mut self.n_time as *mut _ as *mut _,
+                ];
+                (driver.cuLaunchKernel)(
+                    ctx.rhs_mode_avg_real_fn, grid_size_t, 1, 1, block_size, 1, 1, 0, std::ptr::null_mut(),
+                    kerr_args.as_mut_ptr(), std::ptr::null_mut()
+                );
+
+                // FFT R2C (D2Z) -> pto_d to ks_d[ii+1]
+                (cufft.cufftExecD2Z)(self.fft_r2c, self.pto_d.dptr as *mut _, self.ks_d[ii+1].dptr as *mut _);
+            } else {
+                let zeros = vec![Complex::new(0.0, 0.0); self.n];
+                self.ks_d[ii+1].copy_to_device(&zeros).unwrap();
+            }
+
+            let mut dt_prop_neg = -dt_prop;
+            let mut apply_args_inv: [*mut libc::c_void; 4] = [
+                &mut self.ks_d[ii+1].dptr as *mut _ as *mut _,
+                &mut self.linop_d.dptr as *mut _ as *mut _,
+                &mut self.n as *mut _ as *mut _,
+                &mut dt_prop_neg as *mut _ as *mut _,
+            ];
+            (driver.cuLaunchKernel)(
+                ctx.apply_prop_fn, grid_size, 1, 1, block_size, 1, 1, 0, std::ptr::null_mut(),
+                apply_args_inv.as_mut_ptr(), std::ptr::null_mut()
+            );
+        }
+
+        // Error accumulation
+        let mut e = crate::native::DP_ERREST;
+        let mut rk_err_args: [*mut libc::c_void; 17] = [
+            &mut self.yerr_d.dptr as *mut _ as *mut _,
+            &mut self.ks_d[0].dptr as *mut _ as *mut _,
+            &mut self.ks_d[1].dptr as *mut _ as *mut _,
+            &mut self.ks_d[2].dptr as *mut _ as *mut _,
+            &mut self.ks_d[3].dptr as *mut _ as *mut _,
+            &mut self.ks_d[4].dptr as *mut _ as *mut _,
+            &mut self.ks_d[5].dptr as *mut _ as *mut _,
+            &mut self.ks_d[6].dptr as *mut _ as *mut _,
+            &mut e[0] as *mut _ as *mut _,
+            &mut e[1] as *mut _ as *mut _,
+            &mut e[2] as *mut _ as *mut _,
+            &mut e[3] as *mut _ as *mut _,
+            &mut e[4] as *mut _ as *mut _,
+            &mut e[5] as *mut _ as *mut _,
+            &mut e[6] as *mut _ as *mut _,
+            &mut self.n as *mut _ as *mut _,
+            &mut dt as *mut _ as *mut _,
+        ];
+        (driver.cuLaunchKernel)(
+            ctx.rk45_accumulate_error_fn, grid_size, 1, 1, block_size, 1, 1, 0, std::ptr::null_mut(),
+            rk_err_args.as_mut_ptr(), std::ptr::null_mut()
+        );
+        
+        let mut rtol_d = _rtol;
+        let mut atol_d = _atol;
+        let mut weaknorm_elem_args: [*mut libc::c_void; 6] = [
+            &mut self.out_sq_d.dptr as *mut _ as *mut _,
+            &mut self.yerr_d.dptr as *mut _ as *mut _,
+            &mut self.field_d.dptr as *mut _ as *mut _,
+            &mut rtol_d as *mut _ as *mut _,
+            &mut atol_d as *mut _ as *mut _,
+            &mut self.n as *mut _ as *mut _,
+        ];
+        (driver.cuLaunchKernel)(
+            ctx.weaknorm_elem_fn, grid_size, 1, 1, block_size, 1, 1, 0, std::ptr::null_mut(),
+            weaknorm_elem_args.as_mut_ptr(), std::ptr::null_mut()
+        );
+
+        let mut current_n = self.n;
+        let mut in_dptr = self.out_sq_d.dptr;
+        let mut out_dptr = self.reduced_d.dptr;
+        
+        while current_n > 1 {
+            let next_n = (current_n + block_size as usize - 1) / (block_size as usize);
+            let mut reduce_args: [*mut libc::c_void; 3] = [
+                &mut in_dptr as *mut _ as *mut _,
+                &mut out_dptr as *mut _ as *mut _,
+                &mut current_n as *mut _ as *mut _,
+            ];
+            (driver.cuLaunchKernel)(
+                ctx.weaknorm_reduce_fn, next_n as u32, 1, 1, block_size, 1, 1, 
+                (block_size * 8) as u32, std::ptr::null_mut(),
+                reduce_args.as_mut_ptr(), std::ptr::null_mut()
+            );
+            in_dptr = out_dptr;
+            current_n = next_n;
+        }
+        
+        let mut err_sq = [0.0f64];
+        (driver.cuMemcpyDtoH_v2)(err_sq.as_mut_ptr() as *mut _, in_dptr, 8);
+        let err = (err_sq[0] / (self.n as f64)).sqrt();
+        let ok = err <= 1.0;
+        
+        let (dtn_new, errlast_new, ok_final) = crate::native::stepcontrol_pi(ok, err, _errlast_in, dt, _safety, _max_dt, _min_dt);
+        let tn_new;
+
+        if ok_final {
+            tn_new = t + dt;
+            let (left, right) = self.ks_d.split_at_mut(6);
+            left[0].copy_from_device(&right[0]).unwrap(); // FSAL
+
+            // Final 5th-order solution: field_d += dt * Σ DP_B5[i] * ks_d[i] (in place —
+            // safe: each thread reads its own field_d[idx] into a local before writing it
+            // back). This mirrors CpuNativeSim::step's `let b0 = dt * DP_B5[0]; ...` block
+            // (native.rs ~line 2521), which the GPU path was previously missing entirely —
+            // it used to just re-propagate the untouched old field, silently dropping the
+            // whole nonlinear RK contribution on every accepted step.
+            if _locextrap != 0 {
+                let mut b5 = crate::native::DP_B5;
+                let mut final_args: [*mut libc::c_void; 18] = [
+                    &mut self.field_d.dptr as *mut _ as *mut _,
+                    &mut self.field_d.dptr as *mut _ as *mut _,
+                    &mut self.ks_d[0].dptr as *mut _ as *mut _,
+                    &mut self.ks_d[1].dptr as *mut _ as *mut _,
+                    &mut self.ks_d[2].dptr as *mut _ as *mut _,
+                    &mut self.ks_d[3].dptr as *mut _ as *mut _,
+                    &mut self.ks_d[4].dptr as *mut _ as *mut _,
+                    &mut self.ks_d[5].dptr as *mut _ as *mut _,
+                    &mut self.ks_d[6].dptr as *mut _ as *mut _,
+                    &mut b5[0] as *mut _ as *mut _,
+                    &mut b5[1] as *mut _ as *mut _,
+                    &mut b5[2] as *mut _ as *mut _,
+                    &mut b5[3] as *mut _ as *mut _,
+                    &mut b5[4] as *mut _ as *mut _,
+                    &mut b5[5] as *mut _ as *mut _,
+                    &mut b5[6] as *mut _ as *mut _,
+                    &mut self.n as *mut _ as *mut _,
+                    &mut dt as *mut _ as *mut _,
+                ];
+                (driver.cuLaunchKernel)(
+                    ctx.rk45_accumulate_stage_fn, grid_size, 1, 1, block_size, 1, 1, 0, std::ptr::null_mut(),
+                    final_args.as_mut_ptr(), std::ptr::null_mut()
+                );
+            }
+
+            // apply prop on field_d by tn_new - t
+            let mut apply_args_fin: [*mut libc::c_void; 4] = [
+                &mut self.field_d.dptr as *mut _ as *mut _,
+                &mut self.linop_d.dptr as *mut _ as *mut _,
+                &mut self.n as *mut _ as *mut _,
+                &mut {tn_new - t} as *mut _ as *mut _,
+            ];
+            (driver.cuLaunchKernel)(
+                ctx.apply_prop_fn, grid_size, 1, 1, block_size, 1, 1, 0, std::ptr::null_mut(),
+                apply_args_fin.as_mut_ptr(), std::ptr::null_mut()
+            );
+            self.get_field(yn as *mut c_double, self.n); // sync accepted step to host
+        } else {
+            tn_new = _t_new;
+            self.get_field(yn as *mut c_double, self.n); // return untouched field
+        }
+
+        (*result).ok = ok_final as i32;
+        (*result).dt = dt;
+        (*result).t = t;
+        (*result).tn = tn_new;
+        (*result).dtn = dtn_new;
+        (*result).err = err;
+        (*result).errlast = errlast_new;
+        
+        0
+    }
+}
+
+impl Drop for CudaNativeSim {
+    fn drop(&mut self) {
+        if self.fft_r2c != 0 {
+            if let Ok(cufft) = get_cufft_api() {
+                unsafe { (cufft.cufftDestroy)(self.fft_r2c); }
+            }
+        }
+    }
+}
