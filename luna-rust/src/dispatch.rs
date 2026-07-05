@@ -88,7 +88,7 @@ fn is_vulkan_available() -> bool {
         unsafe {
             let vulkan_dll = b"vulkan-1.dll\0";
             let handle = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(vulkan_dll.as_ptr());
-            if handle != 0 {
+            if !handle.is_null() {
                 return true;
             }
         }
