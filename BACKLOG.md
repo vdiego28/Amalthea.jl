@@ -402,8 +402,8 @@ tests). **Phase E (native scope: modal generality) is now complete.**
    `raman_update_coeffs` FFI to re-derive τ2 per stage) remains a
    follow-up, out of scope until Raman + a z-dependent linop are wired
    together for any geometry.
-3. Multi-point pressure gradients (piecewise Phase 7 — per-segment analytic
-   β1 constants; `ensure_linop_at` selects the segment).
+3. ✅ Multi-point pressure gradients (piecewise Phase 7) — see "Done (recent)"
+   below.
 4. Gas mixtures: per-species density vector + summed susceptibilities in
    the native RHS (removes the `densityfun isa Real` guard).
 
@@ -714,6 +714,45 @@ findings below.
 
 ## Done (recent)
 
+- ✅ **Phase F item 3: multi-point (general piecewise) pressure gradients,
+  native.** Generalizes Phase 7's z-dependent linop (previously two-point
+  `Capillary.gradient(gas,L,p0,p1)` only) to the general multi-point
+  `Capillary.gradient(gas,Z,P)` fill:
+  - New `Capillary.MultiPointGradient(Z,P)` — a concrete callable type
+    mirroring `TwoPointGradient`, computing the same per-segment
+    `sqrt(P[i]²+t·(P[i+1]²-P[i]²))` interpolation the old anonymous
+    `p(z)` closure used, so `gradient(gas,Z,P)` no longer returns a `pfun
+    === nothing` sentinel (which previously forced the plain, non-native
+    linop path for every multi-point config, silently, no error).
+  - `Capillary.jl`'s `ZDepLinopMarcatili` wrapper's `L/p0/p1` fields
+    generalized to `Z::Vector{Float64}/P::Vector{Float64}` breakpoints
+    (a two-point gradient is just the `Z=[0,L]` case); its `make_linop`
+    specialization now accepts `pfun isa Union{TwoPointGradient,
+    MultiPointGradient}` and builds the same 4 z-independent β1 closed-form
+    constants either way — **no per-segment change to the constants
+    themselves**: BETA1_ANALYTIC.md's derivation only requires
+    `εco(ω;z)-1` separable into `γ(λ(ω))·dens(z)`, true regardless of how
+    many pressure-gradient segments feed `dens(z)`. Only the z→pressure
+    map itself needed generalizing.
+  - Rust (`native.rs`): `zdep_grad_p0/p1/flength` fields replaced with
+    `zdep_grad_z: Vec<f64>, zdep_grad_p: Vec<f64>`; a new `zdep_pressure_at`
+    free function performs the segment lookup (`findlast(x -> x < z, Z)`
+    equivalent) + same sqrt-interpolation formula, called from
+    `ensure_linop_at` and `debug_beta1_at`. `native_set_zdep_mode_avg_params`
+    FFI gained `n_z`/`z_pts`/`p_pts` in place of `flength`/`p0`/`p1`.
+  - New test: `test/test_native_multipoint_gradient.jl` (3-segment
+    non-monotonic profile, mirrors `test_native_zdep_linop.jl`'s structure)
+    — β1(z) vs BigFloat ground truth at 8 z-values spanning all 3 segments
+    (~1e-9, same tier as Phase 7's check) and full-solve equivalence
+    (`rel_solve` ~2.8e-7, same ~1e-4 systematic-β1-offset tier
+    BETA1_ANALYTIC.md documents — confirmed unrelated to segment count).
+    `test/test_gradient.jl`'s pre-existing "Gradient array" testset (a
+    2-point `gradient(gas,[0,L],[p,p])` call) now also exercises the native
+    path for the first time (previously fell back to Julia via the old
+    `pfun===nothing` guard) — still passes at its existing `rel_grad_array
+    < 1e-3` tolerance.
+  - Full 7-group gate: all Pass==Total (rust 42037/42037, +14 new tests),
+    12 broken (pre-existing, `physics`), 0 failed.
 - ✅ **Phase F item 2: `RamanPolarEnv` native (mode-averaged EnvGrid),
   rotational multi-oscillator, density-dependent τ2.** Three independent
   pieces, all reusing the existing resident `TimeDomainRamanSolver`

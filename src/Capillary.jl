@@ -318,6 +318,39 @@ end
                             sqrt(pg.p0^2 + z/pg.L*(pg.p1^2 - pg.p0^2))
 
 """
+    MultiPointGradient(Z, P)
+
+Callable pressure profile `p(z)` for the general multi-point piecewise
+gradient fill built by [`gradient(gas,Z,P)`](@ref) — a distinct, concrete
+type (rather than an anonymous closure), mirroring [`TwoPointGradient`](@ref),
+so the native-Rust resident path (BACKLOG.md Phase F item 3) can detect this
+closed-form z→pressure map and port it exactly (the same per-segment
+`sqrt`-interpolation formula, no extra interpolation error, `ensure_linop_at`
+selects the segment containing `z`). `Z` must be sorted ascending; `P[i]` is
+the pressure at `Z[i]`, with `sqrt(P[i]^2 + t*(P[i+1]^2-P[i]^2))` (`t` the
+fractional position within `[Z[i],Z[i+1]]`) between breakpoints, flat-clamped
+outside `[Z[1],Z[end]]`. A two-point gradient is just the `Z=[0,L]` special
+case; `TwoPointGradient` is kept as its own type rather than folded into this
+one purely for backward compatibility with existing serialized/constructed
+values.
+"""
+struct MultiPointGradient
+    Z::Vector{Float64}
+    P::Vector{Float64}
+end
+function (pg::MultiPointGradient)(z)
+    Z, P = pg.Z, pg.P
+    if z <= Z[1]
+        return P[1]
+    elseif z >= Z[end]
+        return P[end]
+    else
+        i = findlast(x -> x < z, Z)
+        return sqrt(P[i]^2 + (z - Z[i])/(Z[i+1] - Z[i])*(P[i+1]^2 - P[i]^2))
+    end
+end
+
+"""
     GradedCoreIndex(γ, densf, pfun, dspl)
 
 Callable core-index profile `coren(ω; z) = sqrt(1 + γ(λ_μm(ω))·densf(z))` for a
@@ -329,8 +362,9 @@ below — that `εco(ω;z)-1` is separable into a fixed per-ω `γ` array and a
 scalar `densf(z)`, and build a cheap resident z-dependent linop instead of
 falling back to the (non-native) per-stage Julia callback path. `pfun` is the
 pressure profile `p(z)` — a [`TwoPointGradient`](@ref) for the simple
-two-point `gradient` method (Phase 7's supported case) or `nothing` for the
-general multi-point `gradient` (native path not attempted for that case).
+two-point `gradient` method, or a [`MultiPointGradient`](@ref) for the
+general multi-point `gradient` (both natively eligible as of BACKLOG.md
+Phase F item 3).
 `dspl` is `PhysData.densityspline`'s density-of-pressure spline (`densf(z) =
 dspl(pfun(z))`) exposed directly so the native path can **transfer** its
 `(x,y,D)` to Rust rather than re-fitting a different spline through sampled
@@ -375,22 +409,13 @@ function gradient(gas, Z, P; T=roomtemp)
     γ = sellmeier_gas(gas)
     ex = extrema(P)
     dspl = densityspline(gas, Pmin=ex[1]==ex[2] ? 0 : ex[1], Pmax=ex[2]; T)
-    function p(z)
-        if z <= Z[1]
-            return P[1]
-        elseif z >= Z[end]
-            return P[end]
-        else
-            i = findlast(x -> x < z, Z)
-            return sqrt(P[i]^2 + (z - Z[i])/(Z[i+1] - Z[i])*(P[i+1]^2 - P[i]^2))
-        end
-    end
-    dens(z) = dspl(p(z))
-    # pfun=nothing: the multi-point piecewise ramp is out of Phase 7's native
-    # scope (see GradedCoreIndex docstring) -- the specialized `make_linop`
-    # method below returns the plain (unwrapped) linop!/βfun! for this case,
-    # so RustNativeStepper's native path is simply not attempted.
-    coren = GradedCoreIndex(γ, dens, nothing, dspl)
+    pfun = MultiPointGradient(collect(Float64, Z), collect(Float64, P))
+    dens(z) = dspl(pfun(z))
+    # BACKLOG.md Phase F item 3: the multi-point piecewise ramp is now
+    # natively eligible via `MultiPointGradient`, wired into the same
+    # `ZDepLinopMarcatili` specialization of `make_linop` below as the
+    # two-point case (see that method's docstring).
+    coren = GradedCoreIndex(γ, dens, pfun, dspl)
     return coren, dens
 end
 
@@ -608,9 +633,8 @@ end
 struct ZDepLinopMarcatili{F, DF}
     linop!::F
     densf::DF        # dens(z) = dspl(pfun(z))
-    L::Float64
-    p0::Float64
-    p1::Float64
+    Z::Vector{Float64}   # pressure-gradient breakpoints (length 2 for a two-point gradient)
+    P::Vector{Float64}   # pressures at each breakpoint
     dspl_x::Vector{Float64}
     dspl_y::Vector{Float64}
     dspl_d::Vector{Float64}
@@ -637,15 +661,15 @@ end
 Specialized z-dependent linop for a constant-radius, graded-core
 (pressure-gradient, [`gradient`](@ref)) `MarcatiliMode`. Builds the ordinary
 `linop!`/`βfun!` pair exactly as the generic `LinearOps.make_linop` method
-would. For the two-point gradient (`mode.coren.pfun isa TwoPointGradient`),
-additionally wraps `linop!` in [`ZDepLinopMarcatili`](@ref) carrying the
-extra metadata the native-Rust resident path (Phase 7) needs; for the
-general multi-point gradient (`pfun === nothing`), returns the plain
-`linop!`/`βfun!` unwrapped — out of Phase 7's scope, so `RustNativeStepper`'s
-native path is simply not attempted (no behavior change from before Phase 7).
-Behaviourally identical to the generic method for every existing caller
-either way (the wrapper is directly callable as `linop!(out,z)`) — only
-`RustNativeStepper` inspects the wrapper type.
+would. For a recognized gradient profile (`mode.coren.pfun isa
+Union{TwoPointGradient, MultiPointGradient}`), additionally wraps `linop!` in
+[`ZDepLinopMarcatili`](@ref) carrying the extra metadata the native-Rust
+resident path needs (BACKLOG.md Phase F items 3 and the original Phase 7);
+for any other `pfun` (e.g. a user-supplied custom profile), returns the
+plain `linop!`/`βfun!` unwrapped, so `RustNativeStepper`'s native path is
+simply not attempted. Behaviourally identical to the generic method for
+every existing caller either way (the wrapper is directly callable as
+`linop!(out,z)`) — only `RustNativeStepper` inspects the wrapper type.
 """
 function make_linop(grid::Grid.RealGrid,
                      mode::MarcatiliMode{<:Number, <:GradedCoreIndex, Tcl, LT} where {Tcl, LT},
@@ -673,7 +697,7 @@ function make_linop(grid::Grid.RealGrid,
     end
 
     pfun = mode.coren.pfun
-    pfun isa TwoPointGradient || return linop!, βfun!
+    pfun isa Union{TwoPointGradient, MultiPointGradient} || return linop!, βfun!
 
     # ── Phase 7 metadata for the native resident path (MATH.md §3.5) ────────
     γ = mode.coren.γ
@@ -690,7 +714,13 @@ function make_linop(grid::Grid.RealGrid,
         nwg_im[iω] = imag(nwg)
     end
 
-    L, p0, p1 = pfun.L, pfun.p0, pfun.p1
+    # BACKLOG.md Phase F item 3: both TwoPointGradient and MultiPointGradient
+    # reduce to a shared `(Z,P)` breakpoints representation for the native
+    # side — a two-point gradient is just `Z=[0,L], P=[p0,p1]`. `ensure_linop_at`
+    # (Rust) performs the same per-segment sqrt-interpolation `pfun(z)` uses
+    # here, selecting the segment containing `z` at every resident call.
+    Zg, Pg = pfun isa TwoPointGradient ? ([0.0, pfun.L], [pfun.p0, pfun.p1]) :
+                                          (pfun.Z, pfun.P)
 
     # ── β1(z) closed form: 4 z-independent constants (BETA1_ANALYTIC.md) ────
     # γ0, dγ0: γ(λ_μm(ω)) evaluated/differentiated at ω0. `Maths.derivative`
@@ -719,7 +749,7 @@ function make_linop(grid::Grid.RealGrid,
         Float64(Maths.derivative(nwg_im_of_ω, BigFloat(ω0), 1))
     end
 
-    wrapped = ZDepLinopMarcatili(linop!, densf, L, p0, p1,
+    wrapped = ZDepLinopMarcatili(linop!, densf, collect(Float64, Zg), collect(Float64, Pg),
                                   dspl.x, dspl.y, dspl.D,
                                   gamma_arr, nwg_re, nwg_im,
                                   collect(Float64, grid.ω), BitVector(grid.sidx),

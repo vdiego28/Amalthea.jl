@@ -319,20 +319,23 @@ pub struct CpuNativeSim {
     pub free_eto_c: Vec<Complex<f64>>,
     pub free_pto_c: Vec<Complex<f64>>,
 
-    // ── Phase 7: z-dependent linop — mode-averaged, graded-core constant-
-    // radius MarcatiliMode, two-point pressure gradient — see MATH.md §3.5.
+    // ── Phase 7 (+ BACKLOG.md Phase F item 3): z-dependent linop — mode-
+    // averaged, graded-core constant-radius MarcatiliMode, two-point OR
+    // general multi-point piecewise pressure gradient — see MATH.md §3.5.
     pub is_zdep_mode_avg: bool,
-    /// Fibre length; `z` queries are clamped into `[0, zdep_flength]` before
-    /// converting to pressure, reproducing `Capillary.gradient`'s flat
-    /// pressure profile outside `[0,L]` instead of extrapolating.
-    pub zdep_flength: f64,
-    /// Two-point pressure-gradient parameters (`TwoPointGradient`): pressure
-    /// at z=0/z=L. `p(z) = sqrt(p0² + z/L·(p1²-p0²))` is a closed form,
-    /// ported exactly (no interpolation) — only `dens`/`β1` as functions of
-    /// the resulting *pressure* are LUT'd (see below for why pressure, not
-    /// z, is the LUT axis).
-    pub zdep_grad_p0: f64,
-    pub zdep_grad_p1: f64,
+    /// Pressure-gradient breakpoints (`Capillary.TwoPointGradient`'s `[0,L]`
+    /// or `MultiPointGradient`'s general `Z`, sorted ascending, length >= 2).
+    /// `z` queries are clamped into `[zdep_grad_z[0], zdep_grad_z[last]]`
+    /// before converting to pressure, reproducing `Capillary.gradient`'s flat
+    /// pressure profile outside the breakpoint range instead of extrapolating.
+    pub zdep_grad_z: Vec<f64>,
+    /// Pressures at each breakpoint (same length as `zdep_grad_z`). Within a
+    /// segment `[Z[i],Z[i+1]]`, `p(z) = sqrt(P[i]² + t·(P[i+1]²-P[i]²))`
+    /// (`t` the fractional position) is a closed form, ported exactly (no
+    /// interpolation) — only `dens`/`β1` as functions of the resulting
+    /// *pressure* are LUT'd (see below for why pressure, not z, is the LUT
+    /// axis). `ensure_linop_at` selects the segment containing `z`.
+    pub zdep_grad_p: Vec<f64>,
     /// `dens(pressure)` — **transferred**, not re-fit: `Maths.CSpline`'s own
     /// `(x,y,D)` from `PhysData.densityspline`, evaluated in Rust with the
     /// identical Hermite-cubic formula. Re-fitting a *different* (natural
@@ -517,6 +520,34 @@ fn hilbert_intensity(
     }
 }
 
+/// Closed-form z -> pressure for a piecewise pressure-gradient fill
+/// (`Capillary.TwoPointGradient`/`MultiPointGradient`, BACKLOG.md Phase F
+/// item 3). `zs` (ascending, length >= 2) and `ps` are the breakpoint
+/// positions/pressures; flat-clamps outside `[zs[0], zs[last]]` (reproducing
+/// `Capillary.gradient`'s own boundary behavior) and otherwise selects the
+/// segment `[zs[i],zs[i+1]]` containing `z`, applying the same
+/// `sqrt(p0² + t·(p1²-p0²))` interpolation `MultiPointGradient`'s Julia-side
+/// `p(z)` uses within that segment. A two-point gradient is just the
+/// single-segment case (`zs=[0,L]`).
+fn zdep_pressure_at(z: f64, zs: &[f64], ps: &[f64]) -> f64 {
+    let n = zs.len();
+    if z <= zs[0] {
+        return ps[0];
+    }
+    if z >= zs[n - 1] {
+        return ps[n - 1];
+    }
+    // findlast(x -> x < z, zs): last breakpoint strictly below z.
+    let mut i = 0;
+    for k in 0..n - 1 {
+        if zs[k] < z {
+            i = k;
+        }
+    }
+    let (z0, z1, p0, p1) = (zs[i], zs[i + 1], ps[i], ps[i + 1]);
+    (p0 * p0 + (z - z0) / (z1 - z0) * (p1 * p1 - p0 * p0)).sqrt()
+}
+
 impl CpuNativeSim {
     fn new(n: usize, linop: &[Complex<f64>]) -> Self {
         let z = || vec![Complex::new(0.0, 0.0); n];
@@ -628,9 +659,8 @@ impl CpuNativeSim {
             free_eto_c: Vec::new(),
             free_pto_c: Vec::new(),
             is_zdep_mode_avg: false,
-            zdep_flength: 0.0,
-            zdep_grad_p0: 0.0,
-            zdep_grad_p1: 0.0,
+            zdep_grad_z: Vec::new(),
+            zdep_grad_p: Vec::new(),
             zdep_dens_lut: None,
             zdep_gamma: Vec::new(),
             zdep_nwg_re: Vec::new(),
@@ -1715,20 +1745,11 @@ impl CpuNativeSim {
         if !self.is_zdep_mode_avg { return; }
         if self.zdep_last_z == z { return; }
 
-        // Closed-form z -> pressure (TwoPointGradient.p(z)), ported exactly
-        // (no interpolation error) — the flat clamp outside [0,L] reproduces
+        // Closed-form z -> pressure (TwoPointGradient/MultiPointGradient's
+        // p(z), BACKLOG.md Phase F item 3), ported exactly (no interpolation
+        // error) — flat-clamped outside the breakpoint range, reproducing
         // Capillary.gradient's own boundary behavior.
-        let zc = z.clamp(0.0, self.zdep_flength);
-        let p0 = self.zdep_grad_p0;
-        let p1 = self.zdep_grad_p1;
-        let l = self.zdep_flength;
-        let pressure = if zc >= l {
-            p1
-        } else if zc <= 0.0 {
-            p0
-        } else {
-            (p0 * p0 + zc / l * (p1 * p1 - p0 * p0)).sqrt()
-        };
+        let pressure = zdep_pressure_at(z, &self.zdep_grad_z, &self.zdep_grad_p);
         let dens = self.zdep_dens_lut.as_ref().unwrap().eval(pressure);
         const C: f64 = 299_792_458.0;
 
@@ -2119,7 +2140,7 @@ pub trait NativeBackend {
     unsafe fn debug_beta1_at(&mut self, z: c_double, out_dens: *mut c_double, out_beta1: *mut c_double) -> i32;
     unsafe fn set_fftw_plans(&mut self, lib_path: *const c_char, n_time: size_t, n_time_over: size_t, is_real: c_int, flags: c_uint) -> i32;
     unsafe fn set_mode_avg_params(&mut self, n_time: size_t, n_time_over: size_t, towin: *const c_double, owin: *const c_double, sidx: *const u8, pre_re: *const c_double, pre_im: *const c_double, beta: *const c_double, kerr_fac: c_double, nlscale: c_double, sqrt_aeff: c_double) -> i32;
-    unsafe fn set_zdep_mode_avg_params(&mut self, flength: c_double, p0: c_double, p1: c_double, n_dspl: size_t, dspl_x: *const c_double, dspl_y: *const c_double, dspl_d: *const c_double, gamma: *const c_double, nwg_re: *const c_double, nwg_im: *const c_double, omega: *const c_double, model: c_uint, loss_on: c_uint, eps0_gamma3: c_double, omega0: c_double, gamma0: c_double, dgamma0: c_double, nwg0_re: c_double, nwg0_im: c_double, dnwg0_re: c_double, dnwg0_im: c_double) -> i32;
+    unsafe fn set_zdep_mode_avg_params(&mut self, n_z: size_t, z_pts: *const c_double, p_pts: *const c_double, n_dspl: size_t, dspl_x: *const c_double, dspl_y: *const c_double, dspl_d: *const c_double, gamma: *const c_double, nwg_re: *const c_double, nwg_im: *const c_double, omega: *const c_double, model: c_uint, loss_on: c_uint, eps0_gamma3: c_double, omega0: c_double, gamma0: c_double, dgamma0: c_double, nwg0_re: c_double, nwg0_im: c_double, dnwg0_re: c_double, dnwg0_im: c_double) -> i32;
     unsafe fn set_plasma_params(&mut self, ion_ptr: *const crate::ionization::PptIonizationRate, ionpot: c_double, e_ratio: c_double, preionfrac: c_double, dt: c_double) -> i32;
     unsafe fn set_radial_params(&mut self, n_time: size_t, n_time_over: size_t, n_r: size_t, t_matrix: *const c_double, scale_fwd: c_double, scale_inv: c_double, towin: *const c_double, kerr_fac: c_double, m_re: *const c_double, m_im: *const c_double) -> i32;
     unsafe fn set_raman_params(&mut self, omega: *const c_double, gamma: *const c_double, coupling: *const c_double, n_osc: size_t, dt: c_double, density: c_double, thg: c_int) -> i32;
@@ -2214,12 +2235,7 @@ impl NativeBackend for CpuNativeSim {
     unsafe fn debug_beta1_at(&mut self, z: c_double, out_dens: *mut c_double, out_beta1: *mut c_double) -> i32 {        let sim = self;
 
     sim.ensure_linop_at(z);
-    let zc = z.clamp(0.0, sim.zdep_flength);
-    let p0 = sim.zdep_grad_p0;
-    let p1 = sim.zdep_grad_p1;
-    let l = sim.zdep_flength;
-    let pressure = if zc >= l { p1 } else if zc <= 0.0 { p0 }
-                   else { (p0*p0 + zc/l*(p1*p1-p0*p0)).sqrt() };
+    let pressure = zdep_pressure_at(z, &sim.zdep_grad_z, &sim.zdep_grad_p);
     let dens = sim.zdep_dens_lut.as_ref().unwrap().eval(pressure);
     let eco0 = 1.0 + sim.zdep_gamma0 * dens;
     let deco0 = sim.zdep_dgamma0 * dens;
@@ -2324,17 +2340,17 @@ impl NativeBackend for CpuNativeSim {
     s.sqrt_aeff = sqrt_aeff;
     0
 }
-    unsafe fn set_zdep_mode_avg_params(&mut self, flength: c_double, p0: c_double, p1: c_double, n_dspl: size_t, dspl_x: *const c_double, dspl_y: *const c_double, dspl_d: *const c_double, gamma: *const c_double, nwg_re: *const c_double, nwg_im: *const c_double, omega: *const c_double, model: c_uint, loss_on: c_uint, eps0_gamma3: c_double, omega0: c_double, gamma0: c_double, dgamma0: c_double, nwg0_re: c_double, nwg0_im: c_double, dnwg0_re: c_double, dnwg0_im: c_double) -> i32 {        let s = self;
+    unsafe fn set_zdep_mode_avg_params(&mut self, n_z: size_t, z_pts: *const c_double, p_pts: *const c_double, n_dspl: size_t, dspl_x: *const c_double, dspl_y: *const c_double, dspl_d: *const c_double, gamma: *const c_double, nwg_re: *const c_double, nwg_im: *const c_double, omega: *const c_double, model: c_uint, loss_on: c_uint, eps0_gamma3: c_double, omega0: c_double, gamma0: c_double, dgamma0: c_double, nwg0_re: c_double, nwg0_im: c_double, dnwg0_re: c_double, dnwg0_im: c_double) -> i32 {        let s = self;
 
     if s.sidx.len() != s.n { return -3; }
+    if n_z < 2 { return -4; }
 
     let dspl_x_v = unsafe { std::slice::from_raw_parts(dspl_x, n_dspl) }.to_vec();
     let dspl_y_v = unsafe { std::slice::from_raw_parts(dspl_y, n_dspl) }.to_vec();
     let dspl_d_v = unsafe { std::slice::from_raw_parts(dspl_d, n_dspl) }.to_vec();
 
-    s.zdep_flength = flength;
-    s.zdep_grad_p0 = p0;
-    s.zdep_grad_p1 = p1;
+    s.zdep_grad_z = unsafe { std::slice::from_raw_parts(z_pts, n_z) }.to_vec();
+    s.zdep_grad_p = unsafe { std::slice::from_raw_parts(p_pts, n_z) }.to_vec();
     s.zdep_dens_lut = Some(HermiteSpline::from_parts(dspl_x_v, dspl_y_v, dspl_d_v));
     s.zdep_gamma = unsafe { std::slice::from_raw_parts(gamma, s.n) }.to_vec();
     s.zdep_nwg_re = unsafe { std::slice::from_raw_parts(nwg_re, s.n) }.to_vec();
@@ -3058,19 +3074,23 @@ pub unsafe extern "C" fn native_set_mode_avg_params(
     unsafe { s.backend.set_mode_avg_params(n_time, n_time_over, towin, owin, sidx, pre_re, pre_im, beta, kerr_fac, nlscale, sqrt_aeff) }
 }
 
-/// Wire the z-dependent linop path (Phase 7 — mode-averaged, graded-core
-/// constant-radius `MarcatiliMode`, two-point pressure gradient only, see
-/// MATH.md §3.5 and `docs/native-port/BETA1_ANALYTIC.md`). Must be called
-/// **after** `native_set_mode_avg_params` (reuses `s.sidx`, sized there).
+/// Wire the z-dependent linop path (Phase 7 + BACKLOG.md Phase F item 3 —
+/// mode-averaged, graded-core constant-radius `MarcatiliMode`, two-point OR
+/// general multi-point piecewise pressure gradient, see MATH.md §3.5 and
+/// `docs/native-port/BETA1_ANALYTIC.md`). Must be called **after**
+/// `native_set_mode_avg_params` (reuses `s.sidx`, sized there).
 ///
 /// `dspl_x`/`dspl_y`/`dspl_d` are `PhysData.densityspline`'s own knots,
 /// values, and first derivatives — **transferred**, not re-fit (see
 /// `HermiteSpline`'s docstring for why re-fitting a *different* spline
-/// through samples of `dspl` doesn't converge). `p0`/`p1` are the two-point
-/// gradient's pressures at z=0/z=L, needed to invert the closed-form
-/// z→pressure map at runtime. `gamma`/`nwg_re`/`nwg_im`/`omega` are
-/// per-spectral-bin arrays of length `sim.n` (0 outside `sidx` is fine —
-/// those bins are overwritten with 0 regardless, see `ensure_linop_at`).
+/// through samples of `dspl` doesn't converge). `z_pts`/`p_pts` (length
+/// `n_z`, `n_z>=2`) are the pressure-gradient breakpoints/pressures — `[0,L]`
+/// / `[p0,p1]` for a two-point gradient, or `Capillary.MultiPointGradient`'s
+/// general `Z`/`P` — needed to invert the closed-form z→pressure map at
+/// runtime (`ensure_linop_at` selects the segment containing `z`).
+/// `gamma`/`nwg_re`/`nwg_im`/`omega` are per-spectral-bin arrays of length
+/// `sim.n` (0 outside `sidx` is fine — those bins are overwritten with 0
+/// regardless, see `ensure_linop_at`).
 ///
 /// `omega0`/`gamma0`/`dgamma0`/`nwg0_re`/`nwg0_im`/`dnwg0_re`/`dnwg0_im` are
 /// the 4 z-independent constants (ω0 plus γ0, dγ0, nwg0, dnwg0) needed for
@@ -3093,16 +3113,16 @@ pub unsafe extern "C" fn native_set_mode_avg_params(
 ///
 /// Returns 0 on success, -1 on null/empty args, -2 if `dspl` has fewer than
 /// 2 samples, -3 if called before `native_set_mode_avg_params` sized
-/// `sim.sidx`.
+/// `sim.sidx`, -4 if `n_z < 2`.
 ///
 /// # Safety
 /// All pointer arguments must be non-null and valid for the lengths given.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn native_set_zdep_mode_avg_params(
     sim: *mut NativeSim,
-    flength: c_double,
-    p0: c_double,
-    p1: c_double,
+    n_z: size_t,
+    z_pts: *const c_double,
+    p_pts: *const c_double,
     n_dspl: size_t,
     dspl_x: *const c_double,
     dspl_y: *const c_double,
@@ -3124,7 +3144,7 @@ pub unsafe extern "C" fn native_set_zdep_mode_avg_params(
 ) -> i32 {
     if sim.is_null() { return -1; }
     let s = unsafe { &mut *sim };
-    unsafe { s.backend.set_zdep_mode_avg_params(flength, p0, p1, n_dspl, dspl_x, dspl_y, dspl_d, gamma, nwg_re, nwg_im, omega, model, loss_on, eps0_gamma3, omega0, gamma0, dgamma0, nwg0_re, nwg0_im, dnwg0_re, dnwg0_im) }
+    unsafe { s.backend.set_zdep_mode_avg_params(n_z, z_pts, p_pts, n_dspl, dspl_x, dspl_y, dspl_d, gamma, nwg_re, nwg_im, omega, model, loss_on, eps0_gamma3, omega0, gamma0, dgamma0, nwg0_re, nwg0_im, dnwg0_re, dnwg0_im) }
 }
 
 /// Wire the PPT ionization handle for the plasma cumtrapz path (RealGrid only).

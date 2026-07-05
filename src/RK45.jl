@@ -1090,11 +1090,11 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     # (`Modes.dispersion`) rather than the true derivative.
     if is_zdep_mode_avg
         w = linop
-        w.L == flength || error("RustNativeStepper: z-dependent linop's gradient length " *
-                  "($(w.L)) does not match the propagation length flength=$flength passed " *
-                  "to solve_precon — these should always be the same quantity " *
-                  "(Capillary.gradient's `L` vs `grid.zmax`/`tmax`). Refusing to guess " *
-                  "which is correct.")
+        w.Z[end] == flength || error("RustNativeStepper: z-dependent linop's gradient " *
+                  "length ($(w.Z[end])) does not match the propagation length " *
+                  "flength=$flength passed to solve_precon — these should always be the " *
+                  "same quantity (Capillary.gradient's last breakpoint vs `grid.zmax`/" *
+                  "`tmax`). Refusing to guess which is correct.")
         model_code = w.model == :full ? Cuint(0) : Cuint(1)
         loss_code = w.loss ? Cuint(1) : Cuint(0)
         # density(z)·ε₀·γ3 = kerr_fac(z): γ3 must be re-scaled by the
@@ -1104,12 +1104,12 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         eps0_gamma3 = Luna.PhysData.ε_0 * γ3
 
         rc = ccall((:native_set_zdep_mode_avg_params, _LIBLUNA_RUST_RK45), Cint,
-            (Ptr{Cvoid}, Float64, Float64, Float64,
+            (Ptr{Cvoid}, Csize_t, Ptr{Float64}, Ptr{Float64},
              Csize_t, Ptr{Float64}, Ptr{Float64}, Ptr{Float64},
              Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64},
              Cuint, Cuint, Float64,
              Float64, Float64, Float64, Float64, Float64, Float64, Float64),
-            handle.ptr, w.L, w.p0, w.p1,
+            handle.ptr, Csize_t(length(w.Z)), w.Z, w.P,
             Csize_t(length(w.dspl_x)), w.dspl_x, w.dspl_y, w.dspl_d,
             w.gamma, w.nwg_re, w.nwg_im, w.omega,
             model_code, loss_code, eps0_gamma3,
