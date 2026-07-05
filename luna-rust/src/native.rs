@@ -984,6 +984,29 @@ impl CpuNativeSim {
             self.pto_cplx[i] += kf * e.norm_sqr() * e;
         }
 
+        // ── Step 3b: Raman polarisation (envelope) — Phase F.2 ──────────────────
+        // Reproduces `(R::RamanPolar)(out, Et, ρ)` for `RamanPolarEnv`
+        // (Nonlinear.jl:357-430): `sqr!(R::RamanPolarEnv, E) = 1/2·|E|²`
+        // (Nonlinear.jl:351-354) has no `thg` branch at all (unlike
+        // `RamanPolarField`), so `raman_thg` is irrelevant here — always the
+        // same real-intensity formula. Reuses the identical resident
+        // `raman_solver` (real f64 in/out arrays) already wired for the
+        // RealGrid path; only the intensity source (complex envelope, not
+        // real field) and the final accumulation (complex × real, not
+        // real × real) differ.
+        if self.has_raman {
+            for i in 0..no {
+                self.raman_intensity[i] = 0.5 * self.eto_cplx[i].norm_sqr();
+            }
+            if let Some(ref mut solver) = self.raman_solver {
+                solver.solve(&self.raman_intensity[..no], &mut self.raman_p[..no]);
+            }
+            let rho = self.raman_density;
+            for i in 0..no {
+                self.pto_cplx[i] += self.eto_cplx[i] * (rho * self.raman_p[i]);
+            }
+        }
+
         // ── Step 4: time-window apodization ─────────────────────────────────────
         for i in 0..no {
             self.pto_cplx[i] *= self.towin[i];

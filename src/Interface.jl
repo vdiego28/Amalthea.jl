@@ -573,23 +573,38 @@ end
 
 Extract oscillator parameters from a Raman response object and build a Rust-side
 `TimeDomainRamanSolver` when eligible.  Eligible means:
-  - `r` is a `CombinedRamanResponse` whose `Rs` list contains only `RamanRespSingleDampedOscillator`s
+  - `r` is a `CombinedRamanResponse` whose `Rs` list contains only
+    `RamanRespSingleDampedOscillator`s and/or `RamanRespRotationalNonRigid`s
+    (flattened to their per-`J` SDOs via `Raman.flatten_sdo_oscillators` —
+    this is what lets a rotational, or rotational+vibrational, response
+    reach the resident ADE solver, not just a single vibrational line)
   - All τ2 are density-independent (τ2ρ(1.0) ≈ τ2ρ(2.0))
   - `LUNA_USE_RUST_RAMAN=1` and the Rust lib is present (checked inside `_make_rust_raman_handle`)
 Intermediate-broadening responses (Gaussian damping) are ineligible and stay on the Julia FFT path.
+
+!!! note
+    Unlike the native-port (`RK45.jl`) wiring, this evaluates `τ2ρ` at a
+    placeholder density of `1.0`, not the simulation's actual density —
+    `makeresponse` doesn't have the pressure/density in scope at the call
+    site. Harmless when `τ2ρ` is genuinely density-independent (the only
+    case that passes the check below), but a density-dependent-τ2 gas
+    (e.g. H2's vibrational line) stays ineligible here even at a single,
+    correctly-scaled constant density — unlike the native-port wiring,
+    which does have the real density available.
 """
 function _make_rust_raman_handle_from_response(r, dt)
     r isa Raman.CombinedRamanResponse || return nothing
-    all(ri isa Raman.RamanRespSingleDampedOscillator for ri in r.Rs) || return nothing
+    Rs = Raman.flatten_sdo_oscillators(r)
+    isnothing(Rs) && return nothing
     # Density-independent τ2 check: compare τ2ρ at two different densities
-    for ri in r.Rs
+    for ri in Rs
         τ2_1 = ri.τ2ρ(1.0)
         τ2_2 = ri.τ2ρ(2.0)
         abs(τ2_1 - τ2_2) < 1e-10 * abs(τ2_1) || return nothing
     end
-    omegas    = Float64[ri.Ω          for ri in r.Rs]
-    gammas    = Float64[1.0/ri.τ2ρ(1.0) for ri in r.Rs]
-    couplings = Float64[ri.K          for ri in r.Rs]
+    omegas    = Float64[ri.Ω          for ri in Rs]
+    gammas    = Float64[1.0/ri.τ2ρ(1.0) for ri in Rs]
+    couplings = Float64[ri.K          for ri in Rs]
     Nonlinear._make_rust_raman_handle(omegas, gammas, couplings, dt)
 end
 

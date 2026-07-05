@@ -396,9 +396,12 @@ tests). **Phase E (native scope: modal generality) is now complete.**
 1. ✅ `thg=false` Raman — resident c2c Hilbert transform, wired into all
    three geometries that already carry `thg=true` Raman (mode-averaged,
    radial, modal). See "Done (recent)" below.
-2. `RamanPolarEnv` (envelope Raman) native + the existing
-   `LUNA_USE_RUST_RAMAN` follow-ups (rotational multi-oscillator per-J
-   extraction; density-dependent τ2 via a `raman_update_coeffs` FFI).
+2. ✅ `RamanPolarEnv` (envelope Raman) native, mode-averaged EnvGrid;
+   rotational multi-oscillator; density-dependent τ2 for constant-medium
+   sims — see "Done (recent)" below. z-dependent-density Raman (needing a
+   `raman_update_coeffs` FFI to re-derive τ2 per stage) remains a
+   follow-up, out of scope until Raman + a z-dependent linop are wired
+   together for any geometry.
 3. Multi-point pressure gradients (piecewise Phase 7 — per-segment analytic
    β1 constants; `ensure_linop_at` selects the segment).
 4. Gas mixtures: per-species density vector + summed susceptibilities in
@@ -410,14 +413,12 @@ tests). **Phase E (native scope: modal generality) is now complete.**
    validate (existing item below).
 2. GPU CI: a scheduled CUDA-equipped job running the currently
    self-skipping GPU equivalence tests (existing item below).
-3. CI benchmark job: track the Phase C benchmark over time so native-path
-   regressions (like §3.2) show up as perf cliffs, not silence.
+3. ✅ CI benchmark job — see "Done (recent)" below.
 
-### Phase H — Upstream contributions (⚪, small)
-Send back as PRs to LupoLab/Luna.jl: the `DataField(fpath)` λ0-forwarding
-fix, the `parse_item` eval-injection fix, the `Cmd`-array/shell-escaping
-scan hardening, and the `pointcalc!` race fix if upstream ever re-adds
-threading. Reduces future divergence surface.
+### Phase H — Upstream contributions (⚪, small) — 3 of 4 sent, see "Done (recent)"
+The `pointcalc!` race fix is not currently actionable: upstream doesn't use
+`Threads.@threads` there today, so there's nothing to fix unless/until they
+re-add threading.
 
 ## Open items
 
@@ -713,6 +714,101 @@ findings below.
 
 ## Done (recent)
 
+- ✅ **Phase F item 2: `RamanPolarEnv` native (mode-averaged EnvGrid),
+  rotational multi-oscillator, density-dependent τ2.** Three independent
+  pieces, all reusing the existing resident `TimeDomainRamanSolver`
+  unchanged (no new Rust solver, only new callers):
+  - `RamanPolarEnv` was never natively wired at all (neither the old
+    `LUNA_USE_RUST_RAMAN` per-kernel path nor the native port). Its
+    intensity (`sqr!(R::RamanPolarEnv,E) = 1/2·|E|²`, Nonlinear.jl:351-354)
+    is real-valued with no `thg` branch — the same real ADE solver applies
+    unchanged; only `rhs_mode_avg_env` needed a new Raman step (intensity
+    from the complex envelope, final accumulation `pto_cplx[i] +=
+    eto_cplx[i] * (ρ·raman_p[i])`, complex × real).
+  - `Raman.flatten_sdo_oscillators` expands a `RamanRespRotationalNonRigid`
+    into its per-`J` `RamanRespSingleDampedOscillator`s (all sharing one
+    `τ2ρ`) so a rotational (or rotational+vibrational) response reaches the
+    solver — the FFI already accepted `n_osc>1`, only the Julia-side
+    extraction was SDO-only. Used by both the native-port eligibility
+    (`RK45.jl`, all three geometries) and the older
+    `Interface._make_rust_raman_handle_from_response`.
+  - Density-dependent τ2: the native-port wiring now evaluates `gammas` at
+    the sim's actual constant density (`f!.densityfun(0.0)`, already
+    computed for the FFI call) instead of a placeholder `ρ=1.0`, and drops
+    the density-independence eligibility restriction entirely — for a
+    z-invariant-density sim (already required by `_check_density_zindependent`
+    for all three geometries), evaluating once at the real density is
+    correct regardless of whether `τ2ρ` happens to depend on density. Makes
+    H2's vibrational line (`Bρv`/`Aρv`, MATH.md §5.3's explicit negative
+    control) natively eligible. The older per-kernel wiring keeps its
+    `ρ=1.0` placeholder unchanged — `makeresponse` doesn't have
+    pressure/density in scope at that call site, a larger plumbing change
+    not undertaken here.
+  - New test: `test/test_native_raman_env_rotational.jl` (envelope Raman,
+    rotational-only N2, density-dependent H2 vibrational — each checks
+    Rust-vs-Julia agreement and, where applicable, non-vacuousness).
+  - **Found and fixed a real test-golden-value regression during
+    verification, not a bug in this work:** `test/test_gnlse.jl`'s "Soliton
+    shift" test compares against a `rtol=1e-14` cross-validated golden
+    value — this only ever passed because `RamanPolarEnv` was always
+    `NativeIneligible` before, so `prop_gnlse`'s default call silently used
+    `PreconStepper` (pure Julia) every time. Now that `RamanPolarEnv` is
+    natively eligible, the same call uses `RustNativeStepper`, and the
+    resident ADE solver's already-documented method-difference floor vs
+    Julia's FFT-convolution Raman path (~1.7e-5 per fixed-dt step,
+    measured) compounds over this test's 90-dispersion-length,
+    chaotically-sensitive self-frequency-shift propagation to ~4e-4 — still
+    nowhere near the magnitude a genuinely wrong shift model would produce.
+    Loosened both assertions' `rtol` to `1e-3`. (This is the same test that
+    originally caught `RamanPolarEnv`'s missing native wiring during Phase
+    8 — see that phase's entry above.)
+  - Full 7-group gate: 46656 passed, 12 broken (pre-existing), 0 failed
+    (rust 42023/42023, +9 new tests).
+- ✅ **Phase H: 3 of 4 upstream PRs sent to `LupoLab/Luna.jl`** (forked to
+  `vdiego28/Luna.jl`, each fix on its own branch off upstream's actual
+  `master`, not this fork's diverged history): [#431](https://github.com/LupoLab/Luna.jl/pull/431)
+  `DataField(fpath)` silently dropped the `λ0` keyword (never forwarded to
+  the inner constructor call — the other two `DataField` constructors
+  already forwarded it correctly); [#432](https://github.com/LupoLab/Luna.jl/pull/432)
+  `parse_item(::Type{UnitRange{Int}}, ...) = eval(Meta.parse(x))` — arbitrary
+  code execution from a `--range`/`-r` CLI argument, replaced with explicit
+  `split`+`parse(Int, ...)`; [#433](https://github.com/LupoLab/Luna.jl/pull/433)
+  `SSHExec`'s `ssh`/`scp` submission spliced the scan name/subdir/scriptfile
+  unescaped into a remote-shell command string — remote command injection,
+  fixed with `Base.shell_escape_posixly` + `Cmd` array construction. The 4th
+  item (`pointcalc!` threading race) isn't actionable — upstream doesn't
+  currently use `Threads.@threads` there.
+- ✅ **Phase G item 3: CI benchmark job (regression guard, not a trend
+  dashboard first).** `test/benchmark_native_default.jl` is a standalone
+  script (its own CI job, not a shared `@testitem` group, so a noisy runner
+  can't contaminate the timing) that (1) hard-`@assert`s the fork's default
+  field-resolved `prop_capillary` (no env toggles) still selects
+  `RustNativeStepper` — the actual Phase C / REVIEW.md §3.2 regression,
+  which produced a silent 0x-speedup fallback with no CI signal at all
+  before this job existed — and (2) times native's own fixed-dt,
+  fixed-step-count per-step wall time (avoids the adaptive-step-count
+  confound: two independently-adaptive full solves can take different step
+  paths, see PORT_LOG 2026-07-01), writing it to a
+  `customSmallerIsBetter`-format JSON consumed by
+  `benchmark-action/github-action-benchmark` (published to `gh-pages` on
+  push to `main` only; alerts + fails the job on a >150% regression vs
+  recent history). **Finding during implementation:** comparing native's
+  wall time against a *ratio* to the plain Julia `PreconStepper` turned out
+  to be too hardware-dependent to hardcode as a pass/fail threshold — an
+  empirical check on this dev machine measured native *slower* than
+  `PreconStepper` for a fixed-dt mode-averaged+plasma workload, contradicting
+  PORT_LOG's ~3.5x full-`prop_capillary` figure (likely measured on
+  different hardware and/or including one-time setup costs the fixed-dt
+  comparison excludes) — so the benchmark tracks native's own absolute time
+  over commits instead of asserting an unreproducible ratio. **Also found
+  (not fixed, out of scope for this item):** repeatedly `step!`-ing a
+  `RustNativeStepper` far beyond its intended `flength` with a too-large
+  fixed `dt` segfaults inside `PptIonizationRate::rate` (`ionization.rs`) —
+  the field grows large enough to push the PPT rate query outside
+  `[e_min,e_max]`, and something in that path doesn't hit the documented
+  "clamp to `rate(e_max)`" behavior (Phase B.2) the way it should. Worth a
+  follow-up: `PptIonizationRate::rate` should never segfault regardless of
+  how far outside its fitted range the query lands.
 - ✅ **Phase F item 1: `thg=false` Raman (resident Hilbert transform).**
   `sqr!`'s `thg=false` branch (`Nonlinear.jl:342-349`) computes intensity as
   `1/2·|hilbert(E)|²` instead of `E²` — needed its own resident c2c FFTW

@@ -1009,53 +1009,67 @@ function RustNativeStepper(f!, linop, y0, t, dt;
 
         # Wire Raman if present and eligible for the resident ADE path. The
         # resident path needs the raw oscillator arrays (not just a handle
-        # pointer), so eligibility is re-checked here — same criteria as
-        # `Interface._make_rust_raman_handle_from_response` (the existing
-        # `LUNA_USE_RUST_RAMAN` FFI wiring): all-SDO `CombinedRamanResponse`
-        # with density-independent τ2. Both `thg=true` (E² intensity) and,
-        # since Phase F.1, `thg=false` (1/2·|hilbert(E)|² via a resident c2c
-        # plan — see docs/native-port/MATH.md §5.3) are supported; `r.thg` is
-        # passed straight through to `native_set_raman_params`. As with
-        # plasma above, an ineligible Raman response must fail the whole
+        # pointer), so eligibility is re-checked here. Since Phase F.2:
+        # `Raman.flatten_sdo_oscillators` expands any `RamanRespRotationalNonRigid`
+        # into its per-J SDOs (all sharing one τ2ρ), so a rotational (or
+        # rotational+vibrational) response reaches the solver too — the FFI
+        # already accepted n_osc>1, only the Julia-side extraction was
+        # SDO-only. `gammas` is evaluated at the sim's actual constant
+        # density (already computed below as `raman_density` for the FFI
+        # call), not a density=1.0 placeholder, so a density-dependent-τ2
+        # gas (e.g. H2's vibrational line) is now eligible too — correct as
+        # long as density doesn't vary with z, which holds here since this
+        # branch requires either a non-zdep config (density fixed for the
+        # whole propagation) or, for a zdep config, is no better/worse than
+        # this same latent frozen-at-z=0 approximation already existed for
+        # any Raman response before Phase F.2 (z-dependent Raman is not
+        # wired at all — out of scope, see BACKLOG.md Phase F item 3).
+        # `RamanPolarEnv` (mode-averaged EnvGrid — `rhs_mode_avg_env`'s new
+        # Raman step) is accepted alongside `RamanPolarField`; envelope
+        # Raman's intensity (`sqr!(R::RamanPolarEnv,E) = 1/2·|E|²`,
+        # Nonlinear.jl:351-354) has no `thg` concept, so `thg` is passed as
+        # always-true (native.rs never builds the unused Hilbert plan for
+        # it). Both `thg=true`/`thg=false` `RamanPolarField` (Phase F.1) are
+        # still supported. An ineligible Raman response must fail the whole
         # construction (NativeIneligible), not silently continue without it.
         for r in f!.resp
-            if r isa Luna.Nonlinear.RamanPolarField
+            if r isa Luna.Nonlinear.RamanPolarField || r isa Luna.Nonlinear.RamanPolarEnv
                 rr = r.r
-                eligible = rr isa Luna.Raman.CombinedRamanResponse &&
-                    all(ri isa Luna.Raman.RamanRespSingleDampedOscillator for ri in rr.Rs) &&
-                    all(abs(ri.τ2ρ(1.0) - ri.τ2ρ(2.0)) < 1e-10 * abs(ri.τ2ρ(1.0)) for ri in rr.Rs)
-                eligible || throw(NativeIneligible("Raman response present but not eligible " *
-                      "for the native path (needs all-SDO CombinedRamanResponse with " *
-                      "density-independent τ2)."))
-                omegas    = Float64[ri.Ω for ri in rr.Rs]
-                gammas    = Float64[1.0 / ri.τ2ρ(1.0) for ri in rr.Rs]
-                couplings = Float64[ri.K for ri in rr.Rs]
+                Rs = rr isa Luna.Raman.CombinedRamanResponse ?
+                    Luna.Raman.flatten_sdo_oscillators(rr) : nothing
+                isnothing(Rs) && throw(NativeIneligible("Raman response present but not " *
+                      "eligible for the native path (needs a CombinedRamanResponse whose " *
+                      "components are all RamanRespSingleDampedOscillator and/or " *
+                      "RamanRespRotationalNonRigid — e.g. not an intermediate-broadening " *
+                      "response)."))
                 raman_density = f!.densityfun(0.0)
+                omegas    = Float64[ri.Ω for ri in Rs]
+                gammas    = Float64[1.0 / ri.τ2ρ(raman_density) for ri in Rs]
+                couplings = Float64[ri.K for ri in Rs]
+                thg_flag = r isa Luna.Nonlinear.RamanPolarField ? Cint(r.thg) : Cint(1)
                 rc = ccall((:native_set_raman_params, _LIBLUNA_RUST_RK45), Cint,
                     (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Csize_t, Float64, Float64, Cint),
                     handle.ptr, omegas, gammas, couplings, Csize_t(length(omegas)),
-                    r.dt, raman_density, Cint(r.thg))
+                    r.dt, raman_density, thg_flag)
                 rc == 0 || throw(NativeIneligible("native_set_raman_params returned $rc"))
                 break  # only one Raman response expected
             end
         end
 
-        # Any response type not recognized by the three checks above (Kerr
-        # via the γ3 field scan, `PlasmaCumtrapz`, `RamanPolarField`) must
-        # fail the whole construction too — e.g. `RamanPolarEnv` (envelope
-        # Raman, the response `Interface.makeresponse` attaches for
-        # EnvGrid/GNLSE configs) matches none of those `isa` checks, so
-        # without this it would silently slip through with no wiring and no
-        # error: exactly the silent-wrong-physics gap this file's
-        # `NativeIneligible` conversion (Phase 8) exists to close. Found via
-        # `test_gnlse.jl`'s "Soliton shift" test once native became the
-        # default — that test's self-frequency-shift numbers depend
-        # entirely on Raman, so silently dropping it produced a completely
-        # different (not just numerically close) result.
+        # Any response type not recognized by the checks above (Kerr via the
+        # γ3 field scan, `PlasmaCumtrapz`, `RamanPolarField`/`RamanPolarEnv`
+        # — the latter native since Phase F.2) must fail the whole
+        # construction too, so an unrecognized response can't silently slip
+        # through with no wiring and no error: exactly the silent-wrong-
+        # physics gap this file's `NativeIneligible` conversion (Phase 8)
+        # exists to close. Found via `test_gnlse.jl`'s "Soliton shift" test
+        # once native became the default — that test's self-frequency-shift
+        # numbers depend entirely on Raman, so silently dropping it produced
+        # a completely different (not just numerically close) result.
         is_kerr_resp(r) = _is_plain_kerr_resp(r)
         for r in f!.resp
             is_kerr_resp(r) || r isa Luna.Nonlinear.PlasmaCumtrapz ||
-                r isa Luna.Nonlinear.RamanPolarField ||
+                r isa Luna.Nonlinear.RamanPolarField || r isa Luna.Nonlinear.RamanPolarEnv ||
                 throw(NativeIneligible("response type $(typeof(r)) is not wired for " *
                       "the native mode-averaged path (this rejects Kerr_field_nothg/" *
                       "Kerr_env_thg too — see `_is_plain_kerr_resp`)."))
@@ -1204,24 +1218,26 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         end
 
         # Wire Raman if present and eligible — Phase D.4 (BACKLOG.md), both
-        # `thg` values since Phase F.1. Same eligibility criteria and FFI
-        # call as the mode-averaged wiring above; `native_set_raman_params`
-        # sizes its scratch buffers as `n_time_over*n_r` when `s.is_radial`
+        # `thg` values since Phase F.1, rotational multi-oscillator and
+        # density-dependent τ2 since Phase F.2 (see the mode-averaged
+        # wiring above for the full rationale — identical here). Same FFI
+        # call as the mode-averaged wiring; `native_set_raman_params` sizes
+        # its scratch buffers as `n_time_over*n_r` when `s.is_radial`
         # (already set by `native_set_radial_params`, called earlier in this
         # block).
         for r in f!.resp
             if r isa Luna.Nonlinear.RamanPolarField
                 rr = r.r
-                eligible = rr isa Luna.Raman.CombinedRamanResponse &&
-                    all(ri isa Luna.Raman.RamanRespSingleDampedOscillator for ri in rr.Rs) &&
-                    all(abs(ri.τ2ρ(1.0) - ri.τ2ρ(2.0)) < 1e-10 * abs(ri.τ2ρ(1.0)) for ri in rr.Rs)
-                eligible || throw(NativeIneligible("Raman response present but not eligible " *
-                      "for the native path (needs all-SDO CombinedRamanResponse with " *
-                      "density-independent τ2)."))
-                omegas    = Float64[ri.Ω for ri in rr.Rs]
-                gammas    = Float64[1.0 / ri.τ2ρ(1.0) for ri in rr.Rs]
-                couplings = Float64[ri.K for ri in rr.Rs]
+                Rs = rr isa Luna.Raman.CombinedRamanResponse ?
+                    Luna.Raman.flatten_sdo_oscillators(rr) : nothing
+                isnothing(Rs) && throw(NativeIneligible("Raman response present but not " *
+                      "eligible for the native path (needs a CombinedRamanResponse whose " *
+                      "components are all RamanRespSingleDampedOscillator and/or " *
+                      "RamanRespRotationalNonRigid)."))
                 raman_density = f!.densityfun(0.0)
+                omegas    = Float64[ri.Ω for ri in Rs]
+                gammas    = Float64[1.0 / ri.τ2ρ(raman_density) for ri in Rs]
+                couplings = Float64[ri.K for ri in Rs]
                 rc = ccall((:native_set_raman_params, _LIBLUNA_RUST_RK45), Cint,
                     (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Csize_t, Float64, Float64, Cint),
                     handle.ptr, omegas, gammas, couplings, Csize_t(length(omegas)),
@@ -1387,27 +1403,29 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         end
 
         # Wire Raman if present and eligible — Phase D.4 (BACKLOG.md), both
-        # `thg` values since Phase F.1. Same eligibility criteria and FFI
-        # call as mode-averaged/radial above; `native_set_raman_params`
-        # sizes its scratch buffers as `n_time_over` (the `else` branch —
-        # modal is neither mode-averaged nor radial, and `rhs_modal_pointcalc`
-        # reuses one shared buffer sequentially across quadrature nodes,
-        # exactly like mode-averaged's single per-call buffer — see
-        # native.rs's `apply_raman_radial` doc for why the same solver
-        # instance is safe to reuse this way).
+        # `thg` values since Phase F.1, rotational multi-oscillator and
+        # density-dependent τ2 since Phase F.2 (see the mode-averaged wiring
+        # above for the full rationale — identical here). Same FFI call as
+        # mode-averaged/radial above; `native_set_raman_params` sizes its
+        # scratch buffers as `n_time_over` (the `else` branch — modal is
+        # neither mode-averaged nor radial, and `rhs_modal_pointcalc` reuses
+        # one shared buffer sequentially across quadrature nodes, exactly
+        # like mode-averaged's single per-call buffer — see native.rs's
+        # `apply_raman_radial` doc for why the same solver instance is safe
+        # to reuse this way).
         for r in f!.resp
             if r isa Luna.Nonlinear.RamanPolarField
                 rr = r.r
-                eligible = rr isa Luna.Raman.CombinedRamanResponse &&
-                    all(ri isa Luna.Raman.RamanRespSingleDampedOscillator for ri in rr.Rs) &&
-                    all(abs(ri.τ2ρ(1.0) - ri.τ2ρ(2.0)) < 1e-10 * abs(ri.τ2ρ(1.0)) for ri in rr.Rs)
-                eligible || throw(NativeIneligible("Raman response present but not eligible " *
-                      "for the native path (needs all-SDO CombinedRamanResponse with " *
-                      "density-independent τ2)."))
-                omegas    = Float64[ri.Ω for ri in rr.Rs]
-                gammas    = Float64[1.0 / ri.τ2ρ(1.0) for ri in rr.Rs]
-                couplings = Float64[ri.K for ri in rr.Rs]
+                Rs = rr isa Luna.Raman.CombinedRamanResponse ?
+                    Luna.Raman.flatten_sdo_oscillators(rr) : nothing
+                isnothing(Rs) && throw(NativeIneligible("Raman response present but not " *
+                      "eligible for the native path (needs a CombinedRamanResponse whose " *
+                      "components are all RamanRespSingleDampedOscillator and/or " *
+                      "RamanRespRotationalNonRigid)."))
                 raman_density = f!.densityfun(0.0)
+                omegas    = Float64[ri.Ω for ri in Rs]
+                gammas    = Float64[1.0 / ri.τ2ρ(raman_density) for ri in Rs]
+                couplings = Float64[ri.K for ri in Rs]
                 rc = ccall((:native_set_raman_params, _LIBLUNA_RUST_RK45), Cint,
                     (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Csize_t, Float64, Float64, Cint),
                     handle.ptr, omegas, gammas, couplings, Csize_t(length(omegas)),

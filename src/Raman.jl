@@ -307,6 +307,36 @@ function molecular_raman_response(t, rp; rotation=true, vibration=true, minJ=0, 
 end
 
 """
+    flatten_sdo_oscillators(rr::CombinedRamanResponse)
+
+Flatten `rr.Rs` into a `Vector{RamanRespSingleDampedOscillator}`, expanding
+any `RamanRespRotationalNonRigid` entry into its own per-`J` `.Rs` (all of
+which share one common `τ2ρ`, per the nonrigid-rotor model's single-
+linewidth assumption — see the `TODO` on `RamanRespRotationalNonRigid`).
+Used to extract flat `Ω`/`K`/`τ2ρ` arrays for the resident time-domain ADE
+solver (`native.rs`'s `TimeDomainRamanSolver`, and the older
+`LUNA_USE_RUST_RAMAN` per-kernel wiring), which both already accept an
+arbitrary number of oscillators — this is what lets a rotational (or
+rotational+vibrational) response reach that solver instead of only a
+single vibrational line. Returns `nothing` if `rr.Rs` contains anything
+else (e.g. `RamanRespIntermediateBroadening`, a Gaussian-damped response),
+which can't be represented as a sum of single-damped-oscillator terms.
+"""
+function flatten_sdo_oscillators(rr::CombinedRamanResponse)
+    out = RamanRespSingleDampedOscillator[]
+    for ri in rr.Rs
+        if ri isa RamanRespSingleDampedOscillator
+            push!(out, ri)
+        elseif ri isa RamanRespRotationalNonRigid
+            append!(out, ri.Rs)
+        else
+            return nothing
+        end
+    end
+    out
+end
+
+"""
     raman_response(t, material; kwargs...)
 
 Get the Raman response function for time grid `t` and the `material`.
