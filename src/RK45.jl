@@ -1231,11 +1231,8 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         modes = f!.ts.ms
         n_modes = length(modes)
         npol = f!.ts.npol
-        npol == 1 || throw(NativeIneligible("native modal path only supports " *
-                  "npol=1 (single polarisation component). The KerrVector! " *
-                  "(npol=2, circular/elliptical polarisation) code path is " *
-                  "implemented in native.rs but not yet verified against the " *
-                  "Julia oracle (Phase 5 gate — see MATH.md §3.3)."))
+        npol in (1, 2) || throw(NativeIneligible("native modal path only supports " *
+                  "npol ∈ (1,2) (Modes.ToSpace.npol)."))
 
         all(m -> m isa Luna.Capillary.MarcatiliMode, modes) ||
             throw(NativeIneligible("native modal path only supports MarcatiliMode " *
@@ -1299,6 +1296,14 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                 throw(NativeIneligible("modal: only Kerr and/or Raman (RealGrid, " *
                       "thg=true) responses are supported by the native path " *
                       "(Phase D.4 gate)."))
+            # native.rs's inline Raman ADE solve only ever touches modal
+            # polarisation column 0 (`rhs_modal_pointcalc`'s "npol=1 scalar
+            # field only" Raman block) — with npol=2 it would silently drop
+            # the second (y) column's Raman contribution instead of raising.
+            r isa Luna.Nonlinear.RamanPolarField && npol != 1 &&
+                throw(NativeIneligible("modal: Raman (RamanPolarField) is only " *
+                      "supported natively for npol=1 — native.rs's inline " *
+                      "solver does not yet handle a second polarisation column."))
         end
         γ3 != 0.0 ||
             throw(NativeIneligible("modal: no Kerr response found (γ3=0) — the " *

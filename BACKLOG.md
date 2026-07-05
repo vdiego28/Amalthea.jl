@@ -337,7 +337,44 @@ Gate (E.2): all 7 test groups green — 46629 passed, 12 broken (pre-existing),
 Gate (E.3): all 7 test groups green — 46634 passed, 12 broken (pre-existing),
 0 failed/errored (rust group: 42001/42001, includes 5 new tests).
 
-4. npol=2 (polarisation-resolved modal), then EnvGrid modal.
+4. ✅ npol=2 (polarisation-resolved modal). Turned out to be a "verify, not
+   implement" item: `rhs_modal_pointcalc` (native.rs) was already written
+   generically over `npol` since Phase 5/E.1-E.3 (mode-field synthesis,
+   `to_space!`/`to_time!`/`to_freq!` all loop `for p in 0..npol`), including
+   a bit-for-bit port of `KerrVector!`'s cross term
+   (`out[:,1] += fac*(Ex²+Ey²)*Ex`, `out[:,2] += fac*(Ex²+Ey²)*Ey`,
+   `src/Nonlinear.jl:85-94`) — this was simply gated off in `RK45.jl` behind
+   `npol == 1 || throw(NativeIneligible(...))` pending a Julia-oracle
+   equivalence test. Relaxed the guard to `npol in (1,2)`. One real gap
+   found: native.rs's inline Raman ADE solve (`rhs_modal_pointcalc`'s
+   "npol=1 scalar field only" block) only ever touches polarisation column
+   0 — with npol=2 it would silently drop the second (y) column's Raman
+   contribution rather than raising, so a new guard rejects
+   `RamanPolarField` combined with `npol=2` specifically (Kerr-only npol=2
+   remains fully supported). New test `test/test_native_modal_npol2.jl`:
+   single HE,n=1 mode with `ϕ=π/4` (so both `Ex`/`Ey` are genuinely nonzero
+   at every node, exercising the cross term — `ϕ=0` would leave `Ey≡0` and
+   silently degenerate to the npol=1 formula) at both `full=false` and
+   `full=true`, `rel < 1e-9` (matches E.1's own tolerance tier, achieved
+   ~1e-15/1e-16 — no new approximation source), plus a
+   `@test_throws NativeIneligible` check for the Raman+npol=2 rejection.
+
+5. EnvGrid modal. Substantially larger than npol=2 was — needs a genuine new
+   RHS variant in `native.rs` (complex time/polarisation buffers,
+   `fft_c2c_over` instead of `fft_r2c_over`, `KerrScalarEnv!`/
+   `KerrVectorEnv!` formulas — note `KerrVectorEnv!`
+   (`3/4·((Ex²+2/3Ey²)Ex + 1/3·conj(Ex)·Ey²)`, `src/Nonlinear.jl:124-133`) is
+   a genuinely different formula from RealGrid's `KerrVector!`, not just a
+   complex-typed port of it), a new `is_real`/response-kind flag threaded
+   through `native_set_modal_params` and `rhs_modal_pointcalc` to select the
+   FFT plan and Kerr closure, and a new eligibility path in `RK45.jl` to
+   distinguish `Kerr_env` from `Kerr_field` (today's `is_kerr_resp_modal`
+   just greps for a `γ3` field name, which both closures have). Combines
+   multiplicatively with the npol axis. Comparable in scope to Phase D.3
+   (EnvGrid free-space). Remains out of scope for this session.
+
+Gate (E.4): all 7 test groups green — 46637 passed, 12 broken (pre-existing),
+0 failed/errored (rust group: 42004/42004, includes 3 new tests).
 
 ### Phase F — Native scope: Raman completions + z-dependence (🟡, medium)
 1. `thg=false` Raman (needs a resident Hilbert transform — one extra c2c
