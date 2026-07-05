@@ -86,6 +86,85 @@ fn j0_prime(x: f64) -> f64 {
     -j1(x)
 }
 
+/// Evaluation of the integer-order Bessel function of the first kind
+/// `J_order(x)`, `order >= 0`, via downward Miller recurrence — BACKLOG.md
+/// Phase E.1 (general Marcatili mode orders `n>1`, needed for `J_{n-1}`).
+///
+/// `order` 0/1 dispatch to the dedicated power-series/asymptotic `j0`/`j1`
+/// above (more accurate than the recurrence at those orders). For `order >=
+/// 2`, the upward three-term recurrence `J_{k+1} = (2k/x)·J_k - J_{k-1}` is
+/// numerically unstable (it amplifies rounding error relative to the true,
+/// rapidly-decaying solution) — the standard fix (Abramowitz & Stegun
+/// 9.12) is to recur downward from an arbitrarily-seeded high order M
+/// (`M = order + 8 + sqrt(40·order)`, comfortably above `x` so the true
+/// `J_M` is already negligible) and rescale using the Miller normalization
+/// `J_0 + 2·Σ_{k even>0} J_k = 1`.
+pub fn jn(order: i32, x: f64) -> f64 {
+    if order < 0 {
+        // J_{-n}(x) = (-1)^n J_n(x) for integer n.
+        let v = jn(-order, x);
+        return if order % 2 == 0 { v } else { -v };
+    }
+    if x < 0.0 {
+        // J_n(-x) = (-1)^n J_n(x) for integer n.
+        let v = jn(order, -x);
+        return if order % 2 == 0 { v } else { -v };
+    }
+    match order {
+        0 => return j0(x),
+        1 => return j1(x),
+        _ => {}
+    }
+    if x == 0.0 {
+        return 0.0;
+    }
+
+    let n = order as usize;
+    let m_start = {
+        // Seed order must clear both `n` and `x` comfortably — the
+        // recurrence is unstable (and needs headroom to decay into the true
+        // solution) whichever of the two dominates.
+        let base = (n as f64).max(x);
+        let m = base as usize + 15 + (40.0 * base).sqrt() as usize;
+        // Ensure the seed order is even so the Miller normalization sum
+        // below (which only accumulates even-indexed terms) always includes
+        // the top two seeded values consistently.
+        if m % 2 == 0 { m } else { m + 1 }
+    };
+
+    let mut j_kp1 = 0.0f64; // J_{k+1}, seeded at the top
+    let mut j_k = 1.0e-30f64; // J_k, arbitrary tiny nonzero seed
+    let mut result = 0.0f64;
+    let mut sum = 0.0f64; // accumulates J_0 + 2·(J_2 + J_4 + ...)
+
+    let mut k = m_start;
+    while k >= 1 {
+        let j_km1 = (2.0 * k as f64 / x) * j_k - j_kp1;
+        if k - 1 == n {
+            result = j_km1;
+        }
+        if (k - 1) % 2 == 0 {
+            if k - 1 == 0 {
+                sum += j_km1;
+            } else {
+                sum += 2.0 * j_km1;
+            }
+        }
+        j_kp1 = j_k;
+        j_k = j_km1;
+        // Rescale periodically to avoid overflow during the downward sweep.
+        if j_k.abs() > 1.0e250 {
+            j_kp1 /= 1.0e250;
+            j_k /= 1.0e250;
+            result /= 1.0e250;
+            sum /= 1.0e250;
+        }
+        k -= 1;
+    }
+
+    result / sum
+}
+
 /// Find the first N zeros of the J0 Bessel function using Newton-Raphson
 pub fn find_j0_zeros(n: usize) -> Vec<f64> {
     let mut zeros = Vec::with_capacity(n);
@@ -272,5 +351,46 @@ impl Qdht {
             
             *out_val = Complex::new(sum_re, sum_im);
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jn_matches_j0_j1() {
+        for &x in &[0.0, 0.5, 1.0, 2.4048, 5.0, 8.0, 15.0, 40.0] {
+            assert!((jn(0, x) - j0(x)).abs() < 1e-13);
+            assert!((jn(1, x) - j1(x)).abs() < 1e-13);
+        }
+    }
+
+    #[test]
+    fn jn_matches_known_values() {
+        // Reference values from `SpecialFunctions.besselj` (Julia), the
+        // same library `Capillary.jl`'s mode setup uses.
+        let cases: &[(i32, f64, f64)] = &[
+            (2, 1.0, 0.11490348493190049),
+            (2, 5.0, 0.0465651162777522),
+            (3, 2.4048255576957724, 0.19899990535769077),
+            (4, 10.0, -0.2196026861020085),
+            (5, 0.5, 8.053627241357474e-6),
+            (6, 20.0, -0.05508604956366578),
+        ];
+        for &(n, x, expected) in cases {
+            let got = jn(n, x);
+            let tol = (1e-9 * expected.abs()).max(1e-12);
+            assert!((got - expected).abs() < tol,
+                "jn({n}, {x}) = {got}, expected {expected}");
+        }
+    }
+
+    #[test]
+    fn jn_negative_order_and_argument() {
+        assert!((jn(-2, 3.0) - jn(2, 3.0)).abs() < 1e-13);
+        assert!((jn(-3, 3.0) + jn(3, 3.0)).abs() < 1e-13);
+        assert!((jn(2, -3.0) - jn(2, 3.0)).abs() < 1e-13);
+        assert!((jn(3, -3.0) + jn(3, 3.0)).abs() < 1e-13);
     }
 }

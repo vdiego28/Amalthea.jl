@@ -1237,13 +1237,13 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         all(m -> m isa Luna.Capillary.MarcatiliMode, modes) ||
             throw(NativeIneligible("native modal path only supports MarcatiliMode " *
                   "(Phase 5 gate)"))
-        all(m -> m.kind == :HE && m.n == 1, modes) ||
-            throw(NativeIneligible("native modal path only supports kind=:HE, n=1 " *
-                  "modes (Phase 5 gate; general n needs a general-order Bessel " *
-                  "routine, deferred, see MATH.md §3.3)"))
+        all(m -> m.kind in (:HE, :TE, :TM), modes) ||
+            throw(NativeIneligible("native modal path only supports kind ∈ " *
+                  "(:HE, :TE, :TM) Marcatili modes"))
         all(m -> m.a isa Number, modes) ||
             throw(NativeIneligible("native modal path only supports constant-radius " *
-                  "modes (Phase 5 gate; tapered/z-dependent radius deferred)"))
+                  "modes (Phase 5 gate; tapered/z-dependent radius deferred, " *
+                  "see BACKLOG.md Phase E.2)"))
 
         a = Float64(modes[1].a)
         all(m -> Float64(m.a) == a, modes) ||
@@ -1251,7 +1251,13 @@ function RustNativeStepper(f!, linop, y0, t, dt;
 
         unm = Float64[m.unm for m in modes]
         invsqrtn = Float64[1.0 / sqrt(Luna.Modes.N(m, z=0.0)) for m in modes]
-        phi = Float64[m.ϕ for m in modes]
+        # `field(m, (r,0))` (Capillary.jl) factored as `J_order(x)·(angle_x,
+        # angle_y)` — Phase E.1 generalizes the Phase 5 `HE,n=1`-only
+        # `J0·(sinϕ,cosϕ)` special case (recovered here at n=1) to any
+        # `:HE`/`:TE`/`:TM` mode order.
+        order = Int32[m.kind == :HE ? m.n - 1 : 1 for m in modes]
+        angle_x = Float64[m.kind == :HE ? sin(m.n * m.ϕ) : (m.kind == :TM ? 1.0 : 0.0) for m in modes]
+        angle_y = Float64[m.kind == :HE ? cos(m.n * m.ϕ) : (m.kind == :TM ? 0.0 : 1.0) for m in modes]
 
         pol_select = npol == 2 ? UInt8[0, 1] : UInt8[f!.ts.indices == 1 ? 0 : 1]
 
@@ -1296,11 +1302,11 @@ function RustNativeStepper(f!, linop, y0, t, dt;
 
         rc = ccall((:native_set_modal_params, _LIBLUNA_RUST_RK45), Cint,
             (Ptr{Cvoid}, Csize_t, Csize_t, Csize_t, Csize_t,
-             Float64, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Ptr{UInt8},
-             Ptr{Float64}, Float64, Ptr{Float64}, Ptr{Float64},
+             Float64, Ptr{Float64}, Ptr{Float64}, Ptr{Int32}, Ptr{Float64}, Ptr{Float64},
+             Ptr{UInt8}, Ptr{Float64}, Float64, Ptr{Float64}, Ptr{Float64},
              Cstring, Float64, Float64, Csize_t),
             handle.ptr, n_time, n_time_over, n_modes, npol,
-            a, unm, invsqrtn, phi, pol_select,
+            a, unm, invsqrtn, order, angle_x, angle_y, pol_select,
             towin, kerr_fac, real.(nlfac), imag.(nlfac),
             lib_path, f!.rtol, f!.atol, Csize_t(f!.mfcn))
         rc == 0 || error("native_set_modal_params failed: $rc")

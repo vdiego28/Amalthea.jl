@@ -102,7 +102,7 @@ use crate::ffi::QdhtFfiHandle;
 use crate::spline::HermiteSpline;
 use crate::raman::{TimeDomainRamanSolver, RamanOscillator};
 use crate::cubature::CubatureApi;
-use crate::diffraction::j0;
+use crate::diffraction::jn;
 use std::ffi::CStr;
 
 /// Resident simulation state. One per `solve`. Opaque to Julia.
@@ -223,10 +223,23 @@ pub struct NativeSim {
     /// Per-mode `1/√N(m)` (closed-form Marcatili normalization, precomputed
     /// in Julia — no `besselj` call in Rust for this), length `n_modes`.
     pub modal_inv_sqrt_n: Vec<f64>,
-    /// Per-mode rotation angle `ϕ`, length `n_modes`.
-    pub modal_phi: Vec<f64>,
-    /// Per-polarisation-column selector: 0 → `sin(ϕ)` (x), 1 → `cos(ϕ)` (y).
-    /// Length `npol`.
+    /// Per-mode Bessel order for the radial field factor `J_order(r·unm/a)`
+    /// — `n-1` for `:HE`, `1` for `:TE`/`:TM` (BACKLOG.md Phase E.1: general
+    /// mode orders, generalizing the Phase 5 `kind=:HE,n=1`-only `J0`
+    /// scope). Length `n_modes`.
+    pub modal_order: Vec<i32>,
+    /// Per-mode angular field factor at the `θ=0` evaluation point used by
+    /// the `full=false` radial-only integral (`pointcalc!`'s branch —
+    /// `NonlinearRHS.jl:363-399` — always evaluates at `θ=0`, carrying the
+    /// azimuthal dependence analytically in the mode-field closed form
+    /// rather than integrating it numerically). `modal_angle_x`/`_y` are the
+    /// x/y components of `Capillary.field(m,(r,0))/J_order(r·unm/a)`:
+    /// `(sin(n·ϕ), cos(n·ϕ))` for `:HE`, `(0,1)` for `:TE`, `(1,0)` for
+    /// `:TM`. Length `n_modes` each.
+    pub modal_angle_x: Vec<f64>,
+    pub modal_angle_y: Vec<f64>,
+    /// Per-polarisation-column selector: 0 → x component (`modal_angle_x`),
+    /// 1 → y component (`modal_angle_y`). Length `npol`.
     pub modal_pol_select: Vec<u8>,
     /// Precomputed `ωwin[iω]·normfunc(ω[iω])` (folds the window and whatever
     /// `TransModal.norm!` does — extracted numerically from the Julia
@@ -461,7 +474,9 @@ impl NativeSim {
             modal_a: 0.0,
             modal_unm: Vec::new(),
             modal_inv_sqrt_n: Vec::new(),
-            modal_phi: Vec::new(),
+            modal_order: Vec::new(),
+            modal_angle_x: Vec::new(),
+            modal_angle_y: Vec::new(),
             modal_pol_select: Vec::new(),
             modal_nlfac: Vec::new(),
             modal_kerr_fac: 0.0,
@@ -1115,13 +1130,17 @@ impl NativeSim {
             return;
         }
 
-        // ── mode field synthesis at (r, θ=0): Exy = J0(r·unm/a)/√N · (sin ϕ, cos ϕ) ──
+        // ── mode field synthesis at (r, θ=0): Exy = J_order(r·unm/a)/√N ·
+        // (angle_x, angle_y) — BACKLOG.md Phase E.1 generalizes this beyond
+        // the Phase 5 `kind=:HE,n=1` scope (order=0, angle=(sinϕ,cosϕ)) to
+        // any `:HE`/`:TE`/`:TM` Marcatili mode; see `modal_order`/
+        // `modal_angle_x`/`_y`'s doc comments for the per-kind formulas.
         for m in 0..n_modes {
             let x = r * self.modal_unm[m] / self.modal_a;
-            let base = j0(x) * self.modal_inv_sqrt_n[m];
-            let phi = self.modal_phi[m];
+            let base = jn(self.modal_order[m], x) * self.modal_inv_sqrt_n[m];
+            let (ax, ay) = (self.modal_angle_x[m], self.modal_angle_y[m]);
             for (p, &sel) in self.modal_pol_select.iter().enumerate() {
-                self.modal_ems[m * npol + p] = base * if sel == 0 { phi.sin() } else { phi.cos() };
+                self.modal_ems[m * npol + p] = base * if sel == 0 { ax } else { ay };
             }
         }
 
@@ -2296,8 +2315,10 @@ pub unsafe extern "C" fn native_set_raman_params(
 }
 
 /// Wire the modal (`TransModal`) RHS: resident `libcubature` (`pcubature_v`,
-/// `full=false` only) + analytic `HE, n=1` Marcatili mode-field synthesis.
-/// See MATH.md §3.3 for the full design and scope restrictions.
+/// `full=false` only) + analytic general-order Marcatili mode-field
+/// synthesis (`:HE`/`:TE`/`:TM`, any mode order `n` — BACKLOG.md Phase E.1;
+/// was `HE, n=1`-only through Phase 5/D.4). See MATH.md §3.3 for the design
+/// and remaining scope restrictions (npol=1, `full=false`, constant radius).
 ///
 /// Must be called **after** `native_set_fftw_plans` (`is_real=1` — RealGrid
 /// only) and `native_set_mode_avg_params`-style buffer sizing is done here
@@ -2309,9 +2330,14 @@ pub unsafe extern "C" fn native_set_raman_params(
 /// * `npol` — 1 or 2 (`Modes.ToSpace.npol`).
 /// * `a` — shared physical core radius (constant across modes and z —
 ///   scope restriction).
-/// * `unm`/`inv_sqrt_n`/`phi` — per-mode arrays, length `n_modes` (`unm`,
-///   `1/√N(m)` precomputed closed-form, `ϕ`).
-/// * `pol_select` — length `npol`, 0 → `sin ϕ` (x column), 1 → `cos ϕ` (y column).
+/// * `unm`/`inv_sqrt_n` — per-mode arrays, length `n_modes` (`unm`, `1/√N(m)`
+///   precomputed closed-form in Julia).
+/// * `order` — per-mode Bessel order for `J_order(r·unm/a)`: `n-1` for
+///   `:HE`, `1` for `:TE`/`:TM`. Length `n_modes`.
+/// * `angle_x`/`angle_y` — per-mode field angular factor at `θ=0`:
+///   `(sin(n·ϕ), cos(n·ϕ))` for `:HE`, `(0,1)` for `:TE`, `(1,0)` for `:TM`.
+///   Length `n_modes` each.
+/// * `pol_select` — length `npol`, 0 → x column (`angle_x`), 1 → y column (`angle_y`).
 /// * `towin` — length `n_time_over`, or null for all-ones.
 /// * `kerr_fac` — `density · ε₀ · γ3` (same convention as every other phase).
 /// * `nlfac_re`/`nlfac_im` — precomputed `ωwin[iω]·normfunc(ω[iω])`, length `n_spec` each.
@@ -2323,10 +2349,11 @@ pub unsafe extern "C" fn native_set_raman_params(
 /// failed to load.
 ///
 /// # Safety
-/// `sim` must be valid; `unm`/`inv_sqrt_n`/`phi` must each be valid for
-/// `n_modes` reads; `pol_select` for `npol` reads; `nlfac_re`/`nlfac_im` for
-/// `n_spec` reads (`n_spec = sim.n / n_modes`); `towin`, if non-null, for
-/// `n_time_over` reads; `lib_path` must be a valid null-terminated C string.
+/// `sim` must be valid; `unm`/`inv_sqrt_n`/`order`/`angle_x`/`angle_y` must
+/// each be valid for `n_modes` reads; `pol_select` for `npol` reads;
+/// `nlfac_re`/`nlfac_im` for `n_spec` reads (`n_spec = sim.n / n_modes`);
+/// `towin`, if non-null, for `n_time_over` reads; `lib_path` must be a valid
+/// null-terminated C string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn native_set_modal_params(
     sim: *mut NativeSim,
@@ -2337,7 +2364,9 @@ pub unsafe extern "C" fn native_set_modal_params(
     a: c_double,
     unm: *const c_double,
     inv_sqrt_n: *const c_double,
-    phi: *const c_double,
+    order: *const i32,
+    angle_x: *const c_double,
+    angle_y: *const c_double,
     pol_select: *const u8,
     towin: *const c_double,
     kerr_fac: c_double,
@@ -2348,7 +2377,8 @@ pub unsafe extern "C" fn native_set_modal_params(
     atol: c_double,
     maxevals: size_t,
 ) -> i32 {
-    if sim.is_null() || unm.is_null() || inv_sqrt_n.is_null() || phi.is_null()
+    if sim.is_null() || unm.is_null() || inv_sqrt_n.is_null() || order.is_null()
+        || angle_x.is_null() || angle_y.is_null()
         || pol_select.is_null() || nlfac_re.is_null() || nlfac_im.is_null() || lib_path.is_null() {
         return -1;
     }
@@ -2378,7 +2408,9 @@ pub unsafe extern "C" fn native_set_modal_params(
 
     s.modal_unm = unsafe { std::slice::from_raw_parts(unm, n_modes) }.to_vec();
     s.modal_inv_sqrt_n = unsafe { std::slice::from_raw_parts(inv_sqrt_n, n_modes) }.to_vec();
-    s.modal_phi = unsafe { std::slice::from_raw_parts(phi, n_modes) }.to_vec();
+    s.modal_order = unsafe { std::slice::from_raw_parts(order, n_modes) }.to_vec();
+    s.modal_angle_x = unsafe { std::slice::from_raw_parts(angle_x, n_modes) }.to_vec();
+    s.modal_angle_y = unsafe { std::slice::from_raw_parts(angle_y, n_modes) }.to_vec();
     s.modal_pol_select = unsafe { std::slice::from_raw_parts(pol_select, npol) }.to_vec();
 
     if !towin.is_null() {

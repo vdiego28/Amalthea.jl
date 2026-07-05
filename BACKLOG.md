@@ -249,8 +249,31 @@ Gate (D.5): all 7 test groups green — 46620 passed, 12 broken (pre-existing),
 complete** (D.1-D.5 all ✅).
 
 ### Phase E — Native scope: modal generality (🟡, large)
-1. General mode orders: stable `besselj(n, x)` for n>1 (downward Miller
+1. ✅ General mode orders: stable `besselj(n, x)` for n>1 (downward Miller
    recurrence) in `diffraction.rs`, unlocking TE/TM/`n>1` Marcatili modes.
+   Implementation: `diffraction::jn` (Miller recurrence, seed order scaled
+   to `max(order, x)` for stability at both large order and large argument —
+   see its doc comment for the derivation) replaces the hardcoded `j0` call
+   in `native.rs`'s `rhs_modal_pointcalc`. The `full=false` radial-only
+   integral always evaluates the mode field at `θ=0` (pre-existing design,
+   unchanged), which lets the azimuthal dependence collapse to two
+   precomputed per-mode constants (`modal_angle_x`/`_y`, replacing the old
+   `modal_phi`) instead of needing genuine 2-D angular integration: `:HE`
+   modes get `J_{n-1}(x)·(sin(nϕ), cos(nϕ))` (n=1 recovers the old
+   `J0·(sinϕ,cosϕ)` special case exactly), `:TE` gets `J1(x)·(0,1)`, `:TM`
+   gets `J1(x)·(1,0)` — derived directly from `Capillary.field`'s closed
+   form evaluated at `θ=0`. `RK45.jl`'s modal eligibility gate now accepts
+   any `kind ∈ (:HE,:TE,:TM)` MarcatiliMode (previously `:HE,n=1`-only);
+   `native_set_modal_params`'s FFI signature gained `order`/`angle_x`/
+   `angle_y` array params, dropping the old scalar `phi` param. New test:
+   `test/test_native_modal_general_order.jl` (HE n=2, TE, TM — all agree
+   with the Julia oracle to ~1e-15/1e-16/1e-15, i.e. `jn` is exact to FP
+   noise, not just spline-precision). Tapered radius, `full=true`, and
+   npol=2 (items 2-4 below) remain out of scope.
+
+Gate (E.1): all 7 test groups green — 46623 passed, 12 broken (pre-existing),
+0 failed/errored (rust group: 41990/41990, includes 3 new tests).
+
 2. Tapered / per-mode radius (drop the shared-constant-radius guard).
 3. `full=true` (2-D modal integral — second cubature dimension).
 4. npol=2 (polarisation-resolved modal), then EnvGrid modal.
