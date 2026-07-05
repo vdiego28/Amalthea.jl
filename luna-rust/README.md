@@ -37,8 +37,8 @@ The Rust migration replaces several numerical approximations from the original J
 
 ### 6. Dynamic HDF5 I/O & Queue Serialization (`io.rs`, `scans.rs`)
 *   **Original (Julia)**: Depended on `HDF5.jl` package configurations to write formatted datasets and handle file locking via Julia's standard library pidlocks.
-*   **Proposed (Rust)**: Avoids compile-time linking requirements by dynamically locating and loading `libhdf5.so` at runtime from the system or Julia's artifact cache. File locking for queued sweeps is implemented via lightweight `libc::flock` system calls, enabling process-safe parameter scans without external dependencies.
-    > **Platform caveat:** `flock`-based locking is **Unix only** (Linux/macOS). On Windows the lock is currently a no-op, so concurrent parameter scans are not yet process-safe there (see the `TODO` in `scans.rs`; a Windows `LockFileEx` implementation is still pending).
+*   **Proposed (Rust)**: Avoids compile-time linking requirements by dynamically locating and loading `libhdf5.so` at runtime from the system or Julia's artifact cache. File locking for queued sweeps is implemented via `libc::flock` on Unix and Win32 `LockFileEx`/`UnlockFileEx` on Windows, enabling process-safe parameter scans without external dependencies.
+    > **Platform caveat:** the Windows `LockFileEx` path is implemented but has never been exercised on real Windows CI (no Windows runner yet) — see `BACKLOG.md`'s "Windows scan-lock validation" entry.
 
 ### 7. Group-Velocity β1(z) for Graded-Core (Pressure-Gradient) Waveguides
 *   **Original (Julia)**: For a z-dependent (pressure-gradient) capillary, `β1(z)` — the group-velocity term rebuilt at every propagation step — is computed with an *adaptive* finite difference (`FiniteDifferences.central_fdm`), which has a real, repeatable ~1e-12 relative error against the true derivative (the truncation/rounding step-size tradeoff never fully closes at `Float64` precision).

@@ -239,11 +239,13 @@ The `luna-rust` crate replaces several numerical approximations from the origina
 3. **PPT ionization** (`ionization.rs`) — 1D cubic B-spline LUT over |E| with a strict lower-bound cutoff E_min (returns 0 below, errors above E_max), avoiding ill-conditioned low-field extrapolation.
 4. **Raman response** (`raman.rs`) — solves the single-damped-oscillator ADE directly in the time domain via an explicit exponential integrator (`x_{n+1} = A·x_n + B0·I_n + B1·I_{n+1}`), turning O(Nt·log Nt) FFT convolution into O(Nt) in-place, allocation-free, phase-exact stepping.
 5. **Integrating-factor propagator** (`integrator.rs`, `stepper.rs`) — integrates the diagonal linear operator L(ω,z) over a step with 4-point Gauss-Legendre quadrature (order-8 local accuracy); since L commutes with itself in frequency space the Magnus expansion truncates to the integral.
-6. **Dynamic HDF5 I/O & scan queue** (`io.rs`, `scans.rs`) — locates and `dlopen`s `libhdf5` at runtime (no link-time dependency, `LUNA_HDF5_LIB` override) and serializes parallel parameter sweeps with `libc::flock` (Unix only — see caveat below).
+6. **Dynamic HDF5 I/O & scan queue** (`io.rs`, `scans.rs`) — locates and `dlopen`s `libhdf5` at runtime (no link-time dependency, `LUNA_HDF5_LIB` override) and serializes parallel parameter sweeps with `libc::flock` on Unix / Win32 `LockFileEx` on Windows (see caveat below).
 
 The adaptive **Dormand-Prince 5(4)** stepper (`stepper.rs`) runs in the interaction picture with a Lund PI step controller, FSAL reuse, and pre-allocated stage buffers (zero hot-loop allocation). The **runtime dispatcher** (`dispatch.rs`) cascades GPU (CUDA → Vulkan) → vectorized CPU (AVX-512 / Apple AMX) → standard SIMD (AVX2 / NEON) → portable scalar.
 
-> **Caveat (Windows scans):** the `flock`-based queue lock in `scans.rs` is a no-op on non-Unix targets, so parallel parameter scans are not yet process-safe on Windows. See the `TODO` in `scans.rs`.
+> **Caveat (Windows scans):** `scans.rs`'s `FlockLock` calls real `LockFileEx`/`UnlockFileEx`
+> on non-Unix targets (no longer a no-op — see `BACKLOG.md`'s "Windows scan-lock validation"
+> entry), but this has never actually run on Windows CI, so it's implemented but unvalidated.
 
 ## Key Design Points
 

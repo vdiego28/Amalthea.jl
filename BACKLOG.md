@@ -388,8 +388,9 @@ Gate (E.4): all 7 test groups green — 46637 passed, 12 broken (pre-existing),
    the native RHS (removes the `densityfun isa Real` guard).
 
 ### Phase G — Platform & CI robustness (🟡, small-medium)
-1. Windows scan locking via `LockFileEx`/`UnlockFileEx` (existing item
-   below; needs a Windows CI runner to validate).
+1. ✅ Windows scan locking via `LockFileEx`/`UnlockFileEx` — implemented
+   (commit `febdde1`, 2026-06-28); still needs a Windows CI runner to
+   validate (existing item below).
 2. GPU CI: a scheduled CUDA-equipped job running the currently
    self-skipping GPU equivalence tests (existing item below).
 3. CI benchmark job: track the Phase C benchmark over time so native-path
@@ -608,13 +609,21 @@ Remaining kernels to wire (same pattern, in this order):
   `test/test_raman_rust.jl`, `test/test_dispersion_rust.jl`, and
   `luna-rust/tests/*.jl` (`@testitem tags=[:rust]`, auto-discovered).
 
-### 🔴 Real file locking for parameter scans on Windows
-`luna-rust/src/scans.rs` `FlockLock` is a **no-op on non-Unix targets** (`#[cfg(not(unix))]`
-returns an empty struct; `lock()`/`unlock()` do nothing). Concurrent scans on Windows are
-therefore not process-safe and may race on the shared HDF5 queue file.
-- **Fix:** implement locking via Windows `LockFileEx` / `UnlockFileEx`.
-- **Blocker:** needs a Windows runner to validate; untestable from Linux/macOS.
-- Currently latent — `ScanQueue` is only reachable via FFI, which `src/` doesn't call yet.
+### 🟡 Windows scan-lock validation (implementation done, needs a Windows runner)
+`luna-rust/src/scans.rs` `FlockLock::lock`/`unlock` now call real Win32 `LockFileEx`/
+`UnlockFileEx` on non-Unix targets (commit `febdde1`, 2026-06-28, `windows-sys` added to
+`luna-rust/Cargo.toml`) — this is **no longer a no-op** (confirmed 2026-07-05 by reading the
+current code and `git log`; the previous version of this entry, and the caveats in
+`CLAUDE.md` and `luna-rust/README.md`, were stale and have been corrected to match).
+- **Remaining gap:** never actually executed on Windows — `test_flock_lock_new`/
+  `test_flock_lock_new_error` only test file creation, and `test_scan_queue_flock`
+  (`lib.rs`) exercises `lock()`/`unlock()` end-to-end but only on whichever platform CI runs
+  on (Linux/macOS today). No assertion has ever run against the `windows-sys` code path.
+- **Fix:** add a Windows CI runner (or scheduled job) that actually executes
+  `test_scan_queue_flock` under `#[cfg(windows)]` to validate the `LockFileEx` path.
+- Currently latent regardless of platform — `ScanQueue`/`init_scan_queue` is only reachable
+  via FFI, which `src/*.jl` doesn't call yet (confirmed: no `init_scan_queue` reference in
+  any Julia source file).
 
 ### 🟡 GPU CI coverage
 `luna-rust/tests/test_gpu_cuda.jl` and the GPU numerical-equivalence tests in
