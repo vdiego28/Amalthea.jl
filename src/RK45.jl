@@ -1222,8 +1222,9 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     if is_modal
         is_real_grid || throw(NativeIneligible("EnvGrid modal not yet supported " *
                                "(Phase 5 gate is RealGrid-only)"))
-        f!.full && throw(NativeIneligible("full=true (2-D modal integral) not yet " *
-                          "supported (Phase 5 gate is full=false)"))
+        # Phase E.3: `full=true` (genuine 2-D `(r,θ)` cubature, `hcubature_v`)
+        # is now also supported, alongside the original `full=false` (radial
+        # only, `pcubature_v`) — see native.rs's `mode_angle_xy`/`rhs_modal`.
         isnothing(f!.Emω_noise) || throw(NativeIneligible("modified shot-noise " *
                           "(Emω_noise) not yet supported for the native modal path"))
 
@@ -1265,13 +1266,14 @@ function RustNativeStepper(f!, linop, y0, t, dt;
 
         unm = Float64[m.unm for m in modes]
         invsqrtn = Float64[1.0 / sqrt(Luna.Modes.N(m, z=0.0)) for m in modes]
-        # `field(m, (r,0))` (Capillary.jl) factored as `J_order(x)·(angle_x,
-        # angle_y)` — Phase E.1 generalizes the Phase 5 `HE,n=1`-only
-        # `J0·(sinϕ,cosϕ)` special case (recovered here at n=1) to any
-        # `:HE`/`:TE`/`:TM` mode order.
+        # `field(m, (r,θ))` (Capillary.jl) factored as `J_order(x)·(ax,ay)`,
+        # with `(ax,ay)` a per-kind function of `θ` (`mode_angle_xy` in
+        # native.rs) — Phase E.1 generalized the Phase 5 `HE,n=1`-only `J0`
+        # scope to any `:HE`/`:TE`/`:TM` mode order (fixed `θ=0`); Phase E.3
+        # further generalizes to genuine `θ`-dependence (`full=true`).
         order = Int32[m.kind == :HE ? m.n - 1 : 1 for m in modes]
-        angle_x = Float64[m.kind == :HE ? sin(m.n * m.ϕ) : (m.kind == :TM ? 1.0 : 0.0) for m in modes]
-        angle_y = Float64[m.kind == :HE ? cos(m.n * m.ϕ) : (m.kind == :TM ? 0.0 : 1.0) for m in modes]
+        kind_code = UInt8[m.kind == :HE ? 0 : (m.kind == :TE ? 1 : 2) for m in modes]
+        phi = Float64[m.ϕ for m in modes]
 
         pol_select = npol == 2 ? UInt8[0, 1] : UInt8[f!.ts.indices == 1 ? 0 : 1]
 
@@ -1316,11 +1318,11 @@ function RustNativeStepper(f!, linop, y0, t, dt;
 
         rc = ccall((:native_set_modal_params, _LIBLUNA_RUST_RK45), Cint,
             (Ptr{Cvoid}, Csize_t, Csize_t, Csize_t, Csize_t,
-             Float64, Ptr{Float64}, Ptr{Float64}, Ptr{Int32}, Ptr{Float64}, Ptr{Float64},
+             Float64, Ptr{Float64}, Ptr{Float64}, Ptr{Int32}, Ptr{UInt8}, Ptr{Float64}, UInt8,
              Ptr{UInt8}, Ptr{Float64}, Float64, Ptr{Float64}, Ptr{Float64},
              Cstring, Float64, Float64, Csize_t),
             handle.ptr, n_time, n_time_over, n_modes, npol,
-            a, unm, invsqrtn, order, angle_x, angle_y, pol_select,
+            a, unm, invsqrtn, order, kind_code, phi, UInt8(f!.full), pol_select,
             towin, kerr_fac, real.(nlfac), imag.(nlfac),
             lib_path, f!.rtol, f!.atol, Csize_t(f!.mfcn))
         rc == 0 || error("native_set_modal_params failed: $rc")

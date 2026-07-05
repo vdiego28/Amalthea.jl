@@ -311,7 +311,32 @@ Gate (E.1): all 7 test groups green — 46623 passed, 12 broken (pre-existing),
 Gate (E.2): all 7 test groups green — 46629 passed, 12 broken (pre-existing),
 0 failed/errored (rust group: 41996/41996, includes 5 new tests).
 
-3. `full=true` (2-D modal integral — second cubature dimension).
+3. ✅ `full=true` (2-D modal integral — second cubature dimension). Bound a
+   second `libcubature` symbol, `hcubature_v` (h-adaptive, arbitrary
+   `ndim` — same C prototype as the existing `pcubature_v` binding, so no
+   new FFI type), used with `ndim=2` over `(r,θ) ∈ [0,a]×[0,2π]` — the same
+   routine Julia's `full=true` branch calls (`Cubature.hcubature_v`), so
+   node placement is bit-identical, not just close. The mode-field
+   synthesis (`rhs_modal_pointcalc`) generalizes from E.1/E.2's
+   precomputed-at-`θ=0` `angle_x`/`angle_y` shortcut to a single runtime
+   `mode_angle_xy(kind,order,ϕ,θ)` function evaluated at the cubature
+   node's actual `θ` (subsuming the `θ=0` special case exactly — verified
+   the two formulas agree at `θ=0` before deleting the old fields); the
+   Jacobian switches from `2πr` (θ-integral done analytically) to plain `r`
+   (θ genuinely integrated). New test `test/test_native_modal_full.jl` (HE
+   n=1/n=2, TE, TM) reaches machine precision (~1e-15/1e-16 — tighter than
+   `full=false`'s ~1e-10, since neither approximation source `full=false`
+   still has (constant-radius here, so no β1(z) BigFloat-derivative
+   divergence either) is present), plus a same-mode `full=true`-vs-
+   `full=false` cross-check (both native) at ~5e-8 — a real but small
+   quadrature-method difference (h-adaptive 2-D vs p-adaptive 1-D
+   convergence to the same true integral via different node paths), not a
+   bug, since both were independently verified against the Julia oracle
+   first.
+
+Gate (E.3): all 7 test groups green — 46634 passed, 12 broken (pre-existing),
+0 failed/errored (rust group: 42001/42001, includes 5 new tests).
+
 4. npol=2 (polarisation-resolved modal), then EnvGrid modal.
 
 ### Phase F — Native scope: Raman completions + z-dependence (🟡, medium)

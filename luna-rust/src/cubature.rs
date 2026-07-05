@@ -12,9 +12,13 @@
 //! as FP-summation-order-sensitive as the RK45 step controller, but with no
 //! `max_dt=min_dt` escape hatch to pin node placement).
 //!
-//! Phase 5 scope: only `pcubature_v` (1-D p-adaptive, vectorized) is bound —
-//! the radial-only (`full=false`) modal integral. `hcubature_v` (full 2-D)
-//! is deferred alongside `full=true` support.
+//! Phase 5 scope bound only `pcubature_v` (1-D p-adaptive, vectorized) — the
+//! radial-only (`full=false`) modal integral. Phase E.3 (BACKLOG.md) adds
+//! `hcubature_v` (h-adaptive, arbitrary `ndim`) for `full=true`'s genuine
+//! 2-D `(r,θ)` integral — the same routine Julia's `Cubature.hcubature_v`
+//! calls, sharing `pcubature_v`'s C prototype (`cubature.h` gives every
+//! `{h,p}cubature{,_v}` variant an identical signature, differing only in
+//! subdivision strategy), so no new FFI type is needed.
 
 use std::ffi::CString;
 #[cfg(unix)]
@@ -111,6 +115,7 @@ impl Drop for Library {
 pub struct CubatureApi {
     _lib: Library,
     pcubature_v: PcubatureVFn,
+    hcubature_v: PcubatureVFn,
 }
 
 // Safety: `pcubature_v` is a plain function pointer into a shared library;
@@ -124,9 +129,12 @@ impl CubatureApi {
         let lib = unsafe { Library::load(Path::new(path))? };
         let pcubature_v = unsafe { lib.sym("pcubature_v") }
             .ok_or("symbol pcubature_v not found in libcubature")?;
+        let hcubature_v = unsafe { lib.sym("hcubature_v") }
+            .ok_or("symbol hcubature_v not found in libcubature")?;
         Ok(Self {
             _lib: lib,
             pcubature_v: unsafe { std::mem::transmute::<*mut c_void, PcubatureVFn>(pcubature_v) },
+            hcubature_v: unsafe { std::mem::transmute::<*mut c_void, PcubatureVFn>(hcubature_v) },
         })
     }
 
@@ -162,6 +170,40 @@ impl CubatureApi {
             (self.pcubature_v)(
                 fdim as c_uint, f, fdata,
                 1, xmin_arr.as_ptr(), xmax_arr.as_ptr(),
+                max_eval as size_t, req_abs_error, req_rel_error, ERROR_NORM_L2,
+                val.as_mut_ptr(), err.as_mut_ptr(),
+            )
+        }
+    }
+
+    /// 2-D h-adaptive vectorized cubature over `[xmin[0],xmax[0]] ×
+    /// [xmin[1],xmax[1]]` — Phase E.3 (BACKLOG.md), the `full=true` modal
+    /// integral. Same contract as `pcubature_v` otherwise.
+    ///
+    /// # Safety
+    /// Same as `pcubature_v`, plus: the `x` buffer `f` receives is `2·npt`
+    /// doubles, point-major (`x[2·p]`/`x[2·p+1]` are point `p`'s two
+    /// coordinates), per `cubature.h`'s convention.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn hcubature_v_2d(
+        &self,
+        fdim: usize,
+        f: IntegrandV,
+        fdata: *mut c_void,
+        xmin: [f64; 2],
+        xmax: [f64; 2],
+        max_eval: usize,
+        req_abs_error: f64,
+        req_rel_error: f64,
+        val: &mut [f64],
+        err: &mut [f64],
+    ) -> i32 {
+        debug_assert_eq!(val.len(), fdim);
+        debug_assert_eq!(err.len(), fdim);
+        unsafe {
+            (self.hcubature_v)(
+                fdim as c_uint, f, fdata,
+                2, xmin.as_ptr(), xmax.as_ptr(),
                 max_eval as size_t, req_abs_error, req_rel_error, ERROR_NORM_L2,
                 val.as_mut_ptr(), err.as_mut_ptr(),
             )

@@ -228,18 +228,19 @@ pub struct NativeSim {
     /// mode orders, generalizing the Phase 5 `kind=:HE,n=1`-only `J0`
     /// scope). Length `n_modes`.
     pub modal_order: Vec<i32>,
-    /// Per-mode angular field factor at the `θ=0` evaluation point used by
-    /// the `full=false` radial-only integral (`pointcalc!`'s branch —
-    /// `NonlinearRHS.jl:363-399` — always evaluates at `θ=0`, carrying the
-    /// azimuthal dependence analytically in the mode-field closed form
-    /// rather than integrating it numerically). `modal_angle_x`/`_y` are the
-    /// x/y components of `Capillary.field(m,(r,0))/J_order(r·unm/a)`:
-    /// `(sin(n·ϕ), cos(n·ϕ))` for `:HE`, `(0,1)` for `:TE`, `(1,0)` for
-    /// `:TM`. Length `n_modes` each.
-    pub modal_angle_x: Vec<f64>,
-    pub modal_angle_y: Vec<f64>,
-    /// Per-polarisation-column selector: 0 → x component (`modal_angle_x`),
-    /// 1 → y component (`modal_angle_y`). Length `npol`.
+    /// Per-mode kind: 0=`:HE`, 1=`:TE`, 2=`:TM` — selects the angular
+    /// formula in `mode_angle_xy` (BACKLOG.md Phase E.3: general θ,
+    /// generalizing E.1/E.2's fixed-`θ=0` shortcut). Length `n_modes`.
+    pub modal_kind: Vec<u8>,
+    /// Per-mode rotation angle `ϕ` — only meaningful for `:HE` (`:TE`/`:TM`
+    /// have no `ϕ` dependence, see `Capillary.field`). Length `n_modes`.
+    pub modal_phi: Vec<f64>,
+    /// `full=true`: genuine 2-D `(r,θ)` cubature (`hcubature_v`) instead of
+    /// the `full=false` radial-only 1-D integral at fixed `θ=0`
+    /// (`pcubature_v`) — BACKLOG.md Phase E.3.
+    pub modal_full: bool,
+    /// Per-polarisation-column selector: 0 → x component, 1 → y component
+    /// (see `mode_angle_xy`). Length `npol`.
     pub modal_pol_select: Vec<u8>,
     /// Precomputed `ωwin[iω]·normfunc(ω[iω])` (folds the window and whatever
     /// `TransModal.norm!` does — extracted numerically from the Julia
@@ -533,8 +534,9 @@ impl NativeSim {
             modal_unm: Vec::new(),
             modal_inv_sqrt_n: Vec::new(),
             modal_order: Vec::new(),
-            modal_angle_x: Vec::new(),
-            modal_angle_y: Vec::new(),
+            modal_kind: Vec::new(),
+            modal_phi: Vec::new(),
+            modal_full: false,
             modal_pol_select: Vec::new(),
             modal_nlfac: Vec::new(),
             modal_kerr_fac: 0.0,
@@ -1163,26 +1165,43 @@ impl NativeSim {
         let mut errbuf = vec![0.0f64; fdim];
 
         // `self.cubature` is `take()`n out (not borrowed) before the FFI call:
-        // the C library re-enters Rust via `modal_integrand_v`, which
+        // the C library re-enters Rust via `modal_integrand_v`/`_full`, which
         // reconstructs a fresh `&mut NativeSim` from the raw `self` pointer —
         // holding any live `&`/`&mut` borrow of a `self` field across that
         // call (including a view into `self.ks[idx]`, hence the separate
         // `valbuf` written back afterward) would alias it.
         let cubature = self.cubature.take().expect("rhs_modal called before native_set_modal_params");
-        let rc = unsafe {
-            cubature.pcubature_v(
-                fdim,
-                modal_integrand_v,
-                self as *mut NativeSim as *mut c_void,
-                0.0, self.modal_a,
-                self.modal_maxevals,
-                self.modal_atol, self.modal_rtol,
-                &mut valbuf, &mut errbuf,
-            )
+        let rc = if self.modal_full {
+            // Phase E.3: genuine 2-D `(r,θ)` cubature — `hcubature_v`, the
+            // same h-adaptive routine Julia's `full=true` branch calls
+            // (`Cubature.hcubature_v`, `NonlinearRHS.jl`'s `(t::TransModal)`).
+            unsafe {
+                cubature.hcubature_v_2d(
+                    fdim,
+                    modal_integrand_v_full,
+                    self as *mut NativeSim as *mut c_void,
+                    [0.0, 0.0], [self.modal_a, 2.0 * std::f64::consts::PI],
+                    self.modal_maxevals,
+                    self.modal_atol, self.modal_rtol,
+                    &mut valbuf, &mut errbuf,
+                )
+            }
+        } else {
+            unsafe {
+                cubature.pcubature_v(
+                    fdim,
+                    modal_integrand_v,
+                    self as *mut NativeSim as *mut c_void,
+                    0.0, self.modal_a,
+                    self.modal_maxevals,
+                    self.modal_atol, self.modal_rtol,
+                    &mut valbuf, &mut errbuf,
+                )
+            }
         };
         self.cubature = Some(cubature);
         if rc != 0 {
-            eprintln!("rhs_modal: pcubature_v returned {}", rc);
+            eprintln!("rhs_modal: cubature returned {}", rc);
         }
 
         let ks_f64: &mut [f64] = unsafe {
@@ -1193,12 +1212,14 @@ impl NativeSim {
 
     /// Per-node integrand: mirrors `Erω_to_Prω!` + the mode back-projection +
     /// polar Jacobian in Julia's `pointcalc!` (`src/NonlinearRHS.jl:363-399`)
-    /// for a single radial coordinate `r`, `θ=0` fixed (the `full=false`
-    /// branch always evaluates at `θ=0` — the azimuthal dependence is
-    /// carried analytically in the mode-field formula, not integrated
-    /// numerically). Writes the packed real/imag `Prmω[·,·]·2πr` into `out`
-    /// (length `2·n_spec·n_modes`).
-    fn rhs_modal_pointcalc(&mut self, r: f64, out: &mut [f64]) {
+    /// at coordinate `(r,θ)`. For `full=false`, always called with `θ=0`
+    /// fixed — the azimuthal dependence is then carried analytically in the
+    /// mode-field formula (`mode_angle_xy`) rather than integrated
+    /// numerically, and the Jacobian is `2πr` (the θ-integral done
+    /// analytically). For `full=true` (Phase E.3), `θ` is a genuine
+    /// cubature dimension and the Jacobian is just `r`. Writes the packed
+    /// real/imag `Prmω[·,·]·jacobian` into `out` (length `2·n_spec·n_modes`).
+    fn rhs_modal_pointcalc(&mut self, r: f64, theta: f64, out: &mut [f64]) {
         let n_modes = self.n_modes;
         let npol = self.npol;
         let n_spec = self.n_spec;
@@ -1210,15 +1231,12 @@ impl NativeSim {
             return;
         }
 
-        // ── mode field synthesis at (r, θ=0): Exy = J_order(r·unm/a)/√N ·
-        // (angle_x, angle_y) — BACKLOG.md Phase E.1 generalizes this beyond
-        // the Phase 5 `kind=:HE,n=1` scope (order=0, angle=(sinϕ,cosϕ)) to
-        // any `:HE`/`:TE`/`:TM` Marcatili mode; see `modal_order`/
-        // `modal_angle_x`/`_y`'s doc comments for the per-kind formulas.
+        // ── mode field synthesis at (r,θ): Exy = J_order(r·unm/a)/√N ·
+        // (ax,ay) — see `mode_angle_xy` for the per-kind angular formula.
         for m in 0..n_modes {
             let x = r * self.modal_unm[m] / self.modal_a;
             let base = jn(self.modal_order[m], x) * self.modal_inv_sqrt_n[m];
-            let (ax, ay) = (self.modal_angle_x[m], self.modal_angle_y[m]);
+            let (ax, ay) = mode_angle_xy(self.modal_kind[m], self.modal_order[m], self.modal_phi[m], theta);
             for (p, &sel) in self.modal_pol_select.iter().enumerate() {
                 self.modal_ems[m * npol + p] = base * if sel == 0 { ax } else { ay };
             }
@@ -1333,7 +1351,9 @@ impl NativeSim {
         }
 
         // ── back-projection: Prmω[iω,m] = Σ_p Prω[iω,p]·Ems[m,p] ─────────────────
-        let pre = 2.0 * std::f64::consts::PI * r;
+        // `full=false`: Jacobian is `2πr` (θ-integral done analytically).
+        // `full=true`: Jacobian is just `r` (θ genuinely integrated).
+        let pre = if self.modal_full { r } else { 2.0 * std::f64::consts::PI * r };
         for m in 0..n_modes {
             for i in 0..n_spec {
                 let mut acc = Complex::new(0.0, 0.0);
@@ -1812,7 +1832,58 @@ unsafe extern "C" fn modal_integrand_v(
         let fvals = unsafe { std::slice::from_raw_parts_mut(fval, npt * fdim) };
         for p in 0..npt {
             let out = &mut fvals[p * fdim..(p + 1) * fdim];
-            sim.rhs_modal_pointcalc(xs[p], out);
+            sim.rhs_modal_pointcalc(xs[p], 0.0, out);
+        }
+    }));
+    match result {
+        Ok(()) => 0,
+        Err(_) => 1,
+    }
+}
+
+/// Per-mode angular field factor `(ax,ay)` at `(θ,ϕ)`, mirroring
+/// `Capillary.field(m,(r,θ))/J_order(r·unm/a)` (Capillary.jl:271-283):
+/// `:HE` (`kind=0`) → `(cosθ·sin(n(θ+ϕ)) - sinθ·cos(n(θ+ϕ)),
+/// sinθ·sin(n(θ+ϕ)) + cosθ·cos(n(θ+ϕ)))` with `n=order+1`; `:TE` (`kind=1`)
+/// → `(-sinθ,cosθ)`; `:TM` (`kind=2`) → `(cosθ,sinθ)`. At `θ=0` these reduce
+/// exactly to E.1's `(sin(nϕ),cos(nϕ))`/`(0,1)`/`(1,0)` shortcuts — Phase
+/// E.3 subsumes that special case into this single general formula.
+fn mode_angle_xy(kind: u8, order: i32, phi: f64, theta: f64) -> (f64, f64) {
+    match kind {
+        1 => (-theta.sin(), theta.cos()),
+        2 => (theta.cos(), theta.sin()),
+        _ => {
+            let n = (order + 1) as f64;
+            let arg = n * (theta + phi);
+            (theta.cos() * arg.sin() - theta.sin() * arg.cos(),
+             theta.sin() * arg.sin() + theta.cos() * arg.cos())
+        }
+    }
+}
+
+/// C `integrand_v` callback for `hcubature_v` — the `full=true` (Phase E.3)
+/// counterpart of `modal_integrand_v`. `x` is `2·npt` doubles, point-major
+/// (`x[2·p]=r`, `x[2·p+1]=θ` for point `p`) per `cubature.h`'s convention.
+///
+/// # Safety
+/// Same contract as `modal_integrand_v`, with `x` valid for `2*npt` reads.
+unsafe extern "C" fn modal_integrand_v_full(
+    _ndim: c_uint,
+    npt: size_t,
+    x: *const c_double,
+    fdata: *mut c_void,
+    fdim: c_uint,
+    fval: *mut c_double,
+) -> c_int {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let sim = unsafe { &mut *(fdata as *mut NativeSim) };
+        let npt = npt as usize;
+        let fdim = fdim as usize;
+        let xs = unsafe { std::slice::from_raw_parts(x, 2 * npt) };
+        let fvals = unsafe { std::slice::from_raw_parts_mut(fval, npt * fdim) };
+        for p in 0..npt {
+            let out = &mut fvals[p * fdim..(p + 1) * fdim];
+            sim.rhs_modal_pointcalc(xs[2 * p], xs[2 * p + 1], out);
         }
     }));
     match result {
@@ -2532,22 +2603,24 @@ pub unsafe extern "C" fn native_set_raman_params(
 ///   precomputed closed-form in Julia).
 /// * `order` — per-mode Bessel order for `J_order(r·unm/a)`: `n-1` for
 ///   `:HE`, `1` for `:TE`/`:TM`. Length `n_modes`.
-/// * `angle_x`/`angle_y` — per-mode field angular factor at `θ=0`:
-///   `(sin(n·ϕ), cos(n·ϕ))` for `:HE`, `(0,1)` for `:TE`, `(1,0)` for `:TM`.
-///   Length `n_modes` each.
-/// * `pol_select` — length `npol`, 0 → x column (`angle_x`), 1 → y column (`angle_y`).
+/// * `kind` — per-mode kind: 0=`:HE`, 1=`:TE`, 2=`:TM`.
+/// * `phi` — per-mode `ϕ` (only meaningful for `:HE`). Length `n_modes` each.
+/// * `full` — 0/1: `full=false` (radial-only, `pcubature_v`, θ fixed at 0)
+///   or `full=true` (genuine 2-D `(r,θ)`, `hcubature_v` — Phase E.3).
+/// * `pol_select` — length `npol`, 0 → x column, 1 → y column (see
+///   `mode_angle_xy`).
 /// * `towin` — length `n_time_over`, or null for all-ones.
 /// * `kerr_fac` — `density · ε₀ · γ3` (same convention as every other phase).
 /// * `nlfac_re`/`nlfac_im` — precomputed `ωwin[iω]·normfunc(ω[iω])`, length `n_spec` each.
 /// * `lib_path` — path to the `libcubature` shared library
 ///   (`Cubature.Cubature_jll.libcubature` from Julia).
-/// * `rtol`/`atol`/`maxevals` — passed straight through to `pcubature_v`.
+/// * `rtol`/`atol`/`maxevals` — passed straight through to `pcubature_v`/`hcubature_v`.
 ///
 /// Returns 0 on success, -1 on null/shape-mismatched args, -2 if `libcubature`
 /// failed to load.
 ///
 /// # Safety
-/// `sim` must be valid; `unm`/`inv_sqrt_n`/`order`/`angle_x`/`angle_y` must
+/// `sim` must be valid; `unm`/`inv_sqrt_n`/`order`/`kind`/`phi` must
 /// each be valid for `n_modes` reads; `pol_select` for `npol` reads;
 /// `nlfac_re`/`nlfac_im` for `n_spec` reads (`n_spec = sim.n / n_modes`);
 /// `towin`, if non-null, for `n_time_over` reads; `lib_path` must be a valid
@@ -2563,8 +2636,9 @@ pub unsafe extern "C" fn native_set_modal_params(
     unm: *const c_double,
     inv_sqrt_n: *const c_double,
     order: *const i32,
-    angle_x: *const c_double,
-    angle_y: *const c_double,
+    kind: *const u8,
+    phi: *const c_double,
+    full: u8,
     pol_select: *const u8,
     towin: *const c_double,
     kerr_fac: c_double,
@@ -2576,7 +2650,7 @@ pub unsafe extern "C" fn native_set_modal_params(
     maxevals: size_t,
 ) -> i32 {
     if sim.is_null() || unm.is_null() || inv_sqrt_n.is_null() || order.is_null()
-        || angle_x.is_null() || angle_y.is_null()
+        || kind.is_null() || phi.is_null()
         || pol_select.is_null() || nlfac_re.is_null() || nlfac_im.is_null() || lib_path.is_null() {
         return -1;
     }
@@ -2607,8 +2681,9 @@ pub unsafe extern "C" fn native_set_modal_params(
     s.modal_unm = unsafe { std::slice::from_raw_parts(unm, n_modes) }.to_vec();
     s.modal_inv_sqrt_n = unsafe { std::slice::from_raw_parts(inv_sqrt_n, n_modes) }.to_vec();
     s.modal_order = unsafe { std::slice::from_raw_parts(order, n_modes) }.to_vec();
-    s.modal_angle_x = unsafe { std::slice::from_raw_parts(angle_x, n_modes) }.to_vec();
-    s.modal_angle_y = unsafe { std::slice::from_raw_parts(angle_y, n_modes) }.to_vec();
+    s.modal_kind = unsafe { std::slice::from_raw_parts(kind, n_modes) }.to_vec();
+    s.modal_phi = unsafe { std::slice::from_raw_parts(phi, n_modes) }.to_vec();
+    s.modal_full = full != 0;
     s.modal_pol_select = unsafe { std::slice::from_raw_parts(pol_select, npol) }.to_vec();
 
     if !towin.is_null() {
