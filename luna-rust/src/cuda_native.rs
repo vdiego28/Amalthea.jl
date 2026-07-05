@@ -159,7 +159,7 @@ impl NativeBackend for CudaNativeSim {
 
     unsafe fn set_radial_params(&mut self, _n_time: size_t, _n_time_over: size_t, _n_r: size_t, _t_matrix: *const c_double, _scale_fwd: c_double, _scale_inv: c_double, _towin: *const c_double, _kerr_fac: c_double, _m_re: *const c_double, _m_im: *const c_double) -> i32 { -1 }
 
-    unsafe fn set_raman_params(&mut self, _omega: *const c_double, _gamma: *const c_double, _coupling: *const c_double, _n_osc: size_t, _dt: c_double, _density: c_double) -> i32 { -1 }
+    unsafe fn set_raman_params(&mut self, _omega: *const c_double, _gamma: *const c_double, _coupling: *const c_double, _n_osc: size_t, _dt: c_double, _density: c_double, _thg: c_int) -> i32 { -1 }
 
     unsafe fn set_modal_params(&mut self, _n_time: size_t, _n_time_over: size_t, _n_modes: size_t, _npol: size_t, _a: c_double, _unm: *const c_double, _inv_sqrt_n: *const c_double, _order: *const i32, _kind: *const u8, _phi: *const c_double, _full: u8, _pol_select: *const u8, _towin: *const c_double, _kerr_fac: c_double, _nlfac_re: *const c_double, _nlfac_im: *const c_double, _lib_path: *const c_char, _rtol: c_double, _atol: c_double, _maxevals: size_t) -> i32 { -1 }
 

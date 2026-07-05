@@ -393,8 +393,9 @@ Gate (E.4, final): all 7 test groups green — 46641 passed, 12 broken
 tests). **Phase E (native scope: modal generality) is now complete.**
 
 ### Phase F — Native scope: Raman completions + z-dependence (🟡, medium)
-1. `thg=false` Raman (needs a resident Hilbert transform — one extra c2c
-   FFT pair on the existing plans).
+1. ✅ `thg=false` Raman — resident c2c Hilbert transform, wired into all
+   three geometries that already carry `thg=true` Raman (mode-averaged,
+   radial, modal). See "Done (recent)" below.
 2. `RamanPolarEnv` (envelope Raman) native + the existing
    `LUNA_USE_RUST_RAMAN` follow-ups (rotational multi-oscillator per-J
    extraction; density-dependent τ2 via a `raman_update_coeffs` FFI).
@@ -712,6 +713,33 @@ findings below.
 
 ## Done (recent)
 
+- ✅ **Phase F item 1: `thg=false` Raman (resident Hilbert transform).**
+  `sqr!`'s `thg=false` branch (`Nonlinear.jl:342-349`) computes intensity as
+  `1/2·|hilbert(E)|²` instead of `E²` — needed its own resident c2c FFTW
+  plan since RealGrid otherwise only builds r2c plans (`fft_c2c`/
+  `fft_c2c_over` are EnvGrid-only). Reused `fftw.rs`'s existing
+  `ComplexFft1d` (already validated by the c2c-roundtrip unit test and
+  EnvGrid's Kerr path) rather than writing new FFTW plan-management code.
+  `native_set_raman_params` gained a `thg: c_int` parameter (passed straight
+  through from `RamanPolarField.thg`, replacing the previous blanket
+  `!r.thg` rejection) and lazily builds the plan + two `n_time_over`
+  scratch buffers (`ComplexFft1d::forward`/`inverse` need distinct in/out
+  buffers) when `thg=false`. New `hilbert_intensity` free function in
+  `native.rs` matches `Maths.hilbert`'s FFTW bin convention bit-for-bit:
+  forward c2c FFT, double bins `1..n/2` (0-indexed), zero bins `n/2..n`, DC
+  untouched, inverse c2c FFT normalized by `1/n`. Wired into all three
+  geometries that already carry `thg=true` Raman (mode-averaged, radial —
+  per r-column, modal — per quadrature node), reusing the resident
+  `raman_solver`/scratch-buffer-reuse pattern already established for those.
+  `Interface.makeresponse` couples Kerr's and Raman's `thg` to the same
+  flag, so the new equivalence tests (`test/test_native_raman_nothg.jl`)
+  construct `Kerr_field` (thg=true, native-eligible) + `RamanPolarField(thg=false)`
+  manually rather than via `prop_capillary`; each geometry's testset checks
+  both Rust-vs-Julia agreement (~1e-7, the same ADE-vs-FFT-convolution
+  method-difference floor as the existing `thg=true` Raman tests) and that
+  `thg=false` actually differs from `thg=true` by a margin far above that
+  floor (non-vacuousness). Full 7-group gate: 46651 passed, 12 broken
+  (pre-existing), 0 failed (rust 42018/42018, +6 new tests).
 - ✅ **Fixed CI build breakage in `cuda_native.rs` (`-D warnings`, edition-2024
   `unsafe_op_in_unsafe_fn`).** The GPU-resident stepper scaffolding (Track S3)
   called unsafe fns and dereferenced raw pointers throughout its `unsafe fn`

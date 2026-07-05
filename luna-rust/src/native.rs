@@ -201,13 +201,30 @@ pub struct CpuNativeSim {
     pub radial_eto_c: Vec<Complex<f64>>,
     pub radial_pto_c: Vec<Complex<f64>>,
 
-    // ── Phase 4: Raman (RealGrid, thg=true, additive term in rhs_mode_avg_real) ──
+    // ── Phase 4: Raman (RealGrid, additive term in rhs_mode_avg_real) ──
     pub has_raman: bool,
     pub raman_solver: Option<TimeDomainRamanSolver>,
     /// Constant-medium density (unscaled, unlike `kerr_fac` which folds in ε₀·γ3).
     pub raman_density: f64,
     pub raman_intensity: Vec<f64>,
     pub raman_p: Vec<f64>,
+    /// `true` (default): intensity is `E²` (`sqr!`'s `thg=true` branch).
+    /// `false` (Phase F.1): intensity is `1/2·|hilbert(E)|²`
+    /// (`sqr!`'s `thg=false` branch, `Nonlinear.jl:342-349`) — needs the
+    /// resident c2c plan/buffers below.
+    pub raman_thg: bool,
+    /// Resident c2c FFT plan for the Hilbert transform (`thg=false` only).
+    /// RealGrid has no c2c plan otherwise (`fft_c2c`/`fft_c2c_over` are only
+    /// built for EnvGrid by `set_fftw_plans`), so this is its own plan, sized
+    /// `n_time_over`, built lazily in `set_raman_params` once `is_real` and
+    /// `n_time_over` are already known.
+    pub raman_hilbert_fft: Option<ComplexFft1d>,
+    /// Two scratch buffers (`n_time_over` each) — `ComplexFft1d::forward`/
+    /// `inverse` require distinct in/out buffers (the plan is built
+    /// out-of-place, see `fftw.rs`), reused sequentially across r-columns
+    /// (radial) or quadrature nodes (modal) exactly like `raman_solver`.
+    pub raman_hilbert_a: Vec<Complex<f64>>,
+    pub raman_hilbert_b: Vec<Complex<f64>>,
 
     // ── Phase 5: Modal (TransModal), narrow scope — see MATH.md §3.3 ────────────
     pub is_modal: bool,
@@ -466,6 +483,40 @@ pub struct CpuNativeSim {
     pub zdep_modal_last_z: f64,
 }
 
+/// Analytic-signal intensity `1/2·|hilbert(field)|²`, matching
+/// `Maths.hilbert`'s FFTW bin convention bit-for-bit (`sqr!`'s `thg=false`
+/// branch, `Nonlinear.jl:342-349`): forward c2c FFT, double bins `1..n/2`
+/// (0-indexed), zero bins `n/2..n`, DC (bin 0) untouched, inverse c2c FFT
+/// normalized by `1/n`. `buf_a`/`buf_b` are scratch (length == `field.len()`)
+/// — `ComplexFft1d::forward`/`inverse` require distinct in/out buffers (the
+/// plan is built out-of-place, see `fftw.rs`).
+fn hilbert_intensity(
+    fft: &ComplexFft1d,
+    buf_a: &mut [Complex<f64>],
+    buf_b: &mut [Complex<f64>],
+    field: &[f64],
+    out: &mut [f64],
+    norm: f64,
+) {
+    let n = field.len();
+    for i in 0..n {
+        buf_a[i] = Complex::new(field[i], 0.0);
+    }
+    fft.forward(buf_a, buf_b);
+    let n1 = n / 2;
+    for k in 1..n1 {
+        buf_b[k] *= 2.0;
+    }
+    for k in n1..n {
+        buf_b[k] = Complex::new(0.0, 0.0);
+    }
+    fft.inverse(buf_b, buf_a);
+    for i in 0..n {
+        let a = buf_a[i] * norm;
+        out[i] = 0.5 * a.norm_sqr();
+    }
+}
+
 impl CpuNativeSim {
     fn new(n: usize, linop: &[Complex<f64>]) -> Self {
         let z = || vec![Complex::new(0.0, 0.0); n];
@@ -532,6 +583,10 @@ impl CpuNativeSim {
             raman_density: 0.0,
             raman_intensity: Vec::new(),
             raman_p: Vec::new(),
+            raman_thg: true,
+            raman_hilbert_fft: None,
+            raman_hilbert_a: Vec::new(),
+            raman_hilbert_b: Vec::new(),
             is_modal: false,
             n_modes: 0,
             npol: 0,
@@ -827,9 +882,19 @@ impl CpuNativeSim {
     /// (src/Nonlinear.jl:357-431) — see MATH.md §5.3.
     fn apply_raman_real(&mut self) {
         let n = self.n_time_over;
-        for i in 0..n {
-            let e = self.eto[i];
-            self.raman_intensity[i] = e * e;
+        if self.raman_thg {
+            for i in 0..n {
+                let e = self.eto[i];
+                self.raman_intensity[i] = e * e;
+            }
+        } else {
+            let fft = self.raman_hilbert_fft.take();
+            if let Some(ref fft) = fft {
+                let norm = self.fft_norm_over;
+                hilbert_intensity(fft, &mut self.raman_hilbert_a, &mut self.raman_hilbert_b,
+                                   &self.eto[..n], &mut self.raman_intensity[..n], norm);
+            }
+            self.raman_hilbert_fft = fft;
         }
         if let Some(ref mut solver) = self.raman_solver {
             solver.solve(&self.raman_intensity, &mut self.raman_p);
@@ -855,12 +920,20 @@ impl CpuNativeSim {
         let n_r = self.n_r;
         let rho = self.raman_density;
 
+        let thg = self.raman_thg;
+        let fft = self.raman_hilbert_fft.take();
         for r in 0..n_r {
             let start = r * n_time_over;
             let end = start + n_time_over;
-            for i in start..end {
-                let e = self.radial_eto[i];
-                self.raman_intensity[i] = e * e;
+            if thg {
+                for i in start..end {
+                    let e = self.radial_eto[i];
+                    self.raman_intensity[i] = e * e;
+                }
+            } else if let Some(ref fft) = fft {
+                let norm = self.fft_norm_over;
+                hilbert_intensity(fft, &mut self.raman_hilbert_a, &mut self.raman_hilbert_b,
+                                   &self.radial_eto[start..end], &mut self.raman_intensity[start..end], norm);
             }
             if let Some(ref mut solver) = self.raman_solver {
                 solver.solve(&self.raman_intensity[start..end], &mut self.raman_p[start..end]);
@@ -869,6 +942,7 @@ impl CpuNativeSim {
                 self.radial_pto[i] += rho * self.radial_eto[i] * self.raman_p[i];
             }
         }
+        self.raman_hilbert_fft = fft;
     }
 
     /// EnvGrid mode-averaged RHS: Kerr_env (|E|²·E) via c2c FFTW plans.
@@ -1313,9 +1387,19 @@ impl CpuNativeSim {
             // solver) — Julia rejects Raman+EnvGrid before this is reached.
             if self.has_raman {
                 let rho = self.raman_density;
-                for i in 0..n_time_over {
-                    let e = self.modal_er[i];
-                    self.raman_intensity[i] = e * e;
+                if self.raman_thg {
+                    for i in 0..n_time_over {
+                        let e = self.modal_er[i];
+                        self.raman_intensity[i] = e * e;
+                    }
+                } else {
+                    let fft = self.raman_hilbert_fft.take();
+                    if let Some(ref fft) = fft {
+                        let norm = self.fft_norm_over;
+                        hilbert_intensity(fft, &mut self.raman_hilbert_a, &mut self.raman_hilbert_b,
+                                           &self.modal_er[..n_time_over], &mut self.raman_intensity[..n_time_over], norm);
+                    }
+                    self.raman_hilbert_fft = fft;
                 }
                 if let Some(ref mut solver) = self.raman_solver {
                     solver.solve(&self.raman_intensity[..n_time_over], &mut self.raman_p[..n_time_over]);
@@ -2015,7 +2099,7 @@ pub trait NativeBackend {
     unsafe fn set_zdep_mode_avg_params(&mut self, flength: c_double, p0: c_double, p1: c_double, n_dspl: size_t, dspl_x: *const c_double, dspl_y: *const c_double, dspl_d: *const c_double, gamma: *const c_double, nwg_re: *const c_double, nwg_im: *const c_double, omega: *const c_double, model: c_uint, loss_on: c_uint, eps0_gamma3: c_double, omega0: c_double, gamma0: c_double, dgamma0: c_double, nwg0_re: c_double, nwg0_im: c_double, dnwg0_re: c_double, dnwg0_im: c_double) -> i32;
     unsafe fn set_plasma_params(&mut self, ion_ptr: *const crate::ionization::PptIonizationRate, ionpot: c_double, e_ratio: c_double, preionfrac: c_double, dt: c_double) -> i32;
     unsafe fn set_radial_params(&mut self, n_time: size_t, n_time_over: size_t, n_r: size_t, t_matrix: *const c_double, scale_fwd: c_double, scale_inv: c_double, towin: *const c_double, kerr_fac: c_double, m_re: *const c_double, m_im: *const c_double) -> i32;
-    unsafe fn set_raman_params(&mut self, omega: *const c_double, gamma: *const c_double, coupling: *const c_double, n_osc: size_t, dt: c_double, density: c_double) -> i32;
+    unsafe fn set_raman_params(&mut self, omega: *const c_double, gamma: *const c_double, coupling: *const c_double, n_osc: size_t, dt: c_double, density: c_double, thg: c_int) -> i32;
     unsafe fn set_modal_params(&mut self, n_time: size_t, n_time_over: size_t, n_modes: size_t, npol: size_t, a: c_double, unm: *const c_double, inv_sqrt_n: *const c_double, order: *const i32, kind: *const u8, phi: *const c_double, full: u8, pol_select: *const u8, towin: *const c_double, kerr_fac: c_double, nlfac_re: *const c_double, nlfac_im: *const c_double, lib_path: *const c_char, rtol: c_double, atol: c_double, maxevals: size_t) -> i32;
     unsafe fn set_free_params(&mut self, n_time: size_t, n_time_over: size_t, n_y: size_t, n_x: size_t, flags: c_uint, towin: *const c_double, kerr_fac: c_double, m_re: *const c_double, m_im: *const c_double) -> i32;
     unsafe fn set_free_zdep_params(&mut self, flength: c_double, p0: c_double, p1: c_double, n_dspl: size_t, dspl_x: *const c_double, dspl_y: *const c_double, dspl_d: *const c_double, gamma: *const c_double, omega: *const c_double, omegawin: *const c_double, kperp2: *const c_double, sidx: *const u8, eps0_gamma3: c_double, omega0: c_double, gamma0: c_double, dgamma0: c_double) -> i32;
@@ -2311,7 +2395,7 @@ impl NativeBackend for CpuNativeSim {
 
     0
 }
-    unsafe fn set_raman_params(&mut self, omega: *const c_double, gamma: *const c_double, coupling: *const c_double, n_osc: size_t, dt: c_double, density: c_double) -> i32 {        let s = self;
+    unsafe fn set_raman_params(&mut self, omega: *const c_double, gamma: *const c_double, coupling: *const c_double, n_osc: size_t, dt: c_double, density: c_double, thg: c_int) -> i32 {        let s = self;
 
     if s.n_time_over == 0 { return -2; }
 
@@ -2336,6 +2420,23 @@ impl NativeBackend for CpuNativeSim {
     s.raman_intensity = vec![0.0; n];
     s.raman_p = vec![0.0; n];
     s.has_raman = true;
+
+    // Phase F.1: `thg=false` intensity is `1/2·|hilbert(E)|²` instead of
+    // `E²` — needs its own resident c2c plan since RealGrid otherwise has
+    // none (`fft_c2c`/`fft_c2c_over` are EnvGrid-only, see `set_fftw_plans`).
+    // Built here (not `set_fftw_plans`) since it's only needed for this one
+    // opt-in feature, and `fftw_api`/`n_time_over` are already available by
+    // the time Raman is wired (always after `native_set_fftw_plans`).
+    s.raman_thg = thg != 0;
+    if !s.raman_thg {
+        let api = match s.fftw_api.as_ref() {
+            Some(api) => api,
+            None => return -2,
+        };
+        s.raman_hilbert_fft = Some(ComplexFft1d::new(api, s.n_time_over, 1 << 6));
+        s.raman_hilbert_a = vec![Complex::new(0.0, 0.0); s.n_time_over];
+        s.raman_hilbert_b = vec![Complex::new(0.0, 0.0); s.n_time_over];
+    }
 
     0
 }
@@ -3090,6 +3191,11 @@ pub unsafe extern "C" fn native_set_radial_params(
 /// * `dt` — `grid.to[2] - grid.to[1]` (oversampled grid spacing).
 /// * `density` — constant-medium density (raw, **not** folded with `ε₀·γ3`
 ///   like `kerr_fac` — Raman's accumulation formula needs it unscaled).
+/// * `thg` — nonzero: intensity is `E²` (`sqr!`'s `thg=true` branch, the
+///   original Phase D.4 scope). Zero (Phase F.1): intensity is
+///   `1/2·|hilbert(E)|²` (`sqr!`'s `thg=false` branch) — builds a resident
+///   c2c Hilbert-transform plan sized `n_time_over` (RealGrid has none
+///   otherwise).
 ///
 /// Returns 0 on success, -1 on null/zero-length args, -2 if called before
 /// `native_set_mode_avg_params`.
@@ -3106,10 +3212,11 @@ pub unsafe extern "C" fn native_set_raman_params(
     n_osc: size_t,
     dt: c_double,
     density: c_double,
+    thg: c_int,
 ) -> i32 {
     if sim.is_null() { return -1; }
     let s = unsafe { &mut *sim };
-    unsafe { s.backend.set_raman_params(omega, gamma, coupling, n_osc, dt, density) }
+    unsafe { s.backend.set_raman_params(omega, gamma, coupling, n_osc, dt, density, thg) }
 }
 
 /// Wire the modal (`TransModal`) RHS: resident `libcubature` (`pcubature_v`,
