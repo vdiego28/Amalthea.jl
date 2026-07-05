@@ -712,6 +712,39 @@ findings below.
 
 ## Done (recent)
 
+- ✅ **Fixed CI build breakage in `cuda_native.rs` (`-D warnings`, edition-2024
+  `unsafe_op_in_unsafe_fn`).** The GPU-resident stepper scaffolding (Track S3)
+  called unsafe fns and dereferenced raw pointers throughout its `unsafe fn`
+  bodies without inner `unsafe {}` blocks, plus three now-unused imports. This
+  only warns locally (no `-D warnings`), but CI's `actions-rust-lang/setup-rust-toolchain`
+  sets `RUSTFLAGS=-D warnings` (see "Informational" note above) — so every push
+  since that commit landed failed *every* CI job (all groups build the shared
+  library via `deps/build.jl`'s `cargo build --release`), even though nothing
+  in the actual test logic had changed. Fixed by wrapping the unsafe operations
+  in explicit `unsafe {}` blocks and dropping the unused imports; also fixed
+  two pre-existing `-D warnings`-only `unused_mut` failures in `lib.rs`'s GPU
+  smoke test. Verified with `RUSTFLAGS="-D warnings" cargo build --release` /
+  `cargo test` locally (both clean) and the full 7-group Julia gate.
+- ✅ **Fixed a silent-wrong-physics correctness gap: native Kerr eligibility
+  didn't distinguish `Kerr_field`/`Kerr_env` from `Kerr_field_nothg`/
+  `Kerr_env_thg`.** All four of `Nonlinear.jl`'s Kerr closures capture a field
+  named γ3, so the mode-averaged/radial/modal/free-space eligibility checks'
+  "does any field contain γ3" scan (`is_kerr_resp`/`is_kerr_resp_radial`/
+  `is_kerr_resp_modal`, and the free-space single-response check) treated all
+  four as native-eligible — but native.rs only ever implements the plain
+  `Kerr_field`/`Kerr_env` formula for a given grid type (dispatched solely on
+  `sim.is_real`; there's no THG flag in the FFI). Reachable from the ordinary
+  high-level interface: `prop_capillary(...; thg=false)` on a RealGrid, or
+  `envelope=true, thg=true`, silently ran the *opposite* THG treatment under
+  the (now-default, Phase 8) native path instead of falling back to Julia —
+  no error, no warning, just a wrong answer. Fixed by `RK45._is_plain_kerr_resp`
+  (distinguishes by field count: the plain closures capture only γ3; the
+  `_nothg`/`_thg` variants also capture a Hilbert-transform plan or
+  oscillating-phase buffer), wired into all four eligibility sites. New
+  regression test: `test/test_native_kerr_thg_guard.jl` (confirms both
+  variants now throw `NativeIneligible`, and that the plain closures still
+  agree with Julia to ~1e-16/1e-17). Verified against the full 7-group gate:
+  46645 passed, 12 broken (pre-existing), 0 failed (rust 42012/42012, +4 new).
 - ✅ Skip-guard added to `test/test_rust_ffi.jl` and the four `luna-rust/tests/*.jl`
   testitems so a fresh-clone `]test Luna` skips (not fails) when the Rust lib is unbuilt.
 - ✅ Windows scan-lock no-op documented in `scans.rs` (with `TODO`) and `luna-rust/README.md`.

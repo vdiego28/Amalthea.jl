@@ -507,6 +507,28 @@ end
 function donothing!(y, z, dz, interpolant)
 end
 
+"""
+    _is_plain_kerr_resp(r)
+
+True iff `r` is `Nonlinear.Kerr_field(γ3)` or `Nonlinear.Kerr_env(γ3)` — the
+two Kerr closures native.rs actually implements (`KerrScalar!`/`KerrVector!`
+for RealGrid, `KerrScalarEnv!`/`KerrVectorEnv!` for EnvGrid, dispatched
+purely on `sim.is_real`). A bare "does some field contain γ3" scan is not
+enough: `Kerr_field_nothg(γ3, n)` and `Kerr_env_thg(γ3, ω0, t)` also capture
+a field named γ3, but flip the THG treatment relative to what native.rs
+always applies for a given grid type (native.rs cannot tell them apart —
+there is no THG flag in the FFI). Passing either through the naive scan
+used to construct a `RustNativeStepper` that silently ran with the WRONG
+THG treatment instead of falling back to Julia. Distinguish them by field
+count: `Kerr_field`/`Kerr_env` capture only `γ3`; the `_nothg`/`_thg`
+variants also capture a Hilbert-transform plan or oscillating-phase buffer
+(one extra field).
+"""
+function _is_plain_kerr_resp(r)
+    flds = fieldnames(typeof(r))
+    length(flds) == 1 && occursin("γ3", string(flds[1]))
+end
+
 # ── Rust interaction-picture PreconStepper FFI (LUNA_USE_RUST_STEPPER=1) ───────
 
 function _libluna_rust_path_rk45()
@@ -1032,12 +1054,13 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # default — that test's self-frequency-shift numbers depend
         # entirely on Raman, so silently dropping it produced a completely
         # different (not just numerically close) result.
-        is_kerr_resp(r) = any(occursin("γ3", string(fld)) for fld in fieldnames(typeof(r)))
+        is_kerr_resp(r) = _is_plain_kerr_resp(r)
         for r in f!.resp
             is_kerr_resp(r) || r isa Luna.Nonlinear.PlasmaCumtrapz ||
                 r isa Luna.Nonlinear.RamanPolarField ||
                 throw(NativeIneligible("response type $(typeof(r)) is not wired for " *
-                      "the native mode-averaged path."))
+                      "the native mode-averaged path (this rejects Kerr_field_nothg/" *
+                      "Kerr_env_thg too — see `_is_plain_kerr_resp`)."))
         end
     end
 
@@ -1120,13 +1143,14 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # all-SDO `CombinedRamanResponse` with density-independent τ2). Any
         # other response type (e.g. `RamanPolarEnv`, EnvGrid's envelope
         # Raman) remains out of scope.
-        is_kerr_resp_radial(r) = any(occursin("γ3", string(fld)) for fld in fieldnames(typeof(r)))
+        is_kerr_resp_radial(r) = _is_plain_kerr_resp(r)
         for r in f!.resp
             is_kerr_resp_radial(r) || r isa Luna.Nonlinear.PlasmaCumtrapz ||
                 r isa Luna.Nonlinear.RamanPolarField ||
                 throw(NativeIneligible("radial: only Kerr, plasma, and/or Raman " *
                       "(RealGrid, thg=true) responses are supported by the native path " *
-                      "(Phase D.4 gate)."))
+                      "(Phase D.4 gate) — this also rejects Kerr_field_nothg/" *
+                      "Kerr_env_thg, see `_is_plain_kerr_resp`."))
         end
         γ3 != 0.0 ||
             throw(NativeIneligible("radial: no Kerr response found (γ3=0) — the native " *
@@ -1293,12 +1317,13 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # Phase 5 gate is Kerr-only; Phase D.4 (BACKLOG.md) adds Raman
         # (RealGrid, thg=true, npol=1 — same per-node scalar-field scope as
         # Kerr here) alongside it. Any other response type remains ineligible.
-        is_kerr_resp_modal(r) = any(occursin("γ3", string(fld)) for fld in fieldnames(typeof(r)))
+        is_kerr_resp_modal(r) = _is_plain_kerr_resp(r)
         for r in f!.resp
             is_kerr_resp_modal(r) || r isa Luna.Nonlinear.RamanPolarField ||
                 throw(NativeIneligible("modal: only Kerr and/or Raman (RealGrid, " *
                       "thg=true) responses are supported by the native path " *
-                      "(Phase D.4 gate)."))
+                      "(Phase D.4 gate) — this also rejects Kerr_field_nothg/" *
+                      "Kerr_env_thg, see `_is_plain_kerr_resp`."))
             # native.rs's inline Raman ADE solve only ever touches modal
             # polarisation column 0 (`rhs_modal_pointcalc`'s "npol=1 scalar
             # field only" Raman block) — with npol=2 it would silently drop
@@ -1430,11 +1455,11 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             end
             γ3 != 0.0 && break
         end
-        length(f!.resp) == 1 && γ3 != 0.0 ||
+        length(f!.resp) == 1 && γ3 != 0.0 && _is_plain_kerr_resp(f!.resp[1]) ||
             throw(NativeIneligible("free-space: only single-response Kerr-only " *
                   "is supported by the native path (Phase 6 gate); extra responses " *
-                  "(plasma, Raman, ...), or a lone non-Kerr response, are not wired " *
-                  "for this geometry."))
+                  "(plasma, Raman, ...), a lone non-Kerr response, or Kerr_field_nothg/" *
+                  "Kerr_env_thg (see `_is_plain_kerr_resp`) are not wired for this geometry."))
 
         is_zdep_free = f!.normfun isa Luna.NonlinearRHS.ZDepNormFree
         if is_zdep_free
