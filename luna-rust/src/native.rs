@@ -260,6 +260,11 @@ pub struct CpuNativeSim {
     pub modal_pr: Vec<f64>,
     pub modal_prwo: Vec<Complex<f64>>,
     pub modal_prw: Vec<Complex<f64>>,
+    /// EnvGrid (c2c) counterparts of `modal_er`/`modal_pr` — only allocated
+    /// (non-empty) when `is_real == false` (Phase E.4 item 5), same split as
+    /// `radial_eto_c`/`radial_pto_c` (Phase D.1).
+    pub modal_er_c: Vec<Complex<f64>>,
+    pub modal_pr_c: Vec<Complex<f64>>,
     /// Snapshot of the trial field (`Emω`, flattened column-major
     /// `(n_spec, n_modes)`) for the duration of one `rhs_modal` call — the
     /// `libcubature` callback only receives a `void*`, so the field to
@@ -551,6 +556,8 @@ impl CpuNativeSim {
             modal_pr: Vec::new(),
             modal_prwo: Vec::new(),
             modal_prw: Vec::new(),
+            modal_er_c: Vec::new(),
+            modal_pr_c: Vec::new(),
             modal_emega: Vec::new(),
             is_free: false,
             n_y: 0,
@@ -1256,89 +1263,170 @@ impl CpuNativeSim {
             }
         }
 
-        // ── to_time! per polarisation column (RealGrid r2c, looped rank-1 plan) ──
-        let scale_fwd = (n_spec_over - 1) as f64 / (n_spec - 1) as f64;
         self.modal_erwo.fill(Complex::new(0.0, 0.0));
-        for p in 0..npol {
-            let in_col = &self.modal_erw[p * n_spec..(p + 1) * n_spec];
-            let out_col = &mut self.modal_erwo[p * n_spec_over..(p + 1) * n_spec_over];
-            for i in 0..n_spec { out_col[i] = in_col[i] * scale_fwd; }
-        }
-        if let Some(ref fft) = self.fft_r2c_over {
+        if self.is_real {
+            // ── to_time! per polarisation column (RealGrid r2c, looped rank-1 plan) ──
+            let scale_fwd = (n_spec_over - 1) as f64 / (n_spec - 1) as f64;
             for p in 0..npol {
-                let spec_start = p * n_spec_over;
-                let time_start = p * n_time_over;
-                let spec_col = &mut self.modal_erwo[spec_start..spec_start + n_spec_over];
-                let time_col = &mut self.modal_er[time_start..time_start + n_time_over];
-                fft.inverse(spec_col, time_col);
+                let in_col = &self.modal_erw[p * n_spec..(p + 1) * n_spec];
+                let out_col = &mut self.modal_erwo[p * n_spec_over..(p + 1) * n_spec_over];
+                for i in 0..n_spec { out_col[i] = in_col[i] * scale_fwd; }
             }
-            let inv_nto = self.fft_norm_over;
-            for v in &mut self.modal_er { *v *= inv_nto; }
-        }
+            if let Some(ref fft) = self.fft_r2c_over {
+                for p in 0..npol {
+                    let spec_start = p * n_spec_over;
+                    let time_start = p * n_time_over;
+                    let spec_col = &mut self.modal_erwo[spec_start..spec_start + n_spec_over];
+                    let time_col = &mut self.modal_er[time_start..time_start + n_time_over];
+                    fft.inverse(spec_col, time_col);
+                }
+                let inv_nto = self.fft_norm_over;
+                for v in &mut self.modal_er { *v *= inv_nto; }
+            }
 
-        // ── Kerr (KerrScalar!/KerrVector!, src/Nonlinear.jl:81-93) ───────────────
-        self.modal_pr.fill(0.0);
-        let fac = self.modal_kerr_fac;
-        if npol == 1 {
-            for i in 0..n_time_over {
-                let e = self.modal_er[i];
-                self.modal_pr[i] += fac * e * e * e;
+            // ── Kerr (KerrScalar!/KerrVector!, src/Nonlinear.jl:81-93) ───────────────
+            self.modal_pr.fill(0.0);
+            let fac = self.modal_kerr_fac;
+            if npol == 1 {
+                for i in 0..n_time_over {
+                    let e = self.modal_er[i];
+                    self.modal_pr[i] += fac * e * e * e;
+                }
+            } else {
+                for i in 0..n_time_over {
+                    let ex = self.modal_er[i];
+                    let ey = self.modal_er[n_time_over + i];
+                    let sq = ex * ex + ey * ey;
+                    self.modal_pr[i] += fac * sq * ex;
+                    self.modal_pr[n_time_over + i] += fac * sq * ey;
+                }
+            }
+
+            // ── Raman polarisation (if enabled), npol=1 scalar field only ────────────
+            // Phase D.4 (BACKLOG.md): same `apply_raman_real` ADE-solve formula,
+            // applied per quadrature node — `rhs_modal_pointcalc` is called
+            // sequentially per node (see `modal_integrand_v`'s doc), so the
+            // single resident `raman_solver` (which resets its own state at
+            // solve-entry) can be reused across nodes with no cross-node
+            // leakage, exactly like `apply_raman_radial`'s per-r-column reuse.
+            // RealGrid-only (native.rs's inline ADE solve is a real-buffer
+            // solver) — Julia rejects Raman+EnvGrid before this is reached.
+            if self.has_raman {
+                let rho = self.raman_density;
+                for i in 0..n_time_over {
+                    let e = self.modal_er[i];
+                    self.raman_intensity[i] = e * e;
+                }
+                if let Some(ref mut solver) = self.raman_solver {
+                    solver.solve(&self.raman_intensity[..n_time_over], &mut self.raman_p[..n_time_over]);
+                }
+                for i in 0..n_time_over {
+                    self.modal_pr[i] += rho * self.modal_er[i] * self.raman_p[i];
+                }
+            }
+
+            // ── towin apodization per column (reuses the 1-D towin buffer) ───────────
+            for p in 0..npol {
+                let start = p * n_time_over;
+                for t in 0..n_time_over {
+                    self.modal_pr[start + t] *= self.towin[t];
+                }
+            }
+
+            // ── to_freq! per column ───────────────────────────────────────────────────
+            let scale_inv2 = (n_spec - 1) as f64 / (n_spec_over - 1) as f64;
+            if let Some(ref fft) = self.fft_r2c_over {
+                for p in 0..npol {
+                    let time_start = p * n_time_over;
+                    let spec_start = p * n_spec_over;
+                    let time_col = &mut self.modal_pr[time_start..time_start + n_time_over];
+                    let spec_col = &mut self.modal_prwo[spec_start..spec_start + n_spec_over];
+                    fft.forward(time_col, spec_col);
+                }
+            }
+            for p in 0..npol {
+                let in_start = p * n_spec_over;
+                let out_start = p * n_spec;
+                for i in 0..n_spec {
+                    self.modal_prw[out_start + i] = self.modal_prwo[in_start + i] * scale_inv2;
+                }
             }
         } else {
-            for i in 0..n_time_over {
-                let ex = self.modal_er[i];
-                let ey = self.modal_er[n_time_over + i];
-                let sq = ex * ex + ey * ey;
-                self.modal_pr[i] += fac * sq * ex;
-                self.modal_pr[n_time_over + i] += fac * sq * ey;
-            }
-        }
-
-        // ── Raman polarisation (if enabled), npol=1 scalar field only ────────────
-        // Phase D.4 (BACKLOG.md): same `apply_raman_real` ADE-solve formula,
-        // applied per quadrature node — `rhs_modal_pointcalc` is called
-        // sequentially per node (see `modal_integrand_v`'s doc), so the
-        // single resident `raman_solver` (which resets its own state at
-        // solve-entry) can be reused across nodes with no cross-node
-        // leakage, exactly like `apply_raman_radial`'s per-r-column reuse.
-        if self.has_raman {
-            let rho = self.raman_density;
-            for i in 0..n_time_over {
-                let e = self.modal_er[i];
-                self.raman_intensity[i] = e * e;
-            }
-            if let Some(ref mut solver) = self.raman_solver {
-                solver.solve(&self.raman_intensity[..n_time_over], &mut self.raman_p[..n_time_over]);
-            }
-            for i in 0..n_time_over {
-                self.modal_pr[i] += rho * self.modal_er[i] * self.raman_p[i];
-            }
-        }
-
-        // ── towin apodization per column (reuses the 1-D towin buffer) ───────────
-        for p in 0..npol {
-            let start = p * n_time_over;
-            for t in 0..n_time_over {
-                self.modal_pr[start + t] *= self.towin[t];
-            }
-        }
-
-        // ── to_freq! per column ───────────────────────────────────────────────────
-        let scale_inv2 = (n_spec - 1) as f64 / (n_spec_over - 1) as f64;
-        if let Some(ref fft) = self.fft_r2c_over {
+            // ── EnvGrid (Phase E.4 item 5) — c2c FFT, half-spectrum copy-both
+            // padding/truncation (same trick as `rhs_radial_env`, per
+            // polarisation column instead of per-r column), and the envelope
+            // Kerr formulas (`KerrScalarEnv!`/`KerrVectorEnv!`,
+            // src/Nonlinear.jl:120-133). Raman is Julia-side ineligible for
+            // EnvGrid modal (see RK45.jl), so no Raman branch here.
+            let half = n_spec / 2;
+            let scale_fwd = n_spec_over as f64 / n_spec as f64;
             for p in 0..npol {
-                let time_start = p * n_time_over;
-                let spec_start = p * n_spec_over;
-                let time_col = &mut self.modal_pr[time_start..time_start + n_time_over];
-                let spec_col = &mut self.modal_prwo[spec_start..spec_start + n_spec_over];
-                fft.forward(time_col, spec_col);
+                let in_col = &self.modal_erw[p * n_spec..(p + 1) * n_spec];
+                let out_col = &mut self.modal_erwo[p * n_spec_over..(p + 1) * n_spec_over];
+                for i in 0..half { out_col[i] = in_col[i] * scale_fwd; }
+                for i in 0..half { out_col[n_spec_over - half + i] = in_col[n_spec - half + i] * scale_fwd; }
             }
-        }
-        for p in 0..npol {
-            let in_start = p * n_spec_over;
-            let out_start = p * n_spec;
-            for i in 0..n_spec {
-                self.modal_prw[out_start + i] = self.modal_prwo[in_start + i] * scale_inv2;
+            if let Some(ref fft) = self.fft_c2c_over {
+                for p in 0..npol {
+                    let spec_start = p * n_spec_over;
+                    let time_start = p * n_time_over;
+                    let spec_col = &mut self.modal_erwo[spec_start..spec_start + n_spec_over];
+                    let time_col = &mut self.modal_er_c[time_start..time_start + n_time_over];
+                    fft.inverse(spec_col, time_col);
+                }
+                let inv_nto = self.fft_norm_over;
+                for v in &mut self.modal_er_c { *v *= inv_nto; }
+            }
+
+            // ── Kerr_env (KerrScalarEnv!/KerrVectorEnv!, src/Nonlinear.jl:120-133) ──
+            self.modal_pr_c.fill(Complex::new(0.0, 0.0));
+            let fac = Complex::new(0.75 * self.modal_kerr_fac, 0.0);
+            if npol == 1 {
+                for i in 0..n_time_over {
+                    let e = self.modal_er_c[i];
+                    self.modal_pr_c[i] += fac * e.norm_sqr() * e;
+                }
+            } else {
+                let third = 1.0 / 3.0;
+                for i in 0..n_time_over {
+                    let ex = self.modal_er_c[i];
+                    let ey = self.modal_er_c[n_time_over + i];
+                    let ex2 = ex.norm_sqr();
+                    let ey2 = ey.norm_sqr();
+                    self.modal_pr_c[i] += fac * ((ex2 + 2.0 * third * ey2) * ex + third * ex.conj() * ey * ey);
+                    self.modal_pr_c[n_time_over + i] += fac * ((ey2 + 2.0 * third * ex2) * ey + third * ey.conj() * ex * ex);
+                }
+            }
+
+            // ── towin apodization per column ─────────────────────────────────────────
+            for p in 0..npol {
+                let start = p * n_time_over;
+                for t in 0..n_time_over {
+                    self.modal_pr_c[start + t] *= self.towin[t];
+                }
+            }
+
+            // ── to_freq! per column ───────────────────────────────────────────────────
+            let scale_inv2 = n_spec as f64 / n_spec_over as f64;
+            if let Some(ref fft) = self.fft_c2c_over {
+                for p in 0..npol {
+                    let time_start = p * n_time_over;
+                    let spec_start = p * n_spec_over;
+                    let time_col = &mut self.modal_pr_c[time_start..time_start + n_time_over];
+                    let spec_col = &mut self.modal_prwo[spec_start..spec_start + n_spec_over];
+                    fft.forward(time_col, spec_col);
+                }
+            }
+            for p in 0..npol {
+                let in_start = p * n_spec_over;
+                let out_start = p * n_spec;
+                for i in 0..half {
+                    self.modal_prw[out_start + i] = self.modal_prwo[in_start + i] * scale_inv2;
+                }
+                for i in 0..half {
+                    self.modal_prw[out_start + n_spec - half + i] =
+                        self.modal_prwo[in_start + n_spec_over - half + i] * scale_inv2;
+                }
             }
         }
 
@@ -2309,6 +2397,8 @@ impl NativeBackend for CpuNativeSim {
     s.modal_pr = vec![0.0; n_time_over * npol];
     s.modal_prwo = vec![Complex::new(0.0, 0.0); s.n_spec_over * npol];
     s.modal_prw = vec![Complex::new(0.0, 0.0); n_spec * npol];
+    s.modal_er_c = vec![Complex::new(0.0, 0.0); n_time_over * npol];
+    s.modal_pr_c = vec![Complex::new(0.0, 0.0); n_time_over * npol];
     s.modal_emega = vec![Complex::new(0.0, 0.0); s.n];
 
     0

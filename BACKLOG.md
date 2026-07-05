@@ -359,22 +359,38 @@ Gate (E.3): all 7 test groups green — 46634 passed, 12 broken (pre-existing),
    ~1e-15/1e-16 — no new approximation source), plus a
    `@test_throws NativeIneligible` check for the Raman+npol=2 rejection.
 
-5. EnvGrid modal. Substantially larger than npol=2 was — needs a genuine new
-   RHS variant in `native.rs` (complex time/polarisation buffers,
-   `fft_c2c_over` instead of `fft_r2c_over`, `KerrScalarEnv!`/
-   `KerrVectorEnv!` formulas — note `KerrVectorEnv!`
-   (`3/4·((Ex²+2/3Ey²)Ex + 1/3·conj(Ex)·Ey²)`, `src/Nonlinear.jl:124-133`) is
-   a genuinely different formula from RealGrid's `KerrVector!`, not just a
-   complex-typed port of it), a new `is_real`/response-kind flag threaded
-   through `native_set_modal_params` and `rhs_modal_pointcalc` to select the
-   FFT plan and Kerr closure, and a new eligibility path in `RK45.jl` to
-   distinguish `Kerr_env` from `Kerr_field` (today's `is_kerr_resp_modal`
-   just greps for a `γ3` field name, which both closures have). Combines
-   multiplicatively with the npol axis. Comparable in scope to Phase D.3
-   (EnvGrid free-space). Remains out of scope for this session.
+5. ✅ EnvGrid modal. Turned out smaller than initially scoped: `rhs_modal`
+   (the outer cubature driver) needed no changes at all — only
+   `rhs_modal_pointcalc` (the per-node callback) needed an `is_real` branch,
+   since `sim.is_real` was already set generically (via
+   `native_set_fftw_plans`, called for every geometry including modal) and
+   `n_spec`/`n_spec_over` were already computed grid-agnostically. Added a
+   new EnvGrid branch mirroring `rhs_radial_env`'s established pattern: c2c
+   FFT with half-spectrum copy-both padding/truncation (per polarisation
+   column instead of per-r column) via two new buffer fields
+   (`modal_er_c`/`modal_pr_c: Vec<Complex<f64>>`, alongside the existing
+   real `modal_er`/`modal_pr`), and the envelope Kerr formulas
+   (`KerrScalarEnv!`/`KerrVectorEnv!`, `src/Nonlinear.jl:120-133`) — confirmed
+   `KerrVectorEnv!` is a genuinely different formula from RealGrid's
+   `KerrVector!` (the `2/3`/`1/3` split and `conj(Ex)·Ey²` cross term), not
+   just a complex-typed port. No new eligibility mechanism to distinguish
+   `Kerr_env` from `Kerr_field` was actually needed: like radial/mode-averaged
+   before it, the native RHS never inspects which closure was passed — it
+   picks the RealGrid-vs-EnvGrid formula purely from `is_real`, and the `γ3`
+   value extracted by the existing field-name grep is correct either way.
+   One new guard added: Raman (`RamanPolarField`) + EnvGrid modal is rejected
+   (`NativeIneligible`) — native.rs's inline Raman ADE solve only ever
+   touches the real `modal_er`/`modal_pr` buffers, with no EnvGrid wiring.
+   Relaxed `RK45.jl`'s old blanket `is_real_grid || throw(...)` modal guard
+   accordingly. New test `test/test_native_modal_env.jl`: npol=1 (`full=false`
+   and `full=true`) and npol=2 (`ϕ=π/4`, exercising the cross term) full-solve
+   equivalence, all `rel < 1e-9` (achieved ~1e-15/1e-16, same tolerance tier
+   as the RealGrid modal tests — no new approximation source), plus a
+   `@test_throws NativeIneligible` check for the Raman+EnvGrid rejection.
 
-Gate (E.4): all 7 test groups green — 46637 passed, 12 broken (pre-existing),
-0 failed/errored (rust group: 42004/42004, includes 3 new tests).
+Gate (E.4, final): all 7 test groups green — 46641 passed, 12 broken
+(pre-existing), 0 failed/errored (rust group: 42008/42008, includes 4 new
+tests). **Phase E (native scope: modal generality) is now complete.**
 
 ### Phase F — Native scope: Raman completions + z-dependence (🟡, medium)
 1. `thg=false` Raman (needs a resident Hilbert transform — one extra c2c

@@ -1220,8 +1220,11 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     # `kind=:HE, n=1` modes only, Kerr-only. See MATH.md §3.3 for the design
     # (libcubature reuse, closed-form N(m), the numerically-probed norm!).
     if is_modal
-        is_real_grid || throw(NativeIneligible("EnvGrid modal not yet supported " *
-                               "(Phase 5 gate is RealGrid-only)"))
+        # Phase E.4 item 5: EnvGrid modal. native.rs's `rhs_modal_pointcalc`
+        # now branches on `sim.is_real` (already set generically above, via
+        # `native_set_fftw_plans`) between the RealGrid r2c path and a c2c
+        # path using `KerrScalarEnv!`/`KerrVectorEnv!`
+        # (src/Nonlinear.jl:120-133) — no longer RealGrid-only.
         # Phase E.3: `full=true` (genuine 2-D `(r,θ)` cubature, `hcubature_v`)
         # is now also supported, alongside the original `full=false` (radial
         # only, `pcubature_v`) — see native.rs's `mode_angle_xy`/`rhs_modal`.
@@ -1304,6 +1307,14 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                 throw(NativeIneligible("modal: Raman (RamanPolarField) is only " *
                       "supported natively for npol=1 — native.rs's inline " *
                       "solver does not yet handle a second polarisation column."))
+            # native.rs's inline Raman ADE solve operates on real time-domain
+            # buffers only (`modal_er`/`modal_pr`) — EnvGrid modal (Phase E.4
+            # item 5) uses complex buffers (`modal_er_c`/`modal_pr_c`) with no
+            # Raman wiring at all.
+            r isa Luna.Nonlinear.RamanPolarField && !is_real_grid &&
+                throw(NativeIneligible("modal: Raman (RamanPolarField) is only " *
+                      "supported natively for RealGrid — native.rs has no EnvGrid " *
+                      "Raman path for modal."))
         end
         γ3 != 0.0 ||
             throw(NativeIneligible("modal: no Kerr response found (γ3=0) — the " *
