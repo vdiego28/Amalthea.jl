@@ -274,7 +274,43 @@ complete** (D.1-D.5 all ✅).
 Gate (E.1): all 7 test groups green — 46623 passed, 12 broken (pre-existing),
 0 failed/errored (rust group: 41990/41990, includes 3 new tests).
 
-2. Tapered / per-mode radius (drop the shared-constant-radius guard).
+2. ✅ Tapered / per-mode radius. Turned out to be Phase-7/D.5-scale, not a
+   quick guard-drop — flagged to the user before implementing, who
+   confirmed proceeding. Scope: all modes of one `TransModal` share a
+   single tapered core radius `a(z)` (an arbitrary Julia `Function`, not
+   per-mode-differing radii), constant density (checked, like Phase 7's
+   density check but inverted — here density must be *constant*, radius
+   varies). Key insight that kept this tractable: the Marcatili waveguide
+   term separates cleanly, `nwg(ω,a) = unm²·(φ(ω)/a)²·(1-i·vn(ω)·φ(ω)/a)²`
+   with `φ(ω)=c/ω` — `unm` is radius-independent (a mode's own fixed
+   eigenvalue) and `vn(ω)` depends only on the (z-independent) cladding
+   Sellmeier, so the *entire* `a(z)` dependence is the explicit `1/a`
+   factors, evaluated exactly (no LUT) at any z from `unm`/`vn(ω)` plus the
+   scalar `a(z)`. `β1(z)` reuses the same closed-form chain-rule pattern as
+   Phase 7/D.5 (4 per-mode BigFloat-differentiated ω0 constants:
+   `εco0,dεco0,v0,dv0`), generalized to loop over `n_modes` (vs Phase 7's
+   single reference mode) with a configurable `ref_mode`. `a(z)` itself is
+   transferred as a `Maths.CSpline` fit to dense z-samples of the ground
+   truth function — safe (not a spline-of-spline, unlike the density LUTs)
+   since `a(z)` is a plain user function, not already a spline. A second,
+   easy-to-miss piece: the per-mode normalization `1/√N(m,z)` also depends
+   on radius (`N∝a²`), so `Modes.N`'s z=0 baseline is rescaled by `a(0)/a(z)`
+   every call alongside the linop, and the cubature integration bound
+   (`self.modal_a`) is updated too — both easy to miss since they live in
+   `rhs_modal_pointcalc`, not the linop path. New Julia type
+   `Capillary.ZDepLinopModalTaper` (extends `Capillary.make_linop` for
+   `Tuple{Vararg{MarcatiliMode}}` with a shared `Function`-valued `a`,
+   falling back to the untouched generic `LinearOps.make_linop` otherwise);
+   new Rust `ensure_modal_linop_at`/`native_set_modal_zdep_params`. New test
+   `test/test_native_modal_taper.jl` (HE n=1/n=2, TE, TM, plus a two-mode
+   HE11+HE12 coupling-under-taper case) — agreement ~1e-7/1e-8 (the same
+   deliberate-divergence tier as Phase 7, not the ~1e-15 bitwise tier of the
+   constant-radius modal test, since β1(z)'s closed form intentionally
+   diverges from Julia's own adaptive-FD `dispersion`).
+
+Gate (E.2): all 7 test groups green — 46629 passed, 12 broken (pre-existing),
+0 failed/errored (rust group: 41996/41996, includes 5 new tests).
+
 3. `full=true` (2-D modal integral — second cubature dimension).
 4. npol=2 (polarisation-resolved modal), then EnvGrid modal.
 

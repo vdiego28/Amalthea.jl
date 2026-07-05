@@ -51,7 +51,8 @@ function solve_precon(f!, linop, y0, t, dt, tmax;
     # through to the non-native paths below exactly as before Phase 7 — no
     # behavior change for configurations outside the new narrow scope.
     native_ok = linop isa Array{ComplexF64} || linop isa Luna.Capillary.ZDepLinopMarcatili ||
-                linop isa Luna.LinearOps.ZDepLinopFree
+                linop isa Luna.LinearOps.ZDepLinopFree ||
+                linop isa Luna.Capillary.ZDepLinopModalTaper
     stepper = nothing
     if use_native && isfile(_LIBLUNA_RUST_RK45) && eltype(y0) == ComplexF64 && native_ok
         # Any scope restriction accumulated across Phases 1-7 (EnvGrid
@@ -840,7 +841,8 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     n = length(y0)
     is_zdep_mode_avg = linop isa Luna.Capillary.ZDepLinopMarcatili
     is_zdep_free_linop = linop isa Luna.LinearOps.ZDepLinopFree
-    if is_zdep_mode_avg || is_zdep_free_linop
+    is_zdep_modal_taper = linop isa Luna.Capillary.ZDepLinopModalTaper
+    if is_zdep_mode_avg || is_zdep_free_linop || is_zdep_modal_taper
         isfinite(flength) || throw(NativeIneligible("z-dependent linop requires a " *
                   "finite `flength` (propagation length) to build the resident z-LUTs " *
                   "— got flength=$flength."))
@@ -1240,14 +1242,26 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         all(m -> m.kind in (:HE, :TE, :TM), modes) ||
             throw(NativeIneligible("native modal path only supports kind ∈ " *
                   "(:HE, :TE, :TM) Marcatili modes"))
-        all(m -> m.a isa Number, modes) ||
+        # Phase E.2: tapered radius, via the dedicated `ZDepLinopModalTaper`
+        # wrapper (`Capillary.make_linop`'s specialized method) — any other
+        # Function-valued `a` (not wrapped, e.g. per-mode differing tapers)
+        # remains out of scope.
+        is_zdep_modal_taper = linop isa Luna.Capillary.ZDepLinopModalTaper
+        all(m -> m.a isa Number, modes) || is_zdep_modal_taper ||
             throw(NativeIneligible("native modal path only supports constant-radius " *
-                  "modes (Phase 5 gate; tapered/z-dependent radius deferred, " *
-                  "see BACKLOG.md Phase E.2)"))
+                  "modes, or a shared tapered radius via Capillary.make_linop's " *
+                  "ZDepLinopModalTaper wrapper (Phase E.2)"))
 
-        a = Float64(modes[1].a)
-        all(m -> Float64(m.a) == a, modes) ||
-            throw(NativeIneligible("all modes must share the same core radius"))
+        if is_zdep_modal_taper
+            isfinite(flength) || throw(NativeIneligible("z-dependent modal linop " *
+                      "requires a finite `flength` to build the resident z-LUT — " *
+                      "got flength=$flength."))
+            a = Float64(modes[1].a(0.0))
+        else
+            a = Float64(modes[1].a)
+            all(m -> Float64(m.a) == a, modes) ||
+                throw(NativeIneligible("all modes must share the same core radius"))
+        end
 
         unm = Float64[m.unm for m in modes]
         invsqrtn = Float64[1.0 / sqrt(Luna.Modes.N(m, z=0.0)) for m in modes]
@@ -1310,6 +1324,28 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             towin, kerr_fac, real.(nlfac), imag.(nlfac),
             lib_path, f!.rtol, f!.atol, Csize_t(f!.mfcn))
         rc == 0 || error("native_set_modal_params failed: $rc")
+
+        # Wire the z-dependent linop (tapered radius) — Phase E.2. Must come
+        # after `native_set_modal_params` (reads back its `modal_inv_sqrt_n`
+        # z=0 baseline for the `1/√N(m,z) ∝ 1/a(z)` rescale).
+        if is_zdep_modal_taper
+            w = linop
+            n_a = length(w.a_x)
+            rc = ccall((:native_set_modal_zdep_params, _LIBLUNA_RUST_RK45), Cint,
+                (Ptr{Cvoid}, Float64, Float64,
+                 Csize_t, Ptr{Float64}, Ptr{Float64}, Ptr{Float64},
+                 Ptr{Float64}, Ptr{UInt8}, UInt8, UInt8,
+                 Ptr{Float64}, Ptr{Float64}, Ptr{Float64},
+                 Float64, Csize_t,
+                 Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}),
+                handle.ptr, w.flength, a,
+                Csize_t(n_a), w.a_x, w.a_y, w.a_d,
+                w.omega, UInt8.(w.sidx), w.model == :full ? UInt8(0) : UInt8(1), UInt8(w.loss),
+                vec(w.eco), vec(w.vn_re), vec(w.vn_im),
+                w.ω0, Csize_t(w.ref_mode),
+                w.eco0, w.deco0, w.v0_re, w.v0_im, w.dv0_re, w.dv0_im)
+            rc == 0 || throw(NativeIneligible("native_set_modal_zdep_params returned $rc"))
+        end
 
         # Wire Raman if present and eligible — Phase D.4 (BACKLOG.md). Same
         # eligibility criteria and FFI call as mode-averaged/radial above;

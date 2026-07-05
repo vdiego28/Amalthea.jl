@@ -728,4 +728,133 @@ function make_linop(grid::Grid.RealGrid,
     return wrapped, βfun!
 end
 
+# ─── Phase E.2: z-dependent modal linop for tapered/per-mode radius ─────────
+#
+# See BACKLOG.md Phase E.2. Mirrors `ZDepLinopMarcatili` (Phase 7) but is the
+# reverse case: density is constant (checked by the caller, `RK45.jl`'s
+# `_check_density_zindependent`) while the core radius `a(z)` — a shared
+# Julia `Function` across all modes of one physical (tapered) fibre —
+# varies. The Marcatili waveguide term separates cleanly in `a` and `ω`:
+#
+#   nwg(ω,a) = unm²·(φ(ω)/a)²·(1 - i·vn(ω)·φ(ω)/a)²,   φ(ω) = c/ω
+#
+# (`neff_wg`'s `:full` formula, Capillary.jl:195, with `k=ω/c` substituted).
+# `unm` is a mode's own fixed eigenvalue (independent of `a`); `vn(ω) =
+# get_vn(cladn(ω)²,kind)` depends only on the (z-independent) cladding
+# Sellmeier. So the *entire* `a`-dependence is the explicit `1/a` factors —
+# no LUT needed for `nwg(ω)` itself, only for `a(z)` (`vn(ω)`/`εco(ω)` are
+# transferred as plain per-(ω,mode) arrays, evaluated once at z=0, since
+# they don't depend on z at all here).
+#
+# `a(z)` is an arbitrary user `Function` (e.g. `test_tapers.jl`'s linear
+# ramp) — not itself a spline, so (unlike the density LUTs elsewhere in this
+# file) fitting a fresh natural cubic spline (`Maths.CSpline`) to dense
+# samples is NOT a spline-of-a-spline: it is fitting the ground truth
+# directly, and converges at the usual `O(h⁴)`.
+struct ZDepLinopModalTaper{F}
+    linop!::F
+    a::Function
+    flength::Float64
+    a_x::Vector{Float64}
+    a_y::Vector{Float64}
+    a_d::Vector{Float64}
+    omega::Vector{Float64}
+    sidx::BitVector
+    model::Symbol
+    loss::Bool
+    eco::Matrix{Float64}      # (n_spec, n_modes)
+    vn_re::Matrix{Float64}
+    vn_im::Matrix{Float64}
+    ω0::Float64
+    ref_mode::Int
+    eco0::Vector{Float64}
+    deco0::Vector{Float64}
+    v0_re::Vector{Float64}
+    v0_im::Vector{Float64}
+    dv0_re::Vector{Float64}
+    dv0_im::Vector{Float64}
+end
+(w::ZDepLinopModalTaper)(out, z) = w.linop!(out, z)
+
+"""
+    make_linop(grid::Grid.RealGrid, modes, λ0; ref_mode=1, taper_lut_N=2^12)
+
+Specialized z-dependent linop for a collection of `MarcatiliMode`s that all
+share the same tapered (Function-valued) core radius `a(z)` — Phase E.2.
+Falls back to the generic `LinearOps.make_linop(grid,modes,λ0)` (a plain
+`linop!` closure, always Julia — out of native scope) for any other radius
+type (per-mode differing `a`, or `Number`-valued — use `make_const_linop`).
+"""
+function make_linop(grid::Grid.RealGrid,
+                     modes::Tuple{Vararg{MarcatiliMode}},
+                     λ0; ref_mode=1, taper_lut_N=2^12)
+    all(m -> m.a isa Function, modes) || return make_linop(grid, collect(modes), λ0; ref_mode=ref_mode)
+    afun = modes[1].a
+    all(m -> m.a === afun, modes) ||
+        error("make_linop: all modes must share the identical taper function object " *
+              "for the native z-dependent modal path (Phase E.2 scope)")
+
+    sidcs = (1:length(grid.ω))[grid.sidx]
+    neff_g = neff_grid(grid, collect(modes), λ0; ref_mode=ref_mode)
+    ω0 = wlfreq(λ0)
+    linop! = let neff_g=neff_g, ω=grid.ω, modes=modes, ω0=ω0, ref_mode=ref_mode
+        function linop!(out, z)
+            fill!(out, 0.0)
+            β1 = dispersion(modes[ref_mode], 1, ω0, z=z)::Float64
+            for i in eachindex(modes)
+                for iω in sidcs
+                    nc = conj_clamp(neff_g(iω, i; z=z), ω[iω])
+                    out[iω, i] = -im*(ω[iω]/c*nc - ω[iω]*β1)
+                end
+            end
+        end
+    end
+
+    n_full = length(grid.ω)
+    n_modes = length(modes)
+
+    zgrid = range(0.0, grid.zmax, length=taper_lut_N)
+    a_y = Float64[afun(z) for z in zgrid]
+    aspl = Maths.CSpline(collect(Float64, zgrid), a_y)
+
+    eco = zeros(n_full, n_modes)
+    vn_re = zeros(n_full, n_modes)
+    vn_im = zeros(n_full, n_modes)
+    eco0 = zeros(n_modes)
+    deco0 = zeros(n_modes)
+    v0_re = zeros(n_modes)
+    v0_im = zeros(n_modes)
+    dv0_re = zeros(n_modes)
+    dv0_im = zeros(n_modes)
+    for (i, m) in enumerate(modes)
+        for iω in sidcs
+            eco[iω, i] = real(m.coren(grid.ω[iω], z=0.0)^2)
+            vn = get_vn(m.cladn(grid.ω[iω], z=0.0)^2, m.kind)
+            vn_re[iω, i] = real(vn)
+            vn_im[iω, i] = imag(vn)
+        end
+        eco_of_ω(ω) = real(m.coren(ω, z=0.0)^2)
+        vn_re_of_ω(ω) = real(get_vn(m.cladn(ω, z=0.0)^2, m.kind))
+        vn_im_of_ω(ω) = imag(get_vn(m.cladn(ω, z=0.0)^2, m.kind))
+        eco0[i] = eco_of_ω(ω0)
+        v0 = get_vn(m.cladn(ω0, z=0.0)^2, m.kind)
+        v0_re[i] = real(v0)
+        v0_im[i] = imag(v0)
+        deco0[i], dv0_re[i], dv0_im[i] = setprecision(BigFloat, 1024) do
+            Float64(Maths.derivative(eco_of_ω, BigFloat(ω0), 1)),
+            Float64(Maths.derivative(vn_re_of_ω, BigFloat(ω0), 1)),
+            Float64(Maths.derivative(vn_im_of_ω, BigFloat(ω0), 1))
+        end
+    end
+
+    wrapped = ZDepLinopModalTaper(linop!, afun, grid.zmax,
+                                   aspl.x, aspl.y, aspl.D,
+                                   collect(Float64, grid.ω), BitVector(grid.sidx),
+                                   modes[1].model, modes[1].loss isa Val{true},
+                                   eco, vn_re, vn_im,
+                                   ω0, ref_mode - 1,
+                                   eco0, deco0, v0_re, v0_im, dv0_re, dv0_im)
+    return wrapped
+end
+
 end

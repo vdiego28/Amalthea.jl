@@ -400,6 +400,64 @@ pub struct NativeSim {
     /// once at construction.
     pub zdep_free_kerr_fac_per_dens: f64,
     pub zdep_free_last_z: f64,
+
+    // ── Phase E.2: z-dependent modal linop — tapered/per-mode radius
+    // (`TransModal`, `full=false`, constant density, `a(z)` a shared
+    // Function across all modes) — see `Capillary.ZDepLinopModalTaper`.
+    // Unlike Phase 7 (constant radius, varying density) this is the mirror
+    // case: density is constant (checked via `_check_density_zindependent`
+    // in RK45.jl, so `kerr_fac`/`modal_nlfac` stay fixed, unlike Phase 7's
+    // `zdep_kerr_fac_per_dens`) but the core radius `a(z)` varies, so
+    // `nwg(ω;z)` (not `εco`) is the z-dependent piece of each mode's neff.
+    // `nwg(ω,a) = unm²·(φ(ω)/a)²·(1 - i·vn(ω)·φ(ω)/a)²` with `φ(ω)=c/ω` —
+    // separable in `a` and `ω`, so it is evaluated exactly (not LUT'd) at
+    // any `z` from `unm` (already have it, `modal_unm`) and the per-mode
+    // per-ω complex `vn(ω)` array below (`get_vn(cladn(ω)²,kind)`,
+    // z-independent — same physical cladding regardless of core radius).
+    pub is_zdep_modal: bool,
+    pub zdep_modal_flength: f64,
+    /// `a(z)` — an arbitrary Julia `Function`, transferred as a natural
+    /// cubic spline (`Maths.CSpline`, dense z-sampling of the ground-truth
+    /// function, NOT a re-fit of an existing spline — no spline-of-spline
+    /// risk, unlike the density LUTs elsewhere in this file).
+    pub zdep_modal_a_lut: Option<HermiteSpline>,
+    /// `a(0)` — since `N(m,z) ∝ a(z)²` (`Capillary.N`), the per-mode
+    /// normalization `1/√N(m,z) = 1/√N(m,0)·a(0)/a(z)` is a simple rescale
+    /// of the z=0 baseline (`zdep_modal_inv_sqrt_n0`), needing no per-z
+    /// `besselj` recompute (`unm`, hence `besselj(np1,unm)`, is
+    /// radius-independent).
+    pub zdep_modal_a0: f64,
+    pub zdep_modal_inv_sqrt_n0: Vec<f64>,
+    pub zdep_modal_omega0: f64,
+    /// `grid.ω`, length `n_spec` — needed for the per-(mode,ω) neff/linop
+    /// assembly and `conj_clamp`.
+    pub zdep_modal_omega: Vec<f64>,
+    pub zdep_modal_sidx: Vec<bool>,
+    pub zdep_modal_model: u8,
+    pub zdep_modal_loss_on: bool,
+    /// `εco(ω)` per mode (flattened `(n_spec, n_modes)`, 0 outside sidx) —
+    /// each mode keeps its own gas/core-index closure in Julia (not
+    /// necessarily `===`-shared even for a single-gas fibre), so this is
+    /// stored per-mode rather than assumed common, at negligible extra cost.
+    pub zdep_modal_eco: Vec<f64>,
+    /// `vn(ω) = get_vn(cladn(ω)²,kind)` per mode (flattened `(n_spec,
+    /// n_modes)` complex, 0 outside sidx) — the cladding-Sellmeier piece of
+    /// `nwg`, z-independent (same cladding material regardless of `a(z)`).
+    pub zdep_modal_vn_re: Vec<f64>,
+    pub zdep_modal_vn_im: Vec<f64>,
+    /// Per-mode `εco(ω0)`/`dεco/dω(ω0)` and `vn(ω0)`/`dvn/dω(ω0)` — the
+    /// BigFloat-differentiated constants `β1(z)` needs (same
+    /// `Maths.derivative`-fed-`BigFloat` pattern as Phase 7/D.5's `γ0`/`dγ0`).
+    pub zdep_modal_eco0: Vec<f64>,
+    pub zdep_modal_deco0: Vec<f64>,
+    pub zdep_modal_v0_re: Vec<f64>,
+    pub zdep_modal_v0_im: Vec<f64>,
+    pub zdep_modal_dv0_re: Vec<f64>,
+    pub zdep_modal_dv0_im: Vec<f64>,
+    /// Reference mode index (0-based) `β1(z)` is evaluated from — matches
+    /// `LinearOps.make_linop(grid,modes,λ0;ref_mode)`'s `ref_mode`.
+    pub zdep_modal_ref_mode: usize,
+    pub zdep_modal_last_z: f64,
 }
 
 impl NativeSim {
@@ -539,6 +597,28 @@ impl NativeSim {
             zdep_free_dgamma0: 0.0,
             zdep_free_kerr_fac_per_dens: 0.0,
             zdep_free_last_z: f64::NAN,
+
+            is_zdep_modal: false,
+            zdep_modal_flength: 0.0,
+            zdep_modal_a_lut: None,
+            zdep_modal_a0: 0.0,
+            zdep_modal_inv_sqrt_n0: Vec::new(),
+            zdep_modal_omega0: 0.0,
+            zdep_modal_omega: Vec::new(),
+            zdep_modal_sidx: Vec::new(),
+            zdep_modal_model: 0,
+            zdep_modal_loss_on: true,
+            zdep_modal_eco: Vec::new(),
+            zdep_modal_vn_re: Vec::new(),
+            zdep_modal_vn_im: Vec::new(),
+            zdep_modal_eco0: Vec::new(),
+            zdep_modal_deco0: Vec::new(),
+            zdep_modal_v0_re: Vec::new(),
+            zdep_modal_v0_im: Vec::new(),
+            zdep_modal_dv0_re: Vec::new(),
+            zdep_modal_dv0_im: Vec::new(),
+            zdep_modal_ref_mode: 0,
+            zdep_modal_last_z: f64::NAN,
         }
     }
 
@@ -1587,6 +1667,124 @@ impl NativeSim {
         self.kerr_fac = self.zdep_free_kerr_fac_per_dens * dens;
         self.zdep_free_last_z = z;
     }
+
+    /// Recompute `self.linop` in place for propagation position `z` — the
+    /// modal (`TransModal`, `full=false`) counterpart of `ensure_linop_at`,
+    /// BACKLOG.md Phase E.2 (tapered/per-mode radius). No-op if
+    /// `is_zdep_modal` is false or `z` matches the last call.
+    ///
+    /// Density is constant here (checked in `RK45.jl` before wiring this
+    /// path), so unlike Phase 7/D.5 there is no `kerr_fac` rescale — the
+    /// z-dependence is entirely in the per-mode waveguide term `nwg(ω;a(z))`,
+    /// via the analytic separable form `nwg(ω,a) = unm²·(φ(ω)/a)²·
+    /// (1-i·vn(ω)·φ(ω)/a)²` with `φ(ω)=c/ω` (see `zdep_modal_vn_re`/`_im`'s
+    /// doc comment). `β1(z)` reuses the same closed-form chain-rule pattern
+    /// as Phase 7/D.5, differentiating this expression w.r.t. ω at ω0 for
+    /// the current (fixed) `a=a(z)` using the precomputed `v0`/`dv0`
+    /// constants — no per-z BigFloat call, just algebra.
+    fn ensure_modal_linop_at(&mut self, z: f64) {
+        if !self.is_zdep_modal { return; }
+        if self.zdep_modal_last_z == z { return; }
+
+        const C: f64 = 299_792_458.0;
+        let zc = z.clamp(0.0, self.zdep_modal_flength);
+        let a = self.zdep_modal_a_lut.as_ref().unwrap().eval(zc);
+
+        let n_spec = self.n_spec;
+        let n_modes = self.n_modes;
+        let ref_mode = self.zdep_modal_ref_mode;
+
+        // Mode-field synthesis (`rhs_modal_pointcalc`) reads `self.modal_a`
+        // (both the cubature integration bound and the `J_order` argument's
+        // denominator) and `self.modal_inv_sqrt_n` — both must track the
+        // current `a(z)`, not just the linop.
+        self.modal_a = a;
+        let scale = self.zdep_modal_a0 / a;
+        for m in 0..n_modes {
+            self.modal_inv_sqrt_n[m] = self.zdep_modal_inv_sqrt_n0[m] * scale;
+        }
+
+        // ── β1(z), from the reference mode only ─────────────────────────
+        let beta1 = {
+            let m = ref_mode;
+            let u = self.modal_unm[m];
+            let eco0 = self.zdep_modal_eco0[m];
+            let deco0 = self.zdep_modal_deco0[m];
+            let v0 = Complex::new(self.zdep_modal_v0_re[m], self.zdep_modal_v0_im[m]);
+            let dv0 = Complex::new(self.zdep_modal_dv0_re[m], self.zdep_modal_dv0_im[m]);
+            let ω0 = self.zdep_modal_omega0;
+
+            let phi0 = C / ω0;
+            let dphi0 = -C / (ω0 * ω0);
+            let g0 = phi0 / a;
+            let dg0 = dphi0 / a;
+            let h0 = v0 * g0;
+            let dh0 = dv0 * g0 + v0 * dg0;
+
+            let one = Complex::new(1.0, 0.0);
+            let i = Complex::new(0.0, 1.0);
+            let f0 = g0 * g0;
+            let df0 = 2.0 * g0 * dg0;
+            let big_g0 = (one - i * h0) * (one - i * h0);
+            let d_big_g0 = -2.0 * i * dh0 * (one - i * h0);
+
+            let u2 = Complex::new(u * u, 0.0);
+            let nwg0 = u2 * f0 * big_g0;
+            let dnwg0 = u2 * (df0 * big_g0 + f0 * d_big_g0);
+
+            let (neff0, dneff0) = if self.zdep_modal_model == 0 {
+                let neff0 = (Complex::new(eco0, 0.0) - nwg0).sqrt();
+                let dneff0 = (Complex::new(deco0, 0.0) - dnwg0) / (2.0 * neff0);
+                (neff0, dneff0)
+            } else {
+                let neff0 = Complex::new(1.0 + (eco0 - 1.0) / 2.0, 0.0) - nwg0;
+                let dneff0 = Complex::new(deco0 / 2.0, 0.0) - dnwg0;
+                (neff0, dneff0)
+            };
+            (neff0.re + ω0 * dneff0.re) / C
+        };
+
+        // ── per-(mode,ω) linop fill ───────────────────────────────────────
+        for m in 0..n_modes {
+            let u = self.modal_unm[m];
+            for iω in 0..n_spec {
+                let idx = iω + n_spec * m;
+                if !self.zdep_modal_sidx[iω] {
+                    self.linop[idx] = Complex::new(0.0, 0.0);
+                    continue;
+                }
+                let omega = self.zdep_modal_omega[iω];
+                let eco = self.zdep_modal_eco[idx];
+                let vn = Complex::new(self.zdep_modal_vn_re[idx], self.zdep_modal_vn_im[idx]);
+
+                let phi = C / omega;
+                let g = phi / a;
+                let h = vn * g;
+                let one = Complex::new(1.0, 0.0);
+                let i = Complex::new(0.0, 1.0);
+                let nwg = Complex::new(u * u, 0.0) * g * g * (one - i * h) * (one - i * h);
+
+                let mut neff = if self.zdep_modal_model == 0 {
+                    (Complex::new(eco, 0.0) - nwg).sqrt()
+                } else {
+                    Complex::new(1.0 + (eco - 1.0) / 2.0, 0.0) - nwg
+                };
+                if !self.zdep_modal_loss_on {
+                    neff = Complex::new(neff.re, 0.0);
+                }
+                // conj_clamp(n, ω) = clamp(re(n), 1e-3, Inf) - i·clamp(im(n), 0, 3000·c/ω)
+                let re_c = neff.re.max(1e-3);
+                let im_bound = 3000.0 * C / omega;
+                let im_c = neff.im.clamp(0.0, im_bound);
+                let nc = Complex::new(re_c, -im_c);
+
+                let w = nc * (omega / C) - Complex::new(omega * beta1, 0.0);
+                self.linop[idx] = Complex::new(w.im, -w.re);
+            }
+        }
+
+        self.zdep_modal_last_z = z;
+    }
 }
 
 /// C `integrand_v` callback for `pcubature_v` — reconstructs `&mut NativeSim`
@@ -2614,6 +2812,97 @@ pub unsafe extern "C" fn native_set_free_zdep_params(
     0
 }
 
+/// Wire the z-dependent modal linop — tapered/per-mode radius, BACKLOG.md
+/// Phase E.2. Must be called **after** `native_set_modal_params` (needs
+/// `n_spec`/`n_modes` to validate array lengths; reuses `modal_unm` for the
+/// per-mode Bessel eigenvalue, already set there).
+///
+/// # Arguments
+/// * `flength` — fibre length (`grid.zmax`), for clamping `a(z)` queries.
+/// * `a0` — `a(0)`, for rescaling `modal_inv_sqrt_n` (`∝ 1/a(z)`, see
+///   `zdep_modal_a0`'s doc).
+/// * `n_a`/`a_x`/`a_y`/`a_d` — `Maths.CSpline(zgrid, a.(zgrid))`'s own
+///   `(x,y,D)` knots (dense-sampled ground truth, not a re-fit of an
+///   existing spline — see `zdep_modal_a_lut`'s doc).
+/// * `omega`/`sidx` — `grid.ω`/`grid.sidx`, length `n_spec`.
+/// * `model` — 0 → `:full`, 1 → `:reduced`. `loss_on` — 0/1.
+/// * `eco`/`vn_re`/`vn_im` — per-(ω,mode) arrays, flattened column-major
+///   `(n_spec, n_modes)`, length `n_spec*n_modes` each.
+/// * `omega0`/`ref_mode` — β1(z) evaluation frequency and reference mode
+///   index (0-based).
+/// * `eco0`/`deco0`/`v0_re`/`v0_im`/`dv0_re`/`dv0_im` — per-mode BigFloat-
+///   differentiated ω0 constants, length `n_modes` each.
+///
+/// Returns 0 on success, -1 on null/mismatched args, -2 if `n_a` has fewer
+/// than 2 knots, -3 if called before `native_set_modal_params`.
+///
+/// # Safety
+/// `sim` must be valid; every pointer argument must be valid for its stated length.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_set_modal_zdep_params(
+    sim: *mut NativeSim,
+    flength: c_double,
+    a0: c_double,
+    n_a: size_t,
+    a_x: *const c_double,
+    a_y: *const c_double,
+    a_d: *const c_double,
+    omega: *const c_double,
+    sidx: *const u8,
+    model: u8,
+    loss_on: u8,
+    eco: *const c_double,
+    vn_re: *const c_double,
+    vn_im: *const c_double,
+    omega0: c_double,
+    ref_mode: size_t,
+    eco0: *const c_double,
+    deco0: *const c_double,
+    v0_re: *const c_double,
+    v0_im: *const c_double,
+    dv0_re: *const c_double,
+    dv0_im: *const c_double,
+) -> i32 {
+    if sim.is_null() || a_x.is_null() || a_y.is_null() || a_d.is_null()
+        || omega.is_null() || sidx.is_null() || eco.is_null()
+        || vn_re.is_null() || vn_im.is_null() || eco0.is_null() || deco0.is_null()
+        || v0_re.is_null() || v0_im.is_null() || dv0_re.is_null() || dv0_im.is_null() {
+        return -1;
+    }
+    if n_a < 2 { return -2; }
+    let s = unsafe { &mut *sim };
+    if s.n_spec == 0 || s.n_modes == 0 { return -3; }
+    let n_spec = s.n_spec;
+    let n_modes = s.n_modes;
+
+    let a_x_v = unsafe { std::slice::from_raw_parts(a_x, n_a) }.to_vec();
+    let a_y_v = unsafe { std::slice::from_raw_parts(a_y, n_a) }.to_vec();
+    let a_d_v = unsafe { std::slice::from_raw_parts(a_d, n_a) }.to_vec();
+
+    s.zdep_modal_flength = flength;
+    s.zdep_modal_a0 = a0;
+    s.zdep_modal_inv_sqrt_n0 = s.modal_inv_sqrt_n.clone();
+    s.zdep_modal_a_lut = Some(HermiteSpline::from_parts(a_x_v, a_y_v, a_d_v));
+    s.zdep_modal_omega = unsafe { std::slice::from_raw_parts(omega, n_spec) }.to_vec();
+    s.zdep_modal_sidx = unsafe { std::slice::from_raw_parts(sidx, n_spec) }.iter().map(|&b| b != 0).collect();
+    s.zdep_modal_model = model;
+    s.zdep_modal_loss_on = loss_on != 0;
+    s.zdep_modal_eco = unsafe { std::slice::from_raw_parts(eco, n_spec * n_modes) }.to_vec();
+    s.zdep_modal_vn_re = unsafe { std::slice::from_raw_parts(vn_re, n_spec * n_modes) }.to_vec();
+    s.zdep_modal_vn_im = unsafe { std::slice::from_raw_parts(vn_im, n_spec * n_modes) }.to_vec();
+    s.zdep_modal_omega0 = omega0;
+    s.zdep_modal_ref_mode = ref_mode;
+    s.zdep_modal_eco0 = unsafe { std::slice::from_raw_parts(eco0, n_modes) }.to_vec();
+    s.zdep_modal_deco0 = unsafe { std::slice::from_raw_parts(deco0, n_modes) }.to_vec();
+    s.zdep_modal_v0_re = unsafe { std::slice::from_raw_parts(v0_re, n_modes) }.to_vec();
+    s.zdep_modal_v0_im = unsafe { std::slice::from_raw_parts(v0_im, n_modes) }.to_vec();
+    s.zdep_modal_dv0_re = unsafe { std::slice::from_raw_parts(dv0_re, n_modes) }.to_vec();
+    s.zdep_modal_dv0_im = unsafe { std::slice::from_raw_parts(dv0_im, n_modes) }.to_vec();
+    s.zdep_modal_last_z = f64::NAN;
+    s.is_zdep_modal = true;
+    0
+}
+
 // ── Dormand-Prince constants (matching ffi.rs) ──────────────────────────────
 const DP_B: [[f64; 6]; 6] = [
     [1.0/5.0,          0.0,              0.0,              0.0,             0.0,              0.0],
@@ -2725,6 +3014,7 @@ pub unsafe extern "C" fn native_step(
     // prop!(s.ks[1], s.t, s.tn)  — linop evaluated at the later time, t_new
     s.ensure_linop_at(t_new);
     s.ensure_free_norm_at(t_new);
+    s.ensure_modal_linop_at(t_new);
     apply_prop(&mut s.ks[0], &s.linop, t_new - t_old);
     
     let dt = dtn;
@@ -2758,6 +3048,7 @@ pub unsafe extern "C" fn native_step(
         } else if s.is_modal {
             let dt_prop = DP_NODES[ii] * dt;
             s.ensure_linop_at(t + dt_prop);
+            s.ensure_modal_linop_at(t + dt_prop);
             let mut ystage_prop = s.ystage.clone();
             apply_prop(&mut ystage_prop, &s.linop, dt_prop);
             s.rhs_modal(ii + 1, &ystage_prop);
@@ -2831,6 +3122,7 @@ pub unsafe extern "C" fn native_step(
         left[0].copy_from_slice(&right[0]); // FSAL
         s.ensure_linop_at(tn_new);
         s.ensure_free_norm_at(tn_new);
+        s.ensure_modal_linop_at(tn_new);
         apply_prop(yn_sl, &s.linop, tn_new - t);
         s.field.copy_from_slice(yn_sl);
     } else {
@@ -2838,6 +3130,7 @@ pub unsafe extern "C" fn native_step(
         tn_new = t_new;
         s.ensure_linop_at(tn_new);
         s.ensure_free_norm_at(tn_new);
+        s.ensure_modal_linop_at(tn_new);
         apply_prop(yn_sl, &s.linop, tn_new - t); // no-op since t == tn_new
     }
     
