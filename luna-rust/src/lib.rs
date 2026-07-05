@@ -405,14 +405,14 @@ mod tests {
         use crate::native::NativeBackend;
         
         let n = 256;
-        let mut sim_res = CudaNativeSim::new(n);
+        let sim_res = CudaNativeSim::new(n);
         if sim_res.is_err() {
             println!("Skipping CUDA test (no GPU or CUDA toolkit available)");
             return;
         }
         let mut sim = sim_res.unwrap();
         
-        let mut initial_field = vec![Complex::new(1.0, 0.0); n];
+        let initial_field = vec![Complex::new(1.0, 0.0); n];
         unsafe {
             sim.set_field(initial_field.as_ptr() as *const libc::c_double, n);
             

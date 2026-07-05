@@ -1,7 +1,7 @@
 use crate::native::{NativeBackend, NativeStepResult};
 use crate::cuda::{
-    activate_context, get_cufft_api, get_driver_api, get_gpu_context, cufftHandle, GpuBuffer,
-    CUFFT_Z2D, CUFFT_D2Z, CUFFT_Z2Z
+    get_cufft_api, get_driver_api, get_gpu_context, cufftHandle, GpuBuffer,
+    CUFFT_D2Z
 };
 use num_complex::Complex;
 use std::ffi::{c_char, c_double, c_int, c_uint};
@@ -78,27 +78,35 @@ impl CudaNativeSim {
 
 impl NativeBackend for CudaNativeSim {
     unsafe fn set_field(&mut self, data: *const c_double, n: size_t) -> i32 {
-        let slice = std::slice::from_raw_parts(data as *const Complex<f64>, n);
-        self.field_d.copy_to_device(slice).unwrap();
+        unsafe {
+            let slice = std::slice::from_raw_parts(data as *const Complex<f64>, n);
+            self.field_d.copy_to_device(slice).unwrap();
+        }
         0
     }
 
     unsafe fn resync_field(&mut self, data: *const c_double, n: size_t) -> i32 {
-        let slice = std::slice::from_raw_parts_mut(data as *mut Complex<f64>, n);
-        self.field_d.copy_to_host(slice).unwrap();
+        unsafe {
+            let slice = std::slice::from_raw_parts_mut(data as *mut Complex<f64>, n);
+            self.field_d.copy_to_host(slice).unwrap();
+        }
         0
     }
 
     unsafe fn get_field(&self, data: *mut c_double, n: size_t) -> i32 {
-        let slice = std::slice::from_raw_parts_mut(data as *mut Complex<f64>, n);
-        self.field_d.copy_to_host(slice).unwrap();
+        unsafe {
+            let slice = std::slice::from_raw_parts_mut(data as *mut Complex<f64>, n);
+            self.field_d.copy_to_host(slice).unwrap();
+        }
         0
     }
 
     unsafe fn get_ks_stage(&self, idx: size_t, data: *mut c_double, n: size_t) -> i32 {
         if idx < 7 {
-            let slice = std::slice::from_raw_parts_mut(data as *mut Complex<f64>, n);
-            self.ks_d[idx].copy_to_host(slice).unwrap();
+            unsafe {
+                let slice = std::slice::from_raw_parts_mut(data as *mut Complex<f64>, n);
+                self.ks_d[idx].copy_to_host(slice).unwrap();
+            }
             0
         } else {
             -1
@@ -126,17 +134,19 @@ impl NativeBackend for CudaNativeSim {
         self.eto_d = GpuBuffer::alloc(n_time * 8).unwrap();
         self.pto_d = GpuBuffer::alloc(n_time * 8).unwrap();
         
-        let slice = std::slice::from_raw_parts(towin, n_time);
+        let slice = unsafe { std::slice::from_raw_parts(towin, n_time) };
         self.towin_d = GpuBuffer::alloc(n_time * 8).unwrap();
         self.towin_d.copy_to_device(slice).unwrap();
-        
+
         if let Ok(cufft) = get_cufft_api() {
-            if self.fft_r2c != 0 {
-                (cufft.cufftDestroy)(self.fft_r2c);
+            unsafe {
+                if self.fft_r2c != 0 {
+                    (cufft.cufftDestroy)(self.fft_r2c);
+                }
+                let mut plan = 0;
+                (cufft.cufftPlan1d)(&mut plan, n_time as i32, CUFFT_D2Z, 1);
+                self.fft_r2c = plan;
             }
-            let mut plan = 0;
-            (cufft.cufftPlan1d)(&mut plan, n_time as i32, CUFFT_D2Z, 1);
-            self.fft_r2c = plan;
         } else {
             eprintln!("Warning: cuFFT not available, mode_avg_params will fail during step");
         }
@@ -160,6 +170,7 @@ impl NativeBackend for CudaNativeSim {
     unsafe fn set_modal_zdep_params(&mut self, _flength: c_double, _a0: c_double, _n_a: size_t, _a_x: *const c_double, _a_y: *const c_double, _a_d: *const c_double, _omega: *const c_double, _sidx: *const u8, _model: u8, _loss_on: u8, _eco: *const c_double, _vn_re: *const c_double, _vn_im: *const c_double, _omega0: c_double, _ref_mode: size_t, _eco0: *const c_double, _deco0: *const c_double, _v0_re: *const c_double, _v0_im: *const c_double, _dv0_re: *const c_double, _dv0_im: *const c_double) -> i32 { -1 }
 
     unsafe fn step(&mut self, yn: *mut Complex<f64>, _t_old: f64, _t_new: f64, _dtn: f64, _rtol: f64, _atol: f64, _safety: f64, _max_dt: f64, _min_dt: f64, _errlast_in: f64, _locextrap: i32, result: *mut NativeStepResult) -> i32 {
+      unsafe {
         let ctx = match get_gpu_context() {
             Some(c) => c,
             None => return -1,
@@ -399,8 +410,9 @@ impl NativeBackend for CudaNativeSim {
         (*result).dtn = dtn_new;
         (*result).err = err;
         (*result).errlast = errlast_new;
-        
+
         0
+      }
     }
 }
 
