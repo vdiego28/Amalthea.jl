@@ -60,7 +60,7 @@ impl Library {
             let mut wide_path: Vec<u16> = path.as_os_str().encode_wide().collect();
             wide_path.push(0);
             let handle = unsafe { LoadLibraryW(wide_path.as_ptr()) };
-            if handle == 0 {
+            if handle.is_null() {
                 return Err(format!("LoadLibraryW failed to load {:?}", path));
             }
             Ok(Self { handle: handle as *mut c_void })
