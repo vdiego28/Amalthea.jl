@@ -488,7 +488,9 @@ scope.
 
 Full detail (equations, rationale, per-item code sketches) stays in
 `SUGGESTIONS.md` — this is the tracking summary, synced so status lives in
-one place. None of S1/S2/S4/S5/S6 has started. **S3 is partially started**:
+one place. None of S2/S4/S5/S6 has started; **S1.5 was attempted
+2026-07-07 and found broken** (see S1.5 below — disabled by default, real
+fix still open). **S3 is partially started**:
 the GPU-resident stepper work landed 2026-07-05/07 (see Phase G's "Open
 items" entry and "Done (recent)") implements a narrow slice of S3
 (mode-averaged RealGrid Kerr-only, no threading/dispatch-threshold/design
@@ -534,13 +536,29 @@ tracked as S1.4; until it lands, "AVX-512 path selected" does not mean
    this is the fix for "dispatch selects a path but only Raman uses it").
    Add a Rust unit test asserting SIMD lane == scalar lane bitwise (or
    ≤1 ulp where FMA contraction differs).
-5. BLAS-3 QDHT (item 5) — `blas.rs`'s `cblas_dgemm` binding already exists
-   (landed as part of the GPU-suggestions pass, see "GPU-resident stepper"
-   entry below) but has **no Julia-side caller** (`init_blas_path`
-   unreferenced in `src/*.jl`) — currently dead code. Wire it: pass the
-   BLAS path at init like the FFTW path, `LUNA_QDHT_BLAS=0` opt-out. Gate:
-   `test_qdht_rust.jl` tolerance unchanged (~1e-13) + ≥1.5× QDHT
-   micro-bench at n_r=256, or revert.
+5. 🔴 **BLAS-3 QDHT (item 5) — wired 2026-07-07, found broken, disabled by
+   default pending a real fix.** Added the Julia-side caller
+   (`NonlinearRHS._init_rust_qdht_blas`, resolves
+   `LinearAlgebra.BLAS.libblastrampoline`'s real path via `Libdl.dlpath`,
+   calls `init_blas_path`) that was missing. Wiring it up surfaced a real
+   bug in the previously-untested `blas.rs`: `libblastrampoline`'s
+   `cblas_dgemm` symbol is a **dispatch stub**, not a real BLAS-3 kernel —
+   it requires Julia's own ILP64 Fortran-symbol registration
+   (`dgemm_64_`) to route to OpenBLAS, and calling the CBLAS-name entry
+   point directly errors at runtime ("no BLAS/LAPACK library loaded for
+   cblas_dgemm()") while silently corrupting the QDHT result instead of
+   computing anything (confirmed: `test_qdht_rust.jl`'s mul!/ldiv! unit
+   tests fail when enabled). Fixed the immediate risk by defaulting
+   `LUNA_QDHT_BLAS=0` (opt-in, not opt-out as originally planned) so
+   `LUNA_USE_RUST_QDHT=1` users get the existing correct Rayon path unless
+   they explicitly ask for the (currently broken) BLAS one. **Still open:**
+   rewrite `blas.rs` to bind the ILP64 Fortran signature
+   (`dgemm_64_`/`zgemm_64_`, ISO_Fortran character-by-reference calling
+   convention, `i64` dims) instead of `cblas_dgemm`, per the original
+   suggestion text's own note about the ILP64 suffix convention — this is
+   real work, not a wiring task. Gate once fixed: `test_qdht_rust.jl`
+   tolerance unchanged (~1e-13) + ≥1.5× QDHT micro-bench at n_r=256, or
+   revert.
 6. Split-complex exp-linop spike (item 3b) — timeboxed Criterion-only
    experiment; only do the invasive guru-split-DFT FFTW plan work if it
    shows >1.3×, otherwise record the negative result and close.

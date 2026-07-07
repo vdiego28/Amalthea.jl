@@ -3,12 +3,14 @@ import FFTW
 import Hankel
 import Cubature
 import Base: show
+import LinearAlgebra
 import LinearAlgebra: mul!, ldiv!
 import NumericalIntegration: integrate, SimpsonEven
 import Luna: PhysData, Modes, Maths, Grid
 import Luna.PhysData: wlfreq
 import Logging: @warn
 import Luna.Utils: lunadir
+import Libdl
 
 # ── Rust QDHT FFI (opt-in via LUNA_USE_RUST_QDHT=1) ──────────────────────────
 function _libluna_rust_path_rhs()
@@ -34,9 +36,30 @@ mutable struct RustQdhtHandle
     end
 end
 
+function _init_rust_qdht_blas()
+    # Default OFF (opt-in, not opt-out): `libblastrampoline`'s `cblas_dgemm`
+    # symbol is a dispatch stub that requires Julia's own ILP64 Fortran-symbol
+    # registration (`dgemm_64_`) to actually route to OpenBLAS — calling the
+    # CBLAS-name entry point directly (what `luna-rust/src/blas.rs` does today)
+    # errors at runtime ("no BLAS/LAPACK library loaded for cblas_dgemm()") and
+    # silently corrupts QDHT results instead of computing anything (confirmed
+    # 2026-07-07: `test_qdht_rust.jl`'s mul!/ldiv! unit tests fail when this is
+    # enabled). Needs a real fix (bind the ILP64 Fortran signature instead) —
+    # see BACKLOG.md's S1.5 entry — before this should ever default on.
+    get(ENV, "LUNA_QDHT_BLAS", "0") == "1" || return
+    try
+        blas_path = Libdl.dlpath(Libdl.dlopen(LinearAlgebra.BLAS.libblastrampoline))
+        rc = ccall((:init_blas_path, _LIBLUNA_RUST_RHS), Cint, (Cstring,), blas_path)
+        rc == 0 || @warn "init_blas_path failed; QDHT falls back to the Rayon kernel"
+    catch e
+        @warn "could not resolve libblastrampoline for the Rust QDHT BLAS-3 path" exception=e
+    end
+end
+
 function _make_rust_qdht_handle(HT, n_time::Int)
     get(ENV, "LUNA_USE_RUST_QDHT", "0") == "1" || return nothing
     !isfile(_LIBLUNA_RUST_RHS) && (@warn "libluna_rust not found at $(_LIBLUNA_RUST_RHS); QDHT stays on Julia"; return nothing)
+    _init_rust_qdht_blas()
     T_mat = Matrix{Float64}(HT.T)  # ensure Float64 col-major copy
     n_r = HT.N
     size(T_mat) == (n_r, n_r) || return nothing
