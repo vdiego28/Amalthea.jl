@@ -405,9 +405,10 @@ mod tests {
         use crate::native::NativeBackend;
         
         let n = 256;
-        let sim_res = CudaNativeSim::new(n);
+        let linop = vec![Complex::new(0.0, 0.0); n];
+        let sim_res = CudaNativeSim::new(n, &linop);
         if sim_res.is_err() {
-            println!("Skipping CUDA test (no GPU or CUDA toolkit available)");
+            println!("Skipping CUDA test (no GPU or CUDA toolkit available): {:?}", sim_res.err());
             return;
         }
         let mut sim = sim_res.unwrap();
@@ -439,14 +440,18 @@ mod tests {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _guard = LOCK.lock().unwrap();
 
+        let n = 256;
+        let linop = vec![Complex::new(0.0, 0.0); n];
+        let linop_ptr = linop.as_ptr() as *const libc::c_double;
+
         unsafe { std::env::remove_var("LUNA_USE_RUST_CUDA_NATIVE"); }
-        let p = unsafe { crate::native::init_cuda_native_sim(256) };
+        let p = unsafe { crate::native::init_cuda_native_sim(linop_ptr, n) };
         assert!(p.is_null(), "init_cuda_native_sim must refuse without the opt-in env var");
 
         unsafe { std::env::set_var("LUNA_USE_RUST_CUDA_NATIVE", "1"); }
-        // Still expected to be null on this machine (no real CUDA toolkit/PTX), but must not
-        // panic or crash now that opt-in is granted.
-        let p2 = unsafe { crate::native::init_cuda_native_sim(256) };
+        // Null if this machine genuinely has no GPU/CUDA toolkit; must not panic or crash
+        // either way now that opt-in is granted.
+        let p2 = unsafe { crate::native::init_cuda_native_sim(linop_ptr, n) };
         if !p2.is_null() {
             unsafe { crate::native::free_native_sim(p2); }
         }

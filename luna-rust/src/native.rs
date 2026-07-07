@@ -2822,33 +2822,43 @@ impl NativeBackend for CpuNativeSim {
 }
 }
 
-/// GPU-resident stepper V1 (`CudaNativeSim`) is experimental and unverified against the
-/// Julia oracle on real CUDA hardware (see `BACKLOG.md`'s "GPU-resident stepper" entry).
-/// Refuses to initialize unless this env var is explicitly set, so it can never be reached
-/// by accident via default dispatch.
+/// GPU-resident stepper V1 (`CudaNativeSim`) covers only mode-averaged,
+/// Kerr-only, RealGrid propagation (see `cuda_native.rs`'s `NativeBackend`
+/// impl — every other geometry/physics method returns -1). Verified against
+/// the Julia oracle on real CUDA hardware for that scope (BACKLOG.md's
+/// "GPU-resident stepper" entry); everything outside it remains unimplemented,
+/// not just untested. Refuses to initialize unless this env var is
+/// explicitly set, so it can never be reached by accident via default
+/// dispatch — Julia's own eligibility guard (`RK45._gpu_native_eligible`)
+/// checks the same env var independently before ever calling this.
 const CUDA_NATIVE_OPT_IN_VAR: &str = "LUNA_USE_RUST_CUDA_NATIVE";
 
+/// See `init_native_sim`'s doc — same seed-linop contract, GPU-backed.
+///
+/// # Safety
+/// `linop` must be valid for `n` `ComplexF64` reads.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn init_cuda_native_sim(n: size_t) -> *mut NativeSim {
+pub unsafe extern "C" fn init_cuda_native_sim(linop: *const c_double, n: size_t) -> *mut NativeSim {
     use crate::cuda_native::CudaNativeSim;
-    if n == 0 {
+    if linop.is_null() || n == 0 {
         return std::ptr::null_mut();
     }
     if std::env::var(CUDA_NATIVE_OPT_IN_VAR).as_deref() != Ok("1") {
         eprintln!(
-            "Luna-Rust warning: GPU-resident stepper (CudaNativeSim) is experimental and \
-             not verified against the Julia oracle on real CUDA hardware — refusing to \
-             initialize. Set {}=1 to opt in at your own risk (see BACKLOG.md).",
+            "Luna-Rust warning: GPU-resident stepper (CudaNativeSim) is experimental \
+             (mode-averaged Kerr-only) — refusing to initialize. Set {}=1 to opt in (see \
+             BACKLOG.md).",
             CUDA_NATIVE_OPT_IN_VAR
         );
         return std::ptr::null_mut();
     }
     eprintln!(
-        "Luna-Rust warning: {}=1 — using the experimental, unverified GPU-resident stepper. \
-         Do not trust results without independently checking them against the Julia/CPU path.",
+        "Luna-Rust warning: {}=1 — using the GPU-resident stepper (mode-averaged Kerr-only; \
+         any other geometry/physics on this config is not implemented, not just unverified).",
         CUDA_NATIVE_OPT_IN_VAR
     );
-    match CudaNativeSim::new(n) {
+    let linop_sl = unsafe { std::slice::from_raw_parts(linop as *const Complex<f64>, n) };
+    match CudaNativeSim::new(n, linop_sl) {
         Ok(backend) => {
             let sim = NativeSim {
                 backend: Box::new(backend),

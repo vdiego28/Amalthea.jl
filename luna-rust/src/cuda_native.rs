@@ -1,7 +1,7 @@
 use crate::native::{NativeBackend, NativeStepResult};
 use crate::cuda::{
     get_cufft_api, get_driver_api, get_gpu_context, cufftHandle, GpuBuffer,
-    CUFFT_D2Z
+    CUFFT_D2Z, CUFFT_Z2D
 };
 use num_complex::Complex;
 use std::ffi::{c_char, c_double, c_int, c_uint};
@@ -27,14 +27,36 @@ pub struct CudaNativeSim {
     pub towin_d: GpuBuffer,
     pub kerr_fac: c_double,
 
+    // cuFFT plans are transform-type-specific — a `CUFFT_D2Z` (forward,
+    // real->complex) plan cannot be reused for `cufftExecZ2D` (inverse,
+    // complex->real): they need separate plan handles even though both
+    // describe the "same" `n_time`-point real FFT. Reusing one plan handle
+    // for both directions was a real bug here — `cufftExecZ2D` returned
+    // `CUFFT_INVALID_VALUE` (4) on real hardware (see BACKLOG.md's
+    // GPU-resident stepper entry).
     pub fft_r2c: cufftHandle,
+    pub fft_c2r: cufftHandle,
 }
 
 impl CudaNativeSim {
-    pub fn new(n: usize) -> Result<Self, String> {
+    /// `linop` seeds the resident device-side linear operator (dispersion) —
+    /// mirrors `CpuNativeSim::new(n, linop)`. Without this, `linop_d` would
+    /// be left as freshly `cuMemAlloc`'d (uninitialized) device memory: not
+    /// zeroed, just garbage, silently corrupting every `apply_prop` call.
+    /// Also brings up the CUDA context (`init_gpu_context`) if it isn't
+    /// already: `GpuBuffer::alloc`/`copy_to_device` below need an active
+    /// context (`activate_context` requires `GPU_CONTEXT` to be populated),
+    /// which nothing did before this call on the `CudaNativeSim`-only path
+    /// (as opposed to `dispatch.rs`'s `try_init_cuda`, a separate call path
+    /// for the `SimulationEngine` kernel dispatcher that never touches this
+    /// struct).
+    pub fn new(n: usize, linop: &[Complex<f64>]) -> Result<Self, String> {
+        crate::cuda::init_gpu_context()?;
+
         let field_d = GpuBuffer::alloc(n * 16)?;
         let linop_d = GpuBuffer::alloc(n * 16)?;
-        
+        linop_d.copy_to_device(linop)?;
+
         let ks_d = [
             GpuBuffer::alloc(n * 16)?, GpuBuffer::alloc(n * 16)?,
             GpuBuffer::alloc(n * 16)?, GpuBuffer::alloc(n * 16)?,
@@ -72,7 +94,52 @@ impl CudaNativeSim {
             towin_d,
             kerr_fac: 0.0,
             fft_r2c: 0,
+            fft_c2r: 0,
         })
+    }
+}
+
+/// Launches `f` then synchronizes and checks for a device-side error before
+/// returning. `cuLaunchKernel`'s own return code only validates the launch
+/// request itself (bad grid/block dims, null function, ...) — an in-kernel
+/// fault (out-of-bounds access, bad argument layout) is asynchronous and
+/// only surfaces at the next synchronizing call, which nothing in this file
+/// used to check (`(driver.cuLaunchKernel)(...)` return value was always
+/// discarded). That silently let an illegal-address fault from an early
+/// kernel get reported, confusingly, by an unrelated later `.unwrap()` (see
+/// BACKLOG.md's GPU-resident stepper verification entry) instead of at the
+/// kernel that actually caused it. Not free (a sync per kernel serializes
+/// what would otherwise pipeline on the GPU's own queue) but this path is
+/// still experimental/opt-in — correctness first.
+unsafe fn launch_checked(
+    driver: &crate::cuda::CudaDriverApi,
+    f: crate::cuda::CUfunction,
+    grid: u32,
+    block: u32,
+    shared_mem: u32,
+    args: &mut [*mut libc::c_void],
+    label: &str,
+) -> Result<(), String> {
+    unsafe {
+        let res = (driver.cuLaunchKernel)(
+            f, grid, 1, 1, block, 1, 1, shared_mem, std::ptr::null_mut(),
+            args.as_mut_ptr(), std::ptr::null_mut(),
+        );
+        if res != 0 {
+            return Err(format!("{label}: cuLaunchKernel failed (CUDA error {res})"));
+        }
+        let res = (driver.cuCtxSynchronize)();
+        if res != 0 {
+            let mut msg_ptr: *const libc::c_char = std::ptr::null();
+            (driver.cuGetErrorString)(res, &mut msg_ptr);
+            let msg = if msg_ptr.is_null() {
+                format!("CUDA error {res}")
+            } else {
+                std::ffi::CStr::from_ptr(msg_ptr).to_string_lossy().into_owned()
+            };
+            return Err(format!("{label}: kernel execution failed: {msg} ({res})"));
+        }
+        Ok(())
     }
 }
 
@@ -86,9 +153,16 @@ impl NativeBackend for CudaNativeSim {
     }
 
     unsafe fn resync_field(&mut self, data: *const c_double, n: size_t) -> i32 {
+        // Push host -> device (matches `CpuNativeSim::resync_field`'s
+        // `sim.field.copy_from_slice(src)` direction): Julia hands in the
+        // just-windowed field to overwrite the resident one, it does not
+        // read the resident field back. The previous `copy_to_host` here
+        // ran backwards (device -> host, aliasing `data` through an
+        // unsound `*const` -> `*mut` cast) and silently discarded every
+        // windowing update since Phase 8 made native the default.
         unsafe {
-            let slice = std::slice::from_raw_parts_mut(data as *mut Complex<f64>, n);
-            self.field_d.copy_to_host(slice).unwrap();
+            let slice = std::slice::from_raw_parts(data as *const Complex<f64>, n);
+            self.field_d.copy_to_device(slice).unwrap();
         }
         0
     }
@@ -143,9 +217,15 @@ impl NativeBackend for CudaNativeSim {
                 if self.fft_r2c != 0 {
                     (cufft.cufftDestroy)(self.fft_r2c);
                 }
-                let mut plan = 0;
-                (cufft.cufftPlan1d)(&mut plan, n_time as i32, CUFFT_D2Z, 1);
-                self.fft_r2c = plan;
+                if self.fft_c2r != 0 {
+                    (cufft.cufftDestroy)(self.fft_c2r);
+                }
+                let mut plan_d2z = 0;
+                (cufft.cufftPlan1d)(&mut plan_d2z, n_time as i32, CUFFT_D2Z, 1);
+                self.fft_r2c = plan_d2z;
+                let mut plan_z2d = 0;
+                (cufft.cufftPlan1d)(&mut plan_z2d, n_time as i32, CUFFT_Z2D, 1);
+                self.fft_c2r = plan_z2d;
             }
         } else {
             eprintln!("Warning: cuFFT not available, mode_avg_params will fail during step");
@@ -171,35 +251,52 @@ impl NativeBackend for CudaNativeSim {
 
     unsafe fn step(&mut self, yn: *mut Complex<f64>, _t_old: f64, _t_new: f64, _dtn: f64, _rtol: f64, _atol: f64, _safety: f64, _max_dt: f64, _min_dt: f64, _errlast_in: f64, _locextrap: i32, result: *mut NativeStepResult) -> i32 {
       unsafe {
-        let ctx = match get_gpu_context() {
-            Some(c) => c,
-            None => return -1,
-        };
-        let driver = get_driver_api().unwrap();
-        let cufft = get_cufft_api().unwrap();
-        
+        let step_result = (|| -> Result<(), String> {
+        let ctx = get_gpu_context().ok_or_else(|| "GPU context not initialized".to_string())?;
+        let driver = get_driver_api()?;
+        let cufft = get_cufft_api()?;
+        // `raman.rs`'s `solve_gpu`/`ionization.rs`'s equivalent both call this
+        // immediately before their `cuLaunchKernel` — the CUDA context
+        // current on a thread isn't guaranteed to stick across API calls in
+        // general (`cuCtxSetCurrent` is what makes a context current, and
+        // nothing else in this function did that before its kernel
+        // launches). Missing this was a real bug here, not a defensive
+        // no-op: it segfaulted inside `libcuda.so` itself on the very first
+        // `cuLaunchKernel`, on real hardware (see BACKLOG.md).
+        crate::cuda::activate_context()?;
+
         let block_size = 256;
         let grid_size = (self.n as u32 + block_size - 1) / block_size;
-        
+
         let mut dt = _dtn;
         let t = _t_new;
 
         // 1. apply_prop(ks[0], dt_prev) - shifts ks[0] to t_new
+        //
+        // `dt0`/`b6`/`dt_fin` below are bound to named locals rather than
+        // `&mut {expr} as *mut _` inline, unlike this file's previous
+        // version: a raw-pointer cast of a `&mut` to an anonymous block/
+        // literal temporary is not one of Rust's extending-expression forms
+        // (array/tuple/struct literal, borrow, block tail — a *cast*
+        // breaks the chain), so the temporary could be dropped before
+        // `cuLaunchKernel` reads it. That was a real, not just theoretical,
+        // bug here: it crashed the CUDA driver itself (SIGSEGV inside
+        // `libcuda.so`, during the very first `cuLaunchKernel` call) on
+        // real hardware — see BACKLOG.md's GPU-resident stepper entry.
+        let mut dt0 = _t_new - _t_old;
         let mut apply_args_k0: [*mut libc::c_void; 4] = [
             &mut self.ks_d[0].dptr as *mut _ as *mut _,
             &mut self.linop_d.dptr as *mut _ as *mut _,
             &mut self.n as *mut _ as *mut _,
-            &mut {_t_new - _t_old} as *mut _ as *mut _,
+            &mut dt0 as *mut _ as *mut _,
         ];
-        (driver.cuLaunchKernel)(
-            ctx.apply_prop_fn, grid_size, 1, 1, block_size, 1, 1, 0, std::ptr::null_mut(),
-            apply_args_k0.as_mut_ptr(), std::ptr::null_mut()
-        );
+        launch_checked(driver, ctx.apply_prop_fn, grid_size, block_size, 0, &mut apply_args_k0, "apply_prop(ks[0])")?;
 
         for ii in 0..6 {
-            self.ystage_d.copy_from_device(&self.field_d).unwrap();
-            
+            self.ystage_d.copy_from_device(&self.field_d)?;
+
             let mut b = crate::native::DP_B[ii];
+            let mut b6 = 0.0f64;
             let mut rk_args: [*mut libc::c_void; 18] = [
                 &mut self.ystage_d.dptr as *mut _ as *mut _,
                 &mut self.field_d.dptr as *mut _ as *mut _,
@@ -216,18 +313,16 @@ impl NativeBackend for CudaNativeSim {
                 &mut b[3] as *mut _ as *mut _,
                 &mut b[4] as *mut _ as *mut _,
                 &mut b[5] as *mut _ as *mut _,
-                &mut 0.0f64 as *mut _ as *mut _, // b6 is zero since DP_B is length 6
+                &mut b6 as *mut _ as *mut _, // b6 is zero since DP_B is length 6
                 &mut self.n as *mut _ as *mut _,
                 &mut dt as *mut _ as *mut _,
             ];
-            (driver.cuLaunchKernel)(
-                ctx.rk45_accumulate_stage_fn, grid_size, 1, 1, block_size, 1, 1, 0, std::ptr::null_mut(),
-                rk_args.as_mut_ptr(), std::ptr::null_mut()
-            );
-            
+            launch_checked(driver, ctx.rk45_accumulate_stage_fn, grid_size, block_size, 0, &mut rk_args,
+                &format!("rk45_accumulate_stage(ii={ii})"))?;
+
             // TODO: Z-Dependent Linear Operator: recalculate `linop_d` at `t + dt_prop` for tapered fibers.
             // Currently assuming `linop_d` is static across the step.
-            
+
             let mut dt_prop = crate::native::DP_NODES[ii] * dt;
             let mut apply_args_prop: [*mut libc::c_void; 4] = [
                 &mut self.ystage_d.dptr as *mut _ as *mut _,
@@ -235,14 +330,13 @@ impl NativeBackend for CudaNativeSim {
                 &mut self.n as *mut _ as *mut _,
                 &mut dt_prop as *mut _ as *mut _,
             ];
-            (driver.cuLaunchKernel)(
-                ctx.apply_prop_fn, grid_size, 1, 1, block_size, 1, 1, 0, std::ptr::null_mut(),
-                apply_args_prop.as_mut_ptr(), std::ptr::null_mut()
-            );
+            launch_checked(driver, ctx.apply_prop_fn, grid_size, block_size, 0, &mut apply_args_prop,
+                &format!("apply_prop(ystage, ii={ii})"))?;
 
-            if self.n_time_over > 0 && self.fft_r2c != 0 {
-                // FFT C2R (D2Z) -> ystage_d to eto_d
-                (cufft.cufftExecZ2D)(self.fft_r2c, self.ystage_d.dptr as *mut _, self.eto_d.dptr as *mut _);
+            if self.n_time_over > 0 && self.fft_r2c != 0 && self.fft_c2r != 0 {
+                // FFT C2R (Z2D, inverse) -> ystage_d to eto_d
+                let rc = (cufft.cufftExecZ2D)(self.fft_c2r, self.ystage_d.dptr as *mut _, self.eto_d.dptr as *mut _);
+                if rc != 0 { return Err(format!("cufftExecZ2D failed ({rc})")); }
 
                 let n_time_u32 = self.n_time as u32;
                 let grid_size_t = (n_time_u32 + block_size - 1) / block_size;
@@ -253,16 +347,15 @@ impl NativeBackend for CudaNativeSim {
                     &mut self.kerr_fac as *mut _ as *mut _,
                     &mut self.n_time as *mut _ as *mut _,
                 ];
-                (driver.cuLaunchKernel)(
-                    ctx.rhs_mode_avg_real_fn, grid_size_t, 1, 1, block_size, 1, 1, 0, std::ptr::null_mut(),
-                    kerr_args.as_mut_ptr(), std::ptr::null_mut()
-                );
+                launch_checked(driver, ctx.rhs_mode_avg_real_fn, grid_size_t, block_size, 0, &mut kerr_args,
+                    &format!("rhs_mode_avg_real(ii={ii})"))?;
 
                 // FFT R2C (D2Z) -> pto_d to ks_d[ii+1]
-                (cufft.cufftExecD2Z)(self.fft_r2c, self.pto_d.dptr as *mut _, self.ks_d[ii+1].dptr as *mut _);
+                let rc = (cufft.cufftExecD2Z)(self.fft_r2c, self.pto_d.dptr as *mut _, self.ks_d[ii+1].dptr as *mut _);
+                if rc != 0 { return Err(format!("cufftExecD2Z failed ({rc})")); }
             } else {
                 let zeros = vec![Complex::new(0.0, 0.0); self.n];
-                self.ks_d[ii+1].copy_to_device(&zeros).unwrap();
+                self.ks_d[ii+1].copy_to_device(&zeros)?;
             }
 
             let mut dt_prop_neg = -dt_prop;
@@ -272,10 +365,8 @@ impl NativeBackend for CudaNativeSim {
                 &mut self.n as *mut _ as *mut _,
                 &mut dt_prop_neg as *mut _ as *mut _,
             ];
-            (driver.cuLaunchKernel)(
-                ctx.apply_prop_fn, grid_size, 1, 1, block_size, 1, 1, 0, std::ptr::null_mut(),
-                apply_args_inv.as_mut_ptr(), std::ptr::null_mut()
-            );
+            launch_checked(driver, ctx.apply_prop_fn, grid_size, block_size, 0, &mut apply_args_inv,
+                &format!("apply_prop(ks[ii+1], inv, ii={ii})"))?;
         }
 
         // Error accumulation
@@ -299,30 +390,44 @@ impl NativeBackend for CudaNativeSim {
             &mut self.n as *mut _ as *mut _,
             &mut dt as *mut _ as *mut _,
         ];
-        (driver.cuLaunchKernel)(
-            ctx.rk45_accumulate_error_fn, grid_size, 1, 1, block_size, 1, 1, 0, std::ptr::null_mut(),
-            rk_err_args.as_mut_ptr(), std::ptr::null_mut()
-        );
-        
+        launch_checked(driver, ctx.rk45_accumulate_error_fn, grid_size, block_size, 0, &mut rk_err_args,
+            "rk45_accumulate_error")?;
+
         let mut rtol_d = _rtol;
         let mut atol_d = _atol;
-        let mut weaknorm_elem_args: [*mut libc::c_void; 6] = [
-            &mut self.out_sq_d.dptr as *mut _ as *mut _,
+        // `weaknorm_elem_kernel`'s actual signature (kernels.cu) is
+        // `(yerr, y0, y1, rtol, atol, out_sq, n)` — 7 parameters. The
+        // previous 6-element array here (wrong count *and* wrong order, and
+        // missing `y1`/the trial new-field pointer entirely) made
+        // `cuLaunchKernel` read a 7th "argument" pointer past the end of
+        // this array — undefined stack memory — which the kernel then
+        // dereferenced as `y1`, an illegal memory access (see BACKLOG.md's
+        // GPU-resident stepper entry). `step()` doesn't have a trial
+        // post-step field to use for `y1` (that's only computed afterward,
+        // once the step is already known to be accepted) — passing
+        // `field_d` for both `y0` and `y1` matches this kernel's own
+        // max(|y0|,|y1|) error-weight formula closely enough for a
+        // fixed-step (`max_dt=min_dt=dt`) config, where `err`'s exact value
+        // no longer affects the accepted step-size sequence (only whether
+        // `err<=1`, and this config's steps are always well within
+        // tolerance). Computing a true pre-acceptance trial solution is an
+        // adaptive-step correctness concern, out of scope here.
+        let mut weaknorm_elem_args: [*mut libc::c_void; 7] = [
             &mut self.yerr_d.dptr as *mut _ as *mut _,
+            &mut self.field_d.dptr as *mut _ as *mut _,
             &mut self.field_d.dptr as *mut _ as *mut _,
             &mut rtol_d as *mut _ as *mut _,
             &mut atol_d as *mut _ as *mut _,
+            &mut self.out_sq_d.dptr as *mut _ as *mut _,
             &mut self.n as *mut _ as *mut _,
         ];
-        (driver.cuLaunchKernel)(
-            ctx.weaknorm_elem_fn, grid_size, 1, 1, block_size, 1, 1, 0, std::ptr::null_mut(),
-            weaknorm_elem_args.as_mut_ptr(), std::ptr::null_mut()
-        );
+        launch_checked(driver, ctx.weaknorm_elem_fn, grid_size, block_size, 0, &mut weaknorm_elem_args,
+            "weaknorm_elem")?;
 
         let mut current_n = self.n;
         let mut in_dptr = self.out_sq_d.dptr;
         let mut out_dptr = self.reduced_d.dptr;
-        
+
         while current_n > 1 {
             let next_n = (current_n + block_size as usize - 1) / (block_size as usize);
             let mut reduce_args: [*mut libc::c_void; 3] = [
@@ -330,27 +435,25 @@ impl NativeBackend for CudaNativeSim {
                 &mut out_dptr as *mut _ as *mut _,
                 &mut current_n as *mut _ as *mut _,
             ];
-            (driver.cuLaunchKernel)(
-                ctx.weaknorm_reduce_fn, next_n as u32, 1, 1, block_size, 1, 1, 
-                (block_size * 8) as u32, std::ptr::null_mut(),
-                reduce_args.as_mut_ptr(), std::ptr::null_mut()
-            );
+            launch_checked(driver, ctx.weaknorm_reduce_fn, next_n as u32, block_size, block_size * 8,
+                &mut reduce_args, &format!("weaknorm_reduce(n={current_n})"))?;
             in_dptr = out_dptr;
             current_n = next_n;
         }
-        
+
         let mut err_sq = [0.0f64];
-        (driver.cuMemcpyDtoH_v2)(err_sq.as_mut_ptr() as *mut _, in_dptr, 8);
+        let rc = (driver.cuMemcpyDtoH_v2)(err_sq.as_mut_ptr() as *mut _, in_dptr, 8);
+        if rc != 0 { return Err(format!("cuMemcpyDtoH_v2(err_sq) failed ({rc})")); }
         let err = (err_sq[0] / (self.n as f64)).sqrt();
         let ok = err <= 1.0;
-        
+
         let (dtn_new, errlast_new, ok_final) = crate::native::stepcontrol_pi(ok, err, _errlast_in, dt, _safety, _max_dt, _min_dt);
         let tn_new;
 
         if ok_final {
             tn_new = t + dt;
             let (left, right) = self.ks_d.split_at_mut(6);
-            left[0].copy_from_device(&right[0]).unwrap(); // FSAL
+            left[0].copy_from_device(&right[0])?; // FSAL
 
             // Final 5th-order solution: field_d += dt * Σ DP_B5[i] * ks_d[i] (in place —
             // safe: each thread reads its own field_d[idx] into a local before writing it
@@ -380,23 +483,20 @@ impl NativeBackend for CudaNativeSim {
                     &mut self.n as *mut _ as *mut _,
                     &mut dt as *mut _ as *mut _,
                 ];
-                (driver.cuLaunchKernel)(
-                    ctx.rk45_accumulate_stage_fn, grid_size, 1, 1, block_size, 1, 1, 0, std::ptr::null_mut(),
-                    final_args.as_mut_ptr(), std::ptr::null_mut()
-                );
+                launch_checked(driver, ctx.rk45_accumulate_stage_fn, grid_size, block_size, 0, &mut final_args,
+                    "rk45_accumulate_stage(final)")?;
             }
 
             // apply prop on field_d by tn_new - t
+            let mut dt_fin = tn_new - t;
             let mut apply_args_fin: [*mut libc::c_void; 4] = [
                 &mut self.field_d.dptr as *mut _ as *mut _,
                 &mut self.linop_d.dptr as *mut _ as *mut _,
                 &mut self.n as *mut _ as *mut _,
-                &mut {tn_new - t} as *mut _ as *mut _,
+                &mut dt_fin as *mut _ as *mut _,
             ];
-            (driver.cuLaunchKernel)(
-                ctx.apply_prop_fn, grid_size, 1, 1, block_size, 1, 1, 0, std::ptr::null_mut(),
-                apply_args_fin.as_mut_ptr(), std::ptr::null_mut()
-            );
+            launch_checked(driver, ctx.apply_prop_fn, grid_size, block_size, 0, &mut apply_args_fin,
+                "apply_prop(field, final)")?;
             self.get_field(yn as *mut c_double, self.n); // sync accepted step to host
         } else {
             tn_new = _t_new;
@@ -411,16 +511,28 @@ impl NativeBackend for CudaNativeSim {
         (*result).err = err;
         (*result).errlast = errlast_new;
 
-        0
+        Ok(())
+        })();
+
+        match step_result {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("CudaNativeSim::step failed: {e}");
+                -1
+            }
+        }
       }
     }
 }
 
 impl Drop for CudaNativeSim {
     fn drop(&mut self) {
-        if self.fft_r2c != 0 {
-            if let Ok(cufft) = get_cufft_api() {
+        if let Ok(cufft) = get_cufft_api() {
+            if self.fft_r2c != 0 {
                 unsafe { (cufft.cufftDestroy)(self.fft_r2c); }
+            }
+            if self.fft_c2r != 0 {
+                unsafe { (cufft.cufftDestroy)(self.fft_c2r); }
             }
         }
     }

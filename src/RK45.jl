@@ -794,10 +794,15 @@ end
 
 mutable struct RustNativeSimHandle
     ptr::Ptr{Cvoid}
-    function RustNativeSimHandle(linop::Array{ComplexF64})
+    function RustNativeSimHandle(linop::Array{ComplexF64}; use_gpu::Bool=false)
         n = length(linop)
-        ptr = ccall((:init_native_sim, _LIBLUNA_RUST_RK45), Ptr{Cvoid},
-                    (Ptr{ComplexF64}, Csize_t), pointer(linop), Csize_t(n))
+        ptr = if use_gpu
+            ccall((:init_cuda_native_sim, _LIBLUNA_RUST_RK45), Ptr{Cvoid},
+                  (Ptr{ComplexF64}, Csize_t), pointer(linop), Csize_t(n))
+        else
+            ccall((:init_native_sim, _LIBLUNA_RUST_RK45), Ptr{Cvoid},
+                  (Ptr{ComplexF64}, Csize_t), pointer(linop), Csize_t(n))
+        end
         h = new(ptr)
         finalizer(h) do h
             p = h.ptr
@@ -857,6 +862,30 @@ function RustNativeStepper(linop, y0, t, dt; kwargs...)
     RustNativeStepper(nothing, linop, y0, t, dt; kwargs...)
 end
 
+"""
+    _gpu_native_eligible(f!, linop)
+
+True iff the experimental GPU-resident stepper (`CudaNativeSim`,
+`luna-rust/src/cuda_native.rs`) can handle this exact config: mode-averaged
+(`TransModeAvg`), RealGrid, a constant (non-z-dependent) linop, a scalar
+(non-mixture) density, and exactly one plain Kerr response. That is the only
+geometry/physics `cuda_native.rs`'s `NativeBackend` impl actually implements
+— every other method on it returns -1. Also requires the
+`LUNA_USE_RUST_CUDA_NATIVE=1` opt-in; Rust's `init_cuda_native_sim`
+re-checks the same env var independently, so this is purely to avoid
+attempting GPU init for an ineligible config where it would return a
+confusing null pointer instead of the real reason.
+"""
+function _gpu_native_eligible(f!, linop)
+    get(ENV, "LUNA_USE_RUST_CUDA_NATIVE", "0") == "1" || return false
+    f! isa Luna.NonlinearRHS.TransModeAvg || return false
+    linop isa Array{ComplexF64} || return false
+    f!.grid isa Luna.Grid.RealGrid || return false
+    f!.densityfun(0.0) isa Real || return false
+    length(f!.resp) == 1 && _is_plain_kerr_resp(f!.resp[1]) || return false
+    true
+end
+
 function RustNativeStepper(f!, linop, y0, t, dt;
                             rtol=1e-6, atol=1e-10, safety=0.9, max_dt=Inf, min_dt=0,
                             locextrap=true, norm=weaknorm, flength=Inf)
@@ -870,7 +899,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                   "— got flength=$flength."))
         handle = RustNativeSimHandle(linop, n)
     else
-        handle = RustNativeSimHandle(linop)
+        handle = RustNativeSimHandle(linop; use_gpu=_gpu_native_eligible(f!, linop))
     end
 
     handle.ptr == C_NULL && error("init_native_sim failed")

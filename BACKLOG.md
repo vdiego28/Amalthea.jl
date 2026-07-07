@@ -652,7 +652,7 @@ current code and `git log`; the previous version of this entry, and the caveats 
 (CUDA/Vulkan dispatch, GPU QDHT/Raman/ionization) are never exercised in CI.
 - **Fix:** add a GPU-equipped CI runner (or a scheduled job) that actually executes them.
 
-### 🔴 GPU-resident stepper (Track S3, `CudaNativeSim`) — uncommitted, bug fixed, gated behind explicit opt-in, still unverified on real hardware
+### 🟢 GPU-resident stepper (Track S3, `CudaNativeSim`) — verified on real CUDA hardware 2026-07-07, see "Done (recent)" for the fixes this took
 A prior agent pass (2026-07-05, see `GEMINI_SUGGESTIONS.md` and `docs/native-port/GPU.md`)
 left a large uncommitted working-tree diff implementing three of `SUGGESTIONS.md`'s
 performance ideas. Reviewed and tested (full `rust` gate: 42004/42004, no regression) —
@@ -699,11 +699,10 @@ findings below.
   - Design-doc deviation: `docs/native-port/GPU.md` §4 specifies an `enum { Cpu, Gpu }`
     dispatch ("no `Box<dyn>`... avoids dynamic dispatch overhead") but the implementation
     uses `Box<dyn NativeBackend>` instead — functionally fine, just not what was designed.
-  - **Do not wire this into `RK45.jl`/the runtime dispatcher until it's been run and
-    verified against the Julia oracle on real CUDA hardware** (per
-    `[[feedback_verify_actual_gate_not_subset]]` — a GPU path is a gate of its own, not a
-    subset of the CPU gate that happens to pass). The env-var gate is a stopgap, not a
-    substitute for that verification.
+  - **Update 2026-07-07: verified on real CUDA hardware (RTX 5060 Ti, CUDA 13.3) and wired
+    into `RK45.jl`** — see "Done (recent)" below for the full list of bugs found and fixed
+    along the way (this section's text above is left as historical record of the pre-hardware
+    state).
 
 ## Informational / no action planned
 
@@ -716,6 +715,85 @@ findings below.
   the package build runs under strict warnings (desired; keeps the Rust code clean).
 
 ## Done (recent)
+
+- ✅ **GPU-resident stepper (`CudaNativeSim`) verified on real CUDA hardware
+  and wired into `RK45.jl` (2026-07-07).** Previously this could never even
+  initialize on real hardware (always fell back / self-skipped, "no GPU"
+  message was misleading — see the "GPU-resident stepper" entry above for
+  the pre-hardware state). Available now for the first time, this surfaced
+  and fixed five real, independent bugs, none hardware-availability alone
+  would have caught without actually running it:
+  1. **`CudaNativeSim::new` never called `init_gpu_context()`** — allocated
+     GPU buffers directly, which need an active CUDA context; nothing
+     created one. Fixed by calling it first, and by now taking a `linop:
+     &[Complex<f64>]` seed (mirrors `CpuNativeSim::new`) and uploading it —
+     previously `linop_d` was allocated but never written to (`cuMemAlloc`
+     doesn't zero memory), so dispersion was uninitialized garbage.
+     `init_cuda_native_sim`'s FFI signature gained a `linop` parameter to
+     match (was `(n)`, now `(linop, n)` like `init_native_sim`).
+  2. **`resync_field` ran backwards** — copied device→host into the
+     `data` the caller expects to be read from (host→device), via an
+     unsound `*const`→`*mut` cast. Not exercised by any `solve()`-based
+     test (only `Luna.run`'s post-window resync path would hit it); fixed
+     by inspection, not itself covered by the new test below.
+  3. **Temporary-lifetime UB**: `&mut {expr} as *mut _ as *mut c_void`
+     patterns (a pointer cast of a `&mut` to an anonymous block/literal
+     temporary) are not one of Rust's extending-expression forms, so the
+     temporary could be freed before `cuLaunchKernel` read it — this
+     genuinely crashed (`SIGSEGV` inside `libcuda.so` itself, confirmed via
+     `gdb`) on real hardware. Fixed by binding to named locals first.
+  4. **Missing `activate_context()`**: `step()` launched kernels without
+     ensuring the CUDA context was current on the calling thread first —
+     `raman.rs`/`ionization.rs`'s working GPU code both do this immediately
+     before their `cuLaunchKernel` calls, `cuda_native.rs` didn't.
+  5. **`weaknorm_elem_kernel` called with 6 arguments instead of 7**, in the
+     wrong order, missing the "new/trial field" pointer entirely —
+     `cuLaunchKernel` read past the end of the array for the 7th parameter,
+     causing an illegal memory access (`CUDA error 700`) or, depending on
+     what garbage sat in that stack slot, the same host-side `SIGSEGV` as
+     (3). Fixed by passing all 7 parameters in the kernel's actual order;
+     since `step()` has no pre-acceptance trial solution to use as the true
+     "new field" (CPU only computes one after deciding a step is accepted),
+     `field_d` is passed for both — harmless under fixed-step
+     (`max_dt=min_dt=dt`, the only equivalence-test discipline used
+     anywhere in this port) since `err`'s exact value no longer affects the
+     accepted step path, only whether `err<=1`.
+  6. **cuFFT plan reused across both transform directions** — one
+     `CUFFT_D2Z` plan was created and passed to both `cufftExecD2Z`
+     (forward) and `cufftExecZ2D` (inverse); cuFFT plans are direction/type
+     specific, and the mismatched inverse call failed with
+     `CUFFT_INVALID_VALUE` (4). Fixed by creating a second `CUFFT_Z2D` plan
+     (`fft_c2r`, alongside the existing `fft_r2c`).
+  Also added a `launch_checked` helper (sync + `cuGetErrorString` after
+  every `cuLaunchKernel`) — previously every launch's return code and every
+  kernel's async execution error were silently discarded, which is how bugs
+  3 and 5 above surfaced as a segfault or a mysteriously-unrelated later
+  failure instead of a clear, immediately-attributable error message.
+  **Known, documented, un-fixed fidelity gap** (not a "wrong" result, a
+  bounded approximation): the GPU path's Kerr FFT buffers/plans are sized
+  `n_time` (grid.t), not `n_time_over` (grid.to) — it skips the
+  oversampling/anti-aliasing padding `CpuNativeSim`/Julia both apply, so
+  full-solve agreement is ~4.5e-4 (test's tolerance: `<1e-3`) versus the
+  CPU-resident native path's ~1e-6 (Phase 1). Fixing this is a real Rust
+  kernel/buffer-sizing change, out of scope for verification.
+  **Julia wiring** (`RK45.jl`, opt-in, independent of the CPU-resident
+  `LUNA_USE_RUST_NATIVE` default): `RustNativeSimHandle` gained a
+  `use_gpu::Bool` kwarg dispatching to `init_cuda_native_sim` instead of
+  `init_native_sim`; new `_gpu_native_eligible(f!, linop)` checks
+  `LUNA_USE_RUST_CUDA_NATIVE=1` plus the same mode-averaged/RealGrid/
+  scalar-density/single-plain-Kerr-response scope `cuda_native.rs` actually
+  implements (everything else on `CudaNativeSim`'s `NativeBackend` impl
+  returns `-1`), called from `RustNativeStepper`'s non-zdep construction
+  path. New test `test/test_native_cuda.jl`: constructs a GPU-backed
+  stepper via `withenv("LUNA_USE_RUST_CUDA_NATIVE" => "1")`, self-skips if
+  construction fails (no GPU/toolkit — CI-safe), otherwise asserts
+  `_gpu_native_eligible` actually returned true (not a vacuous CPU-vs-CPU
+  comparison) and checks full-solve field agreement against
+  `PreconStepper`. Full 7-group gate green (rust 42049/42049, physics
+  1645/1657 with the same 12 pre-existing unrelated broken tests).
+  Remaining GPU work: Phase G item 2 (a CI-hosted GPU runner, so this
+  doesn't silently bit-rot un-exercised again) and the `n_time_over` Kerr
+  fidelity gap above.
 
 - ✅ **Phase F item 4: gas mixtures, native (mode-averaged, Kerr-only).**
   `RustNativeStepper`'s `is_mode_avg` block (`RK45.jl`) now accepts

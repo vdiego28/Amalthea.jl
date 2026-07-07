@@ -129,6 +129,8 @@ pub struct CudaDriverApi {
     pub cuMemcpyDtoD_v2: unsafe extern "C" fn(dstDevice: CUdeviceptr, srcDevice: CUdeviceptr, ByteCount: libc::size_t) -> CUresult,
     pub cuCtxGetCurrent: unsafe extern "C" fn(pctx: *mut CUcontext) -> CUresult,
     pub cuCtxSetCurrent: unsafe extern "C" fn(ctx: CUcontext) -> CUresult,
+    pub cuCtxSynchronize: unsafe extern "C" fn() -> CUresult,
+    pub cuGetErrorString: unsafe extern "C" fn(error: CUresult, pStr: *mut *const libc::c_char) -> CUresult,
 }
 
 #[allow(non_camel_case_types)]
@@ -214,6 +216,8 @@ pub fn get_driver_api() -> Result<&'static CudaDriverApi, String> {
             cuMemcpyDtoD_v2: std::mem::transmute(lib.get_symbol("cuMemcpyDtoD_v2")?),
             cuCtxGetCurrent: std::mem::transmute(lib.get_symbol("cuCtxGetCurrent")?),
             cuCtxSetCurrent: std::mem::transmute(lib.get_symbol("cuCtxSetCurrent")?),
+            cuCtxSynchronize: std::mem::transmute(lib.get_symbol("cuCtxSynchronize")?),
+            cuGetErrorString: std::mem::transmute(lib.get_symbol("cuGetErrorString")?),
             _lib: lib,
         })
     }).as_ref().map_err(|e| e.clone())
