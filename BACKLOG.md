@@ -423,6 +423,222 @@ The `pointcalc!` race fix is not currently actionable: upstream doesn't use
 `Threads.@threads` there today, so there's nothing to fix unless/until they
 re-add threading.
 
+### Phase I — Close remaining native-port gaps (mixed 🔴/🟡, small-medium each)
+Audit (2026-07-07) of every `NativeIneligible` throw in `src/RK45.jl`
+(lines 774-1598), cross-referenced against `src/Interface.jl`'s actual
+high-level entry points (not just what the low-level API could
+theoretically construct). Confirms Phase E/F closed everything their own
+"Done" entries claim (`full=true` modal, `npol=2`, gas mixtures,
+`RamanPolarEnv`, `thg=false` Raman, multi-point pressure gradients, EnvGrid
+modal) — this phase is only the genuinely-still-open remainder.
+
+1. 🔴 **Unverified: mode-averaged/radial shot noise (`Et_noise`) may be
+   silently dropped, not gracefully falling back.** `TransModeAvg`/
+   `TransRadial` both carry a `Et_noise` field, populated by default
+   (`shotnoise=true` → `:modified` model is `Interface.jl`'s default) for
+   **every** mode-averaged/radial sim — the single most common
+   configuration in the package. Unlike the modal (`RK45.jl:1343`) and
+   free-space (`RK45.jl:1528`) blocks, the mode-averaged and radial blocks
+   have **no `NativeIneligible` guard on `f!.Et_noise` at all**. This needs
+   a dedicated verification pass (Rust-vs-Julia full-solve diff with
+   `shotnoise=true` on `TransModeAvg`, since Phase 8 made native the
+   default) before anything else in this phase — if shot noise is being
+   silently skipped rather than correctly applied, every default
+   `prop_capillary`/`prop_gnlse` run since Phase 8 shipped may be missing
+   a physical noise term, not just a documented tolerance gap.
+2. 🟡 **`ramanmodel=:SiO2` in `prop_gnlse`** (`Interface.jl:1077-1079`) —
+   `Raman.raman_response(t,:SiO2,...)` returns a bare
+   `RamanRespIntermediateBroadening` (Gaussian-damped), not wrapped in
+   `CombinedRamanResponse`; `flatten_sdo_oscillators` returns `nothing` →
+   falls back (`RK45.jl:1115`/`1310`/`1498`). Plausible/common — this is
+   the documented, recommended silica Raman model for GNLSE fiber sims,
+   so this is probably the highest-value item here after #1.
+3. 🟡 **`ionisation=:ADK`** (`Interface.jl:658-660`) builds
+   `Ionisation.IonRateADK`, not `IonRatePPTAccel` — native requires
+   `irf isa IonRatePPTAccel` (`RK45.jl:1066`/`1279`), so any plasma sim
+   using `:ADK` instead of the default `:PPT` falls back. Plausible
+   (documented, non-default option).
+4. 🟡 **Gas mixtures outside mode-averaged geometry** — Phase F.4 only
+   wired mode-averaged mixtures; `RK45.jl:945-948` rejects any
+   non-scalar `densityfun` for radial/modal/free. Plausible for
+   multi-gas capillary fills in those geometries.
+5. ⚪ **Modal path restricted to `MarcatiliMode`** (`RK45.jl:1352-1354`) —
+   `StepIndexMode`/`ZeisbergerMode`/`VincettiMode` exist but
+   `prop_capillary`'s `makemode_s` only ever builds `MarcatiliMode`s; the
+   other mode types are only reachable via the low-level API. Rare in
+   practice.
+6. ⚪ **Free-space (`TransFree`) stays single-Kerr-only** — never gains
+   plasma/Raman like the other three geometries did (`RK45.jl:1546-1550`).
+   Exotic combination (free-space + plasma/Raman).
+7. ⚪ Remaining `NativeIneligible` sites (non-finite `flength` for
+   z-dependent linops, unrecognized bare `f!` closures, missing Rust
+   ionisation/Raman handle when the library is absent or toggles are
+   forced off) are correct-by-design edge-case guards, not gaps to close.
+
+No other nonlinear response type exists in the codebase beyond
+Kerr/plasma/Raman/`RamanRespIntermediateBroadening` (confirmed by grepping
+`Nonlinear.jl`/`Ionisation.jl`) — so items 1-4 are the complete list of
+what stands between "native handles the documented high-level API" and
+"native is exclusively used for every response/geometry combination
+`Interface.jl` can construct." Item 5-7 remain because the low-level API
+is intentionally broader than the high-level one, not because of missed
+scope.
+
+## Suggestions backlog (imported from SUGGESTIONS.md, 2026-07-07)
+
+Full detail (equations, rationale, per-item code sketches) stays in
+`SUGGESTIONS.md` — this is the tracking summary, synced so status lives in
+one place. None of S1/S2/S4/S5/S6 has started. **S3 is partially started**:
+the GPU-resident stepper work landed 2026-07-05/07 (see Phase G's "Open
+items" entry and "Done (recent)") implements a narrow slice of S3
+(mode-averaged RealGrid Kerr-only, no threading/dispatch-threshold/design
+doc) — and did so *before* the GPU CI dependency S3 itself declares
+("needs a CUDA machine... do NOT start before [GPU CI] exists, or it will
+rot"), which is exactly what happened once already (uncommitted 2 days,
+found broken until manually re-verified). GPU CI is still open (see "GPU
+CI coverage" below) — treat S3's remaining scope (design doc, full
+`NativeBackend` parity, threading, dispatch threshold, `test_native_gpu.jl`)
+as still gated on it.
+
+**ISA / hardware dispatch — synced to actual code state (2026-07-07):**
+`dispatch.rs`'s hardware cascade (CUDA → Vulkan → AVX-512 → AVX2 → NEON →
+Apple AMX → portable) is real for *detection and selection*
+(`is_x86_feature_detected!`, `dlopen`-based Vulkan/CUDA probes all
+genuinely check the running machine). But grepping `luna-rust/src/` for
+`target_feature`/`_mm256_`/`_mm512_`/`std::arch` finds vectorized code in
+exactly **one** file: `raman.rs`'s `solve_avx2`. Every other kernel (Kerr,
+RK45 stage accumulation, window/norm broadcasts, QDHT) runs the same
+portable-scalar code regardless of which `HardwarePath` `dispatch.rs`
+selects — so today the dispatcher's choice of AVX-512/AVX2/NEON is
+**cosmetic** for everything except Raman. This is suggestion 3 below,
+tracked as S1.4; until it lands, "AVX-512 path selected" does not mean
+"AVX-512 code ran."
+
+### 🟡 S1 — Hot-loop CPU performance (suggestions 3, 4, 5)
+*Not started. Needs `benchmark_native_default.jl` as a before/after harness
+— that now exists (Phase G.3), so this is unblocked.*
+1. FFTW wisdom for native plans (item 4) — bind
+   `fftw_import_wisdom_from_filename`/`fftw_export_wisdom_to_filename` in
+   `fftw.rs`; thread `Utils.cachedir()`'s wisdom path through
+   `native_set_fftw_plans` (new trailing arg, `C_NULL` default keeps CI
+   timing unchanged).
+2. Fused RK45 stage accumulation (item 3c) — one pass per stage reading
+   each `k_j` once instead of one pass per coefficient. Summation-order
+   change: validate with fixed-step (`max_dt=min_dt`) equivalence tests
+   per the Phase 2 nondeterminism-floor lesson (TESTING.md §3).
+3. `exp(L·c_i·dt)` caching (item 3d) — cache per-stage propagator arrays
+   keyed on `dt`; measure reject-rate first (skip if rejects <5%, the win
+   is mainly skipping recompute on same-dt retries).
+4. SIMD Kerr + window/norm broadcasts (item 3a) — route through
+   `dispatch.rs`'s existing AVX2/AVX-512 lanes (see ISA sync note above:
+   this is the fix for "dispatch selects a path but only Raman uses it").
+   Add a Rust unit test asserting SIMD lane == scalar lane bitwise (or
+   ≤1 ulp where FMA contraction differs).
+5. BLAS-3 QDHT (item 5) — `blas.rs`'s `cblas_dgemm` binding already exists
+   (landed as part of the GPU-suggestions pass, see "GPU-resident stepper"
+   entry below) but has **no Julia-side caller** (`init_blas_path`
+   unreferenced in `src/*.jl`) — currently dead code. Wire it: pass the
+   BLAS path at init like the FFTW path, `LUNA_QDHT_BLAS=0` opt-out. Gate:
+   `test_qdht_rust.jl` tolerance unchanged (~1e-13) + ≥1.5× QDHT
+   micro-bench at n_r=256, or revert.
+6. Split-complex exp-linop spike (item 3b) — timeboxed Criterion-only
+   experiment; only do the invasive guru-split-DFT FFTW plan work if it
+   shows >1.3×, otherwise record the negative result and close.
+
+### 🟡 S2 — Threading the native RHS (suggestion 2)
+*Not started. Depends on S1.4 (dispatch plumbing).*
+1. `native_set_threads(handle, n)` FFI, wired from `Threads.nthreads()`,
+   default 1 (bit-identical to today).
+2. `rhs_radial`: rayon over radial nodes, each node's own FFTW
+   new-array-execute call against one shared plan; one scratch slab per
+   rayon worker (never shared — this is precisely the bug the Julia
+   `Threads.@threads` `pointcalc!` race had, see Phase B/"Done (recent)").
+3. Modal: rayon inside `hcubature_v`'s batch callback only — cubature's
+   adaptive node placement stays sequential/deterministic.
+4. 3-D free-space FFT: `fftw_plan_with_nthreads`/`fftw_init_threads`
+   (dlopened `libfftw3_threads`, silent fallback if absent).
+5. Error-norm reduction stays sequential (determinism, ties to S5.2).
+- Gate: universal + fixed-step equivalence under `JULIA_NUM_THREADS=4` +
+  ≥2× radial/free benchmark at 4 threads + n=1 bit-identical to pre-track.
+
+### 🟠 S3 — GPU-resident propagation (suggestion 1) — partially started, see note above
+*Large (5+ sessions). Plan's own stated dependency (GPU CI) is not yet
+met — see "GPU CI coverage" below.*
+Already landed (2026-07-05/07, ahead of the plan's own sequencing): the
+`NativeBackend` trait extraction, `CudaNativeSim` scoped to mode-averaged
+RealGrid Kerr-only, verified on real hardware, wired behind
+`LUNA_USE_RUST_CUDA_NATIVE=1`. Still open, per the original design:
+1. Design doc (`docs/native-port/GPU.md` exists from the prior pass but
+   deviates from what was built — reconcile or rewrite: it specifies an
+   `enum{Cpu,Gpu}` dispatch, the actual code uses `Box<dyn NativeBackend>`).
+2. Plasma, Raman, radial/modal/free-space geometries on `CudaNativeSim`
+   (every `set_*_params` beyond mode-avg Kerr currently returns `-1`).
+3. Problem-size dispatch threshold (measured crossover, not guessed) so
+   small grids stay on CPU; `LUNA_NATIVE_GPU=0/1/auto` env override.
+4. cumtrapz (plasma scan, work-efficient prefix scan) and Raman ADE
+   kernels — or explicit `NativeIneligible`-style eligibility split
+   keeping those configs on CPU for GPU v1, documented as such.
+5. `test/test_native_gpu.jl`-style coverage of the above, mirroring the
+   phase-test structure used throughout the CPU native port.
+
+### 🟡 S4 — Architecture cleanups (suggestions 6, 7, 8)
+*Not started. Plan says do this BEFORE S3 (S3 multiplies the toggle zoo
+otherwise) — that ordering was already missed once S3 partially started;
+land this before extending S3 further.*
+1. Config struct (item 6) — `src/Config.jl` `BackendConfig` (native ∈
+   {:auto,:on,:off}, per-kernel overrides, gpu, threads, qdht_blas), one
+   `Luna.backend_config()` resolver reading env vars once; migrate every
+   `get(ENV, "LUNA_USE_RUST_*")` call site to consult it instead. Add
+   `Luna.backend_report()` (also closes BACKLOG's own `_LAST_STEPPER_TYPE`
+   test-hook item under a public API).
+2. FFI error enum (item 7) — `#[repr(i32)] enum FfiStatus{Ok=0,
+   Ineligible>0,Bug<0}` in `ffi.rs`; one Julia `check_ffi(rc, what)`
+   replacing the per-call-site `rc == 0 ||` patterns in `RK45.jl`.
+3. Explicit accessor seams (item 8) — `NonlinearRHS.jl`/`Nonlinear.jl`
+   gain `kerr_γ3(resp)`, `norm_pre(norm!)`, `norm_βfun(norm!)`; delete the
+   `occursin("γ3", string(fld))`/`getfield(norm_func, :pre)` reflective
+   probes in `RK45.jl`.
+- Gate: universal + a `backend_report()` test asserting `RustNativeStepper`
+  for default `prop_capillary` and Julia stepper under `native=:off`.
+
+### 🟡 S5 — Numerics options (suggestions 10, 11, 12)
+*Not started. Items are independent of each other.*
+1. Mixed-precision spike (item 10) — timeboxed Criterion bench only;
+   proceed to real implementation only if >1.4× projected AND the b5−b4
+   cancellation analysis (TESTING.md §3) shows the f64-reduced estimate
+   keeps the same step sequence on the benchmark case.
+2. Deterministic mode (item 11) — `native_set_deterministic(handle, bool)`
+   forcing sequential reductions + pinning `dispatch.rs` to the portable
+   lane; `deterministic=true` kwarg threaded through `BackendConfig`
+   (hard dependency: S4.1). Test: two runs bit-identical, with a written
+   statement of what's NOT guaranteed (cross-machine libm differences).
+3. 5th-order dense output (item 12) — Shampine's DP5 continuous extension
+   in `native.rs::interpolate` (stages already exposed via
+   `get_ks_stage`, Phase 8) **and** `RK45.jl`'s `interpC`, same commit —
+   removes the Julia-vs-native saved-grid tolerance tier entirely (only
+   valid if both sides change together).
+
+### ⚪ S6 — Distribution & ecosystem (suggestions 9, 13, 14)
+*Not started. Lowest priority; 13 is smallest/highest-value of the three.*
+1. Prebuilt binaries (item 13) — `release.yml` building
+   `libluna_rust` per-platform, uploaded to GitHub Releases with a sha256
+   manifest; `deps/build.jl` tries download-by-version+checksum first,
+   falls back to `cargo build` (kept as the from-source/dev path).
+2. Rust-side scan HDF5 writer (item 9) — `io.rs` `scan_write_point(...)`
+   writing directly from native buffers under the existing flock/
+   `LockFileEx` queue lock (hard dependency: Windows scan-lock validation
+   below, for the Windows half). Opt-in `Output.jl` backend.
+3. Standalone CLI (item 14) — `luna-rust/src/bin/luna-cli.rs`
+   (`[[bin]]` in the existing crate, not a new workspace member — see the
+   root-workspace-removal history in "Done (recent)"). TOML config in,
+   scoped to native-eligible configs, HDF5 out; compare against a
+   Julia run of the same config as the acceptance test. WASM demo only
+   after the CLI exists.
+
+**Suggested execution order** (per `SUGGESTIONS.md`, adjusted for what's
+already partially done): S1 → S4 → S2 → S5.2/S5.3 → S6.1 → finish S3 →
+remaining S5/S6.
+
 ## Open items
 
 ### 🟢 Native-Rust backend port (phased)
@@ -710,7 +926,9 @@ findings below.
   which neutralizes `.cargo/config.toml`'s `target-cpu=native` for package-driven
   builds. This is the intended portability safeguard (the runtime dispatcher in
   `dispatch.rs` selects the ISA at runtime); native opt only applies to a manual
-  `cargo build`. **Note:** `actions-rust-lang/setup-rust-toolchain` sets
+  `cargo build`. Note that today this selection is mostly informational for
+  everything but Raman — see the "Suggestions backlog" section's ISA sync note
+  and S1.4 for the gap. **Note:** `actions-rust-lang/setup-rust-toolchain` sets
   `RUSTFLAGS=-D warnings` in CI, which propagates through `deps/build.jl` — so
   the package build runs under strict warnings (desired; keeps the Rust code clean).
 
