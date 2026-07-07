@@ -392,7 +392,7 @@ Gate (E.4, final): all 7 test groups green — 46641 passed, 12 broken
 (pre-existing), 0 failed/errored (rust group: 42008/42008, includes 4 new
 tests). **Phase E (native scope: modal generality) is now complete.**
 
-### Phase F — Native scope: Raman completions + z-dependence (🟡, medium)
+### Phase F — Native scope: Raman completions + z-dependence (✅, medium)
 1. ✅ `thg=false` Raman — resident c2c Hilbert transform, wired into all
    three geometries that already carry `thg=true` Raman (mode-averaged,
    radial, modal). See "Done (recent)" below.
@@ -404,15 +404,18 @@ tests). **Phase E (native scope: modal generality) is now complete.**
    together for any geometry.
 3. ✅ Multi-point pressure gradients (piecewise Phase 7) — see "Done (recent)"
    below.
-4. Gas mixtures: per-species density vector + summed susceptibilities in
-   the native RHS (removes the `densityfun isa Real` guard).
+4. ✅ Gas mixtures (mode-averaged, Kerr-only) — see "Done (recent)" below.
+   Mixtures with plasma/Raman, or mixtures for radial/modal/free-space, are
+   still out of scope (not a simple linear sum of species contributions).
 
 ### Phase G — Platform & CI robustness (🟡, small-medium)
 1. ✅ Windows scan locking via `LockFileEx`/`UnlockFileEx` — implemented
    (commit `febdde1`, 2026-06-28); still needs a Windows CI runner to
    validate (existing item below).
 2. GPU CI: a scheduled CUDA-equipped job running the currently
-   self-skipping GPU equivalence tests (existing item below).
+   self-skipping GPU equivalence tests (existing item below). Local hardware
+   verification (not CI) is now possible — see "Open items" below, this
+   machine has an RTX 5060 Ti + CUDA 13.3 toolkit installed.
 3. ✅ CI benchmark job — see "Done (recent)" below.
 
 ### Phase H — Upstream contributions (⚪, small) — 3 of 4 sent, see "Done (recent)"
@@ -714,6 +717,41 @@ findings below.
 
 ## Done (recent)
 
+- ✅ **Phase F item 4: gas mixtures, native (mode-averaged, Kerr-only).**
+  `RustNativeStepper`'s `is_mode_avg` block (`RK45.jl`) now accepts
+  `densityfun(z) isa AbstractVector{<:Real}` (previously any non-`Real`
+  density threw `NativeIneligible`, forcing every mixture onto the Julia
+  stepper). Mixtures use Luna's existing low-level convention — no new
+  Julia struct needed — `densityfun(z)` returns one density per species and
+  `f!.resp` is a tuple of per-species response tuples (see
+  `test/test_mixtures.jl`, already exercised this shape). Key insight: Kerr
+  is the only nonlinearity summed here, and `NonlinearRHS.Et_to_Pt!`'s
+  `AbstractVector`-density branch calls each species' response with its own
+  density and accumulates into the same `Pt` buffer — since Kerr's
+  contribution is linear in `density·γ3`, the whole per-species sum
+  collapses into a **single scalar** `kerr_fac = Σᵢ densityᵢ·ε₀·γ3ᵢ`, computed
+  once in Julia. **No Rust/FFI changes were needed at all** — `native.rs`'s
+  `kerr_fac` scalar and `native_set_mode_avg_params` signature are
+  unchanged; only `RK45.jl`'s eligibility guard and γ3-extraction logic
+  changed. Each mixture species is validated to be a single plain Kerr
+  response (`_is_plain_kerr_resp`); any species carrying plasma, Raman, or
+  more than one response throws `NativeIneligible` (not a simple linear sum,
+  out of scope) instead of silently miscomputing. Mixtures combined with a
+  z-dependent (pressure-gradient) linop are also rejected explicitly (no
+  existing construction path produces this combination, but the guard makes
+  the rejection explicit rather than an accidental `UndefVarError`).
+  New test: `test/test_native_mixture.jl` — a 2-species mixture of the same
+  gas at half pressure each (physically equivalent to
+  `test_mixtures.jl`'s single-gas reference); single-step equivalence
+  <1e-13, full-solve equivalence measured ~3.8e-16 (bit-parity tier, since
+  Kerr's native RHS is unchanged — only the Julia-side `kerr_fac`
+  computation differs), plus a rejection test for an out-of-scope
+  multi-response species. `test_mixtures.jl` itself (pre-existing,
+  `:io`-tagged) now exercises the native path for its mixture run for the
+  first time (previously silently fell back to Julia) — still passes at its
+  existing `rel < 1e-8` tolerance against the single-gas Julia reference.
+  Full 7-group gate: all Pass==Total (rust 42045/42045, physics
+  1645/1657 with the same 12 pre-existing broken tests, unrelated), 0 failed.
 - ✅ **Phase F item 3: multi-point (general piecewise) pressure gradients,
   native.** Generalizes Phase 7's z-dependent linop (previously two-point
   `Capillary.gradient(gas,L,p0,p1)` only) to the general multi-point

@@ -897,15 +897,27 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     if is_mode_avg || is_radial || is_modal || is_free
         # Gas mixtures (`MarcatiliMode(a, (gas1,gas2,...), (p1,p2,...))`) give
         # `densityfun(z)` a per-species Vector return type and a nested
-        # tuple-of-tuples `resp` (one response tuple per component) — neither
-        # shape is handled by the native RHS setup below (it expects a
-        # scalar density and a flat response tuple), and nothing upstream
-        # rejects it. Left unguarded this silently computes a Vector
-        # `kerr_fac`/`beta` that only fails much later at the FFI boundary
-        # with an opaque `MethodError`. Reject it here instead, with a
-        # message that says what's actually unsupported.
-        f!.densityfun(0.0) isa Real || throw(NativeIneligible("densityfun(z) returned " *
-              "a non-scalar value — gas mixtures are not yet supported by the native path."))
+        # tuple-of-tuples `resp` (one response tuple per component). Since
+        # Phase F item 4 (BACKLOG.md) the mode-averaged path handles this
+        # (Kerr-only — see the `is_mode_avg` block below); radial/modal/free
+        # still expect a scalar density and a flat response tuple, and
+        # nothing upstream rejects a mixture for them, so a Vector density
+        # there would silently compute garbage `kerr_fac`/`beta` that only
+        # fails much later at the FFI boundary with an opaque `MethodError`.
+        # Reject those here instead, with a message that says what's
+        # actually unsupported.
+        dens0 = f!.densityfun(0.0)
+        if is_mode_avg
+            dens0 isa Real || dens0 isa AbstractVector{<:Real} ||
+                throw(NativeIneligible("densityfun(z) returned $(typeof(dens0)) — the " *
+                      "native mode-averaged path only understands a scalar density or a " *
+                      "per-species Vector{<:Real} (gas mixture)."))
+        else
+            dens0 isa Real || throw(NativeIneligible("densityfun(z) returned " *
+                  "a non-scalar value — gas mixtures are only supported by the native " *
+                  "mode-averaged path (Phase F item 4); radial/modal/free-space mixtures " *
+                  "are not yet supported."))
+        end
 
         grid = f!.grid
         is_real_grid = grid isa Luna.Grid.RealGrid   # EnvGrid uses c2c FFTs
@@ -942,21 +954,53 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         owin = f!.grid.ωwin
         sidx = UInt8.(f!.grid.sidx)
 
-        # Find Kerr response and extract γ3
-        γ3 = 0.0
-        for r in f!.resp
-            for fld in fieldnames(typeof(r))
-                if occursin("γ3", string(fld))
-                    γ3 = getfield(r, fld)
-                    break
-                end
-            end
-            γ3 != 0.0 && break
-        end
-
         is_zdep_mode_avg || _check_density_zindependent(f!.densityfun, flength)
         density = f!.densityfun(0.0)
-        kerr_fac = density * Luna.PhysData.ε_0 * γ3
+        is_mixture = density isa AbstractVector
+        γ3 = 0.0
+
+        if is_mixture
+            # Gas mixtures (Phase F item 4): `densityfun(z)` returns one
+            # density per species and `f!.resp` is a tuple of per-species
+            # response tuples (Luna's own low-level mixture convention —
+            # see test_mixtures.jl). Kerr is the only nonlinearity handled
+            # here: `NonlinearRHS.Et_to_Pt!`'s `AbstractVector`-density
+            # branch calls each species' response tuple with that species'
+            # own density and accumulates into the same `Pt` buffer, so for
+            # a plain Kerr response (linear in density·γ3) the whole sum
+            # collapses into one scalar — no per-species vector is needed on
+            # the Rust side at all: kerr_fac = Σᵢ densityᵢ·ε₀·γ3ᵢ. Plasma and
+            # Raman mixtures are not a simple linear sum like this, so they
+            # are rejected below rather than silently ignored.
+            is_zdep_mode_avg && throw(NativeIneligible("gas mixtures are not supported " *
+                  "together with a z-dependent (pressure-gradient) linop."))
+            length(f!.resp) == length(density) ||
+                throw(NativeIneligible("mixture densityfun(z) returned $(length(density)) " *
+                      "species but f!.resp has $(length(f!.resp)) entries — shape mismatch."))
+            kerr_fac = 0.0
+            for (ρi, respi) in zip(density, f!.resp)
+                length(respi) == 1 && _is_plain_kerr_resp(respi[1]) ||
+                    throw(NativeIneligible("mixture species response $(respi) is not a " *
+                          "single plain Kerr response — only Kerr is wired for the native " *
+                          "mixture path (Phase F item 4); plasma/Raman mixtures are out of " *
+                          "scope."))
+                γ3i = getfield(respi[1], fieldnames(typeof(respi[1]))[1])
+                kerr_fac += ρi * Luna.PhysData.ε_0 * γ3i
+            end
+        else
+            # Find Kerr response and extract γ3
+            for r in f!.resp
+                for fld in fieldnames(typeof(r))
+                    if occursin("γ3", string(fld))
+                        γ3 = getfield(r, fld)
+                        break
+                    end
+                end
+                γ3 != 0.0 && break
+            end
+            kerr_fac = density * Luna.PhysData.ε_0 * γ3
+        end
+
         nlscale = Luna.NonlinearRHS.nlscale
         sqrt_aeff = sqrt(f!.aeff(0.0))
 
@@ -985,8 +1029,9 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # continuing without plasma — continuing native-minus-plasma would be
         # wrong physics with only a log line to notice it, which became
         # unacceptable once native became the default (Phase 8) rather than
-        # opt-in.
-        for r in f!.resp
+        # opt-in. Mixtures are Kerr-only by construction (validated above),
+        # so none of this applies to them.
+        for r in (is_mixture ? () : f!.resp)
             if r isa Luna.Nonlinear.PlasmaCumtrapz
                 irf = r.ratefunc
                 if irf isa Luna.Ionisation.IonRatePPTAccel &&
@@ -1032,7 +1077,8 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # it). Both `thg=true`/`thg=false` `RamanPolarField` (Phase F.1) are
         # still supported. An ineligible Raman response must fail the whole
         # construction (NativeIneligible), not silently continue without it.
-        for r in f!.resp
+        # Mixtures are Kerr-only by construction (validated above).
+        for r in (is_mixture ? () : f!.resp)
             if r isa Luna.Nonlinear.RamanPolarField || r isa Luna.Nonlinear.RamanPolarEnv
                 rr = r.r
                 Rs = rr isa Luna.Raman.CombinedRamanResponse ?
@@ -1066,8 +1112,10 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # once native became the default — that test's self-frequency-shift
         # numbers depend entirely on Raman, so silently dropping it produced
         # a completely different (not just numerically close) result.
+        # Mixtures are validated above (each species checked individually);
+        # this catch-all only applies to the single-species case.
         is_kerr_resp(r) = _is_plain_kerr_resp(r)
-        for r in f!.resp
+        for r in (is_mixture ? () : f!.resp)
             is_kerr_resp(r) || r isa Luna.Nonlinear.PlasmaCumtrapz ||
                 r isa Luna.Nonlinear.RamanPolarField || r isa Luna.Nonlinear.RamanPolarEnv ||
                 throw(NativeIneligible("response type $(typeof(r)) is not wired for " *
