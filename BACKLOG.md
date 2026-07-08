@@ -461,11 +461,27 @@ modal) — this phase is only the genuinely-still-open remainder.
      Verified via `test/test_native_radial_shotnoise.jl`: Rust vs. Julia
      agreement ~1e-17 with noise, plus the same noisy-vs-clean regression
      guard. Full `rust` gate: 42063/42063 passing.
-   - **Still falls back** (guarded, not yet ported): mode-averaged and
-     radial EnvGrid noise (both rare — modified shot-noise + envelope
-     propagation) — `Et_noise` is `ComplexF64`-valued there, not the real
-     buffer the current FFI signatures accept; same fix shape, just a
-     second (complex) setter per geometry.
+   - **Mode-averaged and radial EnvGrid: also fully ported to native**
+     (`native_set_mode_avg_noise_cplx`/`native_set_radial_noise_cplx`,
+     same injection points, `ComplexF64` interleaved re/im arrays). This
+     closes the item completely — **not "rare"**: `prop_gnlse` is
+     envelope + mode-averaged with `shotnoise=true` by default
+     (`Interface.jl:1053`), so this was blocking the flagship *gnlse*
+     default workload from running natively, exactly like item 1's
+     original `prop_capillary` finding. Confirmed before/after with a
+     direct `prop_gnlse(...)` call: fell back to `PreconStepper` before
+     this fix, uses `RustNativeStepper` after (independent of
+     `raman=true`, which the native mode-averaged EnvGrid RHS already
+     supported via `RamanPolarEnv` — Phase F.2 — so noise was the sole
+     remaining blocker). Verified via
+     `test/test_native_envgrid_shotnoise.jl`: Rust vs. Julia agreement
+     ~1e-10 to ~1e-17 with noise for both geometries, plus the
+     noisy-vs-clean regression guard for each. Full `rust` gate:
+     42065/42065 passing. **Item 1 is now fully closed** — no remaining
+     `Et_noise` gap in any of the four native geometries that support it
+     (mode-averaged, radial); modal/free-space still correctly guard and
+     fall back (out of scope for this item — no native noise support was
+     ever claimed for them).
 2. 🟡 **`ramanmodel=:SiO2` in `prop_gnlse`** (`Interface.jl:1077-1079`) —
    `Raman.raman_response(t,:SiO2,...)` returns a bare
    `RamanRespIntermediateBroadening` (Gaussian-damped), not wrapped in

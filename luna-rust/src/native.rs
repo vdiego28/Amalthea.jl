@@ -161,6 +161,10 @@ pub struct CpuNativeSim {
     /// Julia's separate `Et_nl` buffer without the extra allocation/copy.
     pub et_noise: Vec<f64>,
     pub has_noise: bool,
+    /// EnvGrid (complex) counterpart of `et_noise`, length `n_time_over`.
+    /// Same injection point/formula as `et_noise`, added to `eto_cplx`
+    /// (also gated by `has_noise`).
+    pub et_noise_cplx: Vec<Complex<f64>>,
 
     // ── Phase 2: EnvGrid complex time-domain buffers (c2c path) ─────────────────
     pub eto_cplx: Vec<Complex<f64>>,
@@ -193,6 +197,9 @@ pub struct CpuNativeSim {
     /// (NonlinearRHS.jl:691-692; no 1/sc factor here, unlike mode-averaged).
     pub radial_et_noise: Vec<f64>,
     pub has_radial_noise: bool,
+    /// EnvGrid (complex) counterpart of `radial_et_noise`, same layout,
+    /// gated by the same `has_radial_noise` flag.
+    pub radial_et_noise_cplx: Vec<Complex<f64>>,
     /// Number of radial grid points (`Hankel.QDHT.N`). Buffers are column-major
     /// `(n_time, n_r)`: column `r` is `n_time` contiguous elements.
     pub n_r: usize,
@@ -601,6 +608,7 @@ impl CpuNativeSim {
             n_spec_over: 0,
             et_noise: Vec::new(),
             has_noise: false,
+            et_noise_cplx: Vec::new(),
             eto_cplx: Vec::new(),
             pto_cplx: Vec::new(),
             eoo_cplx: Vec::new(),
@@ -619,6 +627,7 @@ impl CpuNativeSim {
             is_radial: false,
             radial_et_noise: Vec::new(),
             has_radial_noise: false,
+            radial_et_noise_cplx: Vec::new(),
             n_r: 0,
             qdht: None,
             qdht_scale_fwd: 1.0,
@@ -1035,6 +1044,13 @@ impl CpuNativeSim {
         let inv_sc = 1.0 / (self.nlscale * self.sqrt_aeff);
         for v in &mut self.eto_cplx { *v *= inv_sc; }
 
+        // ── Step 2b: modified shot-noise injection (Et_nl = Eto + Et_noise/sc) ──
+        if self.has_noise {
+            for i in 0..no {
+                self.eto_cplx[i] += self.et_noise_cplx[i] * inv_sc;
+            }
+        }
+
         // ── Step 3: Kerr_env: pto_cplx[i] += (3/4)*kerr_fac · |E|² · E ──────────
         // Factor 3/4: SVEA averaging of E³ over carrier oscillation
         // (matches KerrScalarEnv! in Nonlinear.jl:121).
@@ -1263,6 +1279,13 @@ impl CpuNativeSim {
                     2 * self.radial_eto_c.len())
             };
             qdht.apply_cplx(buf, no, scale_inv);
+        }
+
+        // ── Step 2b: modified shot-noise injection (Et_nl = Eto + Et_noise) ──────
+        if self.has_radial_noise {
+            for i in 0..(no * n_r) {
+                self.radial_eto_c[i] += self.radial_et_noise_cplx[i];
+            }
         }
 
         // ── Step 3: Kerr_env: Pto += (3/4)*kerr_fac · |E|² · E, pointwise (t,r) ───
@@ -2181,10 +2204,12 @@ pub trait NativeBackend {
     unsafe fn set_fftw_plans(&mut self, lib_path: *const c_char, n_time: size_t, n_time_over: size_t, is_real: c_int, flags: c_uint) -> i32;
     unsafe fn set_mode_avg_params(&mut self, n_time: size_t, n_time_over: size_t, towin: *const c_double, owin: *const c_double, sidx: *const u8, pre_re: *const c_double, pre_im: *const c_double, beta: *const c_double, kerr_fac: c_double, nlscale: c_double, sqrt_aeff: c_double) -> i32;
     unsafe fn set_mode_avg_noise(&mut self, noise: *const c_double, n: size_t) -> i32;
+    unsafe fn set_mode_avg_noise_cplx(&mut self, noise_re: *const c_double, noise_im: *const c_double, n: size_t) -> i32;
     unsafe fn set_zdep_mode_avg_params(&mut self, n_z: size_t, z_pts: *const c_double, p_pts: *const c_double, n_dspl: size_t, dspl_x: *const c_double, dspl_y: *const c_double, dspl_d: *const c_double, gamma: *const c_double, nwg_re: *const c_double, nwg_im: *const c_double, omega: *const c_double, model: c_uint, loss_on: c_uint, eps0_gamma3: c_double, omega0: c_double, gamma0: c_double, dgamma0: c_double, nwg0_re: c_double, nwg0_im: c_double, dnwg0_re: c_double, dnwg0_im: c_double) -> i32;
     unsafe fn set_plasma_params(&mut self, ion_ptr: *const crate::ionization::PptIonizationRate, ionpot: c_double, e_ratio: c_double, preionfrac: c_double, dt: c_double) -> i32;
     unsafe fn set_radial_params(&mut self, n_time: size_t, n_time_over: size_t, n_r: size_t, t_matrix: *const c_double, scale_fwd: c_double, scale_inv: c_double, towin: *const c_double, kerr_fac: c_double, m_re: *const c_double, m_im: *const c_double) -> i32;
     unsafe fn set_radial_noise(&mut self, noise: *const c_double, n: size_t) -> i32;
+    unsafe fn set_radial_noise_cplx(&mut self, noise_re: *const c_double, noise_im: *const c_double, n: size_t) -> i32;
     unsafe fn set_raman_params(&mut self, omega: *const c_double, gamma: *const c_double, coupling: *const c_double, n_osc: size_t, dt: c_double, density: c_double, thg: c_int) -> i32;
     unsafe fn set_modal_params(&mut self, n_time: size_t, n_time_over: size_t, n_modes: size_t, npol: size_t, a: c_double, unm: *const c_double, inv_sqrt_n: *const c_double, order: *const i32, kind: *const u8, phi: *const c_double, full: u8, pol_select: *const u8, towin: *const c_double, kerr_fac: c_double, nlfac_re: *const c_double, nlfac_im: *const c_double, lib_path: *const c_char, rtol: c_double, atol: c_double, maxevals: size_t) -> i32;
     unsafe fn set_free_params(&mut self, n_time: size_t, n_time_over: size_t, n_y: size_t, n_x: size_t, flags: c_uint, towin: *const c_double, kerr_fac: c_double, m_re: *const c_double, m_im: *const c_double) -> i32;
@@ -2382,6 +2407,7 @@ impl NativeBackend for CpuNativeSim {
     s.sqrt_aeff = sqrt_aeff;
     s.has_noise = false;
     s.et_noise = Vec::new();
+    s.et_noise_cplx = Vec::new();
     0
 }
     unsafe fn set_mode_avg_noise(&mut self, noise: *const c_double, n: size_t) -> i32 {
@@ -2389,6 +2415,16 @@ impl NativeBackend for CpuNativeSim {
         if noise.is_null() || n == 0 { return -1; }
         if n != s.n_time_over { return -2; }
         s.et_noise = unsafe { std::slice::from_raw_parts(noise, n) }.to_vec();
+        s.has_noise = true;
+        0
+    }
+    unsafe fn set_mode_avg_noise_cplx(&mut self, noise_re: *const c_double, noise_im: *const c_double, n: size_t) -> i32 {
+        let s = self;
+        if noise_re.is_null() || noise_im.is_null() || n == 0 { return -1; }
+        if n != s.n_time_over { return -2; }
+        let re = unsafe { std::slice::from_raw_parts(noise_re, n) };
+        let im = unsafe { std::slice::from_raw_parts(noise_im, n) };
+        s.et_noise_cplx = re.iter().zip(im.iter()).map(|(&r, &i)| Complex::new(r, i)).collect();
         s.has_noise = true;
         0
     }
@@ -2485,6 +2521,7 @@ impl NativeBackend for CpuNativeSim {
     }
     s.has_radial_noise = false;
     s.radial_et_noise = Vec::new();
+    s.radial_et_noise_cplx = Vec::new();
 
     0
 }
@@ -2493,6 +2530,16 @@ impl NativeBackend for CpuNativeSim {
         if noise.is_null() || n == 0 { return -1; }
         if n != s.n_time_over * s.n_r { return -2; }
         s.radial_et_noise = unsafe { std::slice::from_raw_parts(noise, n) }.to_vec();
+        s.has_radial_noise = true;
+        0
+    }
+    unsafe fn set_radial_noise_cplx(&mut self, noise_re: *const c_double, noise_im: *const c_double, n: size_t) -> i32 {
+        let s = self;
+        if noise_re.is_null() || noise_im.is_null() || n == 0 { return -1; }
+        if n != s.n_time_over * s.n_r { return -2; }
+        let re = unsafe { std::slice::from_raw_parts(noise_re, n) };
+        let im = unsafe { std::slice::from_raw_parts(noise_im, n) };
+        s.radial_et_noise_cplx = re.iter().zip(im.iter()).map(|(&r, &i)| Complex::new(r, i)).collect();
         s.has_radial_noise = true;
         0
     }
@@ -3167,6 +3214,24 @@ pub unsafe extern "C" fn native_set_mode_avg_noise(
     unsafe { s.backend.set_mode_avg_noise(noise, n) }
 }
 
+/// EnvGrid (`ComplexF64`) counterpart of [`native_set_mode_avg_noise`] —
+/// same injection point/formula, complex-valued noise (interleaved
+/// re/im arrays, each length `n`).
+///
+/// # Safety
+/// `sim` must be valid; `noise_re`/`noise_im` must each be valid for `n` reads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_set_mode_avg_noise_cplx(
+    sim: *mut NativeSim,
+    noise_re: *const c_double,
+    noise_im: *const c_double,
+    n: size_t,
+) -> i32 {
+    if sim.is_null() { return -1; }
+    let s = unsafe { &mut *sim };
+    unsafe { s.backend.set_mode_avg_noise_cplx(noise_re, noise_im, n) }
+}
+
 /// Wire the z-dependent linop path (Phase 7 + BACKLOG.md Phase F item 3 —
 /// mode-averaged, graded-core constant-radius `MarcatiliMode`, two-point OR
 /// general multi-point piecewise pressure gradient, see MATH.md §3.5 and
@@ -3329,6 +3394,24 @@ pub unsafe extern "C" fn native_set_radial_noise(
     if sim.is_null() { return -1; }
     let s = unsafe { &mut *sim };
     unsafe { s.backend.set_radial_noise(noise, n) }
+}
+
+/// EnvGrid (`ComplexF64`) counterpart of [`native_set_radial_noise`] —
+/// same injection point/formula, complex-valued noise (interleaved re/im
+/// arrays, each length `n`, column-major `(n_time_over, n_r)`).
+///
+/// # Safety
+/// `sim` must be valid; `noise_re`/`noise_im` must each be valid for `n` reads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_set_radial_noise_cplx(
+    sim: *mut NativeSim,
+    noise_re: *const c_double,
+    noise_im: *const c_double,
+    n: size_t,
+) -> i32 {
+    if sim.is_null() { return -1; }
+    let s = unsafe { &mut *sim };
+    unsafe { s.backend.set_radial_noise_cplx(noise_re, noise_im, n) }
 }
 
 /// Wire the Raman ADE solver as an additive term in `rhs_mode_avg_real`

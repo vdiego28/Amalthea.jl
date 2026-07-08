@@ -40,5 +40,20 @@ using TestItems
             end
             @test RK45._LAST_STEPPER_TYPE[] <: RK45.RustNativeStepper
         end
+
+        @testset "Default prop_gnlse (envelope, shotnoise on) uses RustNativeStepper" begin
+            # BACKLOG.md Phase I item 1 — until the EnvGrid mode-averaged
+            # Et_noise fix, this fell back silently (shotnoise=true is
+            # Interface.jl's default for prop_gnlse too — Interface.jl:1053),
+            # exactly mirroring the prop_capillary regression above.
+            withenv("LUNA_USE_RUST_NATIVE" => nothing) do
+                with_logger(NullLogger()) do
+                    prop_gnlse(1.0, 1.0, [0.0, 0.0];
+                               λ0=1550e-9, λlims=(1000e-9, 3000e-9), trange=10e-12,
+                               τfwhm=100e-15, power=1e4, saveN=2)
+                end
+            end
+            @test RK45._LAST_STEPPER_TYPE[] <: RK45.RustNativeStepper
+        end
     end
 end

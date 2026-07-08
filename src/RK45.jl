@@ -968,17 +968,6 @@ function RustNativeStepper(f!, linop, y0, t, dt;
 
     # Set parameters if mode-averaged
     if is_mode_avg
-        # Phase I item 1: `native_set_mode_avg_params` didn't receive a noise
-        # buffer at all, so a `shotnoise=true` config (`:modified` model,
-        # `Interface.jl`'s default) silently ran with no noise term rather
-        # than falling back — this was the flagship default field-resolved
-        # workload. Fixed for RealGrid below (`native_set_mode_avg_noise`);
-        # EnvGrid mode-averaged noise is still unported (rare: modified
-        # shot-noise + mode-averaged envelope propagation).
-        isnothing(f!.Et_noise) || is_real_grid || throw(NativeIneligible(
-            "modified shot-noise (Et_noise) not yet supported for the native " *
-            "mode-averaged EnvGrid path"))
-
         norm_func = f!.norm!
         pre = getfield(norm_func, :pre)
 
@@ -1055,16 +1044,23 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             kerr_fac, nlscale, sqrt_aeff)
         rc == 0 || error("native_set_mode_avg_params failed: $rc")
 
-        # Phase I item 1: wire modified shot-noise (RealGrid only — see the
-        # guard above). `f!.Et_noise` is a constant Float64 buffer of length
-        # n_time_over, precomputed once at TransModeAvg construction time
-        # (NonlinearRHS.jl:534-535); the Rust RHS adds it (rescaled by
-        # 1/sc each call) to `eto`, matching `Et_nl = Eto + Et_noise/sc`.
+        # Phase I item 1: wire modified shot-noise. `f!.Et_noise` is a constant
+        # buffer of length n_time_over (Float64 for RealGrid, ComplexF64 for
+        # EnvGrid), precomputed once at TransModeAvg construction time
+        # (NonlinearRHS.jl:534-535); the Rust RHS adds it (rescaled by 1/sc
+        # each call) to `eto`/`eto_cplx`, matching `Et_nl = Eto + Et_noise/sc`.
         if !isnothing(f!.Et_noise)
-            rc = ccall((:native_set_mode_avg_noise, _LIBLUNA_RUST_RK45), Cint,
-                (Ptr{Cvoid}, Ptr{Float64}, Csize_t),
-                handle.ptr, f!.Et_noise, length(f!.Et_noise))
-            rc == 0 || error("native_set_mode_avg_noise failed: $rc")
+            if is_real_grid
+                rc = ccall((:native_set_mode_avg_noise, _LIBLUNA_RUST_RK45), Cint,
+                    (Ptr{Cvoid}, Ptr{Float64}, Csize_t),
+                    handle.ptr, f!.Et_noise, length(f!.Et_noise))
+                rc == 0 || error("native_set_mode_avg_noise failed: $rc")
+            else
+                rc = ccall((:native_set_mode_avg_noise_cplx, _LIBLUNA_RUST_RK45), Cint,
+                    (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Csize_t),
+                    handle.ptr, real.(f!.Et_noise), imag.(f!.Et_noise), length(f!.Et_noise))
+                rc == 0 || error("native_set_mode_avg_noise_cplx failed: $rc")
+            end
         end
 
         # Wire plasma if present and a Rust ionization handle is available.
@@ -1227,12 +1223,6 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     # directly); `M`'s length (`n_spec`) and the FFI's internal buffer sizing
     # both already generalize to either grid type without further changes here.
     if is_radial
-        # Phase I item 1: ported for RealGrid below (`native_set_radial_noise`);
-        # EnvGrid radial noise is ComplexF64-valued and still unported.
-        isnothing(f!.Et_noise) || is_real_grid || throw(NativeIneligible(
-            "modified shot-noise (Et_noise) not yet supported for the native " *
-            "radial EnvGrid path"))
-
         HT = f!.QDHT
         n_r = HT.N
         n % n_r == 0 || error("RustNativeStepper: field length $n not divisible by QDHT.N=$n_r")
@@ -1297,14 +1287,22 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             real.(M), imag.(M))
         rc == 0 || error("native_set_radial_params failed: $rc")
 
-        # Phase I item 1: wire modified shot-noise (RealGrid only — see the
-        # guard above). `f!.Et_noise` is column-major `(n_time_over, n_r)`,
-        # matching Rust's `radial_eto` layout exactly (NonlinearRHS.jl:660-662).
+        # Phase I item 1: wire modified shot-noise. `f!.Et_noise` is
+        # column-major `(n_time_over, n_r)` (Float64 for RealGrid, ComplexF64
+        # for EnvGrid), matching Rust's `radial_eto`/`radial_eto_c` layout
+        # exactly (NonlinearRHS.jl:660-662).
         if !isnothing(f!.Et_noise)
-            rc = ccall((:native_set_radial_noise, _LIBLUNA_RUST_RK45), Cint,
-                (Ptr{Cvoid}, Ptr{Float64}, Csize_t),
-                handle.ptr, f!.Et_noise, length(f!.Et_noise))
-            rc == 0 || error("native_set_radial_noise failed: $rc")
+            if is_real_grid
+                rc = ccall((:native_set_radial_noise, _LIBLUNA_RUST_RK45), Cint,
+                    (Ptr{Cvoid}, Ptr{Float64}, Csize_t),
+                    handle.ptr, f!.Et_noise, length(f!.Et_noise))
+                rc == 0 || error("native_set_radial_noise failed: $rc")
+            else
+                rc = ccall((:native_set_radial_noise_cplx, _LIBLUNA_RUST_RK45), Cint,
+                    (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Csize_t),
+                    handle.ptr, real.(f!.Et_noise), imag.(f!.Et_noise), length(f!.Et_noise))
+                rc == 0 || error("native_set_radial_noise_cplx failed: $rc")
+            end
         end
 
         # Wire plasma if present and a Rust ionisation handle is available —
