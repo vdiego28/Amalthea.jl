@@ -519,30 +519,42 @@ this commit if plasma played a physically meaningful role.
      (mode-averaged, radial); modal/free-space still correctly guard and
      fall back (out of scope for this item — no native noise support was
      ever claimed for them).
-2. 🟡 **`ramanmodel=:SiO2` in `prop_gnlse`** (`Interface.jl:1077-1079`) —
-   `Raman.raman_response(t,:SiO2,...)` returns a bare
-   `RamanRespIntermediateBroadening` (Gaussian-damped), not wrapped in
-   `CombinedRamanResponse`; `flatten_sdo_oscillators` returns `nothing` →
-   falls back (`RK45.jl:1115`/`1310`/`1498`).
-   **Corrected estimate (2026-07-08): this is a new kernel, not a wiring
-   fix.** `RamanRespIntermediateBroadening`'s impulse response has a
-   `exp(-Γᵢ²t²/4)` Gaussian envelope (`Raman.jl:97-105`, Hollenbeck &
-   Cantrell's multi-line silica model) — no finite sum of single-damped-
-   oscillators (`exp(-t/τ2)`, pure exponential decay) reproduces this
-   exactly, so `flatten_sdo_oscillators` returning `nothing` is correct
-   behavior, not a missing wrapper. Porting this natively means a
-   *second* Raman kernel alongside the existing ADE one: precompute the
-   impulse response's frequency-domain transform ĥ(ω) once in Julia (or
-   Rust), then do a resident FFT convolution (intensity → FFT → ×ĥ →
-   IFFT) per RHS step — the same math `Nonlinear.jl`'s generic (non-SDO)
-   Raman path already uses, just moved into the resident stepper. This
-   still saves the per-step FFI round-trip but not the FFT work itself,
-   so the perf upside is smaller than the ADE kernel's. Do **not** fit a
-   multi-SDO approximation to sidestep this — that's an unvalidated
-   numerical approximation, not a faithful port (see
-   `feedback_prefer_analytic_over_lut` in project memory). Deprioritized
-   below items 3/4 (both smaller, well-bounded) until this gets its own
-   dedicated slice.
+2. 🟢 **Done (2026-07-08): `ramanmodel=:SiO2` in `prop_gnlse`**
+   (`Interface.jl:1077-1079`) — `Raman.raman_response(t,:SiO2,...)` returns
+   a bare `RamanRespIntermediateBroadening` (Gaussian-damped), not wrapped
+   in `CombinedRamanResponse`, so `flatten_sdo_oscillators` correctly
+   returns `nothing` (no finite sum of single-damped-oscillators
+   (`exp(-t/τ2)`) reproduces the `exp(-Γᵢ²t²/4)` Gaussian envelope in
+   `Raman.jl:97-105`, Hollenbeck & Cantrell's multi-line silica model) — a
+   real gap, not a missing wrapper. Ported as a **second, independent
+   resident kernel** (`native_set_raman_fft_params`/`native.rs`'s new
+   `rhs_mode_avg_env` Step 3c), not a multi-SDO approximation (per
+   `feedback_prefer_analytic_over_lut`): precomputes the padded impulse
+   response's spectrum ĥ(ω) once at setup (folding in `dt` and the ifft's
+   `1/n_over` normalisation so no further per-step scaling is needed), then
+   each RHS step does `P = ifft(ĥ(ω) · fft(E²_padded))` via a resident
+   length-`2·n_time_over` c2c FFTW plan — the exact same math as
+   `Nonlinear.jl`'s generic (non-SDO) Raman path
+   (`(R::RamanPolar)(out,Et,ρ)`, `Nonlinear.jl:395-417`), just moved
+   resident. Only reachable via `prop_gnlse` (mode-averaged EnvGrid,
+   `RamanPolarEnv`) — `:SiO2` is not wired for `prop_capillary`, and
+   `RamanRespIntermediateBroadening` is density-independent (`ρ` unused in
+   its `(ht,ρ)` call), so ĥ(ω) can be precomputed once and reused for the
+   whole propagation, same frozen-at-setup restriction the existing ADE
+   Raman path already has for z-dependent density. Verified with a
+   triangulating regression test (native-raman-on, Julia-raman-on,
+   Julia-raman-off) at a soliton self-shift configuration where Raman has a
+   large, unambiguous effect (N=4 soliton, `test/test_native_raman_sio2.jl`),
+   **at `prop_gnlse`'s actual defaults (`shock=true, shotnoise=true`)** —
+   item 1's postmortem was exactly this class of gap staying invisible
+   until the default workload was tested, not a hand-picked easy config;
+   confirmed the native stepper doesn't silently fall back with both
+   defaults on: single-step 0.0 (RNG-seed-identical, since both steppers
+   share one `transform`'s baked-in `Et_noise`), full-solve native-vs-Julia
+   ~5.3e-13 to ~6.0e-13 against a raman-on/raman-off difference of ~1.44
+   (nowhere near vacuous).
+   **Item 2 is now fully closed** — no remaining Raman-model gap in any
+   native geometry that supports `RamanPolarEnv`/`RamanPolarField`.
 3. 🟢 **Done (2026-07-08): `ionisation=:ADK` native support.** `IonRateADK`
    is closed-form/analytic (no LUT — Julia evaluates the ADK formula
    directly, `Ionisation.jl:176-189`), so this ported cleanly with no

@@ -1140,6 +1140,21 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         for r in (is_mixture ? () : f!.resp)
             if r isa Luna.Nonlinear.RamanPolarField || r isa Luna.Nonlinear.RamanPolarEnv
                 rr = r.r
+                if r isa Luna.Nonlinear.RamanPolarEnv && rr isa Luna.Raman.RamanRespIntermediateBroadening
+                    # Phase I item 2: `ramanmodel=:SiO2` (only reachable via
+                    # `prop_gnlse`, mode-averaged EnvGrid, RamanPolarEnv) —
+                    # a Gaussian-damped multi-line response with no finite-SDO
+                    # decomposition (see BACKLOG.md), so it needs the resident
+                    # FFT-convolution kernel instead of the ADE solver below.
+                    raman_density = f!.densityfun(0.0)
+                    rc = ccall((:native_set_raman_fft_params, _LIBLUNA_RUST_RK45), Cint,
+                        (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Csize_t,
+                         Float64, Float64, Csize_t, Float64),
+                        handle.ptr, rr.ωi, rr.Ai, rr.Γi, rr.γi, Csize_t(length(rr.ωi)),
+                        rr.scale, r.dt, Csize_t(length(rr.t)), raman_density)
+                    rc == 0 || throw(NativeIneligible("native_set_raman_fft_params returned $rc"))
+                    break  # only one Raman response expected
+                end
                 Rs = rr isa Luna.Raman.CombinedRamanResponse ?
                     Luna.Raman.flatten_sdo_oscillators(rr) : nothing
                 isnothing(Rs) && throw(NativeIneligible("Raman response present but not " *

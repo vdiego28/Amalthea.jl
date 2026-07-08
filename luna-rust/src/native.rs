@@ -268,6 +268,32 @@ pub struct CpuNativeSim {
     pub raman_hilbert_a: Vec<Complex<f64>>,
     pub raman_hilbert_b: Vec<Complex<f64>>,
 
+    // ── Phase I item 2: intermediate-broadening (`:SiO2`) Raman, resident
+    // FFT convolution — `rhs_mode_avg_env` only (`RamanPolarEnv`, EnvGrid).
+    // `RamanRespIntermediateBroadening`'s Gaussian-damped impulse response
+    // (`Raman.jl:97-105`) has no finite-SDO decomposition, so it cannot
+    // reuse `raman_solver`'s ADE path (see BACKLOG.md Phase I item 2) — this
+    // reproduces `(R::RamanPolar)(out, Et, ρ)`'s generic Julia FFT-conv path
+    // (`Nonlinear.jl:395-417`) instead: precompute the padded impulse
+    // response's spectrum once (`raman_fft_hw`, scaled by `dt/n_over` so no
+    // further scaling is needed per step), then each step does
+    // `P = ifft(hw .* fft(E2_padded))` via a resident length-`2·n_time_over`
+    // c2c plan. Mutually exclusive with `has_raman` (only one Raman response
+    // is ever present in `f!.resp`).
+    pub has_raman_fft: bool,
+    /// Constant-medium density (unscaled, like `raman_density`).
+    pub raman_fft_density: f64,
+    /// Precomputed `fft(h_padded) .* (dt / n_over)`, length `2·n_time_over`.
+    pub raman_fft_hw: Vec<Complex<f64>>,
+    /// Resident c2c plan, length `2·n_time_over` (zero-padded convolution).
+    pub raman_fft_plan: Option<ComplexFft1d>,
+    /// Zero-padded `E²` scratch (second half stays zero forever), length
+    /// `2·n_time_over`.
+    pub raman_fft_e2: Vec<Complex<f64>>,
+    /// Spectrum/output scratch, length `2·n_time_over` (distinct buffer from
+    /// `raman_fft_e2`, `ComplexFft1d` requires out-of-place in/out).
+    pub raman_fft_ew: Vec<Complex<f64>>,
+
     // ── Phase 5: Modal (TransModal), narrow scope — see MATH.md §3.3 ────────────
     pub is_modal: bool,
     /// Number of modes (`sim.n == n_spec * n_modes`).
@@ -669,6 +695,12 @@ impl CpuNativeSim {
             raman_hilbert_fft: None,
             raman_hilbert_a: Vec::new(),
             raman_hilbert_b: Vec::new(),
+            has_raman_fft: false,
+            raman_fft_density: 0.0,
+            raman_fft_hw: Vec::new(),
+            raman_fft_plan: None,
+            raman_fft_e2: Vec::new(),
+            raman_fft_ew: Vec::new(),
             is_modal: false,
             n_modes: 0,
             npol: 0,
@@ -1116,6 +1148,31 @@ impl CpuNativeSim {
             let rho = self.raman_density;
             for i in 0..no {
                 self.pto_cplx[i] += self.eto_cplx[i] * (rho * self.raman_p[i]);
+            }
+        }
+
+        // ── Step 3c: Raman polarisation, intermediate-broadening (`:SiO2`) —
+        // Phase I item 2. Resident FFT-conv counterpart of the block above,
+        // for `RamanRespIntermediateBroadening` (no finite-SDO form, see
+        // `set_raman_fft_params`'s doc comment). `has_raman`/`has_raman_fft`
+        // are mutually exclusive (only one Raman response ever present).
+        if self.has_raman_fft {
+            for i in 0..no {
+                self.raman_fft_e2[i] = Complex::new(0.5 * self.eto_cplx[i].norm_sqr(), 0.0);
+            }
+            if let Some(ref plan) = self.raman_fft_plan {
+                plan.forward(&mut self.raman_fft_e2, &mut self.raman_fft_ew);
+                for k in 0..self.raman_fft_ew.len() {
+                    self.raman_fft_ew[k] *= self.raman_fft_hw[k];
+                }
+                // ifft is unnormalized; `raman_fft_hw` already folds in the
+                // `1/n_over` factor (see `set_raman_fft_params`), so the
+                // result of `inverse` here is already the true `P`.
+                plan.inverse(&mut self.raman_fft_ew, &mut self.raman_fft_e2);
+            }
+            let rho = self.raman_fft_density;
+            for i in 0..no {
+                self.pto_cplx[i] += self.eto_cplx[i] * (rho * self.raman_fft_e2[i]);
             }
         }
 
@@ -2247,6 +2304,7 @@ pub trait NativeBackend {
     unsafe fn set_radial_noise(&mut self, noise: *const c_double, n: size_t) -> i32;
     unsafe fn set_radial_noise_cplx(&mut self, noise_re: *const c_double, noise_im: *const c_double, n: size_t) -> i32;
     unsafe fn set_raman_params(&mut self, omega: *const c_double, gamma: *const c_double, coupling: *const c_double, n_osc: size_t, dt: c_double, density: c_double, thg: c_int) -> i32;
+    unsafe fn set_raman_fft_params(&mut self, omega: *const c_double, amp: *const c_double, gauss_w: *const c_double, lorentz_w: *const c_double, n_osc: size_t, scale: c_double, dt: c_double, n_time: size_t, density: c_double) -> i32;
     unsafe fn set_modal_params(&mut self, n_time: size_t, n_time_over: size_t, n_modes: size_t, npol: size_t, a: c_double, unm: *const c_double, inv_sqrt_n: *const c_double, order: *const i32, kind: *const u8, phi: *const c_double, full: u8, pol_select: *const u8, towin: *const c_double, kerr_fac: c_double, nlfac_re: *const c_double, nlfac_im: *const c_double, lib_path: *const c_char, rtol: c_double, atol: c_double, maxevals: size_t) -> i32;
     unsafe fn set_free_params(&mut self, n_time: size_t, n_time_over: size_t, n_y: size_t, n_x: size_t, flags: c_uint, towin: *const c_double, kerr_fac: c_double, m_re: *const c_double, m_im: *const c_double) -> i32;
     unsafe fn set_free_zdep_params(&mut self, flength: c_double, p0: c_double, p1: c_double, n_dspl: size_t, dspl_x: *const c_double, dspl_y: *const c_double, dspl_d: *const c_double, gamma: *const c_double, omega: *const c_double, omegawin: *const c_double, kperp2: *const c_double, sidx: *const u8, eps0_gamma3: c_double, omega0: c_double, gamma0: c_double, dgamma0: c_double) -> i32;
@@ -2644,6 +2702,56 @@ impl NativeBackend for CpuNativeSim {
         s.raman_hilbert_a = vec![Complex::new(0.0, 0.0); s.n_time_over];
         s.raman_hilbert_b = vec![Complex::new(0.0, 0.0); s.n_time_over];
     }
+
+    0
+}
+    unsafe fn set_raman_fft_params(&mut self, omega: *const c_double, amp: *const c_double, gauss_w: *const c_double, lorentz_w: *const c_double, n_osc: size_t, scale: c_double, dt: c_double, n_time: size_t, density: c_double) -> i32 {        let s = self;
+
+    if s.n_time_over == 0 || n_time == 0 || n_time != s.n_time_over { return -2; }
+    if omega.is_null() || amp.is_null() || gauss_w.is_null() || lorentz_w.is_null() || n_osc == 0 {
+        return -1;
+    }
+    let api = match s.fftw_api.as_ref() {
+        Some(api) => api,
+        None => return -2,
+    };
+
+    let omega_sl = unsafe { std::slice::from_raw_parts(omega, n_osc) };
+    let amp_sl = unsafe { std::slice::from_raw_parts(amp, n_osc) };
+    let gauss_sl = unsafe { std::slice::from_raw_parts(gauss_w, n_osc) };
+    let lorentz_sl = unsafe { std::slice::from_raw_parts(lorentz_w, n_osc) };
+
+    // Reproduces `(R::RamanRespIntermediateBroadening)(ht, ρ)`
+    // (Raman.jl:97-105): a Gaussian-damped multi-line impulse response, zero
+    // for t < 0 (causal, first half of the padded buffer) and zero-padded
+    // in the second half (Nonlinear.jl:299's `h = zeros(length(t)*2)`).
+    let n_over = 2 * n_time;
+    let mut h = vec![Complex::new(0.0, 0.0); n_over];
+    for idx in 0..n_time {
+        let t = idx as f64 * dt;
+        let mut hv = 0.0;
+        for i in 0..n_osc {
+            hv += amp_sl[i] * (-lorentz_sl[i] * t).exp()
+                * (-gauss_sl[i] * gauss_sl[i] * t * t / 4.0).exp()
+                * (omega_sl[i] * t).sin();
+        }
+        h[idx] = Complex::new(scale * hv, 0.0);
+    }
+
+    let plan = ComplexFft1d::new(api, n_over, 1 << 6);
+    let mut hw = vec![Complex::new(0.0, 0.0); n_over];
+    plan.forward(&mut h, &mut hw);
+    // Fold in Nonlinear.jl:415's `dt` and the ifft's `1/n_over` normalisation
+    // once here, so the per-step convolution needs no further scaling.
+    let post = dt / n_over as f64;
+    for v in &mut hw { *v *= post; }
+
+    s.raman_fft_plan = Some(plan);
+    s.raman_fft_hw = hw;
+    s.raman_fft_e2 = vec![Complex::new(0.0, 0.0); n_over];
+    s.raman_fft_ew = vec![Complex::new(0.0, 0.0); n_over];
+    s.raman_fft_density = density;
+    s.has_raman_fft = true;
 
     0
 }
@@ -3538,6 +3646,54 @@ pub unsafe extern "C" fn native_set_raman_params(
     if sim.is_null() { return -1; }
     let s = unsafe { &mut *sim };
     unsafe { s.backend.set_raman_params(omega, gamma, coupling, n_osc, dt, density, thg) }
+}
+
+/// Wire the intermediate-broadening (`:SiO2`) resident FFT-convolution Raman
+/// kernel as an additive term in `rhs_mode_avg_env` (Phase I item 2,
+/// BACKLOG.md) — `RamanPolarEnv`/`RamanRespIntermediateBroadening` only
+/// (`prop_gnlse(...; ramanmodel=:SiO2)`'s only reachable path; no finite
+/// single-damped-oscillator decomposition exists for this response, so it
+/// cannot reuse `native_set_raman_params`'s ADE solver).
+///
+/// Must be called **after** `native_set_fftw_plans` and
+/// `native_set_mode_avg_params` (needs `fftw_api`/`n_time_over`), before
+/// `set_field`.
+///
+/// # Arguments
+/// * `omega`/`amp`/`gauss_w`/`lorentz_w` — per-component `ωi`/`Ai`/`Γi`/`γi`
+///   (`Raman.jl:78-84`).
+/// * `n_osc` — number of components.
+/// * `scale` — `RamanRespIntermediateBroadening.scale`, already normalised
+///   by Julia's `hquadrature` call at construction time (not recomputed
+///   here).
+/// * `dt` — `grid.to[2] - grid.to[1]` (oversampled grid spacing).
+/// * `n_time` — oversampled grid length (`length(rr.t)`); must equal the
+///   sim's own `n_time_over`.
+/// * `density` — constant-medium density (raw, unscaled, like
+///   `native_set_raman_params`'s `density`).
+///
+/// Returns 0 on success, -1 on null/zero-length args, -2 if called before
+/// `native_set_fftw_plans`/`native_set_mode_avg_params` or `n_time` mismatches.
+///
+/// # Safety
+/// `sim` must be valid; `omega`/`amp`/`gauss_w`/`lorentz_w` must each be
+/// valid for `n_osc` reads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_set_raman_fft_params(
+    sim: *mut NativeSim,
+    omega: *const c_double,
+    amp: *const c_double,
+    gauss_w: *const c_double,
+    lorentz_w: *const c_double,
+    n_osc: size_t,
+    scale: c_double,
+    dt: c_double,
+    n_time: size_t,
+    density: c_double,
+) -> i32 {
+    if sim.is_null() { return -1; }
+    let s = unsafe { &mut *sim };
+    unsafe { s.backend.set_raman_fft_params(omega, amp, gauss_w, lorentz_w, n_osc, scale, dt, n_time, density) }
 }
 
 /// Wire the modal (`TransModal`) RHS: resident `libcubature` (`pcubature_v`,
