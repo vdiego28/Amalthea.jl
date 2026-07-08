@@ -936,16 +936,16 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # Reject those here instead, with a message that says what's
         # actually unsupported.
         dens0 = f!.densityfun(0.0)
-        if is_mode_avg
+        if is_mode_avg || is_radial
             dens0 isa Real || dens0 isa AbstractVector{<:Real} ||
                 throw(NativeIneligible("densityfun(z) returned $(typeof(dens0)) — the " *
-                      "native mode-averaged path only understands a scalar density or a " *
-                      "per-species Vector{<:Real} (gas mixture)."))
+                      "native mode-averaged/radial path only understands a scalar density " *
+                      "or a per-species Vector{<:Real} (gas mixture)."))
         else
             dens0 isa Real || throw(NativeIneligible("densityfun(z) returned " *
                   "a non-scalar value — gas mixtures are only supported by the native " *
-                  "mode-averaged path (Phase F item 4); radial/modal/free-space mixtures " *
-                  "are not yet supported."))
+                  "mode-averaged/radial paths (BACKLOG.md Phase F item 4 / Phase I item 4); " *
+                  "modal/free-space mixtures are not yet supported."))
         end
 
         grid = f!.grid
@@ -1086,15 +1086,26 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                         !isnothing(irf.rust_handle) &&
                         irf.rust_handle.ptr != C_NULL
                     rc = ccall((:native_set_plasma_params, _LIBLUNA_RUST_RK45), Cint,
-                        (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64),
+                        (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64, Float64),
                         handle.ptr, irf.rust_handle.ptr,
-                        r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt)
+                        r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt, density)
                     rc == 0 || throw(NativeIneligible("native_set_plasma_params returned $rc"))
+                elseif irf isa Luna.Ionisation.IonRateADK &&
+                        !isnothing(irf.rust_handle) &&
+                        irf.rust_handle.ptr != C_NULL
+                    # Phase I item 3: ADK is closed-form, no LUT — same
+                    # eligibility gate, a different (parameter-only) FFI setter.
+                    rc = ccall((:native_set_plasma_params_adk, _LIBLUNA_RUST_RK45), Cint,
+                        (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64, Float64),
+                        handle.ptr, irf.rust_handle.ptr,
+                        r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt, density)
+                    rc == 0 || throw(NativeIneligible("native_set_plasma_params_adk returned $rc"))
                 else
                     throw(NativeIneligible("plasma detected but no Rust ionisation handle is " *
                           "available (library missing, or both LUNA_USE_RUST_IONISATION and " *
                           "LUNA_USE_RUST_NATIVE were explicitly disabled), or ratefunc is not " *
-                          "an IonRatePPTAccel — this config is not eligible for the native path."))
+                          "an IonRatePPTAccel/IonRateADK — this config is not eligible for the " *
+                          "native path."))
                 end
                 break  # only one plasma response expected
             end
@@ -1234,39 +1245,64 @@ function RustNativeStepper(f!, linop, y0, t, dt;
 
         towin = f!.grid.towin
 
-        # Find Kerr response and extract γ3 (same pattern as mode-averaged above).
-        γ3 = 0.0
-        for r in f!.resp
-            for fld in fieldnames(typeof(r))
-                if occursin("γ3", string(fld))
-                    γ3 = getfield(r, fld)
-                    break
-                end
-            end
-            γ3 != 0.0 && break
-        end
-        # Phase D.2 allows Kerr + a plasma response; Phase D.4 (BACKLOG.md)
-        # adds Raman (`RamanPolarField`, RealGrid, either `thg` value since
-        # Phase F.1 — same eligibility criteria as the mode-averaged Raman
-        # wiring below: an all-SDO `CombinedRamanResponse` with
-        # density-independent τ2). Any other response type (e.g.
-        # `RamanPolarEnv`, EnvGrid's envelope Raman) remains out of scope.
-        is_kerr_resp_radial(r) = _is_plain_kerr_resp(r)
-        for r in f!.resp
-            is_kerr_resp_radial(r) || r isa Luna.Nonlinear.PlasmaCumtrapz ||
-                r isa Luna.Nonlinear.RamanPolarField ||
-                throw(NativeIneligible("radial: only Kerr, plasma, and/or Raman " *
-                      "(RealGrid) responses are supported by the native path " *
-                      "(Phase D.4 gate) — this also rejects Kerr_field_nothg/" *
-                      "Kerr_env_thg, see `_is_plain_kerr_resp`."))
-        end
-        γ3 != 0.0 ||
-            throw(NativeIneligible("radial: no Kerr response found (γ3=0) — the native " *
-                  "radial path requires a Kerr response."))
-
         _check_density_zindependent(f!.densityfun, flength)
         density = f!.densityfun(0.0)
-        kerr_fac = density * Luna.PhysData.ε_0 * γ3
+        is_mixture = density isa AbstractVector
+
+        if is_mixture
+            # BACKLOG.md Phase I item 4: same reasoning as the mode-averaged
+            # mixture branch above — Kerr is linear in density·γ3, so it
+            # collapses to one scalar kerr_fac regardless of geometry;
+            # plasma/Raman mixtures are not a simple sum, so they're
+            # rejected here rather than silently ignored (radial's plasma/
+            # Raman wiring below assumes a single scalar density).
+            length(f!.resp) == length(density) ||
+                throw(NativeIneligible("radial mixture: densityfun(z) returned " *
+                      "$(length(density)) species but f!.resp has $(length(f!.resp)) " *
+                      "entries — shape mismatch."))
+            kerr_fac = 0.0
+            for (ρi, respi) in zip(density, f!.resp)
+                length(respi) == 1 && _is_plain_kerr_resp(respi[1]) ||
+                    throw(NativeIneligible("radial mixture species response $(respi) is " *
+                          "not a single plain Kerr response — only Kerr is wired for the " *
+                          "native radial mixture path (Phase I item 4); plasma/Raman " *
+                          "mixtures are out of scope."))
+                γ3i = getfield(respi[1], fieldnames(typeof(respi[1]))[1])
+                kerr_fac += ρi * Luna.PhysData.ε_0 * γ3i
+            end
+        else
+            # Find Kerr response and extract γ3 (same pattern as mode-averaged above).
+            γ3 = 0.0
+            for r in f!.resp
+                for fld in fieldnames(typeof(r))
+                    if occursin("γ3", string(fld))
+                        γ3 = getfield(r, fld)
+                        break
+                    end
+                end
+                γ3 != 0.0 && break
+            end
+            # Phase D.2 allows Kerr + a plasma response; Phase D.4 (BACKLOG.md)
+            # adds Raman (`RamanPolarField`, RealGrid, either `thg` value since
+            # Phase F.1 — same eligibility criteria as the mode-averaged Raman
+            # wiring below: an all-SDO `CombinedRamanResponse` with
+            # density-independent τ2). Any other response type (e.g.
+            # `RamanPolarEnv`, EnvGrid's envelope Raman) remains out of scope.
+            is_kerr_resp_radial(r) = _is_plain_kerr_resp(r)
+            for r in f!.resp
+                is_kerr_resp_radial(r) || r isa Luna.Nonlinear.PlasmaCumtrapz ||
+                    r isa Luna.Nonlinear.RamanPolarField ||
+                    throw(NativeIneligible("radial: only Kerr, plasma, and/or Raman " *
+                          "(RealGrid) responses are supported by the native path " *
+                          "(Phase D.4 gate) — this also rejects Kerr_field_nothg/" *
+                          "Kerr_env_thg, see `_is_plain_kerr_resp`."))
+            end
+            γ3 != 0.0 ||
+                throw(NativeIneligible("radial: no Kerr response found (γ3=0) — the native " *
+                      "radial path requires a Kerr response."))
+
+            kerr_fac = density * Luna.PhysData.ε_0 * γ3
+        end
 
         # Precompute M[iω,ir] = ωwin[iω]·(-i·ω[iω]) / (2·normfun(0.0)[iω,ir]).
         # Folds norm_radial + ωwin into one array. Valid only for a z-invariant
@@ -1317,15 +1353,26 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                         !isnothing(irf.rust_handle) &&
                         irf.rust_handle.ptr != C_NULL
                     rc = ccall((:native_set_plasma_params, _LIBLUNA_RUST_RK45), Cint,
-                        (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64),
+                        (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64, Float64),
                         handle.ptr, irf.rust_handle.ptr,
-                        r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt)
+                        r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt, density)
                     rc == 0 || throw(NativeIneligible("native_set_plasma_params returned $rc"))
+                elseif irf isa Luna.Ionisation.IonRateADK &&
+                        !isnothing(irf.rust_handle) &&
+                        irf.rust_handle.ptr != C_NULL
+                    # Phase I item 3: ADK is closed-form, no LUT — same
+                    # eligibility gate, a different (parameter-only) FFI setter.
+                    rc = ccall((:native_set_plasma_params_adk, _LIBLUNA_RUST_RK45), Cint,
+                        (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64, Float64),
+                        handle.ptr, irf.rust_handle.ptr,
+                        r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt, density)
+                    rc == 0 || throw(NativeIneligible("native_set_plasma_params_adk returned $rc"))
                 else
                     throw(NativeIneligible("plasma detected but no Rust ionisation handle is " *
                           "available (library missing, or both LUNA_USE_RUST_IONISATION and " *
                           "LUNA_USE_RUST_NATIVE were explicitly disabled), or ratefunc is not " *
-                          "an IonRatePPTAccel — this config is not eligible for the native path."))
+                          "an IonRatePPTAccel/IonRateADK — this config is not eligible for the " *
+                          "native path."))
                 end
                 break  # only one plasma response expected
             end

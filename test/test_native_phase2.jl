@@ -148,6 +148,54 @@ end
                 println("Plasma full-solve rel: ", rel_solve)
                 @test rel_solve < 1e-6
             end
+
+            @testset "Full-solve triangulation at a plasma-matters energy (density-factor regression guard)" begin
+                # BACKLOG.md Phase I item 3 postmortem (2026-07-08): the
+                # equivalence test above runs at energy=2e-6 J, weak enough
+                # that PPT's ionization rate stays near zero throughout —
+                # exactly the blind spot that let a real bug (native's
+                # plasma polarization missing a density factor entirely,
+                # silently contributing ~0 instead of ρ·P) go undetected for
+                # every native mode-averaged/radial plasma sim since Phase C.
+                # Re-run the same geometry at a much stronger energy where
+                # ionization is unambiguously non-vacuous, and triangulate:
+                # native must match Julia's plasma-ON result, not its
+                # plasma-OFF one.
+                kw_strong = (; λ0, λlims, trange, raman=false, plasma=:PPT, kerr=true,
+                             shotnoise=false, energy=1.6e-3, τfwhm=30e-15)
+                kw_strong_noplasma = (; λ0, λlims, trange, raman=false, plasma=false, kerr=true,
+                             shotnoise=false, energy=1.6e-3, τfwhm=30e-15)
+                Eω_s, grid_s, linop_s, transform_s, FT_s, output_s = withenv("LUNA_USE_RUST_IONISATION" => "1") do
+                    with_logger(NullLogger()) do
+                        Interface.prop_capillary_args(args...; kw_strong...)
+                    end
+                end
+                Eω_sn, grid_sn, linop_sn, transform_sn, FT_sn, output_sn = with_logger(NullLogger()) do
+                    Interface.prop_capillary_args(args...; kw_strong_noplasma...)
+                end
+                dt_s = 0.005
+                s_jl_p = PreconStepper(transform_s, linop_s, copy(Eω_s), t0, dt_s, rtol=1e-6, atol=1e-10,
+                                        max_dt=dt_s, min_dt=dt_s)
+                s_jl_np = PreconStepper(transform_sn, linop_sn, copy(Eω_sn), t0, dt_s, rtol=1e-6, atol=1e-10,
+                                         max_dt=dt_s, min_dt=dt_s)
+                s_ru_p = withenv("LUNA_USE_RUST_NATIVE" => "1", "LUNA_USE_RUST_IONISATION" => "1") do
+                    RustNativeStepper(transform_s, linop_s, copy(Eω_s), t0, dt_s, rtol=1e-6, atol=1e-10,
+                                       max_dt=dt_s, min_dt=dt_s)
+                end
+                solve(s_jl_p, flength)
+                solve(s_jl_np, flength)
+                solve(s_ru_p, flength)
+
+                rel_effect = norm(s_jl_p.yn - s_jl_np.yn) / norm(s_jl_np.yn)
+                rel_native_vs_jl = norm(s_ru_p.yn - s_jl_p.yn) / norm(s_jl_p.yn)
+                rel_native_vs_noplasma = norm(s_ru_p.yn - s_jl_np.yn) / norm(s_jl_np.yn)
+                println("Strong-energy plasma-on vs plasma-off rel (Julia, non-vacuousness): ", rel_effect)
+                println("Strong-energy native vs Julia (both plasma-on): ", rel_native_vs_jl)
+                println("Strong-energy native vs Julia no-plasma (must NOT match): ", rel_native_vs_noplasma)
+                @test rel_effect > 1e-4
+                @test rel_native_vs_jl < 1e-10
+                @test rel_native_vs_noplasma > 1e-4
+            end
         end
     end
 end

@@ -338,3 +338,47 @@ impl PptIonizationRate {
         Ok(())
     }
 }
+
+/// ADK (Ammosov-Delone-Krainov) ionization rate — a closed-form analytic
+/// formula, unlike PPT's cubic-spline LUT (BACKLOG.md Phase I item 3:
+/// `ionisation=:ADK` in `Interface.jl` builds `Ionisation.IonRateADK`, a
+/// direct evaluation, not `IonRatePPTAccel`). Precomputed constants are
+/// passed in from Julia's own `IonRateADK` (`src/Ionisation.jl:131-174`,
+/// same field names) rather than recomputed here, so the two paths use
+/// bit-identical `nstar`/`cn_sq`/etc. — the recursion for `cn_sq` involves
+/// `gamma(nstar+1)*gamma(nstar))`, which we don't need to reimplement in
+/// Rust to stay analytic (this is passing exact constants, not fitting a
+/// LUT to samples — no LUT-approximation-of-noise risk here, see
+/// `feedback_prefer_analytic_over_lut`).
+#[derive(Debug, Clone, Copy)]
+pub struct AdkIonizationRate {
+    pub occupancy: f64,
+    pub omega_p: f64,
+    pub cn_sq: f64,
+    pub nstar: f64,
+    pub omega_t_prefac: f64,
+    pub thr: f64,
+    /// `avfac` from Julia's `cycle_average` branch; `1.0` when disabled
+    /// (the `avfac != 1` branch is skipped in that case, exactly like Julia).
+    pub avfac: f64,
+}
+
+impl AdkIonizationRate {
+    /// Reproduces `(ir::IonRateADK)(E)` (`src/Ionisation.jl:176-189`) exactly:
+    /// zero below threshold, otherwise the closed-form ADK rate with the
+    /// optional cycle-averaging correction.
+    pub fn rate(&self, field_strength: f64) -> Result<f64, String> {
+        let a_e = field_strength.abs();
+        if a_e < self.thr {
+            return Ok(0.0);
+        }
+        let x = 4.0 * self.omega_p / (self.omega_t_prefac * a_e);
+        let mut r = self.occupancy * self.omega_p * self.cn_sq
+            * x.powf(2.0 * self.nstar - 1.0)
+            * (-4.0 / 3.0 * self.omega_p / (self.omega_t_prefac * a_e)).exp();
+        if self.avfac != 1.0 {
+            r *= self.avfac * a_e.sqrt();
+        }
+        Ok(r)
+    }
+}

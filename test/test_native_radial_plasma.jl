@@ -122,6 +122,32 @@ using TestItems
             rel_plasma_effect = norm(s_jl_plasma.yn - s_jl_noplasma.yn) / norm(s_jl_noplasma.yn)
             println("Radial plasma-on vs plasma-off rel (Julia, non-vacuousness): ", rel_plasma_effect)
             @test rel_plasma_effect > 1e-6
+
+            # BACKLOG.md Phase I item 3 postmortem (2026-07-08): the
+            # equivalence tests above run at a much weaker energy (6e-5 J)
+            # than this non-vacuousness check (3e-4 J) — exactly the blind
+            # spot that let a real bug (native's plasma polarization
+            # missing a density factor entirely, silently contributing ~0)
+            # go undetected: at the weak equivalence energy, native
+            # "matching Julia" was vacuously true (both near-zero plasma
+            # contribution), and this non-vacuousness check only ever
+            # compared Julia against itself, never against native, at the
+            # energy where the bug would actually show. Close that gap
+            # directly: native vs Julia AT the plasma-matters energy, and
+            # native vs Julia's plasma-OFF result (must NOT match).
+            s_ru_strong = withenv("LUNA_USE_RUST_NATIVE" => "1",
+                           "LUNA_USE_RUST_IONISATION" => "1") do
+                RustNativeStepper(transform_strong, linop, copy(Eω_strong), t0, dt,
+                                   rtol=1e-6, atol=1e-10, max_dt=dt, min_dt=dt)
+            end
+            solve(s_ru_strong, L)
+            rel_native_vs_jl = norm(s_ru_strong.yn - s_jl_plasma.yn) / norm(s_jl_plasma.yn)
+            rel_native_vs_noplasma = norm(s_ru_strong.yn - s_jl_noplasma.yn) / norm(s_jl_noplasma.yn)
+            println("Radial native vs Julia (both plasma-on, strong energy): ", rel_native_vs_jl)
+            println("Radial native vs Julia no-plasma (must NOT match — regression guard): ",
+                     rel_native_vs_noplasma)
+            @test rel_native_vs_jl < 1e-6
+            @test rel_native_vs_noplasma > 1e-6
         end
     end
 end

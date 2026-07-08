@@ -182,10 +182,28 @@ pub struct CpuNativeSim {
     /// Raw ptr to Julia's `PptIonizationRate` handle. Julia owns the pointee;
     /// valid for the lifetime of the enclosing `RustNativeStepper`.
     pub plasma_ion_ptr: *const crate::ionization::PptIonizationRate,
+    /// BACKLOG.md Phase I item 3: `ionisation=:ADK` handle, set instead of
+    /// `plasma_ion_ptr` when `native_set_plasma_params_adk` is called.
+    /// Exactly one of `plasma_ion_ptr`/`plasma_adk_ptr` is non-null at a
+    /// time — `plasma_is_adk` selects which `apply_plasma_*` reads.
+    pub plasma_adk_ptr: *const crate::ionization::AdkIonizationRate,
+    pub plasma_is_adk: bool,
     pub plasma_ionpot: f64,
     pub plasma_e_ratio: f64,
     pub plasma_preionfrac: f64,
     pub plasma_dt: f64,
+    /// Gas density (m⁻³), multiplied into the plasma polarisation before
+    /// accumulating into `pto`/`radial_pto` — reproduces
+    /// `(Plas::PlasmaCumtrapz)(out, Et, ρ)`'s `out .+= ρ .* Plas.P`
+    /// (`Nonlinear.jl:237-249`). Found missing entirely (2026-07-08) while
+    /// verifying Phase I item 3 (ADK): both the PPT and ADK native paths
+    /// computed a correct per-sample ionization rate/polarisation `plas_p`
+    /// but never scaled it by density before adding to `pto`, silently
+    /// under-computing plasma's contribution for every native
+    /// mode-averaged/radial plasma sim since this was first wired
+    /// (BACKLOG.md Phase C) — undetected because existing equivalence
+    /// tests only exercised weak-field/near-zero-ionization regimes.
+    pub plasma_density: f64,
     pub has_plasma: bool,
 
     // ── Phase 3: Radial (TransRadial) — resident QDHT + scalar Kerr ──────────────
@@ -619,10 +637,13 @@ impl CpuNativeSim {
             plas_j: Vec::new(),
             plas_p: Vec::new(),
             plasma_ion_ptr: std::ptr::null(),
+            plasma_adk_ptr: std::ptr::null(),
+            plasma_is_adk: false,
             plasma_ionpot: 0.0,
             plasma_e_ratio: 0.0,
             plasma_preionfrac: 0.0,
             plasma_dt: 1.0,
+            plasma_density: 0.0,
             has_plasma: false,
             is_radial: false,
             radial_et_noise: Vec::new(),
@@ -824,6 +845,25 @@ impl CpuNativeSim {
         }
     }
 
+    /// Dispatches to whichever ionization handle is wired (PPT spline LUT
+    /// or ADK closed form — BACKLOG.md Phase I item 3), matching each
+    /// handle's own out-of-domain fallback: PPT clamps to `rate(e_max)`
+    /// (see `PptIonizationRate::rate`'s doc); ADK never errors (no upper
+    /// domain limit), so its `unwrap_or_else` branch is unreachable.
+    ///
+    /// # Safety
+    /// Exactly one of `plasma_ion_ptr`/`plasma_adk_ptr` must be non-null
+    /// and valid, selected by `plasma_is_adk`.
+    fn plasma_rate(&self, e_abs: f64) -> f64 {
+        if self.plasma_is_adk {
+            let ion = unsafe { &*self.plasma_adk_ptr };
+            ion.rate(e_abs).unwrap_or(0.0)
+        } else {
+            let ion = unsafe { &*self.plasma_ion_ptr };
+            ion.rate(e_abs).unwrap_or_else(|_| ion.rate(ion.e_max).unwrap_or(0.0))
+        }
+    }
+
     /// Plasma polarisation via cumtrapz ×3, added to `self.pto` in-place.
     /// Reproduces `Nonlinear.PlasmaScalar!` (src/Nonlinear.jl:194-206).
     ///
@@ -832,15 +872,11 @@ impl CpuNativeSim {
     fn apply_plasma_real(&mut self) {
         let n = self.n_time_over;
         let dt = self.plasma_dt;
-        // SAFETY: pointer set by `native_set_plasma_params`; Julia owns the handle
-        // and keeps it alive for the lifetime of the stepper.
-        let ion = unsafe { &*self.plasma_ion_ptr };
 
         // 1. ionization rate W(|E(t)|)
         for i in 0..n {
             let e_abs = self.eto[i].abs();
-            self.plas_rate[i] = ion.rate(e_abs)
-                .unwrap_or_else(|_| ion.rate(ion.e_max).unwrap_or(0.0));
+            self.plas_rate[i] = self.plasma_rate(e_abs);
         }
 
         // 2. cumtrapz(fraction, rate, dt) → raw integral ∫₀ᵗ W dτ
@@ -872,9 +908,11 @@ impl CpuNativeSim {
         // 7. cumtrapz(P, J, dt) → plasma polarisation
         cumtrapz_slice_f64(&self.plas_j, &mut self.plas_p, dt);
 
-        // 8. add P(t) to pto
+        // 8. add ρ·P(t) to pto — reproduces `out .+= ρ .* Plas.P`
+        // (Nonlinear.jl:237-249); previously missing the ρ factor entirely.
+        let rho = self.plasma_density;
         for i in 0..n {
-            self.pto[i] += self.plas_p[i];
+            self.pto[i] += rho * self.plas_p[i];
         }
     }
 
@@ -895,9 +933,6 @@ impl CpuNativeSim {
         let n_time_over = self.n_time_over;
         let n_r = self.n_r;
         let dt = self.plasma_dt;
-        // SAFETY: pointer set by `native_set_plasma_params`; Julia owns the handle
-        // and keeps it alive for the lifetime of the stepper.
-        let ion = unsafe { &*self.plasma_ion_ptr };
 
         for r in 0..n_r {
             let start = r * n_time_over;
@@ -906,8 +941,7 @@ impl CpuNativeSim {
             // 1. ionization rate W(|E(t)|)
             for i in start..end {
                 let e_abs = self.radial_eto[i].abs();
-                self.plas_rate[i] = ion.rate(e_abs)
-                    .unwrap_or_else(|_| ion.rate(ion.e_max).unwrap_or(0.0));
+                self.plas_rate[i] = self.plasma_rate(e_abs);
             }
 
             // 2. cumtrapz(fraction, rate, dt) → raw integral ∫₀ᵗ W dτ, per column
@@ -940,9 +974,10 @@ impl CpuNativeSim {
             cumtrapz_slice_f64(&self.plas_j[start..end], &mut self.plas_p[start..end], dt);
         }
 
-        // 8. add P(t,r) to radial_pto
+        // 8. add ρ·P(t,r) to radial_pto (see apply_plasma_real's step 8 doc)
+        let rho = self.plasma_density;
         for i in 0..(n_time_over * n_r) {
-            self.radial_pto[i] += self.plas_p[i];
+            self.radial_pto[i] += rho * self.plas_p[i];
         }
     }
 
@@ -2206,7 +2241,8 @@ pub trait NativeBackend {
     unsafe fn set_mode_avg_noise(&mut self, noise: *const c_double, n: size_t) -> i32;
     unsafe fn set_mode_avg_noise_cplx(&mut self, noise_re: *const c_double, noise_im: *const c_double, n: size_t) -> i32;
     unsafe fn set_zdep_mode_avg_params(&mut self, n_z: size_t, z_pts: *const c_double, p_pts: *const c_double, n_dspl: size_t, dspl_x: *const c_double, dspl_y: *const c_double, dspl_d: *const c_double, gamma: *const c_double, nwg_re: *const c_double, nwg_im: *const c_double, omega: *const c_double, model: c_uint, loss_on: c_uint, eps0_gamma3: c_double, omega0: c_double, gamma0: c_double, dgamma0: c_double, nwg0_re: c_double, nwg0_im: c_double, dnwg0_re: c_double, dnwg0_im: c_double) -> i32;
-    unsafe fn set_plasma_params(&mut self, ion_ptr: *const crate::ionization::PptIonizationRate, ionpot: c_double, e_ratio: c_double, preionfrac: c_double, dt: c_double) -> i32;
+    unsafe fn set_plasma_params(&mut self, ion_ptr: *const crate::ionization::PptIonizationRate, ionpot: c_double, e_ratio: c_double, preionfrac: c_double, dt: c_double, density: c_double) -> i32;
+    unsafe fn set_plasma_params_adk(&mut self, ion_ptr: *const crate::ionization::AdkIonizationRate, ionpot: c_double, e_ratio: c_double, preionfrac: c_double, dt: c_double, density: c_double) -> i32;
     unsafe fn set_radial_params(&mut self, n_time: size_t, n_time_over: size_t, n_r: size_t, t_matrix: *const c_double, scale_fwd: c_double, scale_inv: c_double, towin: *const c_double, kerr_fac: c_double, m_re: *const c_double, m_im: *const c_double) -> i32;
     unsafe fn set_radial_noise(&mut self, noise: *const c_double, n: size_t) -> i32;
     unsafe fn set_radial_noise_cplx(&mut self, noise_re: *const c_double, noise_im: *const c_double, n: size_t) -> i32;
@@ -2456,7 +2492,7 @@ impl NativeBackend for CpuNativeSim {
     s.is_zdep_mode_avg = true;
     0
 }
-    unsafe fn set_plasma_params(&mut self, ion_ptr: *const crate::ionization::PptIonizationRate, ionpot: c_double, e_ratio: c_double, preionfrac: c_double, dt: c_double) -> i32 {        let s = self;
+    unsafe fn set_plasma_params(&mut self, ion_ptr: *const crate::ionization::PptIonizationRate, ionpot: c_double, e_ratio: c_double, preionfrac: c_double, dt: c_double, density: c_double) -> i32 {        let s = self;
 
     // Radial (Phase D.2): one independent plasma state per r-column, laid out
     // column-major `(n_time_over, n_r)` exactly like `radial_eto`/`radial_pto`
@@ -2464,10 +2500,13 @@ impl NativeBackend for CpuNativeSim {
     let n = if s.is_radial { s.n_time_over * s.n_r } else { s.n_time_over };
     if n == 0 { return -2; }
     s.plasma_ion_ptr   = ion_ptr;
+    s.plasma_adk_ptr   = std::ptr::null();
+    s.plasma_is_adk    = false;
     s.plasma_ionpot    = ionpot;
     s.plasma_e_ratio   = e_ratio;
     s.plasma_preionfrac = preionfrac;
     s.plasma_dt        = dt;
+    s.plasma_density   = density;
     s.plas_rate     = vec![0.0; n];
     s.plas_fraction = vec![0.0; n];
     s.plas_phase    = vec![0.0; n];
@@ -2476,6 +2515,26 @@ impl NativeBackend for CpuNativeSim {
     s.has_plasma    = true;
     0
 }
+    unsafe fn set_plasma_params_adk(&mut self, ion_ptr: *const crate::ionization::AdkIonizationRate, ionpot: c_double, e_ratio: c_double, preionfrac: c_double, dt: c_double, density: c_double) -> i32 {
+        let s = self;
+        let n = if s.is_radial { s.n_time_over * s.n_r } else { s.n_time_over };
+        if n == 0 { return -2; }
+        s.plasma_ion_ptr   = std::ptr::null();
+        s.plasma_adk_ptr   = ion_ptr;
+        s.plasma_is_adk    = true;
+        s.plasma_ionpot    = ionpot;
+        s.plasma_e_ratio   = e_ratio;
+        s.plasma_preionfrac = preionfrac;
+        s.plasma_dt        = dt;
+        s.plasma_density   = density;
+        s.plas_rate     = vec![0.0; n];
+        s.plas_fraction = vec![0.0; n];
+        s.plas_phase    = vec![0.0; n];
+        s.plas_j        = vec![0.0; n];
+        s.plas_p        = vec![0.0; n];
+        s.has_plasma    = true;
+        0
+    }
     unsafe fn set_radial_params(&mut self, n_time: size_t, n_time_over: size_t, n_r: size_t, t_matrix: *const c_double, scale_fwd: c_double, scale_inv: c_double, towin: *const c_double, kerr_fac: c_double, m_re: *const c_double, m_im: *const c_double) -> i32 {        let s = self;
 
     if n_r == 0 || s.n % n_r != 0 { return -1; }
@@ -3328,10 +3387,33 @@ pub unsafe extern "C" fn native_set_plasma_params(
     e_ratio: c_double,
     preionfrac: c_double,
     dt: c_double,
+    density: c_double,
 ) -> i32 {
     if sim.is_null() { return -1; }
     let s = unsafe { &mut *sim };
-    unsafe { s.backend.set_plasma_params(ion_ptr, ionpot, e_ratio, preionfrac, dt) }
+    unsafe { s.backend.set_plasma_params(ion_ptr, ionpot, e_ratio, preionfrac, dt, density) }
+}
+
+/// ADK counterpart of [`native_set_plasma_params`] (BACKLOG.md Phase I
+/// item 3) — `ion_ptr` is an `AdkIonizationRate` handle from
+/// [`crate::ffi::init_adk_ionization`] instead of a PPT spline LUT.
+///
+/// # Safety
+/// `sim` and `ion_ptr` must be valid; `ion_ptr` must remain valid for the
+/// lifetime of the `NativeSim`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_set_plasma_params_adk(
+    sim: *mut NativeSim,
+    ion_ptr: *const crate::ionization::AdkIonizationRate,
+    ionpot: c_double,
+    e_ratio: c_double,
+    preionfrac: c_double,
+    dt: c_double,
+    density: c_double,
+) -> i32 {
+    if sim.is_null() { return -1; }
+    let s = unsafe { &mut *sim };
+    unsafe { s.backend.set_plasma_params_adk(ion_ptr, ionpot, e_ratio, preionfrac, dt, density) }
 }
 
 /// Wire the radial (`TransRadial`) RHS: resident QDHT + scalar Kerr.

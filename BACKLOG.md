@@ -432,6 +432,43 @@ theoretically construct). Confirms Phase E/F closed everything their own
 `RamanPolarEnv`, `thg=false` Raman, multi-point pressure gradients, EnvGrid
 modal) — this phase is only the genuinely-still-open remainder.
 
+🔴🔴 **Critical correctness fix, found and fixed 2026-07-08 while verifying
+item 3 below: native plasma polarization was missing its density factor
+entirely, for every mode-averaged/radial plasma sim, PPT or ADK, since
+this was first wired (Phase C).** `native.rs`'s `apply_plasma_real`/
+`apply_plasma_radial` computed the per-sample ionization rate and
+cumtrapz-integrated polarization `plas_p` correctly, then added it
+straight into `pto` with **no density multiplication at all** — Julia's
+own `(Plas::PlasmaCumtrapz)(out, Et, ρ)` does `out .+= ρ .* Plas.P`
+(`Nonlinear.jl:237-249`); the native path was doing `out += Plas.P` (ρ
+implicitly 1, not the real gas density, ~1e25 m⁻³ for a typical capillary
+fill). Every existing plasma equivalence test (`test_native_phase2.jl`'s
+PPT test, `test_native_radial_plasma.jl`) ran at a weak enough field that
+the ionization rate stayed near zero throughout, so "native matches
+Julia" was vacuously true in both cases — nothing in the existing test
+suite ever exercised a field strong enough to make the missing factor
+visible. Found by deliberately picking a stronger-field ADK test energy
+(one where ionization has a clear, non-chaotic ~0.5% effect on the
+propagation — see item 3 below) and triangulating three results
+(native-plasma-on, Julia-plasma-on, Julia-plasma-off) instead of the
+existing tests' two (native vs Julia only, both already near the
+plasma-off limit). Fixed by adding a `plasma_density` field to
+`NativeSim`, threading it through `native_set_plasma_params`/
+`native_set_plasma_params_adk` (both gained a new `density` argument),
+and multiplying it into `plas_p` before accumulating into `pto`/
+`radial_pto`. Verified: PPT full-solve relative error at the
+previously-untested strong-field point dropped from ~3.9e-4 (density
+completely missing — this WAS the bug's signature, not a benign tolerance
+gap) to ~3.8e-15 (bit-parity tier) after the fix. Added a proper
+triangulating regression test to both `test_native_phase2.jl` (PPT,
+mode-averaged) and `test_native_radial_plasma.jl` (PPT, radial) so a
+future regression can't hide behind a weak-field blind spot again.
+**Practical implication:** any published result from a native (default
+since Phase 8) `prop_capillary`/`prop_gnlse` run with plasma enabled and
+a strong enough field for ionization to matter was under-computing plasma
+self-defocusing/spectral broadening — re-run affected sims from before
+this commit if plasma played a physically meaningful role.
+
 1. 🟢 **Confirmed and fixed (2026-07-08): mode-averaged/radial shot noise
    (`Et_noise`) was silently dropped by the native path, not gracefully
    falling back.** Verified by code trace (not a loose full-solve diff,
@@ -486,18 +523,56 @@ modal) — this phase is only the genuinely-still-open remainder.
    `Raman.raman_response(t,:SiO2,...)` returns a bare
    `RamanRespIntermediateBroadening` (Gaussian-damped), not wrapped in
    `CombinedRamanResponse`; `flatten_sdo_oscillators` returns `nothing` →
-   falls back (`RK45.jl:1115`/`1310`/`1498`). Plausible/common — this is
-   the documented, recommended silica Raman model for GNLSE fiber sims,
-   so this is probably the highest-value item here after #1.
-3. 🟡 **`ionisation=:ADK`** (`Interface.jl:658-660`) builds
-   `Ionisation.IonRateADK`, not `IonRatePPTAccel` — native requires
-   `irf isa IonRatePPTAccel` (`RK45.jl:1066`/`1279`), so any plasma sim
-   using `:ADK` instead of the default `:PPT` falls back. Plausible
-   (documented, non-default option).
-4. 🟡 **Gas mixtures outside mode-averaged geometry** — Phase F.4 only
-   wired mode-averaged mixtures; `RK45.jl:945-948` rejects any
-   non-scalar `densityfun` for radial/modal/free. Plausible for
-   multi-gas capillary fills in those geometries.
+   falls back (`RK45.jl:1115`/`1310`/`1498`).
+   **Corrected estimate (2026-07-08): this is a new kernel, not a wiring
+   fix.** `RamanRespIntermediateBroadening`'s impulse response has a
+   `exp(-Γᵢ²t²/4)` Gaussian envelope (`Raman.jl:97-105`, Hollenbeck &
+   Cantrell's multi-line silica model) — no finite sum of single-damped-
+   oscillators (`exp(-t/τ2)`, pure exponential decay) reproduces this
+   exactly, so `flatten_sdo_oscillators` returning `nothing` is correct
+   behavior, not a missing wrapper. Porting this natively means a
+   *second* Raman kernel alongside the existing ADE one: precompute the
+   impulse response's frequency-domain transform ĥ(ω) once in Julia (or
+   Rust), then do a resident FFT convolution (intensity → FFT → ×ĥ →
+   IFFT) per RHS step — the same math `Nonlinear.jl`'s generic (non-SDO)
+   Raman path already uses, just moved into the resident stepper. This
+   still saves the per-step FFI round-trip but not the FFT work itself,
+   so the perf upside is smaller than the ADE kernel's. Do **not** fit a
+   multi-SDO approximation to sidestep this — that's an unvalidated
+   numerical approximation, not a faithful port (see
+   `feedback_prefer_analytic_over_lut` in project memory). Deprioritized
+   below items 3/4 (both smaller, well-bounded) until this gets its own
+   dedicated slice.
+3. 🟢 **Done (2026-07-08): `ionisation=:ADK` native support.** `IonRateADK`
+   is closed-form/analytic (no LUT — Julia evaluates the ADK formula
+   directly, `Ionisation.jl:176-189`), so this ported cleanly with no
+   approximation risk: `luna-rust/src/ionization.rs`'s new
+   `AdkIonizationRate` takes Julia's already-computed constants
+   (`nstar`/`cn_sq`/`ω_p`/`ω_t_prefac`/`thr`/`avfac`) directly rather than
+   refitting anything, mirroring the exact formula in
+   `(ir::IonRateADK)(E)`. New `RustAdkHandle` (Ionisation.jl, same
+   GC-finalizer pattern as `RustIonizationHandle`) and
+   `native_set_plasma_params_adk` FFI setter; `native.rs`'s
+   `apply_plasma_real`/`apply_plasma_radial` now dispatch through a shared
+   `plasma_rate()` helper on a `plasma_is_adk` flag instead of assuming
+   `PptIonizationRate`. Verified: single-step ~3.8e-17, full-solve
+   ~2.7e-16 (bit-parity tier, as expected for an exact analytic port) —
+   see `test/test_native_adk_ionisation.jl`.
+4. 🟢 **Done (2026-07-08, radial only): gas mixtures outside
+   mode-averaged geometry.** Discriminating check (per-item audit):
+   radial's normalization array `M` and QDHT are density-independent at
+   the point kerr_fac is computed (density only enters the *linear*
+   refractive index, already baked into `linop`/`normfun` before native
+   construction) — so, exactly like Phase F.4's mode-averaged case, Kerr's
+   linearity in density·γ3 collapses a per-species mixture to one scalar
+   `kerr_fac = Σᵢ densityᵢ·ε₀·γ3ᵢ`. Julia-only change (no Rust/FFI
+   changes), mirroring Phase F.4's mode-averaged mixture branch almost
+   exactly. Verified: single-step ~1.1e-17, full-solve ~1.3e-16 — see
+   `test/test_native_radial_mixture.jl`. **Modal and free-space mixtures
+   still fall back** (not checked in this slice — modal's per-mode
+   projection and free-space's 2-D Cartesian normalization may or may not
+   collapse the same way; needs its own discriminating check before
+   assuming it's equally trivial).
 5. ⚪ **Modal path restricted to `MarcatiliMode`** (`RK45.jl:1352-1354`) —
    `StepIndexMode`/`ZeisbergerMode`/`VincettiMode` exist but
    `prop_capillary`'s `makemode_s` only ever builds `MarcatiliMode`s; the

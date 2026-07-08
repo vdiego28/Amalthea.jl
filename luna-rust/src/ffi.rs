@@ -1,6 +1,6 @@
 use num_complex::Complex;
 use libc::{c_double, c_int, c_uint, size_t, c_void};
-use crate::ionization::PptIonizationRate;
+use crate::ionization::{PptIonizationRate, AdkIonizationRate};
 use crate::raman::{RamanOscillator, TimeDomainRamanSolver};
 use crate::dispersion::{ZeisbergerNeff, MarcatiliNeff};
 
@@ -439,6 +439,42 @@ pub unsafe extern "C" fn init_ppt_ionization_lut(
 /// that has not yet been freed.  Passing `null` is safe (no-op).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn free_ppt_ionization_lut(ptr: *mut PptIonizationRate) {
+    if !ptr.is_null() {
+        unsafe { drop(Box::from_raw(ptr)); }
+    }
+}
+
+/// Create an `AdkIonizationRate` (BACKLOG.md Phase I item 3) from Julia's
+/// own precomputed `IonRateADK` constants (`src/Ionisation.jl:131-174`) —
+/// closed-form, no LUT/spline fitting at all.
+///
+/// Returns a heap-allocated `*mut AdkIonizationRate`. Free with
+/// [`free_adk_ionization`].
+///
+/// # Safety
+/// No pointer arguments; always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn init_adk_ionization(
+    occupancy: c_double,
+    omega_p: c_double,
+    cn_sq: c_double,
+    nstar: c_double,
+    omega_t_prefac: c_double,
+    thr: c_double,
+    avfac: c_double,
+) -> *mut AdkIonizationRate {
+    Box::into_raw(Box::new(AdkIonizationRate {
+        occupancy, omega_p, cn_sq, nstar, omega_t_prefac, thr, avfac,
+    }))
+}
+
+/// Free an `AdkIonizationRate` handle previously returned by [`init_adk_ionization`].
+///
+/// # Safety
+/// `ptr` must be a valid, non-aliased pointer returned by [`init_adk_ionization`]
+/// that has not yet been freed. Passing `null` is safe (no-op).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn free_adk_ionization(ptr: *mut AdkIonizationRate) {
     if !ptr.is_null() {
         unsafe { drop(Box::from_raw(ptr)); }
     }

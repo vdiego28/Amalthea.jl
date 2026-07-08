@@ -116,6 +116,49 @@ function _make_rust_ionization_handle(E::AbstractVector, rate::AbstractVector,
     return RustIonizationHandle(ptr)
 end
 
+"""
+Mutable wrapper around a heap-allocated `AdkIonizationRate` in the Rust shared
+library (BACKLOG.md Phase I item 3). A GC finalizer calls `free_adk_ionization`
+when the handle is no longer reachable.
+"""
+mutable struct RustAdkHandle
+    ptr::Ptr{Cvoid}
+    function RustAdkHandle(ptr::Ptr{Cvoid})
+        h = new(ptr)
+        finalizer(h) do self
+            if self.ptr != C_NULL
+                ccall((:free_adk_ionization, _LIBLUNA_RUST),
+                      Cvoid, (Ptr{Cvoid},), self.ptr)
+                self.ptr = C_NULL
+            end
+        end
+        return h
+    end
+end
+
+"""
+    _make_rust_adk_handle(occupancy, ω_p, cn_sq, nstar, ω_t_prefac, thr, avfac)
+        -> Union{Nothing, RustAdkHandle}
+
+Build a Rust-side `AdkIonizationRate` from Julia's own already-computed ADK
+constants — closed-form, no LUT fitting (unlike `_make_rust_ionization_handle`).
+Same eligibility as the PPT handle: either `LUNA_USE_RUST_IONISATION=1` or the
+native stepper default. Returns `nothing` when neither toggle is active, or
+the library/handle construction fails, so the pure-Julia path is taken.
+"""
+function _make_rust_adk_handle(occupancy, ω_p, cn_sq, nstar, ω_t_prefac, thr, avfac)
+    use_rust_ionisation = get(ENV, "LUNA_USE_RUST_IONISATION", "0") == "1"
+    use_native = get(ENV, "LUNA_USE_RUST_NATIVE", "1") != "0"
+    (use_rust_ionisation || use_native) || return nothing
+    isfile(_LIBLUNA_RUST) || return nothing
+    ptr = ccall((:init_adk_ionization, _LIBLUNA_RUST),
+          Ptr{Cvoid},
+          (Float64, Float64, Float64, Float64, Float64, Float64, Float64),
+          Float64(occupancy), ω_p, cn_sq, nstar, ω_t_prefac, thr, avfac)
+    ptr == C_NULL && return nothing
+    return RustAdkHandle(ptr)
+end
+
 # ─────────────────────────────────────────────────────────────────────────────
 
 abstract type AbstractIonRate end
@@ -128,7 +171,7 @@ Ionisation rate based on the ADK formula. If `threshold` is true, use [`ADK_thre
 to avoid calculation below floating-point precision. If `cycle_average` is `true`, calculate
 the cycle-averaged ADK ionisation rate instead.
 """
-struct IonRateADK <: AbstractIonRate
+struct IonRateADK{RH} <: AbstractIonRate
     ionpot::Float64
     threshold::Bool
     cycle_average::Bool
@@ -139,6 +182,7 @@ struct IonRateADK <: AbstractIonRate
     thr::Float64
     avfac::Float64
     occupancy::Int
+    rust_handle::RH # Nothing (Julia path) or RustAdkHandle (Rust path)
 end
 
 function IonRateADK(material::Symbol; kwargs...)
@@ -169,8 +213,12 @@ function IonRateADK(ionpot::Number; occupancy=2, threshold=true, cycle_average=f
         avfac = 1.0
     end
 
+    # BACKLOG.md Phase I item 3: ADK is closed-form (no LUT), so the Rust
+    # handle just carries these already-computed constants — see
+    # `_make_rust_adk_handle`/`AdkIonizationRate` (luna-rust/src/ionization.rs).
+    rust_handle = _make_rust_adk_handle(occupancy, ω_p, cn_sq, nstar, ω_t_prefac, thr, avfac)
     IonRateADK(ionpot, threshold, cycle_average,
-               nstar, cn_sq, ω_p, ω_t_prefac, thr, avfac, occupancy)
+               nstar, cn_sq, ω_p, ω_t_prefac, thr, avfac, occupancy, rust_handle)
 end
 
 function (ir::IonRateADK)(E)
