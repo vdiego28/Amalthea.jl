@@ -151,6 +151,16 @@ pub struct CpuNativeSim {
     pub n_time_over: usize,
     pub n_spec: usize,
     pub n_spec_over: usize,
+    /// Modified shot-noise time-domain field, length `n_time_over`, or empty
+    /// if `has_noise` is false. Set once at construction (Julia:
+    /// `NonlinearRHS.jl:534-535`) and added to `eto` (after the 1/sc scaling,
+    /// scaled by the same `inv_sc`) every RHS call, matching
+    /// `TransModeAvg`'s `Et_nl = Eto + Et_noise/sc` (NonlinearRHS.jl:561-562).
+    /// `eto` is pure per-call scratch here (never read after this RHS
+    /// evaluation returns), so adding the noise in place is equivalent to
+    /// Julia's separate `Et_nl` buffer without the extra allocation/copy.
+    pub et_noise: Vec<f64>,
+    pub has_noise: bool,
 
     // ── Phase 2: EnvGrid complex time-domain buffers (c2c path) ─────────────────
     pub eto_cplx: Vec<Complex<f64>>,
@@ -582,6 +592,8 @@ impl CpuNativeSim {
             n_time_over: 0,
             n_spec: n,
             n_spec_over: 0,
+            et_noise: Vec::new(),
+            has_noise: false,
             eto_cplx: Vec::new(),
             pto_cplx: Vec::new(),
             eoo_cplx: Vec::new(),
@@ -736,6 +748,16 @@ impl CpuNativeSim {
         let inv_sc = 1.0 / sc;
         for v in &mut self.eto {
             *v *= inv_sc;
+        }
+
+        // ── Step 2b: modified shot-noise injection (Et_nl = Eto + Et_noise/sc) ──
+        // `eto` is scratch for this call only (never read again after this RHS
+        // evaluation returns), so adding the noise in place matches Julia's
+        // separate Et_nl buffer without needing a second allocation.
+        if self.has_noise {
+            for i in 0..self.n_time_over {
+                self.eto[i] += self.et_noise[i] * inv_sc;
+            }
         }
 
         // ── Step 3: Kerr RHS (KerrScalar!) Pto += kerr_fac · Eto³ ───────────────
@@ -2140,6 +2162,7 @@ pub trait NativeBackend {
     unsafe fn debug_beta1_at(&mut self, z: c_double, out_dens: *mut c_double, out_beta1: *mut c_double) -> i32;
     unsafe fn set_fftw_plans(&mut self, lib_path: *const c_char, n_time: size_t, n_time_over: size_t, is_real: c_int, flags: c_uint) -> i32;
     unsafe fn set_mode_avg_params(&mut self, n_time: size_t, n_time_over: size_t, towin: *const c_double, owin: *const c_double, sidx: *const u8, pre_re: *const c_double, pre_im: *const c_double, beta: *const c_double, kerr_fac: c_double, nlscale: c_double, sqrt_aeff: c_double) -> i32;
+    unsafe fn set_mode_avg_noise(&mut self, noise: *const c_double, n: size_t) -> i32;
     unsafe fn set_zdep_mode_avg_params(&mut self, n_z: size_t, z_pts: *const c_double, p_pts: *const c_double, n_dspl: size_t, dspl_x: *const c_double, dspl_y: *const c_double, dspl_d: *const c_double, gamma: *const c_double, nwg_re: *const c_double, nwg_im: *const c_double, omega: *const c_double, model: c_uint, loss_on: c_uint, eps0_gamma3: c_double, omega0: c_double, gamma0: c_double, dgamma0: c_double, nwg0_re: c_double, nwg0_im: c_double, dnwg0_re: c_double, dnwg0_im: c_double) -> i32;
     unsafe fn set_plasma_params(&mut self, ion_ptr: *const crate::ionization::PptIonizationRate, ionpot: c_double, e_ratio: c_double, preionfrac: c_double, dt: c_double) -> i32;
     unsafe fn set_radial_params(&mut self, n_time: size_t, n_time_over: size_t, n_r: size_t, t_matrix: *const c_double, scale_fwd: c_double, scale_inv: c_double, towin: *const c_double, kerr_fac: c_double, m_re: *const c_double, m_im: *const c_double) -> i32;
@@ -2338,8 +2361,18 @@ impl NativeBackend for CpuNativeSim {
     s.kerr_fac = kerr_fac;
     s.nlscale = nlscale;
     s.sqrt_aeff = sqrt_aeff;
+    s.has_noise = false;
+    s.et_noise = Vec::new();
     0
 }
+    unsafe fn set_mode_avg_noise(&mut self, noise: *const c_double, n: size_t) -> i32 {
+        let s = self;
+        if noise.is_null() || n == 0 { return -1; }
+        if n != s.n_time_over { return -2; }
+        s.et_noise = unsafe { std::slice::from_raw_parts(noise, n) }.to_vec();
+        s.has_noise = true;
+        0
+    }
     unsafe fn set_zdep_mode_avg_params(&mut self, n_z: size_t, z_pts: *const c_double, p_pts: *const c_double, n_dspl: size_t, dspl_x: *const c_double, dspl_y: *const c_double, dspl_d: *const c_double, gamma: *const c_double, nwg_re: *const c_double, nwg_im: *const c_double, omega: *const c_double, model: c_uint, loss_on: c_uint, eps0_gamma3: c_double, omega0: c_double, gamma0: c_double, dgamma0: c_double, nwg0_re: c_double, nwg0_im: c_double, dnwg0_re: c_double, dnwg0_im: c_double) -> i32 {        let s = self;
 
     if s.sidx.len() != s.n { return -3; }
@@ -3082,6 +3115,27 @@ pub unsafe extern "C" fn native_set_mode_avg_params(
     if sim.is_null() { return -1; }
     let s = unsafe { &mut *sim };
     unsafe { s.backend.set_mode_avg_params(n_time, n_time_over, towin, owin, sidx, pre_re, pre_im, beta, kerr_fac, nlscale, sqrt_aeff) }
+}
+
+/// Wire the modified shot-noise time-domain field for the mode-averaged
+/// RealGrid path (BACKLOG.md Phase I item 1). `noise` has length
+/// `n_time_over` (the same grid `native_set_mode_avg_params` sized). Must be
+/// called *after* `native_set_mode_avg_params`. Optional: if never called,
+/// the RHS runs with no noise term (the pre-Phase-I behavior).
+///
+/// Returns 0 on success, -1 on null/empty args, -2 on a length mismatch.
+///
+/// # Safety
+/// `sim` must be valid; `noise` must be valid for `n` reads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_set_mode_avg_noise(
+    sim: *mut NativeSim,
+    noise: *const c_double,
+    n: size_t,
+) -> i32 {
+    if sim.is_null() { return -1; }
+    let s = unsafe { &mut *sim };
+    unsafe { s.backend.set_mode_avg_noise(noise, n) }
 }
 
 /// Wire the z-dependent linop path (Phase 7 + BACKLOG.md Phase F item 3 —

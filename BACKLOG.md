@@ -432,20 +432,32 @@ theoretically construct). Confirms Phase E/F closed everything their own
 `RamanPolarEnv`, `thg=false` Raman, multi-point pressure gradients, EnvGrid
 modal) — this phase is only the genuinely-still-open remainder.
 
-1. 🔴 **Unverified: mode-averaged/radial shot noise (`Et_noise`) may be
-   silently dropped, not gracefully falling back.** `TransModeAvg`/
-   `TransRadial` both carry a `Et_noise` field, populated by default
-   (`shotnoise=true` → `:modified` model is `Interface.jl`'s default) for
-   **every** mode-averaged/radial sim — the single most common
-   configuration in the package. Unlike the modal (`RK45.jl:1343`) and
-   free-space (`RK45.jl:1528`) blocks, the mode-averaged and radial blocks
-   have **no `NativeIneligible` guard on `f!.Et_noise` at all**. This needs
-   a dedicated verification pass (Rust-vs-Julia full-solve diff with
-   `shotnoise=true` on `TransModeAvg`, since Phase 8 made native the
-   default) before anything else in this phase — if shot noise is being
-   silently skipped rather than correctly applied, every default
-   `prop_capillary`/`prop_gnlse` run since Phase 8 shipped may be missing
-   a physical noise term, not just a documented tolerance gap.
+1. 🟢 **Confirmed and fixed (2026-07-08): mode-averaged/radial shot noise
+   (`Et_noise`) was silently dropped by the native path, not gracefully
+   falling back.** Verified by code trace (not a loose full-solve diff,
+   which would have false-passed): neither the mode-averaged nor radial
+   setup blocks in `RustNativeStepper` ever referenced `f!.Et_noise`, and
+   no noise buffer was ever passed to `native_set_mode_avg_params`/
+   `native_set_radial_params` — unlike the modal (`RK45.jl:1343`) and
+   free-space (`RK45.jl:1528`) blocks, which correctly guard and fall back.
+   Since `shotnoise=true` (`:modified` model) is `Interface.jl`'s default,
+   this affected the single most common configuration in the package,
+   including the flagship default field-resolved workload (see
+   `test/test_native_default_workload.jl`).
+   - **Mode-averaged, RealGrid: fully ported to native**, not just
+     guarded. Added `native_set_mode_avg_noise` (Rust: `et_noise`/
+     `has_noise` fields on `CpuNativeSim`, injected into `eto` after the
+     1/sc scaling, matching Julia's `Et_nl = Eto + Et_noise/sc` exactly —
+     `NonlinearRHS.jl:561-562`) and wired the Julia-side caller in
+     `RK45.jl`. Verified via `test/test_native_shotnoise.jl`: (a) Rust vs.
+     Julia single-step equivalence with noise and a shared fixed RNG seed
+     (~1e-9), (b) a regression guard confirming the noisy and noise-free
+     native results actually differ (catches "silently zero" recurring).
+     Full `rust` gate: 42058/42058 passing.
+   - **Still falls back** (guarded, not yet ported): mode-averaged EnvGrid
+     noise (rare — modified shot-noise + mode-averaged envelope
+     propagation) and all of radial (RealGrid + EnvGrid) — same fix
+     shape, tracked as the next slice of this item.
 2. 🟡 **`ramanmodel=:SiO2` in `prop_gnlse`** (`Interface.jl:1077-1079`) —
    `Raman.raman_response(t,:SiO2,...)` returns a bare
    `RamanRespIntermediateBroadening` (Gaussian-damped), not wrapped in
