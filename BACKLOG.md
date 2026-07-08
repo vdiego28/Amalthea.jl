@@ -607,6 +607,84 @@ what stands between "native handles the documented high-level API" and
 is intentionally broader than the high-level one, not because of missed
 scope.
 
+### Phase J — Post-completion audit findings & future directions (2026-07-08)
+
+Full audit after Phase I closed the native-port scope: re-verified Phase
+A-I claims against the git log and code, re-derived the SiO2 FFT-conv
+kernel's math against `Nonlinear.jl:357-431`, and reviewed the test
+methodology. One latent flaw found and fixed; the rest are tracked
+future work, roughly ordered by value.
+
+1. 🟢 **Fixed (2026-07-08): stale zero-padding in the SiO2 FFT-conv
+   kernel.** `rhs_mode_avg_env` Step 3c reuses `raman_fft_e2` as both the
+   padded-E² input and the inverse-FFT output buffer, but only refilled
+   `[0..no)` each step — so from the second RHS call onward the upper half
+   held the *previous* step's convolution tail instead of zeros. Julia
+   never hits this (its `R.E2` upper half is a separate, never-written
+   buffer). Invisible in every existing test (and in any real SiO2 run)
+   because Hollenbeck & Cantrell's Gaussian damping makes h ≈ 0 beyond
+   ~100 fs, so the stale tail was numerically zero — but circular-
+   convolution wrap-around from a non-zero pad is exactly the truncation-
+   artefact class the double-length grid exists to prevent
+   (Nonlinear.jl:406-411), and the kernel itself is generic over
+   oscillator parameters. Fixed by explicitly zeroing `[no..2no)` every
+   step (cost: one trivial loop).
+2. 🟡 **`PptIonizationRate::rate` can segfault far outside its fitted
+   range** — promoted from a buried note in Phase G.3's entry to a
+   tracked item: repeatedly `step!`-ing far beyond `flength` with a
+   too-large fixed `dt` grows the field until the PPT LUT query lands
+   outside `[e_min,e_max]` and something in that path segfaults instead
+   of hitting the documented Phase B.2 clamp. A rate query must never be
+   able to segfault regardless of input; reproduce via the
+   `benchmark_native_default.jl` overshoot described in Phase G.3, then
+   fix + add a Rust unit test hammering `rate()` across ±1e10× the fitted
+   range.
+3. ⚪ **r2c/c2r halving for both FFT-conv Raman convolutions.** The
+   padded E² and h are mathematically real in both the carrier and
+   envelope paths. Julia's `RamanPolarField` already uses `plan_rfft`,
+   but `RamanPolarEnv` uses a full c2c `plan_fft` (Nonlinear.jl:327) and
+   the native SiO2 kernel mirrors that (matching parity exactly). A
+   Hermitian-symmetric r2c/c2r pair would halve the per-step transform
+   work in the native kernel (and could be upstreamed to Julia's
+   `RamanPolarEnv` too). Summation-order change → validate with the
+   fixed-step discipline (TESTING.md §3); benchmark first to confirm the
+   convolution is actually a measurable fraction of a gnlse step.
+4. ⚪ **User-facing native-support matrix.** What runs natively vs falls
+   back (geometry × grid × response × options) is currently derivable
+   only from this file + PORT_LOG + the `NativeIneligible` sites. A
+   single README (or `docs/`) table — rows: mode-avg/radial/modal/
+   free-space; columns: RealGrid/EnvGrid, Kerr/plasma/Raman(SDO/SiO2)/
+   noise/mixtures/z-dep — would let users predict performance without
+   reading the port history. Generate it from the audit in Phase I's
+   preamble; keep it next to the code so guard changes update it.
+5. ⚪ **Consolidate the two resident Raman kernels' shared plumbing.**
+   Step 3b (ADE) and Step 3c (FFT-conv) in `rhs_mode_avg_env` duplicate
+   the `0.5·|E|²` intensity loop and the `pto += E·(ρ·P)` accumulation;
+   only the middle (solve vs convolve) differs. Worth a small refactor
+   when either is next touched — not before (both are covered by
+   equivalence tests; churn for its own sake risks more than it saves).
+6. ⚪ **FFI-surface robustness tests.** The FFI now has ~30 `native_set_*`
+   entry points whose error paths (null pointers, mismatched sizes,
+   wrong call order) are each hand-checked but never systematically
+   exercised. A single Rust test that calls every setter on a fresh
+   `NativeSim` with adversarial inputs (nulls, zero lengths, `n_time`
+   mismatches) and asserts non-zero return codes — no crash, no UB —
+   would fence the whole surface cheaply. Pairs well with S4.2's
+   `FfiStatus` enum.
+
+**Where the project goes from here** (the port itself is done — items
+1-4 of Phase I were the last correctness-scope gaps): the highest-value
+tracks in order are **S1 (CPU hot-loop performance)** — the port's
+premise was performance, and the dispatcher currently vectorizes only
+Raman, so this is where the remaining headroom is; **S4 (architecture
+cleanups)** — the toggle zoo and reflective probes are the main
+maintenance risk as the surface grows, and S4 is a declared prerequisite
+for extending S3; **GPU CI + finish S3** — the GPU stepper exists and is
+hardware-verified but will bit-rot without CI, as already happened once;
+**S6.1 (prebuilt binaries)** — the biggest adoption lever, since today
+every user needs a Rust toolchain. Upstream-sync (Phase A.3's weekly
+job) and the Phase H PR channel keep the fork honest in both directions.
+
 ## Suggestions backlog (imported from SUGGESTIONS.md, 2026-07-07)
 
 Full detail (equations, rationale, per-item code sketches) stays in
@@ -942,8 +1020,11 @@ Remaining kernels to wire (same pattern, in this order):
    `test/test_raman_rust.jl`. Follow-ups: rotational multi-oscillator (FFI already
    supports n_osc>1; needs Julia-side extraction of per-J Ω/K arrays);
    density-dependent τ2 (add `raman_update_coeffs` FFI entry); intermediate-broadening
-   (Gaussian damping — stays Julia indefinitely); envelope (`RamanPolarEnv`) Rust path
-   (needs real-buffer copy for complex→real conversion).
+   (Gaussian damping — ~~stays Julia indefinitely~~ now native via the resident
+   FFT-conv kernel, Phase I item 2, 2026-07-08); envelope (`RamanPolarEnv`) Rust path
+   (~~needs real-buffer copy~~ now native, Phase F item 2). Note these follow-ups
+   landed in the *native-port* path, not this older per-kernel
+   `LUNA_USE_RUST_RAMAN` wiring, which keeps its original narrower scope.
 3. ✅ **Waveguide dispersion — Zeisberger** (`dispersion.rs` `ZeisbergerNeff`) — toggle
    `LUNA_USE_RUST_DISPERSION`, `init_zeisberger_neff` / `free_zeisberger_neff` /
    `zeisberger_neff_vector` exported, wired into `Antiresonant.jl` via a specialised

@@ -593,7 +593,12 @@ Delayed χ⁽³⁾. The carrier-field SDO path (`RamanPolarField`) is already Ru
 exponential integrator (`x_{n+1} = A·x_n + B0·Iₙ + B1·I_{n+1}`), O(Nt) and
 allocation-free, vs. Julia's FFT convolution. Phase 4 makes that solver resident
 in the RHS. The envelope path (`RamanPolarEnv`) and intermediate-broadening
-(Gaussian-damped) responses stay Julia.
+(Gaussian-damped) responses stay Julia. *(Update: both later went native —
+`RamanPolarEnv` in Phase F item 2, intermediate-broadening as a second
+resident FFT-convolution kernel in Phase I item 2 (2026-07-08,
+`native_set_raman_fft_params` / `rhs_mode_avg_env` Step 3c) — see
+BACKLOG.md. This section's remaining text describes the Phase 4 SDO/ADE
+kernel only.)*
 
 **Reuse, don't reinvent — same pattern as Phase 3's QDHT.** `raman.rs`'s
 `TimeDomainRamanSolver` is already a self-contained, public Rust struct

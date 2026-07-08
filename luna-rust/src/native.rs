@@ -1160,6 +1160,18 @@ impl CpuNativeSim {
             for i in 0..no {
                 self.raman_fft_e2[i] = Complex::new(0.5 * self.eto_cplx[i].norm_sqr(), 0.0);
             }
+            // The upper half must be genuinely zero-padded every step:
+            // `plan.inverse` below writes the full 2N-length P back into
+            // this same buffer, so from the second RHS call onward
+            // `[no..2no)` would otherwise hold the previous step's
+            // convolution tail. Julia never hits this (`R.E2`'s upper half
+            // is a separate, never-written buffer), and the double-length
+            // grid exists precisely to prevent truncation/wrap-around
+            // artefacts (Nonlinear.jl:406-411) — don't rely on h's tail
+            // happening to be zero at the wrap distance.
+            for i in no..self.raman_fft_e2.len() {
+                self.raman_fft_e2[i] = Complex::new(0.0, 0.0);
+            }
             if let Some(ref plan) = self.raman_fft_plan {
                 plan.forward(&mut self.raman_fft_e2, &mut self.raman_fft_ew);
                 for k in 0..self.raman_fft_ew.len() {
