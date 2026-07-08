@@ -454,10 +454,18 @@ modal) — this phase is only the genuinely-still-open remainder.
      (~1e-9), (b) a regression guard confirming the noisy and noise-free
      native results actually differ (catches "silently zero" recurring).
      Full `rust` gate: 42058/42058 passing.
-   - **Still falls back** (guarded, not yet ported): mode-averaged EnvGrid
-     noise (rare — modified shot-noise + mode-averaged envelope
-     propagation) and all of radial (RealGrid + EnvGrid) — same fix
-     shape, tracked as the next slice of this item.
+   - **Radial, RealGrid: also fully ported to native.** Same shape:
+     `native_set_radial_noise` adds the (unscaled) noise field into
+     `radial_eto` right after the QDHT `ldiv!` step, matching
+     `TransRadial`'s `Et_nl = Eto + Et_noise` (`NonlinearRHS.jl:691-692`).
+     Verified via `test/test_native_radial_shotnoise.jl`: Rust vs. Julia
+     agreement ~1e-17 with noise, plus the same noisy-vs-clean regression
+     guard. Full `rust` gate: 42063/42063 passing.
+   - **Still falls back** (guarded, not yet ported): mode-averaged and
+     radial EnvGrid noise (both rare — modified shot-noise + envelope
+     propagation) — `Et_noise` is `ComplexF64`-valued there, not the real
+     buffer the current FFI signatures accept; same fix shape, just a
+     second (complex) setter per geometry.
 2. 🟡 **`ramanmodel=:SiO2` in `prop_gnlse`** (`Interface.jl:1077-1079`) —
    `Raman.raman_response(t,:SiO2,...)` returns a bare
    `RamanRespIntermediateBroadening` (Gaussian-damped), not wrapped in

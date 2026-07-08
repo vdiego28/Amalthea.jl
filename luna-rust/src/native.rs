@@ -186,6 +186,13 @@ pub struct CpuNativeSim {
 
     // ── Phase 3: Radial (TransRadial) — resident QDHT + scalar Kerr ──────────────
     pub is_radial: bool,
+    /// Modified shot-noise time-domain field, column-major `(n_time_over,
+    /// n_r)`, length `n_time_over*n_r`, or empty if `has_radial_noise` is
+    /// false. Added to `radial_eto` in place right after the QDHT ldiv!
+    /// step, unscaled — matches `TransRadial`'s `Et_nl = Eto + Et_noise`
+    /// (NonlinearRHS.jl:691-692; no 1/sc factor here, unlike mode-averaged).
+    pub radial_et_noise: Vec<f64>,
+    pub has_radial_noise: bool,
     /// Number of radial grid points (`Hankel.QDHT.N`). Buffers are column-major
     /// `(n_time, n_r)`: column `r` is `n_time` contiguous elements.
     pub n_r: usize,
@@ -610,6 +617,8 @@ impl CpuNativeSim {
             plasma_dt: 1.0,
             has_plasma: false,
             is_radial: false,
+            radial_et_noise: Vec::new(),
+            has_radial_noise: false,
             n_r: 0,
             qdht: None,
             qdht_scale_fwd: 1.0,
@@ -1132,6 +1141,15 @@ impl CpuNativeSim {
         let scale_inv = self.qdht_scale_inv;
         if let Some(ref mut qdht) = self.qdht {
             qdht.apply_real(&mut self.radial_eto, n_time_over, scale_inv);
+        }
+
+        // ── Step 2b: modified shot-noise injection (Et_nl = Eto + Et_noise) ──────
+        // `radial_eto` is scratch for this call only, so adding in place
+        // matches Julia's separate Et_nl buffer without an extra allocation.
+        if self.has_radial_noise {
+            for i in 0..(n_time_over * n_r) {
+                self.radial_eto[i] += self.radial_et_noise[i];
+            }
         }
 
         // ── Step 3: Kerr (KerrScalar!): Pto += kerr_fac · Eto³, pointwise (t,r) ───
@@ -2166,6 +2184,7 @@ pub trait NativeBackend {
     unsafe fn set_zdep_mode_avg_params(&mut self, n_z: size_t, z_pts: *const c_double, p_pts: *const c_double, n_dspl: size_t, dspl_x: *const c_double, dspl_y: *const c_double, dspl_d: *const c_double, gamma: *const c_double, nwg_re: *const c_double, nwg_im: *const c_double, omega: *const c_double, model: c_uint, loss_on: c_uint, eps0_gamma3: c_double, omega0: c_double, gamma0: c_double, dgamma0: c_double, nwg0_re: c_double, nwg0_im: c_double, dnwg0_re: c_double, dnwg0_im: c_double) -> i32;
     unsafe fn set_plasma_params(&mut self, ion_ptr: *const crate::ionization::PptIonizationRate, ionpot: c_double, e_ratio: c_double, preionfrac: c_double, dt: c_double) -> i32;
     unsafe fn set_radial_params(&mut self, n_time: size_t, n_time_over: size_t, n_r: size_t, t_matrix: *const c_double, scale_fwd: c_double, scale_inv: c_double, towin: *const c_double, kerr_fac: c_double, m_re: *const c_double, m_im: *const c_double) -> i32;
+    unsafe fn set_radial_noise(&mut self, noise: *const c_double, n: size_t) -> i32;
     unsafe fn set_raman_params(&mut self, omega: *const c_double, gamma: *const c_double, coupling: *const c_double, n_osc: size_t, dt: c_double, density: c_double, thg: c_int) -> i32;
     unsafe fn set_modal_params(&mut self, n_time: size_t, n_time_over: size_t, n_modes: size_t, npol: size_t, a: c_double, unm: *const c_double, inv_sqrt_n: *const c_double, order: *const i32, kind: *const u8, phi: *const c_double, full: u8, pol_select: *const u8, towin: *const c_double, kerr_fac: c_double, nlfac_re: *const c_double, nlfac_im: *const c_double, lib_path: *const c_char, rtol: c_double, atol: c_double, maxevals: size_t) -> i32;
     unsafe fn set_free_params(&mut self, n_time: size_t, n_time_over: size_t, n_y: size_t, n_x: size_t, flags: c_uint, towin: *const c_double, kerr_fac: c_double, m_re: *const c_double, m_im: *const c_double) -> i32;
@@ -2464,9 +2483,19 @@ impl NativeBackend for CpuNativeSim {
         s.radial_eto_c = vec![Complex::new(0.0, 0.0); n_time_over * n_r];
         s.radial_pto_c = vec![Complex::new(0.0, 0.0); n_time_over * n_r];
     }
+    s.has_radial_noise = false;
+    s.radial_et_noise = Vec::new();
 
     0
 }
+    unsafe fn set_radial_noise(&mut self, noise: *const c_double, n: size_t) -> i32 {
+        let s = self;
+        if noise.is_null() || n == 0 { return -1; }
+        if n != s.n_time_over * s.n_r { return -2; }
+        s.radial_et_noise = unsafe { std::slice::from_raw_parts(noise, n) }.to_vec();
+        s.has_radial_noise = true;
+        0
+    }
     unsafe fn set_raman_params(&mut self, omega: *const c_double, gamma: *const c_double, coupling: *const c_double, n_osc: size_t, dt: c_double, density: c_double, thg: c_int) -> i32 {        let s = self;
 
     if s.n_time_over == 0 { return -2; }
@@ -3280,6 +3309,26 @@ pub unsafe extern "C" fn native_set_radial_params(
     if sim.is_null() { return -1; }
     let s = unsafe { &mut *sim };
     unsafe { s.backend.set_radial_params(n_time, n_time_over, n_r, t_matrix, scale_fwd, scale_inv, towin, kerr_fac, m_re, m_im) }
+}
+
+/// Wire the modified shot-noise time-domain field for the radial
+/// (`TransRadial`) RealGrid path (BACKLOG.md Phase I item 1). `noise` has
+/// length `n_time_over*n_r`, column-major `(n_time_over, n_r)` — the same
+/// layout as `radial_eto`. Must be called *after* `native_set_radial_params`.
+///
+/// Returns 0 on success, -1 on null/empty args, -2 on a length mismatch.
+///
+/// # Safety
+/// `sim` must be valid; `noise` must be valid for `n` reads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_set_radial_noise(
+    sim: *mut NativeSim,
+    noise: *const c_double,
+    n: size_t,
+) -> i32 {
+    if sim.is_null() { return -1; }
+    let s = unsafe { &mut *sim };
+    unsafe { s.backend.set_radial_noise(noise, n) }
 }
 
 /// Wire the Raman ADE solver as an additive term in `rhs_mode_avg_real`
