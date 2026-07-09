@@ -3115,19 +3115,33 @@ impl NativeBackend for CpuNativeSim {
     let t = t_new;
     
     for ii in 0..6 {
-        s.ystage.copy_from_slice(&s.field);
+        // Fused single pass: previously this did one full ystage read-modify-write
+        // sweep per nonzero DP_B[ii][j] coefficient (up to 6 sweeps for the last
+        // stage). Collecting the (scale, k_j) terms once and accumulating each
+        // element in one sweep preserves the exact same addition order (field[idx]
+        // + scale0*k0[idx] + scale1*k1[idx] + ...) so results are bit-identical,
+        // while touching the ystage buffer only once instead of once per term.
         let (ks_slice, _) = s.ks.split_at(ii + 1);
+        let mut terms: [Option<(f64, &[Complex<f64>])>; 6] = [None; 6];
+        let mut n_terms = 0usize;
         for (j, k_j) in ks_slice.iter().enumerate() {
             let bij = DP_B[ii][j];
             if bij != 0.0 {
-                let scale = dt * bij;
-                for (y, k) in s.ystage.iter_mut().zip(k_j.iter()) {
-                    y.re += scale * k.re;
-                    y.im += scale * k.im;
-                }
+                terms[n_terms] = Some((dt * bij, k_j.as_slice()));
+                n_terms += 1;
             }
         }
-        
+        for idx in 0..n {
+            let mut re = s.field[idx].re;
+            let mut im = s.field[idx].im;
+            for term in &terms[..n_terms] {
+                let (scale, k_arr) = term.unwrap();
+                re += scale * k_arr[idx].re;
+                im += scale * k_arr[idx].im;
+            }
+            s.ystage[idx] = Complex::new(re, im);
+        }
+
         if s.is_free {
             let dt_prop = DP_NODES[ii] * dt;
             s.ensure_linop_at(t + dt_prop);

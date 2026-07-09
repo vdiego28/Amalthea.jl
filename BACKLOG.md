@@ -799,11 +799,59 @@ exists (Phase G.3).*
    gate confirms correctness, not that per-construction wisdom export is
    a good idea for scan-heavy workloads. Needs `benchmark_native_default.jl`
    before/after numbers, not another correctness run.
-2. Fused RK45 stage accumulation (item 3c) — one pass per stage reading
-   each `k_j` once instead of one pass per coefficient. Summation-order
-   change: validate with fixed-step (`max_dt=min_dt`) equivalence tests
-   per the Phase 2 nondeterminism-floor lesson (TESTING.md §3). Items 1
-   and 3 are now verified (see below) — this can be started next.
+   **Second risk, found 2026-07-09 while redistributing the test gate
+   into finer-grained processes (see the "17-test discrepancy"
+   investigation below):** before this item, native plans were always
+   created fresh from `FFTW_ESTIMATE` with no wisdom involved, so a given
+   grid size produced a bit-identical plan regardless of process history —
+   fully deterministic. Now that `import_wisdom_from_filename` runs before
+   plan creation, plan selection can depend on what wisdom has already
+   accumulated (both the shared on-disk file across all runs on this
+   machine, and FFTW's own in-process wisdom pool that grows automatically
+   with every construction). That's harmless for a single one-shot
+   simulation per process, but for **any workflow that constructs many
+   `RustNativeStepper`s in one process — parameter scans, batch runs, long
+   REPL/notebook sessions —** later constructions can get a different
+   FFTW plan than earlier ones, which (via the already-documented Phase 2
+   near-cancellation sensitivity in the RK45 error estimate, CLAUDE.md)
+   can shift the adaptive controller onto a different `dt` sequence.
+   Confirmed empirically: splitting the `rust` Julia test group (43
+   files) from one shared process into many separate processes changed
+   the total assertion count from 42098 to 42081 — same effect, no
+   failures either way, isolated by ruling out a file-write race (a fully
+   sequential, non-concurrent per-file rerun gave the identical 42081,
+   so it's process-topology, not a race). Final accuracy should still
+   land within the requested `rtol`/`atol` (that's what the adaptive
+   controller is for), but exact step-by-step reproducibility across
+   runs/machines/scan position is now weaker than before this item, and
+   concurrent scans add a file-race angle on top (best-effort import
+   failures silently no-op, so some runs in a concurrent batch may not
+   get wisdom at all while others do). Same fix candidates as the
+   performance risk above (gate behind "once per process", or skip
+   import/export below some construction-count threshold) — needs a
+   decision, not just a benchmark number, since this one is about
+   reproducibility guarantees, not speed.
+2. 🟢 **Verified 2026-07-09.** Fused RK45 stage accumulation (item 3c) —
+   `native.rs`'s `step()` stage loop previously did one full `ystage`
+   read-modify-write sweep per nonzero `DP_B[ii][j]` coefficient (up to 6
+   sweeps for the last stage: `for j in ks_slice { if bij != 0 { for
+   idx in 0..n { ystage[idx] += scale*k_j[idx] } } }`). Replaced with a
+   single fused sweep per stage: collect the active `(scale, k_j)` terms
+   once (a fixed `[Option<(f64, &[Complex<f64>])>; 6]`, no heap
+   allocation), then for each element accumulate all active terms in one
+   pass and write `ystage[idx]` exactly once. Deliberately preserved the
+   *exact same addition order* (`field[idx] + scale0*k0[idx] +
+   scale1*k1[idx] + ...`, same sequence, same operands) rather than
+   reassociating — so this is not the "summation-order change" the
+   original suggestion anticipated; it's a pure memory-access-pattern
+   change (touch `ystage` once instead of once per term), giving
+   bit-identical results rather than merely equivalent-within-tolerance.
+   Confirmed by the full 7-group gate: `rust` 42098/42098 (bit-identical
+   to the pre-fused baseline — no equivalence-tolerance slack needed),
+   physics 1645/1657 (pre-existing broken, unrelated), sim-interface
+   301/301, sim-multimode 33/33, sim-propagation 18/18, io 2302/2302,
+   fields 334/334. 37/37 Rust unit tests, clean build under
+   `RUSTFLAGS="-D warnings"`.
 3. 🟢 **Verified 2026-07-09** — same full 7-group gate as item 1 above
    (rust group 42098/42098, all groups green). `exp(L·c_i·dt)` caching
    (item 3d) — new `ExpCache` (native.rs, small
