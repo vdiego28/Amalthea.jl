@@ -140,6 +140,43 @@ serve HPC users who don't want a Julia runtime on compute nodes; the same
 core compiled to WASM + a small web UI makes a compelling teaching demo
 (mode-averaged Kerr-only fits comfortably in a browser).
 
+## Numerics — post-port audit additions (2026-07-08)
+
+Full derivations and verification requirements in
+`docs/native-port/MATH.md` §8; tracked in BACKLOG.md Phase J. Like the
+analytic-β1 precedent, each of these deliberately breaks bit-parity with
+the Julia oracle to be *more* correct or cheaper at equal accuracy — so
+each needs a controlled-divergence verification against a ground truth
+(BigFloat / closed form), which is most of its cost.
+
+### 15. Direct embedded-error coefficients
+Compute the DP5(4) error estimate as `Σᵢ eᵢ·kᵢ` with precomputed
+`eᵢ = b5ᵢ − b4ᵢ` (exact rationals) instead of subtracting the two
+solutions — removes the near-total cancellation documented in
+TESTING.md §3 that makes the PI controller FP-noise-sensitive and
+forces the fixed-step test discipline. Must land on `PreconStepper` and
+the native stepper in the same commit (both step sequences change).
+Potentially the highest-leverage numerics item: it attacks the root
+cause behind the adaptive-path divergence, the deterministic-mode
+motivation (#11), and part of the mixed-precision risk (#10).
+
+### 16. Direct PPT evaluation (replace the spline LUT on both sides)
+`IonRatePPTAccel` is a spline LUT in Julia too; evaluating the PPT
+series directly with good special-function code is more accurate than
+both current paths and structurally eliminates the out-of-range
+segfault (BACKLOG Phase J item 2) — no fitted range to fall off of.
+Verify the direct sum against BigFloat, then existing triangulating
+sim tests unchanged.
+
+### 17. Short-kernel (overlap-save) Raman convolution
+For strongly damped responses (SiO2: h ≈ 0 beyond ~100 fs on a
+multi-ps grid), replace the double-length-grid FFT convolution with
+overlap-save using a kernel truncated where |h| < f64 noise (checked
+at setup; full double grid kept as fallback for slowly-decaying
+responses). Pairs with the r2c/c2r halving (BACKLOG Phase J item 3).
+Hard boundary: no recursive/IIR fits to the Gaussian-damped response —
+that's the multi-SDO approximation trap Phase I item 2 rules out.
+
 ---
 
 # Implementation plan

@@ -663,7 +663,19 @@ future work, roughly ordered by value.
    only the middle (solve vs convolve) differs. Worth a small refactor
    when either is next touched — not before (both are covered by
    equivalence tests; churn for its own sake risks more than it saves).
-6. ⚪ **FFI-surface robustness tests.** The FFI now has ~30 `native_set_*`
+6. ⚪ **Beyond-Luna math options recorded (2026-07-08):** MATH.md §8 +
+   SUGGESTIONS.md items 15-17 — direct DP5(4) embedded-error
+   coefficients (`Σeᵢkᵢ`, removes the TESTING.md §3 cancellation at its
+   root; potentially dissolves the fixed-step test discipline), direct
+   PPT evaluation replacing the spline LUT on both sides (also
+   structurally fixes item 2's segfault), and short-kernel overlap-save
+   Raman convolution (pairs with item 3's r2c halving). Each breaks
+   oracle bit-parity deliberately → each needs β1-style
+   controlled-divergence verification against a ground truth. The
+   three-category taxonomy of what stays Julia (setup-by-design /
+   ineligible-but-portable / arbitrary-closures barrier) is written up
+   in ARCHITECTURE.md §6.
+7. ⚪ **FFI-surface robustness tests.** The FFI now has ~30 `native_set_*`
    entry points whose error paths (null pointers, mismatched sizes,
    wrong call order) are each hand-checked but never systematically
    exercised. A single Rust test that calls every setter on a fresh

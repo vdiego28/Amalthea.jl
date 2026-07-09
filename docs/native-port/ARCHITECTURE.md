@@ -156,10 +156,40 @@ independently shippable and independently testable.
 | z-dependent linop assembly | `src/LinearOps.jl:77,185,337` | 7 | ✅ done | narrow scope: mode-averaged, graded-core constant-radius `MarcatiliMode` (`Capillary.gradient`, two-point pressure gradient) only; radial/modal/free-space z-dependent `nfun` deferred — see MATH.md §3.5 |
 | Default-flip + cleanup | — | 8 | ✅ done | `LUNA_USE_RUST_NATIVE` defaults to `"1"`; every scope restriction now a catchable `NativeIneligible` → Julia fallback instead of a crash |
 
-## 6. Out of scope (stays Julia indefinitely)
-- The high-level `Interface.jl` / `Output.jl` / `Grid.jl` / `Fields.jl` setup
-  code (runs once, negligible cost).
-- HDF5 output (`Output.jl`) and parameter scans (`Scans.jl`).
-- Plotting, processing, stats.
+## 6. Out of scope (stays Julia) — the three categories, and which is a real barrier
 
-These are I/O and orchestration, not the hot loop; porting them buys nothing.
+With the port complete (Phases 0-8 + D-I), the Julia code that remains
+un-ported falls into exactly three categories. Only the third is a
+genuine technical barrier; the first two are choices.
+
+**(a) One-time setup and orchestration — stays Julia by design.**
+The high-level `Interface.jl` / `Output.jl` / `Grid.jl` / `Fields.jl`
+setup code (grid construction, mode solvers, Sellmeier/gas data, pulse
+synthesis), HDF5 output (`Output.jl`), parameter scans (`Scans.jl`),
+plotting/processing/stats. This runs once per simulation, costs
+milliseconds, and porting it buys nothing. The port's goal was "the
+*per-step hot loop* is 100% Rust", and that is achieved: for every
+configuration the documented high-level API (`prop_capillary` /
+`prop_gnlse`) can construct, no Julia code runs between steps.
+
+**(b) Ineligible-but-portable configs — "won't", not "can't".**
+BACKLOG.md Phase I items 5-6: `StepIndexMode`/`ZeisbergerMode`/
+`VincettiMode` in modal, plasma/Raman in free-space, mixtures in
+modal/free-space, and similar low-level-API-only combinations. These
+are ordinary numerics that *could* be ported exactly like everything
+else was — they fall back via `NativeIneligible` because they are only
+reachable through the low-level API in combinations almost nobody
+uses, so effort/value rules them out, not feasibility.
+
+**(c) Arbitrary user closures — the one genuine barrier.**
+The low-level API accepts any Julia function as a nonlinear response,
+density profile, or mode field. Rust cannot execute arbitrary Julia
+code without a per-sample FFI callback — which is exactly the
+round-trip this port exists to eliminate. This is why the guards for
+"unrecognized bare `f!` closures" exist: *recognizable* structures
+(splines, two/multi-point gradients, the standard response types) are
+transferred as **data** and evaluated natively; anything else falls
+back to the Julia stepper. Closing this category fully would mean a
+declarative config format instead of Julia closures — that is
+SUGGESTIONS.md item 14's CLI, which sidesteps Julia entirely rather
+than porting it.

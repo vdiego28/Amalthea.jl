@@ -691,3 +691,68 @@ into Rust (transposed to row-major at `init_qdht_ffi`) and using that exact
 bit-pattern at runtime — agreement ~1e-13 (BLAS vs. sequential summation order).
 The resident-QDHT port (Phase 3) must keep using Julia's T matrix, **not**
 recompute T from the Rust convention, or the normalization will silently differ.
+
+## 8. Beyond-Luna math options (2026-07-08 audit — not ported behavior, deliberate improvements)
+
+The port has already crossed the "better than the oracle" line
+deliberately in a few places: the analytic β1 closed form
+(BETA1_ANALYTIC.md) replacing Julia's adaptive-FD noise, Chebyshev-
+recurrence dispersion, the O(Nt) ADE Raman integrator replacing
+O(Nt·logNt) FFT convolution, and exact Gauss-Legendre integrating
+factors. The options below continue that line. **None is a parity
+port**: each breaks bit-parity with the Julia oracle, so each needs its
+own controlled-divergence verification like β1 got — prove the
+divergence is Rust being *more* correct (e.g. against a BigFloat or
+closed-form ground truth), not just different. That verification is
+most of the cost, not the code. Tracked as SUGGESTIONS.md items 12,
+15-17 / BACKLOG.md Phase J.
+
+### 8.1 Direct embedded-error coefficients (SUGGESTIONS.md #15)
+Luna computes the DP5(4) embedded error as the difference of the 5th-
+and 4th-order solutions — a near-total cancellation (`b5-b4`,
+TESTING.md §3), which is why a ~1e-15 summation-order difference can
+become a ~20% relative disagreement in `err` and send two adaptive
+integrators down different step paths. The standard, numerically
+superior formulation computes the estimate directly as
+`err = Σᵢ eᵢ·kᵢ` with precomputed `eᵢ = b5ᵢ − b4ᵢ` coefficients (exact
+rationals, no runtime cancellation). This could dissolve the entire
+fixed-step (`max_dt=min_dt`) test discipline that exists to work around
+the cancellation — but note it changes *both* steppers' step sequences,
+so it should land on the Julia `PreconStepper` and the native stepper in
+the same commit (same rule as the dense-output item).
+
+### 8.2 Direct PPT evaluation (SUGGESTIONS.md #16)
+Julia's `IonRatePPTAccel` is itself a spline LUT over the true PPT
+series, and the Rust port matched it LUT-for-LUT (parity, per the
+port's rules). But the PPT rate can be evaluated directly with good
+special-function code — more accurate than *both* current paths, the
+same move as β1. It also structurally eliminates the out-of-range
+segfault (BACKLOG Phase J item 2): a closed-form evaluation has no
+fitted range to fall off of. Verification target: the direct sum
+against a BigFloat evaluation of the same series, then the sim-level
+triangulating tests unchanged.
+
+### 8.3 5th-order dense output (SUGGESTIONS.md #12, already tracked)
+Luna's quartic `interpC` is one order below the integrator; Shampine's
+DP5 continuous extension is the textbook-correct choice. Both sides
+must change in the same commit (see S5.3).
+
+### 8.4 r2c halving of the FFT-conv Raman (BACKLOG Phase J item 3)
+The padded E² and h are mathematically real in both Raman convolution
+paths; Julia's `RamanPolarEnv` nonetheless uses a full c2c `plan_fft`
+(Nonlinear.jl:327) and the native SiO2 kernel mirrors it for parity. A
+Hermitian r2c/c2r pair computes the identical convolution at half the
+transform cost. Same answer, different summation order → fixed-step
+validation discipline.
+
+### 8.5 Short-kernel (overlap-save) Raman convolution (SUGGESTIONS.md #17)
+Luna's own comment (Nonlinear.jl:406-411) concedes the double-length
+grid is "safe, until we come up with [something more efficient]". For
+strongly damped responses — SiO2's Gaussian damping kills h beyond
+~100 fs on a multi-ps grid — an overlap-save convolution with a short
+kernel (length set by where |h| falls below f64 noise, checked at
+setup, falling back to the full double grid otherwise) is much
+cheaper. **Hard boundary**: do not go further and fit recursive/IIR
+filters to the Gaussian-damped response — that is the multi-SDO
+approximation trap BACKLOG Phase I item 2 explicitly rules out
+(feedback: prefer analytic over LUT/fit-the-noise).
