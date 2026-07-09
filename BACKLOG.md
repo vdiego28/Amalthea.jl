@@ -410,8 +410,10 @@ tests). **Phase E (native scope: modal generality) is now complete.**
 
 ### Phase G — Platform & CI robustness (🟡, small-medium)
 1. ✅ Windows scan locking via `LockFileEx`/`UnlockFileEx` — implemented
-   (commit `febdde1`, 2026-06-28); still needs a Windows CI runner to
-   validate (existing item below).
+   (commit `febdde1`, 2026-06-28) and validated on the existing
+   `windows-2025-vs2026` CI runner (see "Windows scan-lock validation" below —
+   2026-07-08 finding: the runner already existed, the validation was already
+   passing, only the docs claiming otherwise were stale).
 2. GPU CI: a scheduled CUDA-equipped job running the currently
    self-skipping GPU equivalence tests (existing item below). Local hardware
    verification (not CI) is now possible — see "Open items" below, this
@@ -1080,21 +1082,34 @@ Remaining kernels to wire (same pattern, in this order):
   `test/test_raman_rust.jl`, `test/test_dispersion_rust.jl`, and
   `luna-rust/tests/*.jl` (`@testitem tags=[:rust]`, auto-discovered).
 
-### 🟡 Windows scan-lock validation (implementation done, needs a Windows runner)
-`luna-rust/src/scans.rs` `FlockLock::lock`/`unlock` now call real Win32 `LockFileEx`/
-`UnlockFileEx` on non-Unix targets (commit `febdde1`, 2026-06-28, `windows-sys` added to
-`luna-rust/Cargo.toml`) — this is **no longer a no-op** (confirmed 2026-07-05 by reading the
-current code and `git log`; the previous version of this entry, and the caveats in
-`CLAUDE.md` and `luna-rust/README.md`, were stale and have been corrected to match).
-- **Remaining gap:** never actually executed on Windows — `test_flock_lock_new`/
-  `test_flock_lock_new_error` only test file creation, and `test_scan_queue_flock`
-  (`lib.rs`) exercises `lock()`/`unlock()` end-to-end but only on whichever platform CI runs
-  on (Linux/macOS today). No assertion has ever run against the `windows-sys` code path.
-- **Fix:** add a Windows CI runner (or scheduled job) that actually executes
-  `test_scan_queue_flock` under `#[cfg(windows)]` to validate the `LockFileEx` path.
-- Currently latent regardless of platform — `ScanQueue`/`init_scan_queue` is only reachable
-  via FFI, which `src/*.jl` doesn't call yet (confirmed: no `init_scan_queue` reference in
-  any Julia source file).
+### 🟢 Windows scan-lock validation — done (2026-07-08, found already validated by existing CI)
+`luna-rust/src/scans.rs` `FlockLock::lock`/`unlock` call real Win32 `LockFileEx`/
+`UnlockFileEx` on non-Unix targets (commit `febdde1`, 2026-06-28). This entry
+previously claimed "no Windows CI runner exists" — **that was stale, and had
+been since the entry was written**: `.github/workflows/run_tests.yml`'s `rust`
+group has included `windows-2025-vs2026` in its OS matrix since long before this
+BACKLOG entry existed (`cargo test` runs there on every push/PR). Verified
+directly against a real run
+(`gh api repos/vdiego28/Luna-Rust.jl/actions/jobs/85999378123/logs`, run
+28980961881, 2026-07-08):
+```
+test scans::tests::test_flock_lock_new_error ... ok
+test scans::tests::test_flock_lock_new ... ok
+test tests::test_scan_queue_flock ... ok
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+`test_scan_queue_flock` calls `checkout_next_index`/`mark_completed`, which call
+`FlockLock::lock`/`unlock` — the real `LockFileEx`/`UnlockFileEx` path on this
+runner, not a stub — and it passed. (The test does self-skip if HDF5 can't be
+`dlopen`'d, printing to stdout; that branch wasn't taken here, since
+`test_hdf5_io_basic` — same `get_hdf5_api()` call — also passed earlier in the
+same job, before Julia's own HDF5 install step even ran, meaning the Windows
+runner image already has a loadable HDF5.) **No code change was needed** — this
+was a stale-documentation item, not an untested-code item.
+- Currently latent in production regardless of platform — `ScanQueue`/
+  `init_scan_queue` is only reachable via FFI, which `src/*.jl` doesn't call yet
+  (confirmed: no `init_scan_queue` reference in any Julia source file). Relevant
+  again once the Rust-side scan HDF5 writer (S6.2) is wired up.
 
 ### 🟡 GPU CI coverage
 `luna-rust/tests/test_gpu_cuda.jl` and the GPU numerical-equivalence tests in

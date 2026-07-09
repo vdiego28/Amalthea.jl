@@ -44,12 +44,10 @@ The `luna-rust` crate provides the high-performance numerical engine that powers
 - **Automatic hardware dispatch**: at runtime, `luna-rust` detects the available hardware and selects the most performant code path—AVX2 SIMD, AVX-512 SIMD, CUDA (NVIDIA GPU), Vulkan (cross-vendor GPU), or a portable fallback.
 - **Parallelised transforms**: the quasi-discrete Hankel transform (QDHT) used in free-space propagation is parallelised with [Rayon](https://github.com/rayon-rs/rayon).
 - **Raman solver**: the time-domain Raman solver uses an explicit matrix-exponential integrator with AVX2 optimisation.
-- **Cross-platform**: builds and runs on Linux, macOS, and Windows. One caveat:
-  parallel parameter scans (`Scans.jl`'s `QueueExec`) rely on file locking that
-  is implemented on Windows via `LockFileEx`/`UnlockFileEx` but has never been
-  exercised on Windows CI (no Windows runner yet) — treat concurrent scans
-  there as unvalidated (single-process scans are unaffected). See `BACKLOG.md`'s
-  "Windows scan-lock validation" entry.
+- **Cross-platform**: builds and runs on Linux, macOS, and Windows, including
+  the `Scans.jl`/`QueueExec` file-locking path (`LockFileEx`/`UnlockFileEx` on
+  Windows), which is exercised by CI on every push (`windows-2025-vs2026`
+  runner). See `BACKLOG.md`'s "Windows scan-lock validation" entry.
 
 The Rust backend is called transparently via Julia's `ccall` interface; no Rust knowledge is needed to use Luna-Rust.jl.
 

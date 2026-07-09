@@ -256,9 +256,10 @@ The `luna-rust` crate replaces several numerical approximations from the origina
 
 The adaptive **Dormand-Prince 5(4)** stepper (`stepper.rs`) runs in the interaction picture with a Lund PI step controller, FSAL reuse, and pre-allocated stage buffers (zero hot-loop allocation). The **runtime dispatcher** (`dispatch.rs`) cascades GPU (CUDA → Vulkan) → vectorized CPU (AVX-512 / Apple AMX) → standard SIMD (AVX2 / NEON) → portable scalar.
 
-> **Caveat (Windows scans):** `scans.rs`'s `FlockLock` calls real `LockFileEx`/`UnlockFileEx`
-> on non-Unix targets (no longer a no-op — see `BACKLOG.md`'s "Windows scan-lock validation"
-> entry), but this has never actually run on Windows CI, so it's implemented but unvalidated.
+`scans.rs`'s `FlockLock` calls real `LockFileEx`/`UnlockFileEx` on non-Unix
+targets, and this is validated on Windows CI (`test_scan_queue_flock`, run on
+the `rust` group's `windows-2025-vs2026` matrix entry — see `BACKLOG.md`'s
+"Windows scan-lock validation" entry).
 
 ## Key Design Points
 
