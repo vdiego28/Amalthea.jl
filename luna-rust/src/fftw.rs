@@ -149,6 +149,11 @@ type ExecDft = unsafe extern "C" fn(FftwPlan, *mut FftwComplex, *mut FftwComplex
 type ExecR2c = unsafe extern "C" fn(FftwPlan, *mut f64, *mut FftwComplex);
 type ExecC2r = unsafe extern "C" fn(FftwPlan, *mut FftwComplex, *mut f64);
 type DestroyPlan = unsafe extern "C" fn(FftwPlan);
+// `int fftw_import_wisdom_from_filename(const char*)` / `int
+// fftw_export_wisdom_to_filename(const char*)` — both return nonzero on
+// success (FFTW's own convention, unlike most of this file's 0=success FFI).
+type ImportWisdom = unsafe extern "C" fn(*const libc::c_char) -> c_int;
+type ExportWisdom = unsafe extern "C" fn(*const libc::c_char) -> c_int;
 
 /// Loaded FFTW API + the live library handle (kept alive while the API exists).
 pub struct FftwApi {
@@ -163,6 +168,8 @@ pub struct FftwApi {
     exec_r2c: ExecR2c,
     exec_c2r: ExecC2r,
     destroy_plan: DestroyPlan,
+    import_wisdom: Option<ImportWisdom>,
+    export_wisdom: Option<ExportWisdom>,
 }
 
 impl FftwApi {
@@ -203,6 +210,15 @@ impl FftwApi {
         let exec_r2c = sym!("fftw_execute_dft_r2c", ExecR2c);
         let exec_c2r = sym!("fftw_execute_dft_c2r", ExecC2r);
         let destroy_plan = sym!("fftw_destroy_plan", DestroyPlan);
+        // Optional (S1 item 1, BACKLOG.md): every standard FFTW3 build
+        // exports these, but lookup failure here should never block plan
+        // creation (the whole feature is a planning-time speedup, not a
+        // correctness dependency) — `None` just means `import`/`export`
+        // silently no-op below.
+        let import_wisdom = unsafe { lib.sym("fftw_import_wisdom_from_filename") }
+            .map(|p| unsafe { std::mem::transmute::<*mut c_void, ImportWisdom>(p) });
+        let export_wisdom = unsafe { lib.sym("fftw_export_wisdom_to_filename") }
+            .map(|p| unsafe { std::mem::transmute::<*mut c_void, ExportWisdom>(p) });
 
         Ok(FftwApi {
             _lib: lib,
@@ -216,7 +232,39 @@ impl FftwApi {
             exec_r2c,
             exec_c2r,
             destroy_plan,
+            import_wisdom,
+            export_wisdom,
         })
+    }
+
+    /// Load previously-saved planner wisdom from `path` — BACKLOG.md S1
+    /// item 1. Best-effort: a missing file, a symbol-lookup miss at `load`
+    /// time, or a malformed wisdom file all just mean "no wisdom available
+    /// yet" (returns `false`), never an error — planning still works from
+    /// scratch, just without the speedup. Call before creating any plans
+    /// (`fftw_import_wisdom_from_filename` only affects plans created after
+    /// it runs).
+    pub fn import_wisdom_from_filename(&self, path: &str) -> bool {
+        let f = match self.import_wisdom {
+            Some(f) => f,
+            None => return false,
+        };
+        let Ok(c_path) = CString::new(path) else { return false };
+        let _guard = PLANNER_LOCK.lock().unwrap();
+        unsafe { f(c_path.as_ptr()) != 0 }
+    }
+
+    /// Save the process's current planner wisdom (accumulated across every
+    /// plan created so far, not just this call's caller) to `path` —
+    /// BACKLOG.md S1 item 1. Best-effort, same as `import_wisdom_from_filename`.
+    pub fn export_wisdom_to_filename(&self, path: &str) -> bool {
+        let f = match self.export_wisdom {
+            Some(f) => f,
+            None => return false,
+        };
+        let Ok(c_path) = CString::new(path) else { return false };
+        let _guard = PLANNER_LOCK.lock().unwrap();
+        unsafe { f(c_path.as_ptr()) != 0 }
     }
 }
 

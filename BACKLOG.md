@@ -765,20 +765,61 @@ tracked as S1.4; until it lands, "AVX-512 path selected" does not mean
 "AVX-512 code ran."
 
 ### 🟡 S1 — Hot-loop CPU performance (suggestions 3, 4, 5)
-*Not started. Needs `benchmark_native_default.jl` as a before/after harness
-— that now exists (Phase G.3), so this is unblocked.*
-1. FFTW wisdom for native plans (item 4) — bind
-   `fftw_import_wisdom_from_filename`/`fftw_export_wisdom_to_filename` in
-   `fftw.rs`; thread `Utils.cachedir()`'s wisdom path through
-   `native_set_fftw_plans` (new trailing arg, `C_NULL` default keeps CI
-   timing unchanged).
+*Needs `benchmark_native_default.jl` as a before/after harness — that now
+exists (Phase G.3).*
+1. 🟡 **Written 2026-07-09, NOT YET VERIFIED — do not treat as done.**
+   FFTW wisdom for native plans (item 4) — `fftw.rs` gained
+   `import_wisdom_from_filename`/`export_wisdom_to_filename` (bind
+   `fftw_import_wisdom_from_filename`/`fftw_export_wisdom_to_filename`,
+   both best-effort: symbol missing / bad path / bad file all just return
+   `false`, never an error). `native_set_fftw_plans` gained a trailing
+   `wisdom_path` arg, imported right after `FftwApi::load` and before any
+   plans are created; a new `native_export_fftw_wisdom` FFI call (new
+   `NativeBackend::wisdom_export` trait method, `CudaNativeSim` stub
+   returns 1/"unavailable") is issued once at the end of
+   `RustNativeStepper`'s Julia constructor, after every `native_set_*_params`
+   call for that sim. Julia side (`RK45.jl`) always threads a path
+   (`joinpath(Utils.cachedir(), "native_fftw_wisdom_$(threads)threads")`,
+   a file **dedicated to the native path** — deliberately not shared with
+   `Utils.loadFFTwisdom`'s own `FFTWcache_*threads`, to avoid any
+   concurrent-access interaction with its `mkpidlock` guard); falls back
+   to an empty string (silent no-op on the Rust side) if `cachedir()`
+   itself throws. **Known open risk, flagged for tomorrow's review, not
+   fixed:** wisdom is exported on *every* `RustNativeStepper` construction,
+   not once per process — for a workload that constructs many short-lived
+   steppers (e.g. a parameter scan), the disk I/O + FFTW's internal
+   planner-lock on every construction could itself be a net regression;
+   needs the benchmark harness before deciding whether to gate this
+   behind a "once per process" flag or a size/count threshold. Not run
+   against the Julia gate — compiles clean
+   (`RUSTFLAGS="-D warnings"`), 37/37 Rust unit tests pass, and a bare
+   `using Luna` (which exercises `src/Luna.jl`'s module-load-time
+   `prop_capillary`/`prop_gnlse` precompile self-test) completes without
+   error — neither is a substitute for the full `rust` gate.
 2. Fused RK45 stage accumulation (item 3c) — one pass per stage reading
    each `k_j` once instead of one pass per coefficient. Summation-order
    change: validate with fixed-step (`max_dt=min_dt`) equivalence tests
-   per the Phase 2 nondeterminism-floor lesson (TESTING.md §3).
-3. `exp(L·c_i·dt)` caching (item 3d) — cache per-stage propagator arrays
-   keyed on `dt`; measure reject-rate first (skip if rejects <5%, the win
-   is mainly skipping recompute on same-dt retries).
+   per the Phase 2 nondeterminism-floor lesson (TESTING.md §3). Not
+   started (larger, more invasive than items 1/3 — deferred pending
+   those two being verified first).
+3. 🟡 **Written 2026-07-09, NOT YET VERIFIED — do not treat as done.**
+   `exp(L·c_i·dt)` caching (item 3d) — new `ExpCache` (native.rs, small
+   MRU list, capacity 16) keyed on `dt.to_bits()` + a new
+   `linop_version: u64` field (bumped by `ensure_linop_at`/
+   `ensure_free_norm_at`/`ensure_modal_linop_at` only on their real-work
+   branches, never their early-return no-ops) — invalidates cache entries
+   from before a z-dependent linop update without needing to eagerly
+   clear on every bump. `apply_prop`'s 12-14 calls/step (the DP45 stage
+   loop's fixed `DP_NODES[ii]*dt` forward/backward pairs, `native.rs`'s
+   `step()`) now go through a new `apply_prop_cached` free function
+   instead; the old uncached `apply_prop` was deleted (fully superseded,
+   would otherwise be dead code under `-D warnings`). Numerically
+   identical to the old path by construction (same `Complex::exp` values,
+   memoized, not approximated) — the risk surface is purely "does the
+   invalidation ever miss a real `linop` change", not "is the math
+   different". Same verification status as item 1 above: compiles clean,
+   37/37 Rust unit tests, `using Luna`'s precompile self-test passes; the
+   full `rust` equivalence gate has **not** been run.
 4. SIMD Kerr + window/norm broadcasts (item 3a) — route through
    `dispatch.rs`'s existing AVX2/AVX-512 lanes (see ISA sync note above:
    this is the fix for "dispatch selects a path but only Raman uses it").

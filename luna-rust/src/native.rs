@@ -117,6 +117,22 @@ pub struct CpuNativeSim {
     /// Constant diagonal linear operator `L(ω)` (dispersion + loss + frame).
     /// z-dependent assembly is Phase 7; Phases 0–6 use this constant array.
     pub linop: Vec<Complex<f64>>,
+    /// Bumped every time `ensure_linop_at`/`ensure_free_norm_at`/
+    /// `ensure_modal_linop_at` actually recompute `self.linop` in place (not
+    /// on their early-return no-op branches) — invalidates `exp_cache`
+    /// entries keyed against a stale `linop`. Constant-linop geometries
+    /// (Phases 0-6) never bump this, so their cache entries stay valid for
+    /// the whole solve.
+    pub linop_version: u64,
+    /// `exp(linop[i]*dt)` cache, keyed on the exact `dt` bit pattern and
+    /// `linop_version` — BACKLOG.md S1 item 3 ("`exp(L·c_i·dt)` caching").
+    /// DP45's stage loop (`step`) calls `apply_prop` with the same handful
+    /// of `dt` sub-multiples (the fixed `DP_NODES[ii]*dt` fractions) up to
+    /// 14×/step, and the same `dt` recurs across consecutive accepted steps
+    /// whenever the adaptive controller doesn't change step size (the common
+    /// case once a propagation settles) or under fixed-step testing. See
+    /// `apply_prop_cached`.
+    pub exp_cache: ExpCache,
     /// RK stage derivatives k1..k7 (FSAL reuses k7→k1 across steps).
     pub ks: [Vec<Complex<f64>>; 7],
     /// Embedded-pair error estimate buffer.
@@ -623,6 +639,8 @@ impl CpuNativeSim {
             n,
             field: z(),
             linop: linop.to_vec(),
+            linop_version: 0,
+            exp_cache: ExpCache::new(),
             ks: [z(), z(), z(), z(), z(), z(), z()],
             yerr: z(),
             ystage: z(),
@@ -2069,6 +2087,7 @@ impl CpuNativeSim {
         // rescaled here too, not just baked in once at construction.
         self.kerr_fac = self.zdep_kerr_fac_per_dens * dens;
         self.zdep_last_z = z;
+        self.linop_version += 1; // invalidate `exp_cache` — `self.linop` just changed
     }
 
     /// Recompute `self.linop` and `self.free_m` in place for propagation
@@ -2159,6 +2178,7 @@ impl CpuNativeSim {
         // (NonlinearRHS.jl), so `kerr_fac` must be rescaled here too.
         self.kerr_fac = self.zdep_free_kerr_fac_per_dens * dens;
         self.zdep_free_last_z = z;
+        self.linop_version += 1; // invalidate `exp_cache` — `self.linop` just changed
     }
 
     /// Recompute `self.linop` in place for propagation position `z` — the
@@ -2277,6 +2297,7 @@ impl CpuNativeSim {
         }
 
         self.zdep_modal_last_z = z;
+        self.linop_version += 1; // invalidate `exp_cache` — `self.linop` just changed
     }
 }
 
@@ -2395,7 +2416,7 @@ pub trait NativeBackend {
     unsafe fn apply_prop(&mut self, y: *mut c_double, n: size_t, t1: f64, t2: f64) -> i32;
     unsafe fn debug_linop_at(&mut self, z: c_double, data: *mut c_double, n: size_t) -> i32;
     unsafe fn debug_beta1_at(&mut self, z: c_double, out_dens: *mut c_double, out_beta1: *mut c_double) -> i32;
-    unsafe fn set_fftw_plans(&mut self, lib_path: *const c_char, n_time: size_t, n_time_over: size_t, is_real: c_int, flags: c_uint) -> i32;
+    unsafe fn set_fftw_plans(&mut self, lib_path: *const c_char, n_time: size_t, n_time_over: size_t, is_real: c_int, flags: c_uint, wisdom_path: *const c_char) -> i32;
     unsafe fn set_mode_avg_params(&mut self, n_time: size_t, n_time_over: size_t, towin: *const c_double, owin: *const c_double, sidx: *const u8, pre_re: *const c_double, pre_im: *const c_double, beta: *const c_double, kerr_fac: c_double, nlscale: c_double, sqrt_aeff: c_double) -> i32;
     unsafe fn set_mode_avg_noise(&mut self, noise: *const c_double, n: size_t) -> i32;
     unsafe fn set_mode_avg_noise_cplx(&mut self, noise_re: *const c_double, noise_im: *const c_double, n: size_t) -> i32;
@@ -2412,6 +2433,16 @@ pub trait NativeBackend {
     unsafe fn set_free_zdep_params(&mut self, flength: c_double, p0: c_double, p1: c_double, n_dspl: size_t, dspl_x: *const c_double, dspl_y: *const c_double, dspl_d: *const c_double, gamma: *const c_double, omega: *const c_double, omegawin: *const c_double, kperp2: *const c_double, sidx: *const u8, eps0_gamma3: c_double, omega0: c_double, gamma0: c_double, dgamma0: c_double) -> i32;
     unsafe fn set_modal_zdep_params(&mut self, flength: c_double, a0: c_double, n_a: size_t, a_x: *const c_double, a_y: *const c_double, a_d: *const c_double, omega: *const c_double, sidx: *const u8, model: u8, loss_on: u8, eco: *const c_double, vn_re: *const c_double, vn_im: *const c_double, omega0: c_double, ref_mode: size_t, eco0: *const c_double, deco0: *const c_double, v0_re: *const c_double, v0_im: *const c_double, dv0_re: *const c_double, dv0_im: *const c_double) -> i32;
     unsafe fn step(&mut self, yn: *mut Complex<f64>, t_old: f64, t_new: f64, dtn: f64, rtol: f64, atol: f64, safety: f64, max_dt: f64, min_dt: f64, errlast_in: f64, locextrap: i32, result: *mut NativeStepResult) -> i32;
+    /// Saves the process's current planner wisdom (accumulated across every
+    /// plan created in this process, not just this `NativeSim` — FFTW's
+    /// wisdom is process-global) to `path` — BACKLOG.md S1 item 1.
+    /// Best-effort: returns 0 on success, 1 if unavailable (no `fftw_api`
+    /// yet, symbol missing, or the write failed) — never a hard error,
+    /// since wisdom is a planning-time speedup, not a correctness
+    /// requirement. Call once, after all `set_*_params` calls (i.e. after
+    /// every plan for this sim has been created), mirroring Julia's own
+    /// load-before/save-after `Utils.loadFFTwisdom`/`saveFFTwisdom` pattern.
+    unsafe fn wisdom_export(&mut self, path: *const c_char) -> i32;
 }
 pub struct NativeSim { pub backend: Box<dyn NativeBackend> }
 impl NativeBackend for CpuNativeSim {
@@ -2484,7 +2515,7 @@ impl NativeBackend for CpuNativeSim {
     }
     let slice = unsafe { std::slice::from_raw_parts_mut(y as *mut Complex<f64>, n) };
     sim.ensure_linop_at(t2);
-    apply_prop(slice, &sim.linop, t2 - t1);
+    apply_prop_cached(slice, &sim.linop, t2 - t1, &mut sim.exp_cache, sim.linop_version);
     0
 }
     unsafe fn debug_linop_at(&mut self, z: c_double, data: *mut c_double, n: size_t) -> i32 {        let sim = self;
@@ -2519,9 +2550,9 @@ impl NativeBackend for CpuNativeSim {
     }
     0
 }
-    unsafe fn set_fftw_plans(&mut self, lib_path: *const c_char, n_time: size_t, n_time_over: size_t, is_real: c_int, flags: c_uint) -> i32 {        let sim = self;
+    unsafe fn set_fftw_plans(&mut self, lib_path: *const c_char, n_time: size_t, n_time_over: size_t, is_real: c_int, flags: c_uint, wisdom_path: *const c_char) -> i32 {        let sim = self;
 
-    
+
     let path_str = unsafe { CStr::from_ptr(lib_path).to_str().unwrap_or("") };
     let api = match FftwApi::load(Some(path_str)) {
         Ok(api) => api,
@@ -2530,7 +2561,17 @@ impl NativeBackend for CpuNativeSim {
             return -2;
         }
     };
-    
+
+    // S1 item 1 (BACKLOG.md): best-effort wisdom load, before any plans
+    // below are created (only plans created *after* this call can benefit —
+    // FFTW's own contract). `wisdom_path` is null unless the Julia caller
+    // opts in; a missing/unreadable file is silently ignored either way.
+    if !wisdom_path.is_null() {
+        if let Ok(wisdom_str) = unsafe { CStr::from_ptr(wisdom_path) }.to_str() {
+            api.import_wisdom_from_filename(wisdom_str);
+        }
+    }
+
     sim.is_real = is_real != 0;
     sim.fft_norm = 1.0 / (n_time as f64);
     sim.fft_norm_over = 1.0 / (n_time_over as f64);
@@ -2546,6 +2587,16 @@ impl NativeBackend for CpuNativeSim {
     sim.fftw_api = Some(api);
     0
 }
+    unsafe fn wisdom_export(&mut self, path: *const c_char) -> i32 {
+        let sim = self;
+        let api = match sim.fftw_api.as_ref() {
+            Some(api) => api,
+            None => return 1,
+        };
+        if path.is_null() { return 1; }
+        let Ok(path_str) = unsafe { CStr::from_ptr(path) }.to_str() else { return 1; };
+        if api.export_wisdom_to_filename(path_str) { 0 } else { 1 }
+    }
     unsafe fn set_mode_avg_params(&mut self, n_time: size_t, n_time_over: size_t, towin: *const c_double, owin: *const c_double, sidx: *const u8, pre_re: *const c_double, pre_im: *const c_double, beta: *const c_double, kerr_fac: c_double, nlscale: c_double, sqrt_aeff: c_double) -> i32 {        let s = self;
 
     s.n_time = n_time;
@@ -3058,7 +3109,7 @@ impl NativeBackend for CpuNativeSim {
     s.ensure_linop_at(t_new);
     s.ensure_free_norm_at(t_new);
     s.ensure_modal_linop_at(t_new);
-    apply_prop(&mut s.ks[0], &s.linop, t_new - t_old);
+    apply_prop_cached(&mut s.ks[0], &s.linop, t_new - t_old, &mut s.exp_cache, s.linop_version);
     
     let dt = dtn;
     let t = t_new;
@@ -3082,43 +3133,43 @@ impl NativeBackend for CpuNativeSim {
             s.ensure_linop_at(t + dt_prop);
             s.ensure_free_norm_at(t + dt_prop);
             let mut ystage_prop = s.ystage.clone();
-            apply_prop(&mut ystage_prop, &s.linop, dt_prop);
+            apply_prop_cached(&mut ystage_prop, &s.linop, dt_prop, &mut s.exp_cache, s.linop_version);
             if s.is_real {
                 s.rhs_free(ii + 1, &ystage_prop);
             } else {
                 s.rhs_free_env(ii + 1, &ystage_prop);
             }
-            apply_prop(&mut s.ks[ii + 1], &s.linop, -dt_prop);
+            apply_prop_cached(&mut s.ks[ii + 1], &s.linop, -dt_prop, &mut s.exp_cache, s.linop_version);
         } else if s.is_modal {
             let dt_prop = DP_NODES[ii] * dt;
             s.ensure_linop_at(t + dt_prop);
             s.ensure_modal_linop_at(t + dt_prop);
             let mut ystage_prop = s.ystage.clone();
-            apply_prop(&mut ystage_prop, &s.linop, dt_prop);
+            apply_prop_cached(&mut ystage_prop, &s.linop, dt_prop, &mut s.exp_cache, s.linop_version);
             s.rhs_modal(ii + 1, &ystage_prop);
-            apply_prop(&mut s.ks[ii + 1], &s.linop, -dt_prop);
+            apply_prop_cached(&mut s.ks[ii + 1], &s.linop, -dt_prop, &mut s.exp_cache, s.linop_version);
         } else if s.is_radial {
             let dt_prop = DP_NODES[ii] * dt;
             s.ensure_linop_at(t + dt_prop);
             let mut ystage_prop = s.ystage.clone();
-            apply_prop(&mut ystage_prop, &s.linop, dt_prop);
+            apply_prop_cached(&mut ystage_prop, &s.linop, dt_prop, &mut s.exp_cache, s.linop_version);
             if s.is_real {
                 s.rhs_radial(ii + 1, &ystage_prop);
             } else {
                 s.rhs_radial_env(ii + 1, &ystage_prop);
             }
-            apply_prop(&mut s.ks[ii + 1], &s.linop, -dt_prop);
+            apply_prop_cached(&mut s.ks[ii + 1], &s.linop, -dt_prop, &mut s.exp_cache, s.linop_version);
         } else if s.n_time_over > 0 && (s.fft_r2c_over.is_some() || s.fft_c2c_over.is_some()) {
             let dt_prop = DP_NODES[ii] * dt;
             s.ensure_linop_at(t + dt_prop);
             let mut ystage_prop = s.ystage.clone();
-            apply_prop(&mut ystage_prop, &s.linop, dt_prop);
+            apply_prop_cached(&mut ystage_prop, &s.linop, dt_prop, &mut s.exp_cache, s.linop_version);
             if s.is_real {
                 s.rhs_mode_avg_real(ii + 1, &ystage_prop);
             } else {
                 s.rhs_mode_avg_env(ii + 1, &ystage_prop);
             }
-            apply_prop(&mut s.ks[ii + 1], &s.linop, -dt_prop);
+            apply_prop_cached(&mut s.ks[ii + 1], &s.linop, -dt_prop, &mut s.exp_cache, s.linop_version);
         } else {
             for k in 0..n {
                 s.ks[ii+1][k] = Complex::new(0.0, 0.0);
@@ -3179,7 +3230,7 @@ impl NativeBackend for CpuNativeSim {
         s.ensure_linop_at(tn_new);
         s.ensure_free_norm_at(tn_new);
         s.ensure_modal_linop_at(tn_new);
-        apply_prop(yn_sl, &s.linop, tn_new - t);
+        apply_prop_cached(yn_sl, &s.linop, tn_new - t, &mut s.exp_cache, s.linop_version);
         s.field.copy_from_slice(yn_sl);
     } else {
         yn_sl.copy_from_slice(&s.field);
@@ -3187,7 +3238,7 @@ impl NativeBackend for CpuNativeSim {
         s.ensure_linop_at(tn_new);
         s.ensure_free_norm_at(tn_new);
         s.ensure_modal_linop_at(tn_new);
-        apply_prop(yn_sl, &s.linop, tn_new - t); // no-op since t == tn_new
+        apply_prop_cached(yn_sl, &s.linop, tn_new - t, &mut s.exp_cache, s.linop_version); // no-op since t == tn_new
     }
     
     unsafe {
@@ -3436,10 +3487,26 @@ pub unsafe extern "C" fn native_set_fftw_plans(
     n_time_over: size_t,
     is_real: c_int,
     flags: c_uint,
+    wisdom_path: *const c_char,
 ) -> i32 {
     if sim.is_null() { return -1; }
     let s = unsafe { &mut *sim };
-    unsafe { s.backend.set_fftw_plans(lib_path, n_time, n_time_over, is_real, flags) }
+    unsafe { s.backend.set_fftw_plans(lib_path, n_time, n_time_over, is_real, flags, wisdom_path) }
+}
+
+/// Best-effort planner-wisdom save — BACKLOG.md S1 item 1. Call once, after
+/// every `native_set_*_params` call for this sim has run (so every plan it
+/// creates gets included). Returns 0 on success, 1 if unavailable (never a
+/// hard error — see `NativeBackend::wisdom_export`'s doc).
+///
+/// # Safety
+/// `sim` must be a valid, non-null pointer from `init_native_sim`/
+/// `init_cuda_native_sim`. `path` must be a valid, null-terminated C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_export_fftw_wisdom(sim: *mut NativeSim, path: *const c_char) -> i32 {
+    if sim.is_null() { return -1; }
+    let s = unsafe { &mut *sim };
+    unsafe { s.backend.wisdom_export(path) }
 }
 
 #[unsafe(no_mangle)]
@@ -4037,9 +4104,61 @@ pub struct NativeStepResult {
     pub errlast: f64,
 }
 
-fn apply_prop(y: &mut [Complex<f64>], linop: &[Complex<f64>], dt: f64) {
+/// Small most-recently-used cache of `exp(linop[i]*dt)` arrays — BACKLOG.md
+/// S1 item 3. Keyed on the exact bit pattern of `dt` plus a `linop_version`
+/// (bumped by `ensure_linop_at`/`ensure_free_norm_at`/`ensure_modal_linop_at`
+/// whenever they actually rewrite `linop` in place), so a stale entry from
+/// before a z-dependent linop update simply never matches again rather than
+/// being read incorrectly — no need to eagerly evict on a version bump.
+/// Capacity is small: one `step()` call needs at most 7 distinct `|dt|`
+/// magnitudes (the fixed DP45 `DP_NODES` fractions), used both forward and
+/// backward (the backward call passes `-dt`, a different key, so a full step
+/// can populate up to 14 entries before repeats start) — `CAPACITY` covers
+/// one step's worth without unbounded growth across a long propagation with
+/// many distinct step sizes.
+pub struct ExpCache {
+    // (dt.to_bits(), linop_version, exp(linop*dt)), most-recently-used first.
+    entries: Vec<(u64, u64, Vec<Complex<f64>>)>,
+}
+
+const EXP_CACHE_CAPACITY: usize = 16;
+
+impl ExpCache {
+    fn new() -> Self {
+        ExpCache { entries: Vec::new() }
+    }
+
+    /// Returns `exp(linop[i]*dt)`, computing and caching it on a miss.
+    fn get(&mut self, dt: f64, linop: &[Complex<f64>], linop_version: u64) -> &[Complex<f64>] {
+        let key = dt.to_bits();
+        if let Some(pos) = self.entries.iter().position(|(k, v, arr)| {
+            *k == key && *v == linop_version && arr.len() == linop.len()
+        }) {
+            if pos != 0 {
+                let entry = self.entries.remove(pos);
+                self.entries.insert(0, entry);
+            }
+            return &self.entries[0].2;
+        }
+        let arr: Vec<Complex<f64>> = linop.iter().map(|&l| (l * dt).exp()).collect();
+        self.entries.insert(0, (key, linop_version, arr));
+        if self.entries.len() > EXP_CACHE_CAPACITY {
+            self.entries.pop();
+        }
+        &self.entries[0].2
+    }
+}
+
+/// Cached counterpart of `apply_prop` — looks up (or computes and caches)
+/// `exp(linop[i]*dt)` in `cache` instead of recomputing the transcendental
+/// `exp` on every call. Numerically identical to `apply_prop` (same
+/// `Complex::exp` values, just memoized) — this changes performance only,
+/// not results, for any `dt`/`linop_version` pair that repeats.
+fn apply_prop_cached(y: &mut [Complex<f64>], linop: &[Complex<f64>], dt: f64,
+                      cache: &mut ExpCache, linop_version: u64) {
+    let factors = cache.get(dt, linop, linop_version);
     for i in 0..y.len() {
-        y[i] *= (linop[i] * dt).exp();
+        y[i] *= factors[i];
     }
 }
 

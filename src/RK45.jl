@@ -961,9 +961,29 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     # Set FFTW plans; is_real=1 for RealGrid (r2c), 0 for EnvGrid (c2c).
     # FFTW_ESTIMATE = 1 << 6 = 64
     lib_path = FFTW.FFTW_jll.libfftw3
+
+    # BACKLOG.md S1 item 1: best-effort planner wisdom, dedicated to the
+    # native path (a separate file from Utils.loadFFTwisdom's own
+    # `FFTWcache_*threads`, not shared — avoids any concurrent-access
+    # interaction with Julia's own `mkpidlock`-guarded load/save). A missing
+    # file is a no-op on the Rust side (see `set_fftw_plans`'s doc), so no
+    # existence check is needed here; `native_wisdom_path` is only `nothing`
+    # if `Utils.cachedir()` itself throws (kept purely best-effort — this
+    # must never block native construction).
+    # Empty string (not C_NULL — keeps the ccall argument type-stably
+    # `Cstring`) if `cachedir()` throws; `CStr::from_ptr("").to_str()` on the
+    # Rust side is `Ok("")`, and opening a file at `""` just fails the
+    # best-effort import, same as a missing file.
+    native_wisdom_path::String = try
+        joinpath(Luna.Utils.cachedir(), "native_fftw_wisdom_$(Luna.Utils.FFTWthreads())threads")
+    catch
+        ""
+    end
+
     rc = ccall((:native_set_fftw_plans, _LIBLUNA_RUST_RK45), Cint,
-          (Ptr{Cvoid}, Cstring, Csize_t, Csize_t, Cint, Cuint),
-          handle.ptr, lib_path, n_time, n_time_over, is_real_grid ? 1 : 0, 64)
+          (Ptr{Cvoid}, Cstring, Csize_t, Csize_t, Cint, Cuint, Cstring),
+          handle.ptr, lib_path, n_time, n_time_over, is_real_grid ? 1 : 0, 64,
+          native_wisdom_path)
     rc == 0 || error("native_set_fftw_plans failed")
 
     # Set parameters if mode-averaged
@@ -1800,6 +1820,21 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     ccall((:set_field, _LIBLUNA_RUST_RK45), Cint,
           (Ptr{Cvoid}, Ptr{ComplexF64}, Csize_t),
           handle.ptr, pointer(y0), Csize_t(n))
+
+    # BACKLOG.md S1 item 1: save accumulated planner wisdom (every plan this
+    # construction created, across all the `native_set_*_params` calls
+    # above) for next time — mirrors Julia's own load-before/save-after
+    # `Utils.loadFFTwisdom`/`saveFFTwisdom` pattern. Best-effort: `mkpath`
+    # and the export call are both allowed to fail silently (this must never
+    # throw or block returning a working stepper).
+    if !isempty(native_wisdom_path)
+        try
+            isdir(dirname(native_wisdom_path)) || mkpath(dirname(native_wisdom_path))
+            ccall((:native_export_fftw_wisdom, _LIBLUNA_RUST_RK45), Cint,
+                  (Ptr{Cvoid}, Cstring), handle.ptr, native_wisdom_path)
+        catch
+        end
+    end
 
     RustNativeStepper(
         copy(y0), copy(y0), float(t), float(t), float(dt), float(dt),
