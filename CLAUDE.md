@@ -113,6 +113,11 @@ Each Rust kernel follows this pattern for progressive migration:
   not 1e-8. Only `RamanPolarField` (carrier field) is wired; `RamanPolarEnv` (envelope)
   always uses Julia in this slice. Eligibility: `CombinedRamanResponse` with all-SDO `Rs`
   and density-independent τ2 — `Interface._make_rust_raman_handle_from_response`.
+  (Note: this describes the older per-kernel `LUNA_USE_RUST_RAMAN` path only. The
+  *native-port* path — the default since Phase 8 — went further: `RamanPolarEnv`,
+  rotational multi-oscillator, density-dependent τ2, `thg=false`, and the
+  intermediate-broadening `:SiO2` model are all resident-native there. See
+  BACKLOG.md Phases F and I.)
 - Zeisberger anti-resonant dispersion (`LUNA_USE_RUST_DISPERSION=1`) — `src/Antiresonant.jl`,
   `test/test_dispersion_rust.jl`. New wrinkles vs Raman: (a) the acceleration seam is
   `neff_β_grid(grid, ::ZeisbergerMode, λ0)` — a per-step batch over all positive-frequency
@@ -172,7 +177,15 @@ and Phase 8 (default-flip: `LUNA_USE_RUST_NATIVE` now defaults to `"1"`;
 every Phases 1-7 scope restriction converted to a catchable
 `NativeIneligible` exception so an out-of-scope config falls back to the
 Julia stepper instead of crashing) are complete — **the native-Rust backend
-port is done.** Full design docs, phase checklist, and math reference live
+port is done.** Subsequent phases (BACKLOG.md Phases D-I, all ✅ as of
+2026-07-08) lifted nearly every original scope restriction listed above:
+EnvGrid in every geometry, plasma/Raman in radial/modal, general mode
+orders (`TE`/`TM`/`n>1`), tapered radius, `full=true`, npol=2, `thg=false`
+Raman, `RamanPolarEnv` + `:SiO2` intermediate-broadening Raman, gas
+mixtures, multi-point pressure gradients, shot noise, ADK ionisation —
+plus an opt-in GPU-resident backend (`LUNA_USE_RUST_CUDA_NATIVE=1`).
+What still falls back and why is categorized in `ARCHITECTURE.md` §6.
+Full design docs, phase checklist, and math reference live
 under `docs/native-port/{ARCHITECTURE,MATH,TESTING,PORT_LOG,BETA1_ANALYTIC}.md`
 and `AGENTS.md` (repo root) — read those before touching this code; they
 are the source of truth for phase status, not this section.
