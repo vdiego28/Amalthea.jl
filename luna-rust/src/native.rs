@@ -1082,6 +1082,88 @@ impl CpuNativeSim {
         self.raman_hilbert_fft = fft;
     }
 
+    /// Free-space counterpart of `apply_plasma_radial` — BACKLOG.md Phase I
+    /// item 6. `TransFree`'s `Et_to_Pt!` dispatches each response over
+    /// `t.idcs` (`CartesianIndices((Ny,Nx))`), so `PlasmaCumtrapz` sees a
+    /// scalar field per `(y,x)` column exactly like the radial `TransRadial`
+    /// case — same per-column cumtrapz-×3 formula, just column-major over
+    /// `n_y*n_x` columns instead of `n_r`. RealGrid only (Julia's `PlasmaCumtrapz`
+    /// is inherently field-resolved; EnvGrid free-space, `rhs_free_env`, has no
+    /// plasma step, matching the fact that no EnvGrid geometry gets native
+    /// plasma anywhere in this port).
+    fn apply_plasma_free(&mut self) {
+        let n_time_over = self.n_time_over;
+        let n_cols = self.n_y * self.n_x;
+        let dt = self.plasma_dt;
+
+        for c in 0..n_cols {
+            let start = c * n_time_over;
+            let end = start + n_time_over;
+
+            for i in start..end {
+                let e_abs = self.free_eto[i].abs();
+                self.plas_rate[i] = self.plasma_rate(e_abs);
+            }
+            cumtrapz_slice_f64(&self.plas_rate[start..end], &mut self.plas_fraction[start..end], dt);
+            for i in start..end {
+                self.plas_fraction[i] =
+                    self.plasma_preionfrac + 1.0 - (-self.plas_fraction[i]).exp();
+            }
+            for i in start..end {
+                self.plas_phase[i] = self.plas_fraction[i] * self.plasma_e_ratio * self.free_eto[i];
+            }
+            cumtrapz_slice_f64(&self.plas_phase[start..end], &mut self.plas_j[start..end], dt);
+            for i in start..end {
+                let e = self.free_eto[i];
+                if e.abs() > 0.0 {
+                    self.plas_j[i] +=
+                        self.plasma_ionpot * self.plas_rate[i] * (1.0 - self.plas_fraction[i]) / e;
+                }
+            }
+            cumtrapz_slice_f64(&self.plas_j[start..end], &mut self.plas_p[start..end], dt);
+        }
+
+        let rho = self.plasma_density;
+        for i in 0..(n_time_over * n_cols) {
+            self.free_pto[i] += rho * self.plas_p[i];
+        }
+    }
+
+    /// Free-space counterpart of `apply_raman_radial` — BACKLOG.md Phase I
+    /// item 6. Same per-column reuse of the resident `raman_solver` (its
+    /// `solve()` resets internal oscillator state at entry, so no cross-column
+    /// leakage); RealGrid only (`RamanPolarField`, either `thg` value —
+    /// `RamanPolarEnv` is not wired for any geometry but mode-averaged EnvGrid).
+    fn apply_raman_free(&mut self) {
+        let n_time_over = self.n_time_over;
+        let n_cols = self.n_y * self.n_x;
+        let rho = self.raman_density;
+
+        let thg = self.raman_thg;
+        let fft = self.raman_hilbert_fft.take();
+        for c in 0..n_cols {
+            let start = c * n_time_over;
+            let end = start + n_time_over;
+            if thg {
+                for i in start..end {
+                    let e = self.free_eto[i];
+                    self.raman_intensity[i] = e * e;
+                }
+            } else if let Some(ref fft) = fft {
+                let norm = self.fft_norm_over;
+                hilbert_intensity(fft, &mut self.raman_hilbert_a, &mut self.raman_hilbert_b,
+                                   &self.free_eto[start..end], &mut self.raman_intensity[start..end], norm);
+            }
+            if let Some(ref mut solver) = self.raman_solver {
+                solver.solve(&self.raman_intensity[start..end], &mut self.raman_p[start..end]);
+            }
+            for i in start..end {
+                self.free_pto[i] += rho * self.free_eto[i] * self.raman_p[i];
+            }
+        }
+        self.raman_hilbert_fft = fft;
+    }
+
     /// EnvGrid mode-averaged RHS: Kerr_env (|E|²·E) via c2c FFTW plans.
     /// Reproduces `TransModeAvg` for `ComplexF64` fields (src/NonlinearRHS.jl:531).
     fn rhs_mode_avg_env(&mut self, idx: usize, eomega: &[Complex<f64>]) {
@@ -1794,6 +1876,14 @@ impl CpuNativeSim {
         for i in 0..(n_time_over * n_cols) {
             let e = self.free_eto[i];
             self.free_pto[i] += self.kerr_fac * e * e * e;
+        }
+
+        // ── Step 3b/3c: plasma / Raman, per (y,x) column — Phase I item 6 ────────
+        if self.has_plasma {
+            self.apply_plasma_free();
+        }
+        if self.has_raman {
+            self.apply_raman_free();
         }
 
         // ── Step 4: towin apodization per (y,x) column ───────────────────────────
@@ -2567,7 +2657,7 @@ impl NativeBackend for CpuNativeSim {
     // Radial (Phase D.2): one independent plasma state per r-column, laid out
     // column-major `(n_time_over, n_r)` exactly like `radial_eto`/`radial_pto`
     // — `native_set_radial_params` must run first so `s.n_r` is already set.
-    let n = if s.is_radial { s.n_time_over * s.n_r } else { s.n_time_over };
+    let n = if s.is_radial { s.n_time_over * s.n_r } else if s.is_free { s.n_time_over * s.n_y * s.n_x } else { s.n_time_over };
     if n == 0 { return -2; }
     s.plasma_ion_ptr   = ion_ptr;
     s.plasma_adk_ptr   = std::ptr::null();
@@ -2587,7 +2677,7 @@ impl NativeBackend for CpuNativeSim {
 }
     unsafe fn set_plasma_params_adk(&mut self, ion_ptr: *const crate::ionization::AdkIonizationRate, ionpot: c_double, e_ratio: c_double, preionfrac: c_double, dt: c_double, density: c_double) -> i32 {
         let s = self;
-        let n = if s.is_radial { s.n_time_over * s.n_r } else { s.n_time_over };
+        let n = if s.is_radial { s.n_time_over * s.n_r } else if s.is_free { s.n_time_over * s.n_y * s.n_x } else { s.n_time_over };
         if n == 0 { return -2; }
         s.plasma_ion_ptr   = std::ptr::null();
         s.plasma_adk_ptr   = ion_ptr;
@@ -2689,7 +2779,7 @@ impl NativeBackend for CpuNativeSim {
     // internal oscillator state at entry (see `raman.rs`), so the *same*
     // solver instance can be called once per r-column with no cross-column
     // state leakage; only the scratch buffers need the extra width.
-    let n = if s.is_radial { s.n_time_over * s.n_r } else { s.n_time_over };
+    let n = if s.is_radial { s.n_time_over * s.n_r } else if s.is_free { s.n_time_over * s.n_y * s.n_x } else { s.n_time_over };
     if n == 0 { return -2; }
 
     s.raman_solver = Some(TimeDomainRamanSolver::new(oscillators, dt));

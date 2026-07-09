@@ -592,13 +592,46 @@ this commit if plasma played a physically meaningful role.
    `prop_capillary`'s `makemode_s` only ever builds `MarcatiliMode`s; the
    other mode types are only reachable via the low-level API. Rare in
    practice.
-6. ⚪ **Free-space (`TransFree`) stays single-Kerr-only** — never gains
-   plasma/Raman like the other three geometries did (`RK45.jl:1546-1550`).
-   Exotic combination (free-space + plasma/Raman).
-7. ⚪ Remaining `NativeIneligible` sites (non-finite `flength` for
+6. 🟢 **Done (2026-07-09): free-space (`TransFree`) gains plasma and/or
+   Raman.** `apply_plasma_free`/`apply_raman_free` (native.rs) mirror
+   `apply_plasma_radial`/`apply_raman_radial` verbatim over `n_y*n_x`
+   columns instead of `n_r` — `TransFree`'s `Et_to_Pt!` dispatches each
+   response over `CartesianIndices((Ny,Nx))` exactly like `TransRadial`
+   dispatches over r, so both responses see a scalar field per column
+   either way. RealGrid only (no EnvGrid geometry gets native plasma
+   anywhere in this port, and `RamanPolarEnv` is native only for
+   mode-averaged EnvGrid) — EnvGrid free-space (`rhs_free_env`) keeps the
+   original Kerr-only restriction. Plasma/Raman + a z-dependent normfun
+   (Phase D.5) is explicitly rejected (unverified interaction, no test
+   coverage), not silently combined. `RK45.jl`'s free-space eligibility
+   block now branches on `is_real_grid`: RealGrid accepts Kerr +
+   optional plasma + optional Raman (`RamanPolarField`, same
+   `CombinedRamanResponse`/density-independent-τ2 eligibility as
+   radial's Phase D.4 wiring); EnvGrid keeps the single-response
+   Kerr-only check. New tests `test/test_native_free_plasma.jl`
+   (single-step ~1e-12, full-solve, non-vacuousness 1.57e-6, native vs
+   Julia at the plasma-matters energy 3.76e-16 vs plasma-off 1.57e-6 —
+   same triangulation discipline as Phase I's plasma-density postmortem)
+   and `test/test_native_free_raman.jl` (single-step ~1e-7 — same
+   ADE-vs-FFT-convolution method-difference floor as radial's Raman
+   test, non-vacuousness 1.18e-3, native vs Julia 2.2e-7 vs Raman-off
+   1.18e-3). Full `rust` gate: 42098/42098 (was 42083; +15 new tests).
+7. 🟢 **Done (2026-07-09): regression tests added for the three
+   `NativeIneligible` guard categories** (non-finite `flength` for
    z-dependent linops, unrecognized bare `f!` closures, missing Rust
    ionisation/Raman handle when the library is absent or toggles are
-   forced off) are correct-by-design edge-case guards, not gaps to close.
+   forced off) — previously correct-by-design but unverified by any
+   dedicated test (Phase I's own preamble is exactly this class of risk:
+   "documented as correct" isn't "verified to actually fire"). New
+   `test/test_native_ineligible_guards.jl`, three testsets. One
+   assumption caught and fixed while writing it: a plasma response built
+   without `LUNA_USE_RUST_IONISATION=1` still gets a Rust handle by
+   default, since Phase C decoupled the handle-build condition to *also*
+   trigger whenever the native stepper itself is enabled
+   (`LUNA_USE_RUST_NATIVE`, on by default since Phase 8) — the
+   missing-handle guard is therefore only reachable by explicitly
+   disabling *both* env vars at construction time, not just the
+   ionisation one alone. Included in the same 42098/42098 gate as item 6.
 
 No other nonlinear response type exists in the codebase beyond
 Kerr/plasma/Raman/`RamanRespIntermediateBroadening` (confirmed by grepping

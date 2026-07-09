@@ -1623,6 +1623,18 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     # `normfun isa NonlinearRHS.ZDepNormFree` (and `linop isa
     # LinearOps.ZDepLinopFree`, checked by `native_ok` above) — wiring an
     # additional `native_set_free_zdep_params` call. See MATH.md §3.4.
+    # Phase I item 6 (BACKLOG.md) adds plasma and/or Raman (`RamanPolarField`)
+    # alongside Kerr, RealGrid only — `TransFree`'s `Et_to_Pt!` dispatches each
+    # response over `t.idcs` (`CartesianIndices((Ny,Nx))`), so both see a
+    # scalar field per `(y,x)` column exactly like `TransRadial`'s Phase
+    # D.2/D.4 wiring; `apply_plasma_free`/`apply_raman_free` in native.rs
+    # mirror the radial per-column kernels verbatim over `n_y*n_x` columns.
+    # EnvGrid free-space (`rhs_free_env`) has no plasma/Raman step (no EnvGrid
+    # geometry gets native plasma anywhere in this port, and `RamanPolarEnv`
+    # is only wired for mode-averaged EnvGrid), so EnvGrid keeps the original
+    # Kerr-only restriction. Plasma/Raman + a z-dependent normfun together are
+    # also out of scope (unverified interaction, no existing test coverage) —
+    # rejected explicitly rather than silently combined.
     if is_free
         isnothing(f!.Et_noise) || throw(NativeIneligible("modified shot-noise " *
                           "(Et_noise) not yet supported for the native free-space path"))
@@ -1642,11 +1654,29 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             end
             γ3 != 0.0 && break
         end
-        length(f!.resp) == 1 && γ3 != 0.0 && _is_plain_kerr_resp(f!.resp[1]) ||
-            throw(NativeIneligible("free-space: only single-response Kerr-only " *
-                  "is supported by the native path (Phase 6 gate); extra responses " *
-                  "(plasma, Raman, ...), a lone non-Kerr response, or Kerr_field_nothg/" *
-                  "Kerr_env_thg (see `_is_plain_kerr_resp`) are not wired for this geometry."))
+
+        if is_real_grid
+            for r in f!.resp
+                _is_plain_kerr_resp(r) || r isa Luna.Nonlinear.PlasmaCumtrapz ||
+                    r isa Luna.Nonlinear.RamanPolarField ||
+                    throw(NativeIneligible("free-space: only Kerr, plasma, and/or Raman " *
+                          "(RealGrid, RamanPolarField) responses are supported by the " *
+                          "native path (Phase I item 6 gate) — this also rejects " *
+                          "Kerr_field_nothg, see `_is_plain_kerr_resp`."))
+            end
+        else
+            length(f!.resp) == 1 && γ3 != 0.0 && _is_plain_kerr_resp(f!.resp[1]) ||
+                throw(NativeIneligible("free-space (EnvGrid): only single-response " *
+                      "Kerr-only is supported by the native path — plasma/Raman are " *
+                      "RealGrid-only (Phase I item 6), and a lone non-Kerr response or " *
+                      "Kerr_env_thg (see `_is_plain_kerr_resp`) are not wired either."))
+        end
+        γ3 != 0.0 ||
+            throw(NativeIneligible("free-space: no Kerr response found (γ3=0) — the " *
+                  "native free-space path requires a Kerr response."))
+
+        has_plasma_free = is_real_grid && any(r -> r isa Luna.Nonlinear.PlasmaCumtrapz, f!.resp)
+        has_raman_free  = is_real_grid && any(r -> r isa Luna.Nonlinear.RamanPolarField, f!.resp)
 
         is_zdep_free = f!.normfun isa Luna.NonlinearRHS.ZDepNormFree
         if is_zdep_free
@@ -1654,6 +1684,10 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                 throw(NativeIneligible("free-space: a z-dependent normfun (ZDepNormFree) " *
                       "requires a matching z-dependent linop (ZDepLinopFree) — got " *
                       "$(typeof(linop))."))
+            has_plasma_free && throw(NativeIneligible("free-space: plasma combined with a " *
+                  "z-dependent normfun is not supported by the native path."))
+            has_raman_free && throw(NativeIneligible("free-space: Raman combined with a " *
+                  "z-dependent normfun is not supported by the native path."))
         else
             _check_density_zindependent(f!.densityfun, flength)
         end
@@ -1693,6 +1727,72 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                 w.gamma, w.omega, ωwin, w.kperp2, UInt8.(w.sidx),
                 eps0_gamma3, w.ω0, w.γ0, w.dγ0)
             rc == 0 || throw(NativeIneligible("native_set_free_zdep_params returned $rc"))
+        end
+
+        # Wire plasma if present and a Rust ionisation handle is available —
+        # same decoupled eligibility as the mode-averaged/radial wiring above.
+        # `native_set_plasma_params`/`_adk` size their scratch buffers as
+        # `n_time_over*n_y*n_x` when `s.is_free` (already set by
+        # `native_set_free_params`, called earlier in this block).
+        if has_plasma_free
+            for r in f!.resp
+                if r isa Luna.Nonlinear.PlasmaCumtrapz
+                    irf = r.ratefunc
+                    if irf isa Luna.Ionisation.IonRatePPTAccel &&
+                            !isnothing(irf.rust_handle) &&
+                            irf.rust_handle.ptr != C_NULL
+                        rc = ccall((:native_set_plasma_params, _LIBLUNA_RUST_RK45), Cint,
+                            (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64, Float64),
+                            handle.ptr, irf.rust_handle.ptr,
+                            r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt, density)
+                        rc == 0 || throw(NativeIneligible("native_set_plasma_params returned $rc"))
+                    elseif irf isa Luna.Ionisation.IonRateADK &&
+                            !isnothing(irf.rust_handle) &&
+                            irf.rust_handle.ptr != C_NULL
+                        rc = ccall((:native_set_plasma_params_adk, _LIBLUNA_RUST_RK45), Cint,
+                            (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64, Float64),
+                            handle.ptr, irf.rust_handle.ptr,
+                            r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt, density)
+                        rc == 0 || throw(NativeIneligible("native_set_plasma_params_adk returned $rc"))
+                    else
+                        throw(NativeIneligible("plasma detected but no Rust ionisation handle is " *
+                              "available (library missing, or both LUNA_USE_RUST_IONISATION and " *
+                              "LUNA_USE_RUST_NATIVE were explicitly disabled), or ratefunc is not " *
+                              "an IonRatePPTAccel/IonRateADK — this config is not eligible for the " *
+                              "native path."))
+                    end
+                    break  # only one plasma response expected
+                end
+            end
+        end
+
+        # Wire Raman if present and eligible — same criteria as the
+        # mode-averaged/radial wiring above (all-SDO/rotational
+        # `CombinedRamanResponse`, density-independent τ2). Same FFI call;
+        # `native_set_raman_params` sizes its scratch buffers as
+        # `n_time_over*n_y*n_x` when `s.is_free`.
+        if has_raman_free
+            for r in f!.resp
+                if r isa Luna.Nonlinear.RamanPolarField
+                    rr = r.r
+                    Rs = rr isa Luna.Raman.CombinedRamanResponse ?
+                        Luna.Raman.flatten_sdo_oscillators(rr) : nothing
+                    isnothing(Rs) && throw(NativeIneligible("Raman response present but not " *
+                          "eligible for the native path (needs a CombinedRamanResponse whose " *
+                          "components are all RamanRespSingleDampedOscillator and/or " *
+                          "RamanRespRotationalNonRigid)."))
+                    raman_density = f!.densityfun(0.0)
+                    omegas    = Float64[ri.Ω for ri in Rs]
+                    gammas    = Float64[1.0 / ri.τ2ρ(raman_density) for ri in Rs]
+                    couplings = Float64[ri.K for ri in Rs]
+                    rc = ccall((:native_set_raman_params, _LIBLUNA_RUST_RK45), Cint,
+                        (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Csize_t, Float64, Float64, Cint),
+                        handle.ptr, omegas, gammas, couplings, Csize_t(length(omegas)),
+                        r.dt, raman_density, Cint(r.thg))
+                    rc == 0 || throw(NativeIneligible("native_set_raman_params returned $rc"))
+                    break  # only one Raman response expected
+                end
+            end
         end
     end
 
