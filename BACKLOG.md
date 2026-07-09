@@ -767,7 +767,11 @@ tracked as S1.4; until it lands, "AVX-512 path selected" does not mean
 ### 🟡 S1 — Hot-loop CPU performance (suggestions 3, 4, 5)
 *Needs `benchmark_native_default.jl` as a before/after harness — that now
 exists (Phase G.3).*
-1. 🟡 **Written 2026-07-09, NOT YET VERIFIED — do not treat as done.**
+1. 🟢 **Verified 2026-07-09.** Full 7-group parallel gate green: physics
+   1645/1657 (12 pre-existing `@test_broken`, unrelated), rust 42098/42098,
+   sim-interface 301/301, sim-multimode 33/33, sim-propagation 18/18,
+   io 2302/2302, fields 334/334 — no failures, no new errors. All exit
+   codes 0.
    FFTW wisdom for native plans (item 4) — `fftw.rs` gained
    `import_wisdom_from_filename`/`export_wisdom_to_filename` (bind
    `fftw_import_wisdom_from_filename`/`fftw_export_wisdom_to_filename`,
@@ -790,20 +794,19 @@ exists (Phase G.3).*
    steppers (e.g. a parameter scan), the disk I/O + FFTW's internal
    planner-lock on every construction could itself be a net regression;
    needs the benchmark harness before deciding whether to gate this
-   behind a "once per process" flag or a size/count threshold. Not run
-   against the Julia gate — compiles clean
-   (`RUSTFLAGS="-D warnings"`), 37/37 Rust unit tests pass, and a bare
-   `using Luna` (which exercises `src/Luna.jl`'s module-load-time
-   `prop_capillary`/`prop_gnlse` precompile self-test) completes without
-   error — neither is a substitute for the full `rust` gate.
+   behind a "once per process" flag or a size/count threshold. Still
+   open even though the full gate is now green (item 1 above) — the
+   gate confirms correctness, not that per-construction wisdom export is
+   a good idea for scan-heavy workloads. Needs `benchmark_native_default.jl`
+   before/after numbers, not another correctness run.
 2. Fused RK45 stage accumulation (item 3c) — one pass per stage reading
    each `k_j` once instead of one pass per coefficient. Summation-order
    change: validate with fixed-step (`max_dt=min_dt`) equivalence tests
-   per the Phase 2 nondeterminism-floor lesson (TESTING.md §3). Not
-   started (larger, more invasive than items 1/3 — deferred pending
-   those two being verified first).
-3. 🟡 **Written 2026-07-09, NOT YET VERIFIED — do not treat as done.**
-   `exp(L·c_i·dt)` caching (item 3d) — new `ExpCache` (native.rs, small
+   per the Phase 2 nondeterminism-floor lesson (TESTING.md §3). Items 1
+   and 3 are now verified (see below) — this can be started next.
+3. 🟢 **Verified 2026-07-09** — same full 7-group gate as item 1 above
+   (rust group 42098/42098, all groups green). `exp(L·c_i·dt)` caching
+   (item 3d) — new `ExpCache` (native.rs, small
    MRU list, capacity 16) keyed on `dt.to_bits()` + a new
    `linop_version: u64` field (bumped by `ensure_linop_at`/
    `ensure_free_norm_at`/`ensure_modal_linop_at` only on their real-work
@@ -817,9 +820,9 @@ exists (Phase G.3).*
    identical to the old path by construction (same `Complex::exp` values,
    memoized, not approximated) — the risk surface is purely "does the
    invalidation ever miss a real `linop` change", not "is the math
-   different". Same verification status as item 1 above: compiles clean,
-   37/37 Rust unit tests, `using Luna`'s precompile self-test passes; the
-   full `rust` equivalence gate has **not** been run.
+   different". Confirmed by the full green gate: no cache-invalidation
+   misses surfaced across any geometry (radial, modal, free-space,
+   mode-avg z-dependent linop) or grid type.
 4. SIMD Kerr + window/norm broadcasts (item 3a) — route through
    `dispatch.rs`'s existing AVX2/AVX-512 lanes (see ISA sync note above:
    this is the fix for "dispatch selects a path but only Raman uses it").
