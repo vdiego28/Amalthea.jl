@@ -1015,6 +1015,13 @@ exists (Phase G.3).*
      alone, before this ceiling was known) — flagged back to the user
      before continuing into the multi-week Phase 1-4 rewrite of a
      numerics-critical stepper for a ~1% ceiling.
+     **Confirmed across two more workloads (2026-07-10)** at the user's
+     request before any final call: radial geometry (QDHT, N=32 r-points)
+     — ~2.5%; a 16×-larger mode-avg+plasma grid (n_spec=16385 vs. the
+     default ~1025) — ~1.9%. The ceiling doesn't grow with grid size or
+     change materially across geometry — FFT cost dominates `step()`
+     proportionally regardless, so this isn't an artifact of the one
+     default-benchmark workload.
    - Phases 2-4 (per-geometry migration, FFI boundary shim, cleanup) —
      not started.
 

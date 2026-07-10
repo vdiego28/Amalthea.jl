@@ -39,6 +39,17 @@ to the user before committing to the multi-week Phase 1-4 rewrite of a
 numerics-critical stepper for a ~1% ceiling. **Do not resume Phase 1
 without a fresh decision from the user in light of this number.**
 
+**Cross-workload confirmation (2026-07-10), at the user's request before
+any final call:** re-ran the same measurement on two more workloads.
+Radial geometry (QDHT, N=32 r-points, 500 steps): apply_prop ~2.5% of
+step() time. A 16×-larger mode-avg+plasma grid (trange=4ps, n_spec=16385
+vs. the default benchmark's ~1025, 500 steps): apply_prop ~1.9%. The
+ceiling does not grow with grid size (an O(n) op next to O(n log n) FFTs
+should, if anything, shrink its share as n grows — consistent with what
+was measured) and doesn't change materially across geometry. This is not
+an artifact of the one default-benchmark workload — the ~2% figure is
+representative.
+
 ## Context
 
 BACKLOG.md S1 item 6 asked for a timeboxed Criterion spike comparing AoS
