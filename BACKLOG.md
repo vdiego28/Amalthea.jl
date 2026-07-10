@@ -973,16 +973,31 @@ exists (Phase G.3).*
      No consistent win; the reduction is likely already auto-vectorized
      well enough on the AoS layout that the shuffle cost from re/im
      unzip-in-place isn't recovered.
-   **Decision, not yet acted on:** the primary target (`apply_prop`) clears
-   the threshold that justifies the invasive guru-split-DFT FFTW plan
-   rewrite, but that rewrite means converting the *resident field storage*
-   to SoA end-to-end (every kernel touching the field — Kerr, ionisation,
-   Raman ADE, QDHT, dispersion norm, plus the FFTW plan objects themselves
-   via `fftw_plan_guru_split_dft`) — a much larger, riskier scope than the
-   isolated benchmark above tests, and not something to start
-   autonomously without sign-off given the blast radius. Flagged for the
-   user to decide whether to greenlight the full SoA conversion or leave
-   this as a documented, benchmarked negative-ROI-for-now call.
+   **Decision: greenlit 2026-07-10.** User was shown the expanded scope (no
+   chokepoint — ~30 distinct `Vec<Complex<f64>>` fields in `native.rs`, no
+   split-DFT support in `fftw.rs` today, every FFT-touching kernel pays an
+   interleave tax under SoA unless split plans exist, the Julia↔Rust FFI
+   boundary is hard-AoS regardless, and only `apply_prop_cached` — not
+   `weaknorm_c64`, not any `rhs_*` kernel — showed a measured win) and chose
+   to proceed with the full end-to-end conversion anyway. Tracked as a
+   phased effort, full plan in
+   `docs/native-port/PLAN_S1_6_SOA_CONVERSION.md` (mirrors how the native
+   port itself — Phases 0-8, D-I — was staged and gated). Each phase lands
+   as its own commit, gated by the full 7-group test suite (never a subset)
+   before the next phase starts.
+   - **Phase 0 — done (2026-07-10).** `fftw.rs` gained
+     `fftw_plan_guru_split_dft`/`_r2c`/`_c2r` bindings + two new wrapper
+     types (`SplitComplexFft1d`, `SplitRealFft1d`) operating on separate
+     re/im `f64` arrays. 3-D split variants deliberately deferred until the
+     free-space geometry phase needs them. Verified bit-exact against the
+     existing AoS plans (`split_c2c_matches_aos_c2c`,
+     `split_r2c_matches_aos_r2c`); not yet wired into `native.rs` (purely
+     additive). Full gate unchanged: rust 42087/42087, physics 1645/1657
+     (pre-existing broken), sim-interface 301/301, sim-multimode 33/33,
+     sim-propagation 18/18, io 2302/2302, fields 334/334.
+   - **Phase 1 (universal RK buffers + `ExpCache`) — next.**
+   - Phases 2-4 (per-geometry migration, FFI boundary shim, cleanup) —
+     not started.
 
 ### 🟡 S2 — Threading the native RHS (suggestion 2)
 *Not started. Depends on S1.4 (dispatch plumbing).*
