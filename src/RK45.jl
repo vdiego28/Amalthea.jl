@@ -1041,6 +1041,15 @@ function RustNativeStepper(f!, linop, y0, t, dt;
           native_wisdom_path)
     check_ffi(rc, "native_set_fftw_plans")
 
+    # BACKLOG.md S2 item 1: rayon thread count for later-phase parallel RHS
+    # seams. `Threads.nthreads()` is Julia's own thread count — automatic,
+    # not something users set separately. `n<=1` is sequential on the Rust
+    # side (the pre-S2 default), so single-threaded Julia sessions see no
+    # behavior change.
+    rc = ccall((:native_set_threads, _LIBLUNA_RUST_RK45), Cint,
+          (Ptr{Cvoid}, Csize_t), handle.ptr, Threads.nthreads())
+    check_ffi(rc, "native_set_threads")
+
     # Set parameters if mode-averaged
     if is_mode_avg
         norm_func = f!.norm!

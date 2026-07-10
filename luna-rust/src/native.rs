@@ -568,6 +568,15 @@ pub struct CpuNativeSim {
     /// `LinearOps.make_linop(grid,modes,λ0;ref_mode)`'s `ref_mode`.
     pub zdep_modal_ref_mode: usize,
     pub zdep_modal_last_z: f64,
+
+    // ── S2: threading the native RHS (BACKLOG.md) ────────────────────────────
+    /// Rayon thread count for later-phase parallel RHS seams. `<= 1` means
+    /// sequential — the default, matching pre-S2 behavior exactly.
+    pub n_threads: usize,
+    /// Lazily built the first time a parallel seam actually runs with
+    /// `n_threads > 1` — never touches rayon's process-global pool (see
+    /// `set_threads`'s doc on the trait for why).
+    pub thread_pool: Option<rayon::ThreadPool>,
 }
 
 /// Analytic-signal intensity `1/2·|hilbert(field)|²`, matching
@@ -814,6 +823,8 @@ impl CpuNativeSim {
             zdep_modal_dv0_im: Vec::new(),
             zdep_modal_ref_mode: 0,
             zdep_modal_last_z: f64::NAN,
+            n_threads: 1,
+            thread_pool: None,
         }
     }
 
@@ -2432,6 +2443,14 @@ pub trait NativeBackend {
     unsafe fn set_free_params(&mut self, n_time: size_t, n_time_over: size_t, n_y: size_t, n_x: size_t, flags: c_uint, towin: *const c_double, kerr_fac: c_double, m_re: *const c_double, m_im: *const c_double) -> i32;
     unsafe fn set_free_zdep_params(&mut self, flength: c_double, p0: c_double, p1: c_double, n_dspl: size_t, dspl_x: *const c_double, dspl_y: *const c_double, dspl_d: *const c_double, gamma: *const c_double, omega: *const c_double, omegawin: *const c_double, kperp2: *const c_double, sidx: *const u8, eps0_gamma3: c_double, omega0: c_double, gamma0: c_double, dgamma0: c_double) -> i32;
     unsafe fn set_modal_zdep_params(&mut self, flength: c_double, a0: c_double, n_a: size_t, a_x: *const c_double, a_y: *const c_double, a_d: *const c_double, omega: *const c_double, sidx: *const u8, model: u8, loss_on: u8, eco: *const c_double, vn_re: *const c_double, vn_im: *const c_double, omega0: c_double, ref_mode: size_t, eco0: *const c_double, deco0: *const c_double, v0_re: *const c_double, v0_im: *const c_double, dv0_re: *const c_double, dv0_im: *const c_double) -> i32;
+    /// Sets the rayon thread count used by later-phase parallel RHS seams
+    /// (BACKLOG.md S2 item 1). `n <= 1` means "sequential" — every parallel
+    /// branch this enables is gated behind `n_threads > 1`, so the default
+    /// (1, matching pre-S2 behavior) never changes results. Builds a
+    /// per-sim `rayon::ThreadPool` (not the process-global pool) so
+    /// multiple sims/tests coexisting in one process never contend over a
+    /// single global configuration.
+    unsafe fn set_threads(&mut self, n: size_t) -> i32;
     unsafe fn step(&mut self, yn: *mut Complex<f64>, t_old: f64, t_new: f64, dtn: f64, rtol: f64, atol: f64, safety: f64, max_dt: f64, min_dt: f64, errlast_in: f64, locextrap: i32, result: *mut NativeStepResult) -> i32;
     /// Saves the process's current planner wisdom (accumulated across every
     /// plan created in this process, not just this `NativeSim` — FFTW's
@@ -2587,6 +2606,17 @@ impl NativeBackend for CpuNativeSim {
     sim.fftw_api = Some(api);
     0
 }
+    unsafe fn set_threads(&mut self, n: size_t) -> i32 {
+        let sim = self;
+        let n = n.max(1);
+        if sim.n_threads != n {
+            sim.n_threads = n;
+            // Drop any existing pool so it's rebuilt lazily (correct size)
+            // the next time a parallel seam actually runs.
+            sim.thread_pool = None;
+        }
+        0
+    }
     unsafe fn wisdom_export(&mut self, path: *const c_char) -> i32 {
         let sim = self;
         let api = match sim.fftw_api.as_ref() {
@@ -3506,6 +3536,21 @@ pub unsafe extern "C" fn native_set_fftw_plans(
     if sim.is_null() { return -1; }
     let s = unsafe { &mut *sim };
     unsafe { s.backend.set_fftw_plans(lib_path, n_time, n_time_over, is_real, flags, wisdom_path) }
+}
+
+/// Sets the rayon thread count for later-phase parallel RHS seams —
+/// BACKLOG.md S2 item 1. `n <= 1` is sequential (the default, bit-identical
+/// to pre-S2 behavior). Wired from Julia's `Threads.nthreads()` at
+/// `RustNativeStepper` construction.
+///
+/// # Safety
+/// `sim` must be a valid, non-null pointer from `init_native_sim`/
+/// `init_cuda_native_sim`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_set_threads(sim: *mut NativeSim, n: size_t) -> i32 {
+    if sim.is_null() { return -1; }
+    let s = unsafe { &mut *sim };
+    unsafe { s.backend.set_threads(n) }
 }
 
 /// Best-effort planner-wisdom save — BACKLOG.md S1 item 1. Call once, after
