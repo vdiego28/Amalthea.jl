@@ -995,7 +995,26 @@ exists (Phase G.3).*
      additive). Full gate unchanged: rust 42087/42087, physics 1645/1657
      (pre-existing broken), sim-interface 301/301, sim-multimode 33/33,
      sim-propagation 18/18, io 2302/2302, fields 334/334.
-   - **Phase 1 (universal RK buffers + `ExpCache`) — next.**
+   - **Phase 1 — halted before implementation (2026-07-10), pending
+     re-confirmation.** Before writing the Phase 1 rewrite, measured
+     `apply_prop_cached`'s actual share of `step()` wall time (temporary
+     `Instant`-based counters, reverted after the reading — see
+     `PLAN_S1_6_SOA_CONVERSION.md`'s gotcha section) on the same
+     mode-averaged+plasma+kerr workload `benchmark_native_default.jl` uses,
+     2000 fixed-dt steps: **`apply_prop_cached` is ~1.9-2.0% of `step()`'s
+     own wall time.** Even a perfect 2.6× speedup on it (the isolated
+     Criterion spike's best case) caps the *entire* SoA conversion's
+     end-to-end win at roughly **1.2%** for this workload — the ~14
+     calls/step are O(n) sitting next to O(n·log n) FFTs called several
+     times per stage across 7 stages, which dominate `step()`'s time and
+     don't get faster from this (FFTW's own split-DFT plans are typically
+     equal-or-slightly-slower than its interleaved plans, so Phase 2
+     wouldn't recover the gap either). This is materially different
+     information from what motivated the "proceed with full conversion"
+     decision above (that decision was made on "2-2.6× on the multiply"
+     alone, before this ceiling was known) — flagged back to the user
+     before continuing into the multi-week Phase 1-4 rewrite of a
+     numerics-critical stepper for a ~1% ceiling.
    - Phases 2-4 (per-geometry migration, FFI boundary shim, cleanup) —
      not started.
 

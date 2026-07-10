@@ -1,8 +1,43 @@
 # Plan: BACKLOG.md S1 item 6 — full SoA conversion of the native-port resident field
 
-Status: **Phase 0 done (2026-07-10). Phase 1 next.** See BACKLOG.md's S1
-item 6 entry for the live status line; this file is the durable plan
-(survives a context reset), not the status tracker.
+Status: **Phase 0 done (2026-07-10). Phase 1 halted before implementation,
+pending re-confirmation — see "Ceiling measurement" section below.** See
+BACKLOG.md's S1 item 6 entry for the live status line; this file is the
+durable plan (survives a context reset), not the status tracker.
+
+## Ceiling measurement (2026-07-10) — read this before resuming Phase 1
+
+Before writing the Phase 1 rewrite, measured `apply_prop_cached`'s actual
+share of `step()`'s own wall time, using temporary `Instant`-based counters
+(added to `native.rs`, read via a temporary FFI accessor, then fully
+reverted — `git diff` was empty afterward). Workload: the same
+mode-averaged + plasma + kerr fixed-dt configuration
+`benchmark_native_default.jl` uses, 2000 steps.
+
+```
+wall clock for 2000 steps: 4.206 s
+sum of step() internal timers: 4.187 s
+sum of apply_prop_cached time: 0.082 s
+apply_prop share of step() internal time: 1.95%
+apply_prop share of wall-clock time: 1.94%
+```
+
+`apply_prop_cached` — the ~14 calls/step this whole effort targets — is
+**~2% of step() time**. Even a perfect 2.6× speedup on it (the isolated
+Criterion spike's best case, Phase 0's benchmark) caps the *entire* SoA
+conversion's end-to-end win at roughly **1.2%** for this workload: the
+O(n) exp-linop multiply sits next to O(n·log n) FFTs called several times
+per stage across all 7 RK stages, and those FFTs dominate `step()`'s time.
+Phase 2's split-DFT FFTW plans wouldn't recover the gap either — FFTW's
+split-array plans are typically equal-or-slightly-slower than its
+interleaved plans, not faster.
+
+This is materially different information from what motivated "proceed with
+full SoA conversion" — that decision was made knowing only the isolated
+microbenchmark's 2-2.6× number, not this end-to-end ceiling. Flagged back
+to the user before committing to the multi-week Phase 1-4 rewrite of a
+numerics-critical stepper for a ~1% ceiling. **Do not resume Phase 1
+without a fresh decision from the user in light of this number.**
 
 ## Context
 
