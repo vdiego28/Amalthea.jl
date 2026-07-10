@@ -34,3 +34,7 @@ harness = false
 name = "dispersion_bench"
 harness = false
 
+[[bench]]
+name = "exp_linop_layout_bench"
+harness = false
+
