@@ -193,3 +193,18 @@ back to the Julia stepper. Closing this category fully would mean a
 declarative config format instead of Julia closures — that is
 SUGGESTIONS.md item 14's CLI, which sidesteps Julia entirely rather
 than porting it.
+
+**Native-path FFTW planner wisdom (opt-in, default off).** Unlike the
+per-kernel toggles in §2 (default off because the *feature* is optional),
+`RustNativeStepper`'s own FFTW wisdom cache is default off for a
+determinism reason: importing wisdom before planning lets accumulated
+on-disk/in-process wisdom perturb plan selection, which — via the RK45
+controller's near-cancellation sensitivity (CLAUDE.md's Phase 2 gotcha) —
+can shift the adaptive step-size path run to run. Set
+`LUNA_NATIVE_FFTW_WISDOM=1` to opt back in. See
+`docs/native-port/PLAN_FFTW_WISDOM_FIX.md` for the full analysis and
+`BACKLOG.md` S1 item 1 for the resolution. The determinism boundary this
+leaves in place: exact bit-level step-path reproducibility across runs is
+only guaranteed with one fresh process per simulation (native shares
+FFTW's single process-global wisdom pool with Julia's own `FFTW.jl`,
+regardless of the on-disk cache toggle).

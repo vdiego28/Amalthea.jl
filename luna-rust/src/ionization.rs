@@ -144,8 +144,11 @@ impl CubicSplineLUT {
     }
 
     /// Evaluates the spline at x. Returns None if x lies outside [x_min, x_max]
+    /// or is non-finite (NaN/±inf) — IEEE 754 makes every comparison with NaN
+    /// false, so `x < x_min || x > x_max` alone would silently let a NaN
+    /// through to the segment lookup below instead of being rejected here.
     pub fn evaluate(&self, x: f64) -> Option<f64> {
-        if x < self.x_min || x > self.x_max {
+        if !x.is_finite() || x < self.x_min || x > self.x_max {
             return None;
         }
         
@@ -230,6 +233,26 @@ impl PptIonizationRate {
     /// [`Self::strict`] was set, in which case they return `Err`.
     pub fn rate(&self, field_strength: f64) -> Result<f64, String> {
         let abs_e = field_strength.abs();
+
+        // BACKLOG.md S1 item 2: a NaN/±inf field (e.g. from an overshooting
+        // fixed-dt integration far beyond flength) fails both the `< e_min`
+        // and `> e_max` comparisons below (IEEE 754: any comparison with NaN
+        // is false). Caught here explicitly rather than relying solely on
+        // `spline_lut.evaluate`'s own non-finite guard (added alongside this
+        // one — `evaluate(NaN)` previously returned `Some(garbage)` instead
+        // of `None`, confirmed by `cubic_spline_lut_rejects_out_of_range_without_panicking`
+        // failing before that fix). Route non-finite input through the same
+        // overflow policy as a too-large-but-finite field (clamp to
+        // `rate(e_max)`, or `Err` under `strict`).
+        if !abs_e.is_finite() {
+            if self.strict {
+                return Err(format!(
+                    "Electric field amplitude {} V/m is not finite (NaN or ±inf)",
+                    field_strength
+                ));
+            }
+            return self.rate(self.e_max);
+        }
 
         if abs_e < self.e_min {
             // Cutoff region: rate is physically negligible and Keldysh calculation diverges
@@ -369,7 +392,12 @@ impl AdkIonizationRate {
     /// optional cycle-averaging correction.
     pub fn rate(&self, field_strength: f64) -> Result<f64, String> {
         let a_e = field_strength.abs();
-        if a_e < self.thr {
+        // Same defensive non-finite guard as PptIonizationRate::rate (BACKLOG.md
+        // S1 item 2): `a_e < self.thr` is false for NaN, so without this it
+        // would fall through into `x.powf(...)`/`.exp()` and return `Ok(NaN)`
+        // silently rather than the documented "never errors, always 0 below
+        // threshold" contract.
+        if !a_e.is_finite() || a_e < self.thr {
             return Ok(0.0);
         }
         let x = 4.0 * self.omega_p / (self.omega_t_prefac * a_e);
@@ -380,5 +408,149 @@ impl AdkIonizationRate {
             r *= self.avfac * a_e.sqrt();
         }
         Ok(r)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // BACKLOG.md S1 item 2: "a rate query must never be able to segfault
+    // regardless of input" — hammer PptIonizationRate::rate/CubicSplineLUT
+    // across many orders of magnitude beyond the fitted [e_min, e_max]
+    // range, plus non-finite inputs, and assert every call returns cleanly
+    // (Ok or a clean Err, never a panic/segfault).
+
+    fn make_ppt(e_min: f64, e_max: f64) -> PptIonizationRate {
+        // A simple, well-behaved representative rate function: not the real
+        // PPT formula, just something monotonic and strictly positive so
+        // the spline is well-conditioned and clamp behavior is checkable.
+        PptIonizationRate::new(e_min, e_max, 32, |e| e.abs() + 1.0)
+    }
+
+    #[test]
+    fn ppt_below_e_min_is_zero() {
+        let ppt = make_ppt(1.0, 100.0);
+        assert_eq!(ppt.rate(0.0).unwrap(), 0.0);
+        assert_eq!(ppt.rate(0.5).unwrap(), 0.0);
+        assert_eq!(ppt.rate(-0.5).unwrap(), 0.0); // abs() symmetry
+    }
+
+    #[test]
+    fn ppt_within_range_is_positive_and_finite() {
+        let ppt = make_ppt(1.0, 100.0);
+        for e in [1.0, 2.0, 50.0, 99.0, 100.0] {
+            let r = ppt.rate(e).unwrap();
+            assert!(r.is_finite() && r > 0.0, "rate({e}) = {r}");
+        }
+    }
+
+    #[test]
+    fn ppt_clamps_above_e_max_instead_of_erroring() {
+        let ppt = make_ppt(1.0, 100.0);
+        let at_max = ppt.rate(100.0).unwrap();
+        for factor in [1.01, 2.0, 1e3, 1e6, 1e10] {
+            let r = ppt.rate(100.0 * factor).unwrap();
+            assert_eq!(r, at_max, "factor={factor}");
+            // Negative overshoot (abs() symmetry) must clamp identically.
+            let r_neg = ppt.rate(-100.0 * factor).unwrap();
+            assert_eq!(r_neg, at_max, "factor={factor} (negative)");
+        }
+    }
+
+    #[test]
+    fn ppt_far_below_e_min_is_still_zero_not_a_panic() {
+        let ppt = make_ppt(1.0, 100.0);
+        for factor in [0.99, 0.5, 1e-3, 1e-6, 1e-10] {
+            assert_eq!(ppt.rate(1.0 * factor).unwrap(), 0.0, "factor={factor}");
+        }
+    }
+
+    #[test]
+    fn ppt_non_finite_inputs_never_panic() {
+        let ppt = make_ppt(1.0, 100.0);
+        let at_max = ppt.rate(100.0).unwrap();
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let r = ppt.rate(bad).unwrap();
+            assert_eq!(r, at_max, "bad input {bad}");
+        }
+    }
+
+    #[test]
+    fn ppt_strict_mode_errors_cleanly_instead_of_clamping() {
+        let ppt = make_ppt(1.0, 100.0).strict(true);
+        assert!(ppt.rate(100.0).is_ok());
+        assert!(ppt.rate(101.0).is_err());
+        assert!(ppt.rate(f64::NAN).is_err());
+        assert!(ppt.rate(f64::INFINITY).is_err());
+    }
+
+    #[test]
+    fn ppt_extreme_sweep_never_panics() {
+        // BACKLOG.md's own reproduction recipe: hammer across ±1e10x the
+        // fitted range on a log-spaced sweep, both signs, non-strict.
+        let ppt = make_ppt(1e-3, 1e6);
+        let mut e = 1e-13; // 1e10x below e_min
+        while e <= 1e16 {
+            // 1e10x above e_max
+            for sign in [1.0, -1.0] {
+                let r = ppt.rate(sign * e).unwrap();
+                assert!(r.is_finite() && r >= 0.0, "rate({}) = {r}", sign * e);
+            }
+            e *= 3.7; // irrational-ish step to avoid hitting exact grid knots only
+        }
+    }
+
+    #[test]
+    fn cubic_spline_lut_rejects_out_of_range_without_panicking() {
+        let lut = CubicSplineLUT::fit(1.0, 10.0, 8, |x| x * x);
+        assert!(lut.evaluate(0.999).is_none());
+        assert!(lut.evaluate(10.001).is_none());
+        assert!(lut.evaluate(f64::NAN).is_none());
+        assert!(lut.evaluate(f64::INFINITY).is_none());
+        assert!(lut.evaluate(f64::NEG_INFINITY).is_none());
+        // Exactly on the boundary must succeed (inclusive range).
+        assert!(lut.evaluate(1.0).is_some());
+        assert!(lut.evaluate(10.0).is_some());
+    }
+
+    fn make_adk() -> AdkIonizationRate {
+        AdkIonizationRate {
+            occupancy: 2.0,
+            omega_p: 1.0,
+            cn_sq: 1.0,
+            nstar: 1.0,
+            omega_t_prefac: 1.0,
+            thr: 1.0,
+            avfac: 1.0,
+        }
+    }
+
+    #[test]
+    fn adk_below_threshold_is_zero() {
+        let adk = make_adk();
+        assert_eq!(adk.rate(0.0).unwrap(), 0.0);
+        assert_eq!(adk.rate(0.5).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn adk_non_finite_inputs_never_panic() {
+        let adk = make_adk();
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(adk.rate(bad).unwrap(), 0.0, "bad input {bad}");
+        }
+    }
+
+    #[test]
+    fn adk_extreme_sweep_never_panics() {
+        let adk = make_adk();
+        let mut e = 1e-10;
+        while e <= 1e10 {
+            for sign in [1.0, -1.0] {
+                let r = adk.rate(sign * e).unwrap();
+                assert!(r.is_finite(), "rate({}) = {r}", sign * e);
+            }
+            e *= 3.7;
+        }
     }
 }

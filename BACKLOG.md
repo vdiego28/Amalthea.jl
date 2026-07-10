@@ -664,16 +664,36 @@ future work, roughly ordered by value.
    (Nonlinear.jl:406-411), and the kernel itself is generic over
    oscillator parameters. Fixed by explicitly zeroing `[no..2no)` every
    step (cost: one trivial loop).
-2. 🟡 **`PptIonizationRate::rate` can segfault far outside its fitted
-   range** — promoted from a buried note in Phase G.3's entry to a
-   tracked item: repeatedly `step!`-ing far beyond `flength` with a
-   too-large fixed `dt` grows the field until the PPT LUT query lands
-   outside `[e_min,e_max]` and something in that path segfaults instead
-   of hitting the documented Phase B.2 clamp. A rate query must never be
-   able to segfault regardless of input; reproduce via the
-   `benchmark_native_default.jl` overshoot described in Phase G.3, then
-   fix + add a Rust unit test hammering `rate()` across ±1e10× the fitted
-   range.
+2. 🟢 **Resolved 2026-07-09.** `PptIonizationRate::rate` can segfault far
+   outside its fitted range — promoted from a buried note in Phase G.3's
+   entry to a tracked item: repeatedly `step!`-ing far beyond `flength`
+   with a too-large fixed `dt` grows the field until the PPT LUT query
+   lands outside `[e_min,e_max]` and something in that path segfaults
+   instead of hitting the documented Phase B.2 clamp. Investigated: the
+   `[e_min, e_max]` finite-range clamp itself (Phase B.2) was already
+   correct and `CubicSplineLUT::evaluate`'s `get_unchecked` was already
+   bounds-safe (its bounds check runs before the segment lookup, and the
+   binary search invariant keeps the index in range) — no literal
+   out-of-bounds memory access was found. The real bug was **NaN/±inf
+   handling**: IEEE 754 makes every comparison with NaN false, so a
+   non-finite field silently passed *both* `rate()`'s `< e_min`/`> e_max`
+   checks *and* `evaluate()`'s own `x < x_min || x > x_max` guard, falling
+   through to return `Some(garbage)` instead of the intended `None`/clamp
+   — confirmed by a new unit test failing before the fix
+   (`cubic_spline_lut_rejects_out_of_range_without_panicking`). Fixed by
+   adding an explicit `is_finite()` guard in both `CubicSplineLUT::evaluate`
+   (defense at the source) and `PptIonizationRate::rate` (routes non-finite
+   input through the same overflow policy as a too-large-but-finite field:
+   clamp to `rate(e_max)`, or `Err` under `.strict(true)`); the sibling
+   `AdkIonizationRate::rate` got the same guard for consistency (treats
+   non-finite as below-threshold → `0.0`, matching its "never errors"
+   contract). Added 11 new Rust unit tests in `luna-rust/src/ionization.rs`
+   hammering both rate functions across ±1e10× the fitted range (log-spaced
+   sweep, both signs) plus explicit NaN/+inf/-inf/boundary cases — `cargo
+   test` 48/48 green, full `rust` Julia group re-verified clean
+   (42087/42087 via `test/parallel_rust_tests.py`, matching the pre-fix
+   count exactly — this was a hardening fix, not a behavior change for any
+   finite input).
 3. ⚪ **r2c/c2r halving for both FFT-conv Raman convolutions.** The
    padded E² and h are mathematically real in both the carrier and
    envelope paths. Julia's `RamanPolarField` already uses `plan_rfft`,
@@ -831,6 +851,30 @@ exists (Phase G.3).*
    import/export below some construction-count threshold) — needs a
    decision, not just a benchmark number, since this one is about
    reproducibility guarantees, not speed.
+   **Resolved 2026-07-09.** Investigated and planned in
+   `docs/native-port/PLAN_FFTW_WISDOM_FIX.md`, then implemented: on-disk
+   wisdom persistence is now **opt-in, default OFF**
+   (`LUNA_NATIVE_FFTW_WISDOM=1` to enable; unset/`"0"` = off), gated in
+   `src/RK45.jl` via `_native_wisdom_enabled()` — both the import path
+   (`native_wisdom_path` is `""` when off, which Rust's best-effort import
+   already no-ops on) and the export block are skipped entirely by
+   default. This kills the per-construction disk I/O + planner-lock
+   (performance risk) outright, and removes the disk channel of the
+   reproducibility risk (consecutive runs on one machine no longer
+   diverge via a shared wisdom file). A pool channel remains even with
+   persistence off: native `dlopen`s the same `FFTW_jll.libfftw3` Julia's
+   `FFTW.jl` uses, so all constructions in one process still share one
+   global in-process wisdom pool — a fundamental consequence of FFTW's
+   process-global wisdom API (no `fftw_forget_wisdom()` without
+   corrupting Julia's own plans), bounded by "one process per simulation"
+   (which `scans.rs`'s `ScanQueue` already does). The plan file's crux
+   argument: native plans only ever use `FFTW_ESTIMATE`, which by design
+   skips measurement, so imported wisdom likely never helped here in the
+   first place — default-OFF is justified regardless of a separately
+   re-benchmarked perf number. Tests: `test/test_native_fftw_wisdom.jl`
+   (T1: default off writes nothing to disk; T2: opt-in exports/imports
+   without error). No Rust changes were needed — `fftw.rs`/`native.rs`
+   plumbing is unchanged and reused as-is for the opt-in path.
 2. 🟢 **Verified 2026-07-09.** Fused RK45 stage accumulation (item 3c) —
    `native.rs`'s `step()` stage loop previously did one full `ystage`
    read-modify-write sweep per nonzero `DP_B[ii][j]` coefficient (up to 6
@@ -876,29 +920,46 @@ exists (Phase G.3).*
    this is the fix for "dispatch selects a path but only Raman uses it").
    Add a Rust unit test asserting SIMD lane == scalar lane bitwise (or
    ≤1 ulp where FMA contraction differs).
-5. 🔴 **BLAS-3 QDHT (item 5) — wired 2026-07-07, found broken, disabled by
-   default pending a real fix.** Added the Julia-side caller
-   (`NonlinearRHS._init_rust_qdht_blas`, resolves
-   `LinearAlgebra.BLAS.libblastrampoline`'s real path via `Libdl.dlpath`,
-   calls `init_blas_path`) that was missing. Wiring it up surfaced a real
-   bug in the previously-untested `blas.rs`: `libblastrampoline`'s
-   `cblas_dgemm` symbol is a **dispatch stub**, not a real BLAS-3 kernel —
-   it requires Julia's own ILP64 Fortran-symbol registration
-   (`dgemm_64_`) to route to OpenBLAS, and calling the CBLAS-name entry
-   point directly errors at runtime ("no BLAS/LAPACK library loaded for
-   cblas_dgemm()") while silently corrupting the QDHT result instead of
-   computing anything (confirmed: `test_qdht_rust.jl`'s mul!/ldiv! unit
-   tests fail when enabled). Fixed the immediate risk by defaulting
-   `LUNA_QDHT_BLAS=0` (opt-in, not opt-out as originally planned) so
-   `LUNA_USE_RUST_QDHT=1` users get the existing correct Rayon path unless
-   they explicitly ask for the (currently broken) BLAS one. **Still open:**
-   rewrite `blas.rs` to bind the ILP64 Fortran signature
-   (`dgemm_64_`/`zgemm_64_`, ISO_Fortran character-by-reference calling
-   convention, `i64` dims) instead of `cblas_dgemm`, per the original
-   suggestion text's own note about the ILP64 suffix convention — this is
-   real work, not a wiring task. Gate once fixed: `test_qdht_rust.jl`
-   tolerance unchanged (~1e-13) + ≥1.5× QDHT micro-bench at n_r=256, or
-   revert.
+5. 🟢 **Resolved 2026-07-09.** BLAS-3 QDHT (item 5) — wired 2026-07-07,
+   found broken (`cblas_dgemm` dispatch-stub issue, see below), fixed by
+   rewriting `blas.rs` to bind the real ILP64 Fortran entry point instead.
+   Original bug: `libblastrampoline`'s `cblas_dgemm` symbol is a
+   **dispatch stub**, not a real BLAS-3 kernel — it requires Julia's own
+   ILP64 Fortran-symbol registration to route to OpenBLAS, and calling
+   the CBLAS-name entry point directly errors at runtime ("no BLAS/LAPACK
+   library loaded for cblas_dgemm()") while silently corrupting the QDHT
+   result instead of computing anything. **Fix:** `blas.rs` now binds
+   `dgemm_64_` — the exact same symbol and calling convention Julia's own
+   `LinearAlgebra.BLAS.gemm!` resolves to (confirmed by reading
+   `stdlib/LinearAlgebra/src/blas.jl`: `USE_BLAS64=true` ⇒
+   `@blasfunc(dgemm_)` → `dgemm_64_`, `BlasInt=Int64`, every scalar passed
+   *by reference* per the Fortran calling convention, plus two trailing
+   `size_t` hidden-string-length args (each `1`, for the two single-char
+   `transa`/`transb`) — since this is the identical library Julia's own
+   BLAS calls resolve to, binding it the same way is guaranteed to behave
+   identically to what Julia itself would compute). `ffi.rs`'s
+   `QdhtFfiHandle::apply_real`/`apply_cplx` updated to the new
+   `BlasApi::dgemm` signature (no more CBLAS layout arg — Fortran GEMM is
+   inherently column-major; `i64` dims; `u8` trans chars). **A real
+   pitfall found and worked around:** a standalone `cargo test` that
+   `dlopen`s `libblastrampoline` directly and calls `dgemm_64_` segfaults
+   — the trampoline's forwarding table is only populated by Julia's own
+   runtime startup, so a bare dlopen outside a live Julia process gets an
+   unconfigured trampoline (see the comment block in `blas.rs` where the
+   unit test would go). This is not a real-usage bug: production code
+   (`NonlinearRHS._init_rust_qdht_blas`) dlopens the *already-loaded*
+   `libblastrampoline` from inside a running Julia process, reusing its
+   live, configured instance — confirmed by running the actual gate,
+   `test/test_qdht_rust.jl` with `LUNA_USE_RUST_QDHT=1 LUNA_QDHT_BLAS=1`:
+   mul!/ldiv! unit equivalence (6 tests) and full radial-simulation
+   equivalence (2 tests) all pass at the ~1e-13 tolerance the backlog
+   asked for. Full `rust` Julia group re-verified unaffected
+   (42087/42087, `LUNA_QDHT_BLAS` still opt-in so default runs are
+   untouched). **Still open, deliberately not done here:** the ≥1.5×
+   QDHT micro-bench at n_r=256 this item's own gate also asked for,
+   before flipping `LUNA_QDHT_BLAS` to default-on — that's a timeboxed
+   perf measurement, separate from the correctness fix; until it's run,
+   leave the opt-in default as-is.
 6. Split-complex exp-linop spike (item 3b) — timeboxed Criterion-only
    experiment; only do the invasive guru-split-DFT FFTW plan work if it
    shows >1.3×, otherwise record the negative result and close.

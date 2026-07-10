@@ -38,6 +38,21 @@ NativeIneligible test earlier in the same session). See
 """
 const _LAST_STEPPER_TYPE = Ref{Any}(nothing)
 
+"""
+BACKLOG.md S1 item 1: on-disk FFTW planner-wisdom persistence for the native
+resident stepper is opt-in, default OFF. Default-off avoids two problems: (a)
+paying disk I/O + FFTW's planner-lock on every `RustNativeStepper`
+construction (relevant for parameter scans that build many short-lived
+steppers), and (b) importing wisdom before planning make plan selection —
+and therefore the adaptive step-size path, via the RK45 controller's
+near-cancellation sensitivity (see the Phase 2 gotcha in CLAUDE.md) — vary
+with whatever the on-disk file happens to contain from a prior run. Set
+`LUNA_NATIVE_FFTW_WISDOM=1` to restore persistence (import + export) for
+workloads where the accumulated wisdom is worth the tradeoff. See
+`docs/native-port/PLAN_FFTW_WISDOM_FIX.md` for the full analysis.
+"""
+_native_wisdom_enabled() = get(ENV, "LUNA_NATIVE_FFTW_WISDOM", "0") == "1"
+
 function solve_precon(f!, linop, y0, t, dt, tmax;
                     rtol=1e-6, atol=1e-10, safety=0.9, max_dt=Inf, min_dt=0, locextrap=true, norm=weaknorm,
                     kwargs...)
@@ -974,9 +989,15 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     # `Cstring`) if `cachedir()` throws; `CStr::from_ptr("").to_str()` on the
     # Rust side is `Ok("")`, and opening a file at `""` just fails the
     # best-effort import, same as a missing file.
-    native_wisdom_path::String = try
-        joinpath(Luna.Utils.cachedir(), "native_fftw_wisdom_$(Luna.Utils.FFTWthreads())threads")
-    catch
+    # Persistence is opt-in (`_native_wisdom_enabled`, default off — see its
+    # docstring above); when off, pass "" so Rust does not import anything.
+    native_wisdom_path::String = if _native_wisdom_enabled()
+        try
+            joinpath(Luna.Utils.cachedir(), "native_fftw_wisdom_$(Luna.Utils.FFTWthreads())threads")
+        catch
+            ""
+        end
+    else
         ""
     end
 
@@ -1827,7 +1848,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     # `Utils.loadFFTwisdom`/`saveFFTwisdom` pattern. Best-effort: `mkpath`
     # and the export call are both allowed to fail silently (this must never
     # throw or block returning a working stepper).
-    if !isempty(native_wisdom_path)
+    if _native_wisdom_enabled() && !isempty(native_wisdom_path)
         try
             isdir(dirname(native_wisdom_path)) || mkpath(dirname(native_wisdom_path))
             ccall((:native_export_fftw_wisdom, _LIBLUNA_RUST_RK45), Cint,

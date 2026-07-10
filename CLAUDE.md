@@ -51,9 +51,17 @@ cargo bench
 # Run a single test group (env var controls TestItemRunner tag filter)
 LUNA_TEST_GROUP=physics julia --project test/runtests.jl
 # Valid groups: physics, rust, sim-interface, sim-multimode, sim-propagation, io, fields, All (default)
+
+# Run the `rust` group as load-balanced parallel workers (max 10, LPT-scheduled
+# by test/rust_test_timings.txt so workers finish at roughly the same time)
+python3 test/parallel_rust_tests.py
 ```
 
 > Tests use `:estimate` FFTW mode to run faster; the package itself defaults to `:patient`.
+> Splitting the `rust` group across processes is safe post-`LUNA_NATIVE_FFTW_WISDOM`
+> fix (`docs/native-port/PLAN_FFTW_WISDOM_FIX.md`) — see `VANILLA_LUNA_ISSUES.md` §5
+> for the residual-count caveat (one-shared-process vs. many-processes assertion
+> counts differ by a documented, harmless amount; neither has failures).
 
 ### Python bindings
 
@@ -266,7 +274,7 @@ the `rust` group's `windows-2025-vs2026` matrix entry — see `BACKLOG.md`'s
 - **Unicode variable names**: the codebase uses `ω`, `λ`, `β`, `τ`, `ε`, etc. throughout Julia files. Enter them with `\omega<tab>`, `\lambda<tab>`, etc.
 - **Dual grid types**: `RealGrid` (carrier-resolved, uses `rfft`) vs. `EnvGrid` (envelope, uses `fft`). The `setup` and `run` functions are overloaded for each grid type.
 - **Mode-averaged vs. modal propagation**: `modes=:HE11` (mode-averaged) and `modes=1` (single-mode modal) are **not** equivalent when ionisation is active — mode-averaged treats spatial dependence of the nonlinear polarisation like Kerr, while modal projects it onto each mode.
-- **FFTW wisdom**: automatically loaded/saved by `Utils.loadFFTwisdom`/`saveFFTwisdom`. Tests disable this with `:estimate` planning mode.
+- **FFTW wisdom**: automatically loaded/saved by `Utils.loadFFTwisdom`/`saveFFTwisdom`. Tests disable this with `:estimate` planning mode. The native-port resident stepper (`RustNativeStepper`) has its own, separate wisdom cache file, gated behind `LUNA_NATIVE_FFTW_WISDOM` (default OFF — persistence is opt-in; see `docs/native-port/PLAN_FFTW_WISDOM_FIX.md` and `BACKLOG.md` S1 item 1).
 - **Precompilation run**: `src/Luna.jl` runs two `prop_capillary` calls and one `prop_gnlse` call at module load time to trigger precompilation.
 
 ## CI Test Groups

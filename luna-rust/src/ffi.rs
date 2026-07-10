@@ -61,24 +61,15 @@ impl QdhtFfiHandle {
         if let Ok(api) = crate::blas::get_blas_api() {
             // Use BLAS-3 dgemm directly on the col-major array
             self.scratch[..block].copy_from_slice(&data[..block]);
-            unsafe {
-                (api.cblas_dgemm)(
-                    crate::blas::CBLAS_COL_MAJOR,
-                    crate::blas::CBLAS_NO_TRANS,
-                    crate::blas::CBLAS_NO_TRANS,
-                    n_time as libc::c_int,
-                    n_r as libc::c_int,
-                    n_r as libc::c_int,
-                    scale,
-                    self.scratch.as_ptr(),
-                    n_time as libc::c_int,
-                    self.t_row_major.as_ptr(),
-                    n_r as libc::c_int,
-                    0.0,
-                    data.as_mut_ptr(),
-                    n_time as libc::c_int,
-                );
-            }
+            api.dgemm(
+                b'N', b'N',
+                n_time as i64, n_r as i64, n_r as i64,
+                scale,
+                &self.scratch, n_time as i64,
+                &self.t_row_major, n_r as i64,
+                0.0,
+                data, n_time as i64,
+            );
         } else {
             // Fallback to Rayon
             for s in 0..n_r {
@@ -126,24 +117,15 @@ impl QdhtFfiHandle {
             // Use BLAS-3 dgemm directly on the col-major complex array
             // Interleaved complex arrays act exactly as a 2*n_time x n_r real array.
             self.scratch[..block2].copy_from_slice(&data[..block2]);
-            unsafe {
-                (api.cblas_dgemm)(
-                    crate::blas::CBLAS_COL_MAJOR,
-                    crate::blas::CBLAS_NO_TRANS,
-                    crate::blas::CBLAS_NO_TRANS,
-                    (2 * n_time) as libc::c_int,
-                    n_r as libc::c_int,
-                    n_r as libc::c_int,
-                    scale,
-                    self.scratch.as_ptr(),
-                    (2 * n_time) as libc::c_int,
-                    self.t_row_major.as_ptr(),
-                    n_r as libc::c_int,
-                    0.0,
-                    data.as_mut_ptr(),
-                    (2 * n_time) as libc::c_int,
-                );
-            }
+            api.dgemm(
+                b'N', b'N',
+                (2 * n_time) as i64, n_r as i64, n_r as i64,
+                scale,
+                &self.scratch, (2 * n_time) as i64,
+                &self.t_row_major, n_r as i64,
+                0.0,
+                data, (2 * n_time) as i64,
+            );
         } else {
             // Fallback to Rayon
             let block = n_r * n_time;

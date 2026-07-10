@@ -3,29 +3,42 @@ use std::ffi::CString;
 use std::ffi::CStr;
 use std::path::Path;
 use std::sync::OnceLock;
-use libc::{c_int, c_double, c_void};
+use libc::{c_double, c_void};
 
-pub const CBLAS_ROW_MAJOR: c_int = 101;
-pub const CBLAS_COL_MAJOR: c_int = 102;
-pub const CBLAS_NO_TRANS: c_int = 111;
-pub const CBLAS_TRANS: c_int = 112;
-pub const CBLAS_CONJ_TRANS: c_int = 113;
-
-type CblasDgemmFn = unsafe extern "C" fn(
-    layout: c_int,
-    trans_a: c_int,
-    trans_b: c_int,
-    m: c_int,
-    n: c_int,
-    k: c_int,
-    alpha: c_double,
+/// BACKLOG.md S1 item 5: `libblastrampoline`'s CBLAS-name entry point
+/// (`cblas_dgemm`) is a dispatch stub that requires Julia's own ILP64
+/// Fortran-symbol registration to route anywhere — calling it directly
+/// errors ("no BLAS/LAPACK library loaded for cblas_dgemm()") instead of
+/// computing anything. The fix is to bind the plain Fortran BLAS entry
+/// point instead, exactly the way Julia's own `LinearAlgebra.BLAS.gemm!`
+/// does it (`stdlib/LinearAlgebra/src/blas.jl`): `@blasfunc(dgemm_)`
+/// resolves to `dgemm_64_` because Julia is built with `USE_BLAS64=true`
+/// (`BlasInt = Int64`); every scalar is passed *by reference* (a Fortran
+/// calling-convention requirement, not a choice), and two trailing `size_t`
+/// "hidden string length" arguments follow the argument list — one per
+/// `CHARACTER` argument (`transa`, `transb`), each hardcoded to `1` since
+/// both are always single ASCII chars ('N'/'T'/'C'). This is the same
+/// `libblastrampoline` → OpenBLAS64 symbol Julia's own BLAS calls resolve
+/// to, so it is guaranteed to exist and behave identically to what Julia
+/// itself would compute.
+///
+/// SUBROUTINE DGEMM(TRANSA,TRANSB,M,N,K,ALPHA,A,LDA,B,LDB,BETA,C,LDC)
+type Dgemm64Fn = unsafe extern "C" fn(
+    transa: *const u8,
+    transb: *const u8,
+    m: *const i64,
+    n: *const i64,
+    k: *const i64,
+    alpha: *const c_double,
     a: *const c_double,
-    lda: c_int,
+    lda: *const i64,
     b: *const c_double,
-    ldb: c_int,
-    beta: c_double,
+    ldb: *const i64,
+    beta: *const c_double,
     c: *mut c_double,
-    ldc: c_int,
+    ldc: *const i64,
+    len_transa: usize,
+    len_transb: usize,
 );
 
 struct Library {
@@ -91,7 +104,45 @@ impl Library {
 
 pub struct BlasApi {
     _lib: Library,
-    pub cblas_dgemm: CblasDgemmFn,
+    dgemm_64: Dgemm64Fn,
+}
+
+impl BlasApi {
+    /// Column-major `C := alpha*op(A)*op(B) + beta*C`, `trans ∈ {b'N', b'T', b'C'}`.
+    /// `A` is `m×k` (or `k×m` if transposed), `B` is `k×n` (or `n×k`), `C` is `m×n`;
+    /// `lda`/`ldb`/`ldc` are the respective leading dimensions (column strides).
+    /// Callers must ensure the slices are large enough for `op(A)`/`op(B)`/`C`'s
+    /// shapes given the leading dimensions passed in.
+    #[allow(clippy::too_many_arguments)]
+    pub fn dgemm(
+        &self,
+        trans_a: u8,
+        trans_b: u8,
+        m: i64,
+        n: i64,
+        k: i64,
+        alpha: f64,
+        a: &[f64],
+        lda: i64,
+        b: &[f64],
+        ldb: i64,
+        beta: f64,
+        c: &mut [f64],
+        ldc: i64,
+    ) {
+        unsafe {
+            (self.dgemm_64)(
+                &trans_a, &trans_b,
+                &m, &n, &k,
+                &alpha,
+                a.as_ptr(), &lda,
+                b.as_ptr(), &ldb,
+                &beta,
+                c.as_mut_ptr(), &ldc,
+                1, 1,
+            );
+        }
+    }
 }
 
 static BLAS_API: OnceLock<BlasApi> = OnceLock::new();
@@ -104,11 +155,11 @@ pub fn init_blas_api(path: &Path) -> Result<(), String> {
     }
 
     let lib = unsafe { Library::load(path)? };
-    let cblas_dgemm_ptr = unsafe { lib.get("cblas_dgemm")? };
+    let dgemm_64_ptr = unsafe { lib.get("dgemm_64_")? };
 
     let api = BlasApi {
         _lib: lib,
-        cblas_dgemm: unsafe { std::mem::transmute(cblas_dgemm_ptr) },
+        dgemm_64: unsafe { std::mem::transmute(dgemm_64_ptr) },
     };
 
     BLAS_API.set(api).map_err(|_| "BLAS API already initialized".to_string())?;
@@ -119,3 +170,20 @@ pub fn init_blas_api(path: &Path) -> Result<(), String> {
 pub fn get_blas_api() -> Result<&'static BlasApi, String> {
     BLAS_API.get().ok_or_else(|| "BLAS API not initialized".to_string())
 }
+
+// Deliberately no standalone `#[cfg(test)]` unit test in this file: a bare
+// `cargo test` process that `dlopen`s `libblastrampoline` directly segfaults
+// on the very first `dgemm_64_` call, because the trampoline's forwarding
+// table is only populated by Julia's own runtime startup (`LinearAlgebra`
+// registers the default OpenBLAS64 provider) — dlopen-ing the shared object
+// outside a running Julia process gets an *unconfigured* trampoline whose
+// symbol resolves to a jump through a null/garbage slot. This was confirmed
+// empirically while developing this fix (a naive `#[test]` doing exactly
+// that crashed `cargo test` with SIGSEGV). The only place `dgemm_64_` can be
+// validly exercised is inside a live Julia process where the trampoline is
+// already configured — which is also exactly how this code is actually
+// used in production (`NonlinearRHS._init_rust_qdht_blas` dlopens the
+// *already-loaded* `libblastrampoline` via `Libdl.dlpath(Libdl.dlopen(...))`
+// from within Julia, reusing its live, configured instance). The real gate
+// is `test/test_qdht_rust.jl` run with `LUNA_USE_RUST_QDHT=1
+// LUNA_QDHT_BLAS=1` (see BACKLOG.md S1 item 5).
