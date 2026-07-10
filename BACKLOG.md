@@ -960,7 +960,8 @@ exists (Phase G.3).*
    before flipping `LUNA_QDHT_BLAS` to default-on — that's a timeboxed
    perf measurement, separate from the correctness fix; until it's run,
    leave the opt-in default as-is.
-6. 🟡 **Spike run 2026-07-10.** Split-complex exp-linop spike (item 3b) —
+6. 🟢 **Parked 2026-07-10 (negative ROI, revisit after current backlog).**
+   Split-complex exp-linop spike (item 3b) —
    `luna-rust/benches/exp_linop_layout_bench.rs` (Criterion-only, no
    production code touched). Two shapes benchmarked at n=2000/8000/16000
    (target-cpu=native, matching `.cargo/config.toml`):
@@ -1022,8 +1023,21 @@ exists (Phase G.3).*
      change materially across geometry — FFT cost dominates `step()`
      proportionally regardless, so this isn't an artifact of the one
      default-benchmark workload.
-   - Phases 2-4 (per-geometry migration, FFI boundary shim, cleanup) —
-     not started.
+   - **Final call (2026-07-10): stop here.** Phases 1-4 will not be built
+     given the confirmed ~1% end-to-end ceiling — not worth a multi-week
+     rewrite of ~30 buffers/8 near-duplicate RHS functions in a
+     numerics-critical stepper. Phase 0 (`fftw.rs` split-array bindings)
+     stays committed as harmless, already-tested infrastructure in case a
+     future kernel needs split-DFT plans for an unrelated reason. Parked,
+     not deleted — **explicitly flagged for reconsideration once the rest
+     of the current BACKLOG.md work is finished**, in case a future
+     workload profile (e.g. a kernel that isn't FFT-dominated) changes the
+     ceiling. Full writeup, including the cross-workload measurements, in
+     `docs/native-port/PLAN_S1_6_SOA_CONVERSION.md`.
+   - Effort redirected to S2 (threading the native RHS) and S1.4 (SIMD
+     Kerr/window broadcasts) instead — both target the FFT/RHS-dominated
+     cost this investigation surfaced, which is where the real headroom
+     appears to be, rather than the small exp-linop multiply.
 
 ### 🟡 S2 — Threading the native RHS (suggestion 2)
 *Not started. Depends on S1.4 (dispatch plumbing).*

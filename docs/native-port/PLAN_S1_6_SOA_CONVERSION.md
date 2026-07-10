@@ -1,9 +1,12 @@
 # Plan: BACKLOG.md S1 item 6 — full SoA conversion of the native-port resident field
 
-Status: **Phase 0 done (2026-07-10). Phase 1 halted before implementation,
-pending re-confirmation — see "Ceiling measurement" section below.** See
-BACKLOG.md's S1 item 6 entry for the live status line; this file is the
-durable plan (survives a context reset), not the status tracker.
+Status: **Parked 2026-07-10 (negative ROI). Phase 0 stays committed as
+infrastructure; Phases 1-4 will not be built.** Explicitly flagged for
+reconsideration once the rest of the current BACKLOG.md work is finished
+— see "Ceiling measurement" below for why, and revisit if a future
+workload profile changes the picture. See BACKLOG.md's S1 item 6 entry
+for the live status line; this file is the durable writeup (survives a
+context reset), not the status tracker.
 
 ## Ceiling measurement (2026-07-10) — read this before resuming Phase 1
 
