@@ -72,21 +72,5 @@ using TestItems
             println("Radial full-solve rel: ", rel_solve)
             @test rel_solve < 1e-6
         end
-
-        @testset "n_threads=1 vs n_threads=4 bit-identical (BACKLOG.md S2)" begin
-            # The FFT-per-column loops (rhs_radial Steps 1/6) parallelized
-            # under S2 write to disjoint column slices with no cross-column
-            # reduction — so unlike typical parallel-code equivalence, this
-            # must be an *exact* match, not within tolerance. A mismatch here
-            # is a real bug (an assumed-disjoint slice aliased, or a chunk
-            # size miscalculation), never floating-point noise to relax.
-            s1 = RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
-                                    max_dt=dt, min_dt=dt, native_threads=1)
-            s4 = RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
-                                    max_dt=dt, min_dt=dt, native_threads=4)
-            solve(s1, L)
-            solve(s4, L)
-            @test s1.yn == s4.yn
-        end
     end
 end

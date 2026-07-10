@@ -1043,6 +1043,38 @@ exists (Phase G.3).*
 *Started 2026-07-10. Radial geometry only this pass (items 1-2); modal
 (item 3) and free-space (item 4) left as separate, not-started follow-ups
 — see `docs/native-port/PLAN_S2_THREADING.md` for the full phased plan.*
+
+**Phase 3 REVERTED 2026-07-10 — unsound, do not re-land as-is.** After
+Phase 3 was committed/pushed (`d15a25c`), a post-hoc wall-clock benchmark
+(`bench_threads.jl`-style: `n_threads=1`→4 at N=32 then N=128, plasma
+enabled throughout, same process) surfaced an intermittent segfault
+inside `PptIonizationRate::rate`, triggered on a *later*, unrelated,
+purely-sequential (`n_threads=1`) stepper construction — only when an
+*earlier* stepper construction in the same process used `n_threads>1`.
+Root-caused by isolation: replacing the earlier threaded call with a
+Kerr-only config (no plasma at all, so `apply_plasma_radial`'s parallel
+branch is never exercised — only the FFT-loop `par_chunks_mut` seam is)
+made the later sequential plasma call succeed cleanly. This implicates
+`apply_plasma_radial`'s parallel branch (the `ReadOnlyPtr`/
+`plasma_rate_at` free-function pattern) as the corruption source, not the
+FFT-loop `unsafe impl Sync for ComplexFft1d/RealFft1d`. The "crash occurs
+later, in unrelated code, after an earlier concurrent call" signature is
+classic heap corruption (an out-of-bounds write during the `n_threads=4`
+plasma call corrupts the allocator's view of nearby memory; the next,
+unrelated allocation that lands there — e.g. a fresh `PptIonizationRate`'s
+spline LUT — reads garbage and crashes). The bit-identical
+`n_threads=1`-vs-4 unit tests added alongside Phase 3 did NOT catch this:
+they exercise one stepper per test file/process, never the
+"`n_threads=4` construction, then a *different*, later, sequential
+construction in the same process" pattern that surfaced the corruption —
+a real gap in the verification performed before the original push. Full
+commit reverted (`fftw.rs`'s `unsafe impl Sync`, `native.rs`'s
+`ReadOnlyPtr`/`plasma_rate_at`/parallel FFT-and-plasma branches,
+`RK45.jl`'s `native_threads` kwarg, both bit-identical tests) pending a
+safe re-design — e.g. giving each rayon worker its own scratch/FFTW
+handle instead of sharing one plan/pointer set across threads, verified
+under ASAN/valgrind rather than just bit-identical single-process tests,
+before re-attempting item 2.
 1. 🟢 **Done 2026-07-10.** `native_set_threads(handle, n)` FFI, wired from
    `Threads.nthreads()`, default 1 (bit-identical to today — verified via
    full 7-group gate, purely additive plumbing, `n_threads` not yet read

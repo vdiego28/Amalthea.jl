@@ -1,9 +1,18 @@
 # Plan: BACKLOG.md S2 — Threading the native RHS
 
 Status: **Phase 1 done (2026-07-10). Phase 2 (measurement) done — result
-justifies proceeding. Phase 3 (thread the safe seams) next.** See
-BACKLOG.md's S2 entry for the live status line; this file is the durable
-plan (survives a context reset), not the status tracker.
+justified proceeding. Phase 3 was implemented, committed, pushed, then
+REVERTED (2026-07-10) after a post-push wall-clock benchmark surfaced an
+intermittent segfault root-caused to `apply_plasma_radial`'s parallel
+branch (see BACKLOG.md's S2 entry for the full postmortem).** A re-attempt
+needs a safe redesign (e.g. per-worker scratch/FFTW handles instead of
+shared-pointer/shared-plan patterns) verified under ASAN/valgrind, not
+just bit-identical single-process unit tests — those tests passed and
+still missed this bug, because they never exercised "one stepper
+constructed with n_threads>1, then a *different*, later, sequential
+stepper in the same process," which is the pattern that reproduced the
+corruption. See BACKLOG.md's S2 entry for the live status line; this file
+is the durable plan (survives a context reset), not the status tracker.
 
 ## Context
 

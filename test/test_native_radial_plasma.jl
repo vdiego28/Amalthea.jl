@@ -149,26 +149,5 @@ using TestItems
             @test rel_native_vs_jl < 1e-6
             @test rel_native_vs_noplasma > 1e-6
         end
-
-        @testset "n_threads=1 vs n_threads=4 bit-identical (BACKLOG.md S2)" begin
-            # Both the FFT-per-column loops AND apply_plasma_radial's
-            # per-column loop are parallelized under S2 — this is the case
-            # that actually exercises the plasma seam (test_native_radial.jl's
-            # equivalent testset only covers the Kerr-only FFT seam). Same
-            # disjoint-writes argument: must be exact, not within tolerance.
-            s1 = withenv("LUNA_USE_RUST_NATIVE" => "1",
-                         "LUNA_USE_RUST_IONISATION" => "1") do
-                RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
-                                   max_dt=dt, min_dt=dt, native_threads=1)
-            end
-            s4 = withenv("LUNA_USE_RUST_NATIVE" => "1",
-                         "LUNA_USE_RUST_IONISATION" => "1") do
-                RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
-                                   max_dt=dt, min_dt=dt, native_threads=4)
-            end
-            solve(s1, L)
-            solve(s4, L)
-            @test s1.yn == s4.yn
-        end
     end
 end

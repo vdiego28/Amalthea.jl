@@ -937,8 +937,7 @@ end
 
 function RustNativeStepper(f!, linop, y0, t, dt;
                             rtol=1e-6, atol=1e-10, safety=0.9, max_dt=Inf, min_dt=0,
-                            locextrap=true, norm=weaknorm, flength=Inf,
-                            native_threads::Integer=Threads.nthreads())
+                            locextrap=true, norm=weaknorm, flength=Inf)
     n = length(y0)
     is_zdep_mode_avg = linop isa Luna.Capillary.ZDepLinopMarcatili
     is_zdep_free_linop = linop isa Luna.LinearOps.ZDepLinopFree
@@ -1043,14 +1042,12 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     check_ffi(rc, "native_set_fftw_plans")
 
     # BACKLOG.md S2 item 1: rayon thread count for later-phase parallel RHS
-    # seams. Defaults to `Threads.nthreads()` (Julia's own thread count) —
-    # automatic, not something users set separately — but can be overridden
-    # via `native_threads` (a Rust-side-only rayon thread count, independent
-    # of Julia's own threading model) for equivalence testing without
-    # restarting Julia. `n<=1` is sequential on the Rust side (the pre-S2
-    # default), so single-threaded Julia sessions see no behavior change.
+    # seams. `Threads.nthreads()` is Julia's own thread count — automatic,
+    # not something users set separately. `n<=1` is sequential on the Rust
+    # side (the pre-S2 default), so single-threaded Julia sessions see no
+    # behavior change.
     rc = ccall((:native_set_threads, _LIBLUNA_RUST_RK45), Cint,
-          (Ptr{Cvoid}, Csize_t), handle.ptr, native_threads)
+          (Ptr{Cvoid}, Csize_t), handle.ptr, Threads.nthreads())
     check_ffi(rc, "native_set_threads")
 
     # Set parameters if mode-averaged
