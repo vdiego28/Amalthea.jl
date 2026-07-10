@@ -5,7 +5,7 @@ import StaticArrays: SVector
 import Cubature: hquadrature
 using Reexport
 @reexport using Luna.Modes
-import Luna: Maths, Grid
+import Luna: Maths, Grid, Config
 import Luna.PhysData: c, ε_0, μ_0, ref_index_fun, roomtemp, densityspline, sellmeier_gas
 import Luna.Modes: AbstractMode, dimlimits, neff, field, Aeff, N, modeinfo
 import Luna.LinearOps: make_linop, conj_clamp, neff_grid, neff_β_grid
@@ -458,7 +458,7 @@ mutable struct RustMarcatiliHandle
 end
 
 function _make_rust_marcatili_handle(nwg_re_s, nwg_im_s, model_code::Cuint, loss_on::Cuint)
-    get(ENV, "LUNA_USE_RUST_DISPERSION", "0") == "1" || return nothing
+    Config.backend_config().dispersion || return nothing
     if !isfile(_LIBLUNA_RUST_CAP)
         @warn "luna-rust library not found at $(_LIBLUNA_RUST_CAP) — MarcatiliMode neff_β_grid using Julia."
         return nothing

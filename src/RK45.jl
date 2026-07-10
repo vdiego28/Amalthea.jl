@@ -51,14 +51,15 @@ with whatever the on-disk file happens to contain from a prior run. Set
 workloads where the accumulated wisdom is worth the tradeoff. See
 `docs/native-port/PLAN_FFTW_WISDOM_FIX.md` for the full analysis.
 """
-_native_wisdom_enabled() = get(ENV, "LUNA_NATIVE_FFTW_WISDOM", "0") == "1"
+_native_wisdom_enabled() = Luna.Config.backend_config().native_wisdom
 
 function solve_precon(f!, linop, y0, t, dt, tmax;
                     rtol=1e-6, atol=1e-10, safety=0.9, max_dt=Inf, min_dt=0, locextrap=true, norm=weaknorm,
                     kwargs...)
-    use_rust = get(ENV, "LUNA_USE_RUST_STEPPER", "0") == "1"
+    cfg = Luna.Config.backend_config()
+    use_rust = cfg.stepper
     # Phase 8: native is the default (LUNA_USE_RUST_NATIVE=0 opts back out).
-    use_native = get(ENV, "LUNA_USE_RUST_NATIVE", "1") == "1"
+    use_native = cfg.native
     # Constant linop (Phases 1-6) or the narrow z-dependent case Phase 7 supports
     # (graded-core, constant-radius MarcatiliMode — see Capillary.jl / MATH.md
     # §3.5). Any other z-dependent linop (a bare `Function`, e.g. multimode or
@@ -708,7 +709,7 @@ function step!(s::RustPreconStepper)
             cb_ptr,
             result_ref
         )
-        rc == 0 || error("precon_step_ffi returned error code $rc")
+        check_ffi(rc, "precon_step_ffi")
     end
     res = result_ref[]
     s.ok      = res.ok != 0
@@ -769,6 +770,39 @@ struct NativeIneligible <: Exception
     msg::String
 end
 Base.showerror(io::IO, e::NativeIneligible) = print(io, "NativeIneligible: ", e.msg)
+
+"""
+    check_ffi(rc, what; ineligible=false)
+
+Check a Rust FFI call's `Cint` return code, `0` meaning success (the
+universal convention across every `native_*`/`precon_step_ffi`/
+`get_ks_stage` entry point). On a nonzero `rc`: `ineligible=true` throws
+[`NativeIneligible`](@ref) (the calling config legitimately falls back to
+the Julia stepper — used where a Rust-side failure genuinely means "this
+input combination isn't wired", e.g. a plasma/Raman setter rejecting a
+combination Julia's own eligibility checks couldn't already rule out); the
+default `ineligible=false` raises a hard `error` (an invariant violation
+that should never happen if the surrounding Julia code is correct — a null
+pointer, a length mismatch, a stale handle — and must not be silently
+swallowed as ineligibility, see `NativeIneligible`'s own docstring).
+
+Centralizes what was 27 duplicated `rc == 0 || error(...)`/
+`rc == 0 || throw(NativeIneligible(...))` call sites (BACKLOG.md S4 item 2;
+suggestion 7's "FFI error enum"). The Rust side's return codes are still a
+plain `0 = success` convention today — the ineligible-vs-bug classification
+is inherently a call-site policy decision (the same numeric nonzero code
+means "ineligible" at one call site and "bug" at another, depending on what
+Julia has already validated before making the call), so it lives here as an
+explicit keyword rather than being encoded in the numeric code itself.
+"""
+function check_ffi(rc, what; ineligible::Bool=false)
+    rc == 0 && return nothing
+    if ineligible
+        throw(NativeIneligible("$what returned $rc"))
+    else
+        error("$what failed: $rc")
+    end
+end
 
 """
     _check_density_zindependent(densityfun, flength)
@@ -892,7 +926,7 @@ attempting GPU init for an ineligible config where it would return a
 confusing null pointer instead of the real reason.
 """
 function _gpu_native_eligible(f!, linop)
-    get(ENV, "LUNA_USE_RUST_CUDA_NATIVE", "0") == "1" || return false
+    Luna.Config.backend_config().cuda_native || return false
     f! isa Luna.NonlinearRHS.TransModeAvg || return false
     linop isa Array{ComplexF64} || return false
     f!.grid isa Luna.Grid.RealGrid || return false
@@ -1005,15 +1039,15 @@ function RustNativeStepper(f!, linop, y0, t, dt;
           (Ptr{Cvoid}, Cstring, Csize_t, Csize_t, Cint, Cuint, Cstring),
           handle.ptr, lib_path, n_time, n_time_over, is_real_grid ? 1 : 0, 64,
           native_wisdom_path)
-    rc == 0 || error("native_set_fftw_plans failed")
+    check_ffi(rc, "native_set_fftw_plans")
 
     # Set parameters if mode-averaged
     if is_mode_avg
         norm_func = f!.norm!
-        pre = getfield(norm_func, :pre)
+        pre = Luna.NonlinearRHS.norm_pre(norm_func)
+        bfun! = Luna.NonlinearRHS.norm_βfun(norm_func)
 
-        if hasfield(typeof(norm_func), :βfun!)
-            bfun! = getfield(norm_func, :βfun!)
+        if !isnothing(bfun!)
             beta = zeros(Float64, length(pre))
             bfun!(beta, 0.0)
         else
@@ -1027,7 +1061,6 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         is_zdep_mode_avg || _check_density_zindependent(f!.densityfun, flength)
         density = f!.densityfun(0.0)
         is_mixture = density isa AbstractVector
-        γ3 = 0.0
 
         if is_mixture
             # Gas mixtures (Phase F item 4): `densityfun(z)` returns one
@@ -1054,20 +1087,11 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                           "single plain Kerr response — only Kerr is wired for the native " *
                           "mixture path (Phase F item 4); plasma/Raman mixtures are out of " *
                           "scope."))
-                γ3i = getfield(respi[1], fieldnames(typeof(respi[1]))[1])
+                γ3i = Luna.Nonlinear.kerr_γ3((respi[1],))
                 kerr_fac += ρi * Luna.PhysData.ε_0 * γ3i
             end
         else
-            # Find Kerr response and extract γ3
-            for r in f!.resp
-                for fld in fieldnames(typeof(r))
-                    if occursin("γ3", string(fld))
-                        γ3 = getfield(r, fld)
-                        break
-                    end
-                end
-                γ3 != 0.0 && break
-            end
+            γ3 = Luna.Nonlinear.kerr_γ3(f!.resp)
             kerr_fac = density * Luna.PhysData.ε_0 * γ3
         end
 
@@ -1083,7 +1107,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             towin, owin, sidx,
             real.(pre), imag.(pre), beta,
             kerr_fac, nlscale, sqrt_aeff)
-        rc == 0 || error("native_set_mode_avg_params failed: $rc")
+        check_ffi(rc, "native_set_mode_avg_params")
 
         # Phase I item 1: wire modified shot-noise. `f!.Et_noise` is a constant
         # buffer of length n_time_over (Float64 for RealGrid, ComplexF64 for
@@ -1095,12 +1119,12 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                 rc = ccall((:native_set_mode_avg_noise, _LIBLUNA_RUST_RK45), Cint,
                     (Ptr{Cvoid}, Ptr{Float64}, Csize_t),
                     handle.ptr, f!.Et_noise, length(f!.Et_noise))
-                rc == 0 || error("native_set_mode_avg_noise failed: $rc")
+                check_ffi(rc, "native_set_mode_avg_noise")
             else
                 rc = ccall((:native_set_mode_avg_noise_cplx, _LIBLUNA_RUST_RK45), Cint,
                     (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Csize_t),
                     handle.ptr, real.(f!.Et_noise), imag.(f!.Et_noise), length(f!.Et_noise))
-                rc == 0 || error("native_set_mode_avg_noise_cplx failed: $rc")
+                check_ffi(rc, "native_set_mode_avg_noise_cplx")
             end
         end
 
@@ -1130,7 +1154,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                         (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64, Float64),
                         handle.ptr, irf.rust_handle.ptr,
                         r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt, density)
-                    rc == 0 || throw(NativeIneligible("native_set_plasma_params returned $rc"))
+                    check_ffi(rc, "native_set_plasma_params"; ineligible=true)
                 elseif irf isa Luna.Ionisation.IonRateADK &&
                         !isnothing(irf.rust_handle) &&
                         irf.rust_handle.ptr != C_NULL
@@ -1140,7 +1164,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                         (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64, Float64),
                         handle.ptr, irf.rust_handle.ptr,
                         r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt, density)
-                    rc == 0 || throw(NativeIneligible("native_set_plasma_params_adk returned $rc"))
+                    check_ffi(rc, "native_set_plasma_params_adk"; ineligible=true)
                 else
                     throw(NativeIneligible("plasma detected but no Rust ionisation handle is " *
                           "available (library missing, or both LUNA_USE_RUST_IONISATION and " *
@@ -1193,7 +1217,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                          Float64, Float64, Csize_t, Float64),
                         handle.ptr, rr.ωi, rr.Ai, rr.Γi, rr.γi, Csize_t(length(rr.ωi)),
                         rr.scale, r.dt, Csize_t(length(rr.t)), raman_density)
-                    rc == 0 || throw(NativeIneligible("native_set_raman_fft_params returned $rc"))
+                    check_ffi(rc, "native_set_raman_fft_params"; ineligible=true)
                     break  # only one Raman response expected
                 end
                 Rs = rr isa Luna.Raman.CombinedRamanResponse ?
@@ -1212,7 +1236,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                     (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Csize_t, Float64, Float64, Cint),
                     handle.ptr, omegas, gammas, couplings, Csize_t(length(omegas)),
                     r.dt, raman_density, thg_flag)
-                rc == 0 || throw(NativeIneligible("native_set_raman_params returned $rc"))
+                check_ffi(rc, "native_set_raman_params"; ineligible=true)
                 break  # only one Raman response expected
             end
         end
@@ -1277,7 +1301,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             w.gamma, w.nwg_re, w.nwg_im, w.omega,
             model_code, loss_code, eps0_gamma3,
             w.ω0, w.γ0, w.dγ0, w.nwg0_re, w.nwg0_im, w.dnwg0_re, w.dnwg0_im)
-        rc == 0 || error("native_set_zdep_mode_avg_params failed: $rc")
+        check_ffi(rc, "native_set_zdep_mode_avg_params")
     end
 
     # Set parameters if radial (TransRadial) — Phase 3 gate: scalar Kerr only,
@@ -1323,21 +1347,11 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                           "not a single plain Kerr response — only Kerr is wired for the " *
                           "native radial mixture path (Phase I item 4); plasma/Raman " *
                           "mixtures are out of scope."))
-                γ3i = getfield(respi[1], fieldnames(typeof(respi[1]))[1])
+                γ3i = Luna.Nonlinear.kerr_γ3((respi[1],))
                 kerr_fac += ρi * Luna.PhysData.ε_0 * γ3i
             end
         else
-            # Find Kerr response and extract γ3 (same pattern as mode-averaged above).
-            γ3 = 0.0
-            for r in f!.resp
-                for fld in fieldnames(typeof(r))
-                    if occursin("γ3", string(fld))
-                        γ3 = getfield(r, fld)
-                        break
-                    end
-                end
-                γ3 != 0.0 && break
-            end
+            γ3 = Luna.Nonlinear.kerr_γ3(f!.resp)
             # Phase D.2 allows Kerr + a plasma response; Phase D.4 (BACKLOG.md)
             # adds Raman (`RamanPolarField`, RealGrid, either `thg` value since
             # Phase F.1 — same eligibility criteria as the mode-averaged Raman
@@ -1377,7 +1391,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             T_mat, scale_fwd, scale_inv,
             towin, kerr_fac,
             real.(M), imag.(M))
-        rc == 0 || error("native_set_radial_params failed: $rc")
+        check_ffi(rc, "native_set_radial_params")
 
         # Phase I item 1: wire modified shot-noise. `f!.Et_noise` is
         # column-major `(n_time_over, n_r)` (Float64 for RealGrid, ComplexF64
@@ -1388,12 +1402,12 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                 rc = ccall((:native_set_radial_noise, _LIBLUNA_RUST_RK45), Cint,
                     (Ptr{Cvoid}, Ptr{Float64}, Csize_t),
                     handle.ptr, f!.Et_noise, length(f!.Et_noise))
-                rc == 0 || error("native_set_radial_noise failed: $rc")
+                check_ffi(rc, "native_set_radial_noise")
             else
                 rc = ccall((:native_set_radial_noise_cplx, _LIBLUNA_RUST_RK45), Cint,
                     (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Csize_t),
                     handle.ptr, real.(f!.Et_noise), imag.(f!.Et_noise), length(f!.Et_noise))
-                rc == 0 || error("native_set_radial_noise_cplx failed: $rc")
+                check_ffi(rc, "native_set_radial_noise_cplx")
             end
         end
 
@@ -1412,7 +1426,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                         (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64, Float64),
                         handle.ptr, irf.rust_handle.ptr,
                         r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt, density)
-                    rc == 0 || throw(NativeIneligible("native_set_plasma_params returned $rc"))
+                    check_ffi(rc, "native_set_plasma_params"; ineligible=true)
                 elseif irf isa Luna.Ionisation.IonRateADK &&
                         !isnothing(irf.rust_handle) &&
                         irf.rust_handle.ptr != C_NULL
@@ -1422,7 +1436,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                         (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64, Float64),
                         handle.ptr, irf.rust_handle.ptr,
                         r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt, density)
-                    rc == 0 || throw(NativeIneligible("native_set_plasma_params_adk returned $rc"))
+                    check_ffi(rc, "native_set_plasma_params_adk"; ineligible=true)
                 else
                     throw(NativeIneligible("plasma detected but no Rust ionisation handle is " *
                           "available (library missing, or both LUNA_USE_RUST_IONISATION and " *
@@ -1459,7 +1473,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                     (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Csize_t, Float64, Float64, Cint),
                     handle.ptr, omegas, gammas, couplings, Csize_t(length(omegas)),
                     r.dt, raman_density, Cint(r.thg))
-                rc == 0 || throw(NativeIneligible("native_set_raman_params returned $rc"))
+                check_ffi(rc, "native_set_raman_params"; ineligible=true)
                 break  # only one Raman response expected
             end
         end
@@ -1531,17 +1545,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
 
         towin = f!.grid.towin
 
-        # Find Kerr response and extract γ3 (same pattern as mode-averaged/radial above).
-        γ3 = 0.0
-        for r in f!.resp
-            for fld in fieldnames(typeof(r))
-                if occursin("γ3", string(fld))
-                    γ3 = getfield(r, fld)
-                    break
-                end
-            end
-            γ3 != 0.0 && break
-        end
+        γ3 = Luna.Nonlinear.kerr_γ3(f!.resp)
         # Phase 5 gate is Kerr-only; Phase D.4 (BACKLOG.md) adds Raman
         # (RealGrid, npol=1, either `thg` value since Phase F.1 — same
         # per-node scalar-field scope as Kerr here) alongside it. Any other
@@ -1595,7 +1599,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             a, unm, invsqrtn, order, kind_code, phi, UInt8(f!.full), pol_select,
             towin, kerr_fac, real.(nlfac), imag.(nlfac),
             lib_path, f!.rtol, f!.atol, Csize_t(f!.mfcn))
-        rc == 0 || error("native_set_modal_params failed: $rc")
+        check_ffi(rc, "native_set_modal_params")
 
         # Wire the z-dependent linop (tapered radius) — Phase E.2. Must come
         # after `native_set_modal_params` (reads back its `modal_inv_sqrt_n`
@@ -1616,7 +1620,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                 vec(w.eco), vec(w.vn_re), vec(w.vn_im),
                 w.ω0, Csize_t(w.ref_mode),
                 w.eco0, w.deco0, w.v0_re, w.v0_im, w.dv0_re, w.dv0_im)
-            rc == 0 || throw(NativeIneligible("native_set_modal_zdep_params returned $rc"))
+            check_ffi(rc, "native_set_modal_zdep_params"; ineligible=true)
         end
 
         # Wire Raman if present and eligible — Phase D.4 (BACKLOG.md), both
@@ -1647,7 +1651,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                     (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Csize_t, Float64, Float64, Cint),
                     handle.ptr, omegas, gammas, couplings, Csize_t(length(omegas)),
                     r.dt, raman_density, Cint(r.thg))
-                rc == 0 || throw(NativeIneligible("native_set_raman_params returned $rc"))
+                check_ffi(rc, "native_set_raman_params"; ineligible=true)
                 break  # only one Raman response expected
             end
         end
@@ -1685,16 +1689,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
 
         towin = f!.grid.towin
 
-        γ3 = 0.0
-        for r in f!.resp
-            for fld in fieldnames(typeof(r))
-                if occursin("γ3", string(fld))
-                    γ3 = getfield(r, fld)
-                    break
-                end
-            end
-            γ3 != 0.0 && break
-        end
+        γ3 = Luna.Nonlinear.kerr_γ3(f!.resp)
 
         if is_real_grid
             for r in f!.resp
@@ -1753,7 +1748,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             handle.ptr, n_time, n_time_over, n_y, n_x, Cuint(64),
             towin, kerr_fac,
             real.(M), imag.(M))
-        rc == 0 || error("native_set_free_params failed: $rc")
+        check_ffi(rc, "native_set_free_params")
 
         if is_zdep_free
             w = linop
@@ -1767,7 +1762,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                 Csize_t(length(w.dspl_x)), w.dspl_x, w.dspl_y, w.dspl_d,
                 w.gamma, w.omega, ωwin, w.kperp2, UInt8.(w.sidx),
                 eps0_gamma3, w.ω0, w.γ0, w.dγ0)
-            rc == 0 || throw(NativeIneligible("native_set_free_zdep_params returned $rc"))
+            check_ffi(rc, "native_set_free_zdep_params"; ineligible=true)
         end
 
         # Wire plasma if present and a Rust ionisation handle is available —
@@ -1786,7 +1781,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                             (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64, Float64),
                             handle.ptr, irf.rust_handle.ptr,
                             r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt, density)
-                        rc == 0 || throw(NativeIneligible("native_set_plasma_params returned $rc"))
+                        check_ffi(rc, "native_set_plasma_params"; ineligible=true)
                     elseif irf isa Luna.Ionisation.IonRateADK &&
                             !isnothing(irf.rust_handle) &&
                             irf.rust_handle.ptr != C_NULL
@@ -1794,7 +1789,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                             (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64, Float64),
                             handle.ptr, irf.rust_handle.ptr,
                             r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt, density)
-                        rc == 0 || throw(NativeIneligible("native_set_plasma_params_adk returned $rc"))
+                        check_ffi(rc, "native_set_plasma_params_adk"; ineligible=true)
                     else
                         throw(NativeIneligible("plasma detected but no Rust ionisation handle is " *
                               "available (library missing, or both LUNA_USE_RUST_IONISATION and " *
@@ -1830,7 +1825,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                         (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Csize_t, Float64, Float64, Cint),
                         handle.ptr, omegas, gammas, couplings, Csize_t(length(omegas)),
                         r.dt, raman_density, Cint(r.thg))
-                    rc == 0 || throw(NativeIneligible("native_set_raman_params returned $rc"))
+                    check_ffi(rc, "native_set_raman_params"; ineligible=true)
                     break  # only one Raman response expected
                 end
             end
@@ -1875,7 +1870,7 @@ function step!(s::RustNativeStepper)
         (Ptr{Cvoid}, Ptr{ComplexF64}, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Cint, Ptr{NativeStepResult}),
         s._handle.ptr, pointer(s.yn), s.t, s.tn, s.dtn, s.rtol, s.atol, s.safety, s.max_dt, s.min_dt, s.errlast, Cint(s.locextrap), result_ref
     )
-    rc == 0 || error("native_step returned error code $rc")
+    check_ffi(rc, "native_step")
 
     res = result_ref[]
     s.ok = res.ok != 0
@@ -1897,7 +1892,7 @@ function _native_field_resync!(s::RustNativeStepper)
     rc = ccall((:native_resync_field, _LIBLUNA_RUST_RK45), Cint,
           (Ptr{Cvoid}, Ptr{ComplexF64}, Csize_t),
           s._handle.ptr, pointer(s.yn), Csize_t(length(s.yn)))
-    rc == 0 || error("native_resync_field (post-stepfun resync) failed: $rc")
+    check_ffi(rc, "native_resync_field (post-stepfun resync)")
 end
 
 function interpolate(s::RustNativeStepper, ti::Float64)
@@ -1934,14 +1929,14 @@ function interpolate(s::RustNativeStepper, ti::Float64)
         rc = ccall((:get_ks_stage, _LIBLUNA_RUST_RK45), Cint,
               (Ptr{Cvoid}, Csize_t, Ptr{ComplexF64}, Csize_t),
               s._handle.ptr, Csize_t(ii - 1), kbuf, Csize_t(n))
-        rc == 0 || error("get_ks_stage failed: $rc")
+        check_ffi(rc, "get_ks_stage")
         yi .+= kbuf .* b[ii]
     end
     out = @. s.y + s.dt * yi
     rc = ccall((:native_apply_prop, _LIBLUNA_RUST_RK45), Cint,
           (Ptr{Cvoid}, Ptr{ComplexF64}, Csize_t, Float64, Float64),
           s._handle.ptr, out, Csize_t(n), s.t, ti)
-    rc == 0 || error("native_apply_prop failed: $rc")
+    check_ffi(rc, "native_apply_prop")
     return out
 end
 

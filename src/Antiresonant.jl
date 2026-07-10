@@ -2,7 +2,7 @@ module Antiresonant
 using Reexport
 import Logging: @warn
 import Printf: @sprintf
-import Luna: Capillary, Utils
+import Luna: Capillary, Utils, Config
 import Luna.PhysData: c, wlfreq, ref_index_fun
 import Luna.LinearOps: neff_β_grid
 @reexport using Luna.Modes
@@ -175,7 +175,7 @@ Build a Rust-side `ZeisbergerNeff` geometry handle from a `ZeisbergerMode`.
 Returns `nothing` when the toggle is off, the lib is missing, or init fails.
 """
 function _make_rust_zeisberger_handle(m::ZeisbergerMode)
-    get(ENV, "LUNA_USE_RUST_DISPERSION", "0") == "1" || return nothing
+    Config.backend_config().dispersion || return nothing
     if !isfile(_LIBLUNA_RUST)
         @warn "LUNA_USE_RUST_DISPERSION=1 but Rust lib not found at $_LIBLUNA_RUST — " *
               "falling back to Julia. Build with `cargo build --release` in luna-rust/."

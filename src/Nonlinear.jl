@@ -1,7 +1,7 @@
 module Nonlinear
 import Luna
 import Luna.PhysData: ε_0, e_ratio
-import Luna: Maths, Utils
+import Luna: Maths, Utils, Config
 import FFTW
 import LinearAlgebra: mul!, ldiv!
 
@@ -56,7 +56,7 @@ Returns `nothing` when the toggle is off, the lib is missing, or init fails.
 """
 function _make_rust_raman_handle(omegas::Vector{Float64}, gammas::Vector{Float64},
                                   couplings::Vector{Float64}, dt::Float64)
-    get(ENV, "LUNA_USE_RUST_RAMAN", "0") == "1" || return nothing
+    Config.backend_config().raman || return nothing
     if !isfile(_LIBLUNA_RUST)
         @warn "LUNA_USE_RUST_RAMAN=1 but Rust lib not found at $_LIBLUNA_RUST — " *
               "falling back to Julia. Build with `cargo build --release` in luna-rust/."
@@ -91,6 +91,42 @@ function KerrVector!(out, E, fac)
         out[i,1] += fac*(Ex2 + Ey2)*Ex
         out[i,2] += fac*(Ex2 + Ey2)*Ey
     end
+end
+
+"""
+    kerr_γ3(resp)
+
+Extract the γ3 nonlinear-Kerr coefficient captured by a plain
+`Kerr_field`/`Kerr_env` closure (below), scanning `resp` — an iterable of
+response objects, e.g. a `TransModeAvg`/`TransRadial`/`TransModal`/
+`TransFree`'s `.resp` tuple — for the first entry whose closure-generated
+struct has a field named with a `γ3` substring, and returning its value.
+Continues scanning past a response whose extracted value is exactly `0.0`
+(same "keep looking for a nonzero one" behavior as the code this replaces).
+Returns `0.0` if no response has a `γ3`-named field at all (e.g. `resp`
+contains only Raman/plasma responses).
+
+Centralizes what was 4 duplicated inline reflective loops across
+`RK45.jl`'s native-stepper construction paths (BACKLOG.md S4 item 3;
+suggestion 8's "explicit accessor seams"). Note this does *not* distinguish
+`Kerr_field`/`Kerr_env` (a single-field closure) from
+`Kerr_field_nothg`/`Kerr_env_thg` (which also capture a `γ3` field, plus one
+more) — that distinction is a separate eligibility question
+(`RK45._is_plain_kerr_resp`), checked elsewhere before the extracted value
+here is actually used.
+"""
+function kerr_γ3(resp)
+    γ3 = 0.0
+    for r in resp
+        for fld in fieldnames(typeof(r))
+            if occursin("γ3", string(fld))
+                γ3 = getfield(r, fld)
+                break
+            end
+        end
+        γ3 != 0.0 && break
+    end
+    return γ3
 end
 
 "Kerr response for real field"

@@ -7,7 +7,7 @@ import HypergeometricFunctions: pFq
 import Logging: @info
 import Luna.PhysData: c, ħ, electron, m_e, au_energy, au_time, au_Efield, wlfreq, polarisability_difference, polarisability, au_polarisability
 import Luna.PhysData: ionisation_potential, quantum_numbers
-import Luna: Maths, Utils
+import Luna: Maths, Utils, Config
 import Printf: @sprintf
 
 # ─── Rust FFI helpers ────────────────────────────────────────────────────────
@@ -86,9 +86,8 @@ construction fails, so the pure-Julia path is taken.
 """
 function _make_rust_ionization_handle(E::AbstractVector, rate::AbstractVector,
                                        Emin::Float64, Emax::Float64)
-    use_rust_ionisation = get(ENV, "LUNA_USE_RUST_IONISATION", "0") == "1"
-    use_native = get(ENV, "LUNA_USE_RUST_NATIVE", "1") != "0"
-    (use_rust_ionisation || use_native) || return nothing
+    cfg = Config.backend_config()
+    (cfg.ionisation || cfg.native) || return nothing
     if !isfile(_LIBLUNA_RUST)
         # Only warn when the user *explicitly* opted in via
         # LUNA_USE_RUST_IONISATION=1 — the native-stepper-implied case is an
@@ -147,9 +146,8 @@ native stepper default. Returns `nothing` when neither toggle is active, or
 the library/handle construction fails, so the pure-Julia path is taken.
 """
 function _make_rust_adk_handle(occupancy, ω_p, cn_sq, nstar, ω_t_prefac, thr, avfac)
-    use_rust_ionisation = get(ENV, "LUNA_USE_RUST_IONISATION", "0") == "1"
-    use_native = get(ENV, "LUNA_USE_RUST_NATIVE", "1") != "0"
-    (use_rust_ionisation || use_native) || return nothing
+    cfg = Config.backend_config()
+    (cfg.ionisation || cfg.native) || return nothing
     isfile(_LIBLUNA_RUST) || return nothing
     ptr = ccall((:init_adk_ionization, _LIBLUNA_RUST),
           Ptr{Cvoid},

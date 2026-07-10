@@ -48,6 +48,7 @@ function __init__()
     set_fftw_threads()
 end
 
+include("Config.jl")
 include("Utils.jl")
 include("Scans.jl")
 include("Output.jl")
@@ -84,11 +85,25 @@ runscan = Scans.runscan
 makefilename = Scans.makefilename
 addvariable! = Scans.addvariable!
 
+"""
+    backend_report()
+
+Small `NamedTuple` report of the currently-resolved [`Config.BackendConfig`](@ref)
+plus the concrete stepper type used by the most recent `RK45.solve_precon`
+call in this session (`nothing` if none has run yet). Public replacement
+for the `RK45._LAST_STEPPER_TYPE` test-only hook (BACKLOG.md S4 item 1);
+`_LAST_STEPPER_TYPE` itself is unchanged/still updated internally — this
+just gives external callers (and interactive sessions) a documented way to
+ask "what backend is actually active, and what did it just use" without
+reaching into RK45's internals.
+"""
+backend_report() = (config = Config.backend_config(), last_stepper_type = RK45._LAST_STEPPER_TYPE[])
+
 export Utils, Scans, Output, Maths, PhysData, Grid, RK45, Modes, Capillary, RectModes,
        Nonlinear, Ionisation, NonlinearRHS, LinearOps, Stats, Polarisation,
        Tools, Plotting, Raman, Antiresonant, Fields, Processing, Interface, SFA,
        prop_capillary, prop_gnlse, Pulses, Scan, runscan, makefilename, addvariable!,
-       StepIndexFibre, SimpleFibre
+       StepIndexFibre, SimpleFibre, Config, backend_report
 
 # for a tuple of TimeFields we assume all inputs are for mode 1
 function doinput_sm(grid, inputs::Tuple{Vararg{T} where T <: Fields.TimeField}, FT)

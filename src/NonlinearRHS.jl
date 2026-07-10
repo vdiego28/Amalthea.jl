@@ -6,7 +6,7 @@ import Base: show
 import LinearAlgebra
 import LinearAlgebra: mul!, ldiv!
 import NumericalIntegration: integrate, SimpsonEven
-import Luna: PhysData, Modes, Maths, Grid
+import Luna: PhysData, Modes, Maths, Grid, Config
 import Luna.PhysData: wlfreq
 import Logging: @warn
 import Luna.Utils: lunadir
@@ -37,16 +37,15 @@ mutable struct RustQdhtHandle
 end
 
 function _init_rust_qdht_blas()
-    # Default OFF (opt-in, not opt-out): `libblastrampoline`'s `cblas_dgemm`
-    # symbol is a dispatch stub that requires Julia's own ILP64 Fortran-symbol
-    # registration (`dgemm_64_`) to actually route to OpenBLAS — calling the
-    # CBLAS-name entry point directly (what `luna-rust/src/blas.rs` does today)
-    # errors at runtime ("no BLAS/LAPACK library loaded for cblas_dgemm()") and
-    # silently corrupts QDHT results instead of computing anything (confirmed
-    # 2026-07-07: `test_qdht_rust.jl`'s mul!/ldiv! unit tests fail when this is
-    # enabled). Needs a real fix (bind the ILP64 Fortran signature instead) —
-    # see BACKLOG.md's S1.5 entry — before this should ever default on.
-    get(ENV, "LUNA_QDHT_BLAS", "0") == "1" || return
+    # Default OFF (opt-in, not opt-out): fixed 2026-07-09 (BACKLOG.md S1 item
+    # 5) — `blas.rs` now binds the ILP64 Fortran `dgemm_64_` entry point
+    # directly (the same symbol/calling-convention Julia's own
+    # `LinearAlgebra.BLAS.gemm!` resolves to), replacing the broken
+    # `cblas_dgemm` dispatch-stub call that used to silently corrupt QDHT
+    # results. Verified via `test_qdht_rust.jl`'s mul!/ldiv! equivalence
+    # tests. Still opt-in pending a perf benchmark (≥1.5× at n_r=256) before
+    # flipping the default — see that BACKLOG entry.
+    Config.backend_config().qdht_blas || return
     try
         blas_path = Libdl.dlpath(Libdl.dlopen(LinearAlgebra.BLAS.libblastrampoline))
         rc = ccall((:init_blas_path, _LIBLUNA_RUST_RHS), Cint, (Cstring,), blas_path)
@@ -57,7 +56,7 @@ function _init_rust_qdht_blas()
 end
 
 function _make_rust_qdht_handle(HT, n_time::Int)
-    get(ENV, "LUNA_USE_RUST_QDHT", "0") == "1" || return nothing
+    Config.backend_config().qdht || return nothing
     !isfile(_LIBLUNA_RUST_RHS) && (@warn "libluna_rust not found at $(_LIBLUNA_RUST_RHS); QDHT stays on Julia"; return nothing)
     _init_rust_qdht_blas()
     T_mat = Matrix{Float64}(HT.T)  # ensure Float64 col-major copy
@@ -572,6 +571,27 @@ function (t::TransModeAvg)(nl, Eω, z)
         nl[i] *= t.grid.ωwin[i]
     end
 end
+
+"""
+    norm_pre(norm!)
+
+Extract the `pre` array captured by a mode-averaged `norm!` closure
+(`norm_mode_average`/`norm_mode_average_gnlse` below). Centralizes what was
+an inline `getfield(norm!, :pre)` reflective probe in `RK45.jl`'s native
+stepper construction (BACKLOG.md S4 item 3).
+"""
+norm_pre(norm!) = getfield(norm!, :pre)
+
+"""
+    norm_βfun(norm!)
+
+Extract the `βfun!` closure captured by a `norm_mode_average` `norm!`
+closure, or `nothing` if this `norm!` doesn't capture one (e.g.
+`norm_mode_average_gnlse`, which has no shock/dispersion correction term).
+Centralizes an inline `hasfield`/`getfield` reflective probe in `RK45.jl`
+(BACKLOG.md S4 item 3).
+"""
+norm_βfun(norm!) = hasfield(typeof(norm!), :βfun!) ? getfield(norm!, :βfun!) : nothing
 
 function norm_mode_average(grid, βfun!, aeff; shock=true)
     β = zeros(Float64, length(grid.ω))
