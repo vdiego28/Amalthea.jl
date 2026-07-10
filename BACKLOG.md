@@ -1040,20 +1040,55 @@ exists (Phase G.3).*
      appears to be, rather than the small exp-linop multiply.
 
 ### 🟡 S2 — Threading the native RHS (suggestion 2)
-*Not started. Depends on S1.4 (dispatch plumbing).*
-1. `native_set_threads(handle, n)` FFI, wired from `Threads.nthreads()`,
-   default 1 (bit-identical to today).
+*Started 2026-07-10. Radial geometry only this pass (items 1-2); modal
+(item 3) and free-space (item 4) left as separate, not-started follow-ups
+— see `docs/native-port/PLAN_S2_THREADING.md` for the full phased plan.*
+1. 🟢 **Done 2026-07-10.** `native_set_threads(handle, n)` FFI, wired from
+   `Threads.nthreads()`, default 1 (bit-identical to today — verified via
+   full 7-group gate, purely additive plumbing, `n_threads` not yet read
+   by any RHS code).
 2. `rhs_radial`: rayon over radial nodes, each node's own FFTW
    new-array-execute call against one shared plan; one scratch slab per
    rayon worker (never shared — this is precisely the bug the Julia
    `Threads.@threads` `pointcalc!` race had, see Phase B/"Done (recent)").
+   **Re-scoped after investigation:** an Explore survey found the two
+   per-column FFT loops and `apply_plasma_radial`'s per-column loop
+   already operate on disjoint slices of matrix-shaped
+   (`n_time_over*n_r`) buffers, not shared per-call scratch — safe for
+   `par_chunks_mut` without new per-worker scratch structures. Only
+   `apply_raman_radial`'s single shared `raman_solver` (and, when
+   `raman_thg==false`, shared Hilbert scratch) has the genuine
+   shared-mutable-state hazard the backlog warns about — deferred to a
+   follow-up (per-worker solver instances), not bundled into this pass.
+   **Measured 2026-07-10** (temporary `Instant` profiling, reverted after
+   reading, same discipline as S1.6): FFT-loop + plasma-loop share of
+   `rhs_radial` time, at N=32/N=128 r-points, with/without plasma:
+   | N | plasma | FFT | QDHT | plasma | other |
+   |---|---|---|---|---|---|
+   | 32 | off | 35.9% | 46.7% | — | 17.4% |
+   | 32 | on | 20.9% | 28.3% | 40.5% | 10.2% |
+   | 128 | off | 18.6% | 72.6% | — | 8.8% |
+   | 128 | on | 14.1% | 54.8% | 24.5% | 6.6% |
+
+   Unlike S1.6's ~2% ceiling, FFT+plasma combined is **38-61% of
+   `rhs_radial` time** for plasma-enabled configs — clears the bar for
+   proceeding. QDHT dominates the rest (already internally
+   parallel/BLAS-backed via S1 item 5's BLAS-3 QDHT fix — out of scope
+   for this item).
 3. Modal: rayon inside `hcubature_v`'s batch callback only — cubature's
-   adaptive node placement stays sequential/deterministic.
+   adaptive node placement stays sequential/deterministic. *Not started
+   this pass.*
 4. 3-D free-space FFT: `fftw_plan_with_nthreads`/`fftw_init_threads`
-   (dlopened `libfftw3_threads`, silent fallback if absent).
-5. Error-norm reduction stays sequential (determinism, ties to S5.2).
+   (dlopened `libfftw3_threads`, silent fallback if absent). *Not started
+   this pass.*
+5. 🟢 Error-norm reduction stays sequential (determinism, ties to S5.2) —
+   confirmed already sequential (`weaknorm_c64`), untouched by this item.
 - Gate: universal + fixed-step equivalence under `JULIA_NUM_THREADS=4` +
   ≥2× radial/free benchmark at 4 threads + n=1 bit-identical to pre-track.
+  For radial specifically: since the parallelized loops write disjoint
+  memory with no cross-column reduction, `n_threads=1` vs. `n_threads=4`
+  must be **bit-identical**, not merely within tolerance — a stronger,
+  more testable guarantee than typical parallel-code equivalence.
 
 ### 🟠 S3 — GPU-resident propagation (suggestion 1) — partially started, see note above
 *Large (5+ sessions). Plan's own stated dependency (GPU CI) is not yet
