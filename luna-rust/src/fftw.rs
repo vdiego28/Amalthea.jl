@@ -50,6 +50,19 @@ type FftwPlan = *mut c_void;
 /// `num_complex::Complex<f64>` and Julia `ComplexF64`.
 type FftwComplex = [f64; 2];
 
+/// `fftw_iodim` — one dimension's `{n, input_stride, output_stride}` for the
+/// guru split-array planning interface (BACKLOG.md S1 item 6, Phase 0). Only
+/// rank-1, howmany_rank-0 transforms are used here (single-array 1-D
+/// transforms of contiguous re/im buffers) — `is`/`os` are both 1 in every
+/// caller below.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FftwIoDim {
+    n: c_int,
+    is_: c_int,
+    os: c_int,
+}
+
 // ── minimal runtime loader (mirrors io.rs::Library) ─────────────────────────
 struct Library {
     handle: *mut c_void,
@@ -149,6 +162,26 @@ type ExecDft = unsafe extern "C" fn(FftwPlan, *mut FftwComplex, *mut FftwComplex
 type ExecR2c = unsafe extern "C" fn(FftwPlan, *mut f64, *mut FftwComplex);
 type ExecC2r = unsafe extern "C" fn(FftwPlan, *mut FftwComplex, *mut f64);
 type DestroyPlan = unsafe extern "C" fn(FftwPlan);
+// Guru split-array planning/execution (BACKLOG.md S1 item 6, Phase 0) — same
+// library, separate re/im `double*` pointers instead of interleaved
+// `fftw_complex`. Only the rank-1 signatures used by the 1-D SoA plan types
+// below are declared; add 3-D variants when a 3-D SoA caller (free-space
+// geometry) actually needs them.
+type PlanGuruSplitDft1d = unsafe extern "C" fn(
+    c_int, *const FftwIoDim, c_int, *const FftwIoDim,
+    *mut f64, *mut f64, *mut f64, *mut f64, c_uint,
+) -> FftwPlan;
+type PlanGuruSplitDftR2c1d = unsafe extern "C" fn(
+    c_int, *const FftwIoDim, c_int, *const FftwIoDim,
+    *mut f64, *mut f64, *mut f64, c_uint,
+) -> FftwPlan;
+type PlanGuruSplitDftC2r1d = unsafe extern "C" fn(
+    c_int, *const FftwIoDim, c_int, *const FftwIoDim,
+    *mut f64, *mut f64, *mut f64, c_uint,
+) -> FftwPlan;
+type ExecSplitDft = unsafe extern "C" fn(FftwPlan, *mut f64, *mut f64, *mut f64, *mut f64);
+type ExecSplitDftR2c = unsafe extern "C" fn(FftwPlan, *mut f64, *mut f64, *mut f64);
+type ExecSplitDftC2r = unsafe extern "C" fn(FftwPlan, *mut f64, *mut f64, *mut f64);
 // `int fftw_import_wisdom_from_filename(const char*)` / `int
 // fftw_export_wisdom_to_filename(const char*)` — both return nonzero on
 // success (FFTW's own convention, unlike most of this file's 0=success FFI).
@@ -170,6 +203,12 @@ pub struct FftwApi {
     destroy_plan: DestroyPlan,
     import_wisdom: Option<ImportWisdom>,
     export_wisdom: Option<ExportWisdom>,
+    plan_guru_split_dft_1d: PlanGuruSplitDft1d,
+    plan_guru_split_dft_r2c_1d: PlanGuruSplitDftR2c1d,
+    plan_guru_split_dft_c2r_1d: PlanGuruSplitDftC2r1d,
+    exec_split_dft: ExecSplitDft,
+    exec_split_dft_r2c: ExecSplitDftR2c,
+    exec_split_dft_c2r: ExecSplitDftC2r,
 }
 
 impl FftwApi {
@@ -220,6 +259,13 @@ impl FftwApi {
         let export_wisdom = unsafe { lib.sym("fftw_export_wisdom_to_filename") }
             .map(|p| unsafe { std::mem::transmute::<*mut c_void, ExportWisdom>(p) });
 
+        let plan_guru_split_dft_1d = sym!("fftw_plan_guru_split_dft", PlanGuruSplitDft1d);
+        let plan_guru_split_dft_r2c_1d = sym!("fftw_plan_guru_split_dft_r2c", PlanGuruSplitDftR2c1d);
+        let plan_guru_split_dft_c2r_1d = sym!("fftw_plan_guru_split_dft_c2r", PlanGuruSplitDftC2r1d);
+        let exec_split_dft = sym!("fftw_execute_split_dft", ExecSplitDft);
+        let exec_split_dft_r2c = sym!("fftw_execute_split_dft_r2c", ExecSplitDftR2c);
+        let exec_split_dft_c2r = sym!("fftw_execute_split_dft_c2r", ExecSplitDftC2r);
+
         Ok(FftwApi {
             _lib: lib,
             plan_dft_1d,
@@ -234,6 +280,12 @@ impl FftwApi {
             destroy_plan,
             import_wisdom,
             export_wisdom,
+            plan_guru_split_dft_1d,
+            plan_guru_split_dft_r2c_1d,
+            plan_guru_split_dft_c2r_1d,
+            exec_split_dft,
+            exec_split_dft_r2c,
+            exec_split_dft_c2r,
         })
     }
 
@@ -533,6 +585,165 @@ impl Drop for ComplexFft3d {
     }
 }
 
+/// A complex↔complex 1-D plan pair on **split (SoA) buffers** — separate
+/// contiguous `re`/`im` `f64` arrays instead of interleaved `Complex<f64>`.
+/// BACKLOG.md S1 item 6, Phase 0: enables the native-port resident field to
+/// move to SoA layout without paying an interleave/deinterleave tax at every
+/// FFT round-trip. Same unnormalized-transform convention as
+/// [`ComplexFft1d`] — the caller applies the `1/n` factor, never the plan.
+pub struct SplitComplexFft1d {
+    n: usize,
+    fwd: FftwPlan,
+    inv: FftwPlan,
+    destroy_plan: DestroyPlan,
+    exec_split_dft: ExecSplitDft,
+}
+
+impl SplitComplexFft1d {
+    pub fn new(api: &FftwApi, n: usize, flags: c_uint) -> Self {
+        let dims = [FftwIoDim { n: n as c_int, is_: 1, os: 1 }];
+        let mut ar = vec![0.0f64; n];
+        let mut ai = vec![0.0f64; n];
+        let mut br = vec![0.0f64; n];
+        let mut bi = vec![0.0f64; n];
+        let f = flags | FFTW_UNALIGNED;
+        let _guard = PLANNER_LOCK.lock().unwrap();
+        // `fftw_plan_guru_split_dft` has no explicit sign argument — per
+        // FFTW's own documentation, the backward (unnormalized inverse)
+        // transform is obtained from the same primitive by swapping the
+        // real/imaginary pointers on **both** input and output (equivalent
+        // to conjugating twice), not just the output. Plan-creation buffer
+        // contents are irrelevant under FFTW_ESTIMATE (never measured), so
+        // reusing the same dummy scratch with swapped argument order is
+        // sufficient to fix the plan's sign; execution must swap the same
+        // way (see `inverse`).
+        let fwd = unsafe {
+            (api.plan_guru_split_dft_1d)(
+                1, dims.as_ptr(), 0, std::ptr::null(),
+                ar.as_mut_ptr(), ai.as_mut_ptr(), br.as_mut_ptr(), bi.as_mut_ptr(), f,
+            )
+        };
+        let inv = unsafe {
+            (api.plan_guru_split_dft_1d)(
+                1, dims.as_ptr(), 0, std::ptr::null(),
+                ai.as_mut_ptr(), ar.as_mut_ptr(), bi.as_mut_ptr(), br.as_mut_ptr(), f,
+            )
+        };
+        SplitComplexFft1d { n, fwd, inv, destroy_plan: api.destroy_plan, exec_split_dft: api.exec_split_dft }
+    }
+
+    /// Forward transform: `(out_re,out_im) = fft(in_re,in_im)` (unnormalized).
+    pub fn forward(&self, in_re: &mut [f64], in_im: &mut [f64], out_re: &mut [f64], out_im: &mut [f64]) {
+        assert_eq!(in_re.len(), self.n);
+        assert_eq!(in_im.len(), self.n);
+        assert_eq!(out_re.len(), self.n);
+        assert_eq!(out_im.len(), self.n);
+        unsafe {
+            (self.exec_split_dft)(self.fwd, in_re.as_mut_ptr(), in_im.as_mut_ptr(),
+                                   out_re.as_mut_ptr(), out_im.as_mut_ptr());
+        }
+    }
+
+    /// Inverse transform: `(out_re,out_im) = ifft_unnormalized(in_re,in_im)`
+    /// (caller divides by `n`).
+    pub fn inverse(&self, in_re: &mut [f64], in_im: &mut [f64], out_re: &mut [f64], out_im: &mut [f64]) {
+        assert_eq!(in_re.len(), self.n);
+        assert_eq!(in_im.len(), self.n);
+        assert_eq!(out_re.len(), self.n);
+        assert_eq!(out_im.len(), self.n);
+        // Plan was built with both input and output pointers swapped for
+        // the backward direction (see `new`) — execution must pass the same
+        // full swap, not just the output.
+        unsafe {
+            (self.exec_split_dft)(self.inv, in_im.as_mut_ptr(), in_re.as_mut_ptr(),
+                                   out_im.as_mut_ptr(), out_re.as_mut_ptr());
+        }
+    }
+}
+
+impl Drop for SplitComplexFft1d {
+    fn drop(&mut self) {
+        let _guard = PLANNER_LOCK.lock().unwrap();
+        unsafe { (self.destroy_plan)(self.fwd); (self.destroy_plan)(self.inv); }
+    }
+}
+
+/// A real↔complex 1-D plan pair on split (SoA) spectral buffers — real time
+/// array unchanged (`f64`, already "SoA" trivially), spectral output/input
+/// as separate `re`/`im` arrays instead of interleaved `Complex<f64>`.
+/// BACKLOG.md S1 item 6, Phase 0.
+pub struct SplitRealFft1d {
+    n: usize,
+    nspec: usize,
+    r2c: FftwPlan,
+    c2r: FftwPlan,
+    destroy_plan: DestroyPlan,
+    exec_split_dft_r2c: ExecSplitDftR2c,
+    exec_split_dft_c2r: ExecSplitDftC2r,
+}
+
+impl SplitRealFft1d {
+    pub fn new(api: &FftwApi, n: usize, flags: c_uint) -> Self {
+        let nspec = n / 2 + 1;
+        let dims = [FftwIoDim { n: n as c_int, is_: 1, os: 1 }];
+        let mut tbuf = vec![0.0f64; n];
+        let mut sr = vec![0.0f64; nspec];
+        let mut si = vec![0.0f64; nspec];
+        let f = flags | FFTW_UNALIGNED;
+        let _guard = PLANNER_LOCK.lock().unwrap();
+        let r2c = unsafe {
+            (api.plan_guru_split_dft_r2c_1d)(
+                1, dims.as_ptr(), 0, std::ptr::null(),
+                tbuf.as_mut_ptr(), sr.as_mut_ptr(), si.as_mut_ptr(), f,
+            )
+        };
+        // 1-D split c2r does support PRESERVE_INPUT, matching RealFft1d's
+        // AoS c2r plan (see that struct's own comment) — keep parity so a
+        // caller that reuses the spectrum after inverse isn't broken.
+        let c2r = unsafe {
+            (api.plan_guru_split_dft_c2r_1d)(
+                1, dims.as_ptr(), 0, std::ptr::null(),
+                sr.as_mut_ptr(), si.as_mut_ptr(), tbuf.as_mut_ptr(),
+                f | FFTW_PRESERVE_INPUT,
+            )
+        };
+        SplitRealFft1d { n, nspec, r2c, c2r, destroy_plan: api.destroy_plan,
+                          exec_split_dft_r2c: api.exec_split_dft_r2c,
+                          exec_split_dft_c2r: api.exec_split_dft_c2r }
+    }
+
+    pub fn nspec(&self) -> usize { self.nspec }
+
+    /// `(spec_re,spec_im) = rfft(time)` (unnormalized), each length `n/2+1`.
+    pub fn forward(&self, time: &mut [f64], spec_re: &mut [f64], spec_im: &mut [f64]) {
+        assert_eq!(time.len(), self.n);
+        assert_eq!(spec_re.len(), self.nspec);
+        assert_eq!(spec_im.len(), self.nspec);
+        unsafe {
+            (self.exec_split_dft_r2c)(self.r2c, time.as_mut_ptr(),
+                                       spec_re.as_mut_ptr(), spec_im.as_mut_ptr());
+        }
+    }
+
+    /// `time = irfft_unnormalized(spec_re,spec_im)` (caller divides by `n`).
+    pub fn inverse(&self, spec_re: &mut [f64], spec_im: &mut [f64], time: &mut [f64]) {
+        assert_eq!(spec_re.len(), self.nspec);
+        assert_eq!(spec_im.len(), self.nspec);
+        assert_eq!(time.len(), self.n);
+        unsafe {
+            (self.exec_split_dft_c2r)(self.c2r, spec_re.as_mut_ptr(),
+                                       spec_im.as_mut_ptr(), time.as_mut_ptr());
+        }
+    }
+}
+
+impl Drop for SplitRealFft1d {
+    fn drop(&mut self) {
+        let _guard = PLANNER_LOCK.lock().unwrap();
+        unsafe { (self.destroy_plan)(self.r2c); (self.destroy_plan)(self.c2r); }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -690,6 +901,86 @@ mod tests {
         let norm = ntot as f64;
         for i in 0..ntot {
             assert!((back[i] / norm - orig[i]).norm() < 1e-9, "c2c_3d roundtrip mismatch at {i}");
+        }
+    }
+
+    /// BACKLOG.md S1 item 6, Phase 0: the new split (SoA) c2c plan must match
+    /// the existing AoS `ComplexFft1d` plan bit-for-bit on the same input —
+    /// both are the same underlying FFTW plan class/algorithm (`FFTW_ESTIMATE`,
+    /// same `fftw_iodim` describing the same transform), just a different
+    /// buffer layout, so this is an exact comparison, not tolerance-based.
+    #[test]
+    fn split_c2c_matches_aos_c2c() {
+        let api = match try_api() {
+            Some(a) => a,
+            None => { eprintln!("skip split_c2c_matches_aos_c2c: no FFTW found"); return; }
+        };
+        let n = 16;
+        let x: Vec<Complex<f64>> =
+            (0..n).map(|i| Complex::new((i as f64).sin(), (0.3 * i as f64).cos())).collect();
+
+        let aos_plan = ComplexFft1d::new(&api, n, FFTW_ESTIMATE);
+        let mut aos_in = x.clone();
+        let mut aos_fwd = vec![Complex::new(0.0, 0.0); n];
+        aos_plan.forward(&mut aos_in, &mut aos_fwd);
+        let mut aos_spec_copy = aos_fwd.clone();
+        let mut aos_back = vec![Complex::new(0.0, 0.0); n];
+        aos_plan.inverse(&mut aos_spec_copy, &mut aos_back);
+
+        let split_plan = SplitComplexFft1d::new(&api, n, FFTW_ESTIMATE);
+        let (mut in_re, mut in_im): (Vec<f64>, Vec<f64>) = x.iter().map(|c| (c.re, c.im)).collect();
+        let mut fwd_re = vec![0.0f64; n];
+        let mut fwd_im = vec![0.0f64; n];
+        split_plan.forward(&mut in_re, &mut in_im, &mut fwd_re, &mut fwd_im);
+        for i in 0..n {
+            assert_eq!(fwd_re[i], aos_fwd[i].re, "split c2c forward re mismatch at {i}");
+            assert_eq!(fwd_im[i], aos_fwd[i].im, "split c2c forward im mismatch at {i}");
+        }
+
+        let (mut spec_re, mut spec_im) = (fwd_re.clone(), fwd_im.clone());
+        let mut back_re = vec![0.0f64; n];
+        let mut back_im = vec![0.0f64; n];
+        split_plan.inverse(&mut spec_re, &mut spec_im, &mut back_re, &mut back_im);
+        for i in 0..n {
+            assert_eq!(back_re[i], aos_back[i].re, "split c2c inverse re mismatch at {i}");
+            assert_eq!(back_im[i], aos_back[i].im, "split c2c inverse im mismatch at {i}");
+        }
+    }
+
+    /// BACKLOG.md S1 item 6, Phase 0: split r2c/c2r must match the existing
+    /// AoS `RealFft1d` plan bit-for-bit, same rationale as the c2c test above.
+    #[test]
+    fn split_r2c_matches_aos_r2c() {
+        let api = match try_api() {
+            Some(a) => a,
+            None => { eprintln!("skip split_r2c_matches_aos_r2c: no FFTW found"); return; }
+        };
+        let n = 32;
+        let t: Vec<f64> = (0..n).map(|i| (0.5 * i as f64).sin()).collect();
+
+        let aos_plan = RealFft1d::new(&api, n, FFTW_ESTIMATE);
+        let mut aos_t = t.clone();
+        let mut aos_spec = vec![Complex::new(0.0, 0.0); aos_plan.nspec()];
+        aos_plan.forward(&mut aos_t, &mut aos_spec);
+        let mut aos_spec_copy = aos_spec.clone();
+        let mut aos_back = vec![0.0f64; n];
+        aos_plan.inverse(&mut aos_spec_copy, &mut aos_back);
+
+        let split_plan = SplitRealFft1d::new(&api, n, FFTW_ESTIMATE);
+        let mut split_t = t.clone();
+        let mut spec_re = vec![0.0f64; split_plan.nspec()];
+        let mut spec_im = vec![0.0f64; split_plan.nspec()];
+        split_plan.forward(&mut split_t, &mut spec_re, &mut spec_im);
+        for i in 0..split_plan.nspec() {
+            assert_eq!(spec_re[i], aos_spec[i].re, "split r2c forward re mismatch at {i}");
+            assert_eq!(spec_im[i], aos_spec[i].im, "split r2c forward im mismatch at {i}");
+        }
+
+        let (mut spec_re2, mut spec_im2) = (spec_re.clone(), spec_im.clone());
+        let mut back = vec![0.0f64; n];
+        split_plan.inverse(&mut spec_re2, &mut spec_im2, &mut back);
+        for i in 0..n {
+            assert_eq!(back[i], aos_back[i], "split c2r inverse mismatch at {i}");
         }
     }
 }
