@@ -1,0 +1,96 @@
+name: Release prebuilt luna-rust binaries
+
+# Triggered by the same `vX.Y.Z` tags TagBot.yml pushes after a Julia
+# registry release, so a release's binaries always match the Project.toml
+# version that deps/build.jl (try_download_prebuilt) looks up.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.triple }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            triple: x86_64-unknown-linux-gnu
+            libname: libluna_rust.so
+          - os: macos-latest
+            triple: aarch64-apple-darwin
+            libname: libluna_rust.dylib
+          - os: windows-2025-vs2026
+            triple: x86_64-pc-windows-msvc
+            libname: luna_rust.dll
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      # Deliberately NOT target-cpu=native (unlike the dev/test build path
+      # in run_tests.yml and .cargo/config.toml) — a downloaded binary must
+      # run on any user's CPU, not just this runner's.
+      - name: Build release library (portable, no target-cpu=native)
+        run: cargo build --release
+        working-directory: luna-rust
+        env:
+          RUSTFLAGS: ""
+
+      - name: Stage asset (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p staging
+          ext="${{ matrix.libname }}"; ext="${ext##*.}"
+          asset="libluna_rust-${{ matrix.triple }}.${ext}"
+          cp "luna-rust/target/release/${{ matrix.libname }}" "staging/$asset"
+          ( cd staging && shasum -a 256 "$asset" > "$asset.sha256" )
+
+      - name: Stage asset (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path staging | Out-Null
+          $dest = "staging/libluna_rust-${{ matrix.triple }}.dll"
+          Copy-Item "luna-rust/target/release/${{ matrix.libname }}" $dest
+          $hash = (Get-FileHash -Algorithm SHA256 $dest).Hash.ToLower()
+          "$hash libluna_rust-${{ matrix.triple }}.dll" | Out-File -Encoding ascii "$dest.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: luna-rust-${{ matrix.triple }}
+          path: staging/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Assemble checksum manifest
+        run: |
+          cd artifacts
+          cat *.sha256 > SHA256SUMS.txt
+          rm -f *.sha256
+          cat SHA256SUMS.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true

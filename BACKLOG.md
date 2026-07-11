@@ -1352,11 +1352,45 @@ the gate test itself was missing.*
    valid if both sides change together).
 
 ### ⚪ S6 — Distribution & ecosystem (suggestions 9, 13, 14)
-*Not started. Lowest priority; 13 is smallest/highest-value of the three.*
-1. Prebuilt binaries (item 13) — `release.yml` building
-   `libluna_rust` per-platform, uploaded to GitHub Releases with a sha256
-   manifest; `deps/build.jl` tries download-by-version+checksum first,
-   falls back to `cargo build` (kept as the from-source/dev path).
+*Item 1 done 2026-07-11. Items 2, 3 not started.*
+1. 🟢 **Done 2026-07-11.** Prebuilt binaries (item 13).
+   `.github/workflows/release.yml`: triggered on `v*` tags (same tags
+   TagBot.yml pushes after a Julia registry release) or manual dispatch;
+   builds `libluna_rust` on the same three CI hosts `run_tests.yml` already
+   tests on (`ubuntu-latest`→`x86_64-unknown-linux-gnu`, `macos-latest`→
+   `aarch64-apple-darwin`, `windows-2025-vs2026`→`x86_64-pc-windows-msvc`),
+   deliberately with `RUSTFLAGS=""` (portable, no `target-cpu=native` —
+   unlike the dev/test build path — since a downloaded binary must run on
+   any user's CPU, not just the builder's); stages each asset as
+   `libluna_rust-<triple>.<ext>` with a per-asset `.sha256` file, then a
+   `publish` job merges all `.sha256` files into one `SHA256SUMS.txt` and
+   uploads everything to a GitHub Release via `softprops/action-gh-release`.
+   `deps/build.jl` gained `try_download_prebuilt(rust_dir)`, tried before
+   the existing `cargo build --release` fallback: resolves the release
+   asset from `Project.toml`'s version + the running platform's target
+   triple (only the 3 triples above; anything else — e.g. linux non-x86_64
+   — returns `nothing` and falls straight to source), downloads the binary
+   + `SHA256SUMS.txt`, verifies the asset's sha256 against the manifest
+   entry, and only then moves it into the exact
+   `luna-rust/target/release/<libname>` path every `_libluna_rust_path()`
+   helper across `src/*.jl` already resolves to — so no Artifacts.toml or
+   separate lookup path was needed, just placing the file where the
+   existing from-source build already puts it. Any failure at any step
+   (network, unsupported platform, missing release, checksum mismatch) is
+   caught, logged via `@info`, and falls back to `cargo build --release`
+   silently — never `rethrow`s from the download path itself. Opt-out:
+   `LUNA_RUST_SKIP_DOWNLOAD=1` forces straight to source (useful for local
+   dev iteration on `luna-rust/`, where a stale downloaded binary would
+   silently shadow local changes). **Verified:** the fallback path (no
+   `v0.7.0` release exists yet, so every attempt 404s) confirmed to return
+   `false` cleanly, leave any existing library file untouched (mtime
+   unchanged), and leave no `.download`/`SHA256SUMS.txt` temp files behind.
+   The download+verify+install happy path was verified in isolation
+   against a local HTTP server serving a real build of `libluna_rust.so`
+   plus its real sha256 manifest line — confirmed the checksum-match branch
+   installs correctly. **Not yet verified:** an actual tagged release
+   completing the `release.yml` pipeline and `deps/build.jl` consuming it
+   end-to-end in the wild — that only happens on the next real version tag.
 2. Rust-side scan HDF5 writer (item 9) — `io.rs` `scan_write_point(...)`
    writing directly from native buffers under the existing flock/
    `LockFileEx` queue lock (hard dependency: Windows scan-lock validation
