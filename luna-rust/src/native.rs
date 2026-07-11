@@ -103,6 +103,8 @@ use crate::spline::HermiteSpline;
 use crate::raman::{TimeDomainRamanSolver, RamanOscillator};
 use crate::cubature::CubatureApi;
 use crate::diffraction::jn;
+use rayon::iter::{IndexedParallelIterator, ParallelIterator};
+use rayon::slice::{ParallelSlice, ParallelSliceMut};
 use std::ffi::CStr;
 
 /// Resident simulation state. One per `solve`. Opaque to Julia.
@@ -1012,45 +1014,114 @@ impl CpuNativeSim {
         let n_time_over = self.n_time_over;
         let n_r = self.n_r;
         let dt = self.plasma_dt;
+        let n_threads = self.n_threads;
 
-        for r in 0..n_r {
-            let start = r * n_time_over;
-            let end = start + n_time_over;
+        if n_threads > 1 {
+            // BACKLOG.md S2 item 2: `plas_rate`/`plas_fraction`/`plas_phase`/
+            // `plas_j`/`plas_p` are already `n_time_over*n_r` matrices (see
+            // struct doc) — the per-column body below only ever reads/writes
+            // its own disjoint `[r*n_time_over, (r+1)*n_time_over)` slice of
+            // each, so this is safe-by-construction, not a new scratch
+            // layout. `plasma_rate`'s `&self` method can't be called from
+            // inside a rayon closure that also holds disjoint `&mut` field
+            // borrows (the borrow checker can't see that it only touches
+            // `plasma_is_adk`/`plasma_adk_ptr`/`plasma_ion_ptr`), so the raw
+            // pointers are copied out first and `plasma_rate_at` (a free
+            // function, no `self`) is called instead — identical logic to
+            // `plasma_rate`.
+            let is_adk = self.plasma_is_adk;
+            let adk_ptr = ReadOnlyPtr(self.plasma_adk_ptr);
+            let ion_ptr = ReadOnlyPtr(self.plasma_ion_ptr);
+            let preionfrac = self.plasma_preionfrac;
+            let e_ratio = self.plasma_e_ratio;
+            let ionpot = self.plasma_ionpot;
 
-            // 1. ionization rate W(|E(t)|)
-            for i in start..end {
-                let e_abs = self.radial_eto[i].abs();
-                self.plas_rate[i] = self.plasma_rate(e_abs);
-            }
+            let pool = self.thread_pool.get_or_insert_with(|| {
+                rayon::ThreadPoolBuilder::new().num_threads(n_threads).build()
+                    .expect("failed to build rayon thread pool for native RHS (BACKLOG.md S2)")
+            });
+            let eto = &self.radial_eto;
+            let rate = &mut self.plas_rate;
+            let frac = &mut self.plas_fraction;
+            let phase = &mut self.plas_phase;
+            let j = &mut self.plas_j;
+            let p = &mut self.plas_p;
+            pool.install(|| {
+                eto.par_chunks(n_time_over)
+                    .zip(rate.par_chunks_mut(n_time_over))
+                    .zip(frac.par_chunks_mut(n_time_over))
+                    .zip(phase.par_chunks_mut(n_time_over))
+                    .zip(j.par_chunks_mut(n_time_over))
+                    .zip(p.par_chunks_mut(n_time_over))
+                    .for_each(|(((((eto_c, rate_c), frac_c), phase_c), j_c), p_c)| {
+                        // 1. ionization rate W(|E(t)|)
+                        for i in 0..eto_c.len() {
+                            rate_c[i] = plasma_rate_at(is_adk, adk_ptr, ion_ptr, eto_c[i].abs());
+                        }
+                        // 2. cumtrapz(fraction, rate, dt) → raw integral ∫₀ᵗ W dτ
+                        cumtrapz_slice_f64(rate_c, frac_c, dt);
+                        // 3. ρ(t) = preionfrac + 1 − exp(−∫W)
+                        for i in 0..frac_c.len() {
+                            frac_c[i] = preionfrac + 1.0 - (-frac_c[i]).exp();
+                        }
+                        // 4. phase[i] = ρ[i] * e_ratio * E[i]
+                        for i in 0..phase_c.len() {
+                            phase_c[i] = frac_c[i] * e_ratio * eto_c[i];
+                        }
+                        // 5. cumtrapz(J, phase, dt) → free-electron current
+                        cumtrapz_slice_f64(phase_c, j_c, dt);
+                        // 6. ionization loss current: J[i] += Ip*W[i]*(1−ρ[i])/E[i]
+                        for i in 0..j_c.len() {
+                            let e = eto_c[i];
+                            if e.abs() > 0.0 {
+                                j_c[i] += ionpot * rate_c[i] * (1.0 - frac_c[i]) / e;
+                            }
+                        }
+                        // 7. cumtrapz(P, J, dt) → plasma polarisation
+                        cumtrapz_slice_f64(j_c, p_c, dt);
+                    });
+            });
+        } else {
+            // Sequential path — bit-identical to pre-S2 behavior, untouched.
+            for r in 0..n_r {
+                let start = r * n_time_over;
+                let end = start + n_time_over;
 
-            // 2. cumtrapz(fraction, rate, dt) → raw integral ∫₀ᵗ W dτ, per column
-            cumtrapz_slice_f64(&self.plas_rate[start..end], &mut self.plas_fraction[start..end], dt);
-
-            // 3. ρ(t) = preionfrac + 1 − exp(−∫W)
-            for i in start..end {
-                self.plas_fraction[i] =
-                    self.plasma_preionfrac + 1.0 - (-self.plas_fraction[i]).exp();
-            }
-
-            // 4. phase[i] = ρ[i] * e_ratio * E[i]
-            for i in start..end {
-                self.plas_phase[i] = self.plas_fraction[i] * self.plasma_e_ratio * self.radial_eto[i];
-            }
-
-            // 5. cumtrapz(J, phase, dt) → free-electron current, per column
-            cumtrapz_slice_f64(&self.plas_phase[start..end], &mut self.plas_j[start..end], dt);
-
-            // 6. ionization loss current: J[i] += Ip * W[i] * (1−ρ[i]) / E[i]
-            for i in start..end {
-                let e = self.radial_eto[i];
-                if e.abs() > 0.0 {
-                    self.plas_j[i] +=
-                        self.plasma_ionpot * self.plas_rate[i] * (1.0 - self.plas_fraction[i]) / e;
+                // 1. ionization rate W(|E(t)|)
+                for i in start..end {
+                    let e_abs = self.radial_eto[i].abs();
+                    self.plas_rate[i] = self.plasma_rate(e_abs);
                 }
-            }
 
-            // 7. cumtrapz(P, J, dt) → plasma polarisation, per column
-            cumtrapz_slice_f64(&self.plas_j[start..end], &mut self.plas_p[start..end], dt);
+                // 2. cumtrapz(fraction, rate, dt) → raw integral ∫₀ᵗ W dτ, per column
+                cumtrapz_slice_f64(&self.plas_rate[start..end], &mut self.plas_fraction[start..end], dt);
+
+                // 3. ρ(t) = preionfrac + 1 − exp(−∫W)
+                for i in start..end {
+                    self.plas_fraction[i] =
+                        self.plasma_preionfrac + 1.0 - (-self.plas_fraction[i]).exp();
+                }
+
+                // 4. phase[i] = ρ[i] * e_ratio * E[i]
+                for i in start..end {
+                    self.plas_phase[i] = self.plas_fraction[i] * self.plasma_e_ratio * self.radial_eto[i];
+                }
+
+                // 5. cumtrapz(J, phase, dt) → free-electron current, per column
+                cumtrapz_slice_f64(&self.plas_phase[start..end], &mut self.plas_j[start..end], dt);
+
+                // 6. ionization loss current: J[i] += Ip * W[i] * (1−ρ[i]) / E[i]
+                for i in start..end {
+                    let e = self.radial_eto[i];
+                    if e.abs() > 0.0 {
+                        self.plas_j[i] +=
+                            self.plasma_ionpot * self.plas_rate[i] * (1.0 - self.plas_fraction[i]) / e;
+                    }
+                }
+
+                // 7. cumtrapz(P, J, dt) → plasma polarisation, per column
+                cumtrapz_slice_f64(&self.plas_j[start..end], &mut self.plas_p[start..end], dt);
+            }
         }
 
         // 8. add ρ·P(t,r) to radial_pto (see apply_plasma_real's step 8 doc)
@@ -1372,12 +1443,32 @@ impl CpuNativeSim {
             }
         }
         if let Some(ref fft) = self.fft_r2c_over {
-            for r in 0..n_r {
-                let spec_start = r * n_spec_over;
-                let time_start = r * n_time_over;
-                let spec_col = &mut self.radial_eoo[spec_start..spec_start + n_spec_over];
-                let time_col = &mut self.radial_eto[time_start..time_start + n_time_over];
-                fft.inverse(spec_col, time_col);
+            // BACKLOG.md S2 item 2: each r-column's inverse FFT reads/writes
+            // a disjoint slice of `radial_eoo`/`radial_eto` — FFTW's
+            // `fftw_execute_dft_r2c`/`_c2r` (what `RealFft1d::inverse` calls)
+            // is documented thread-safe against one shared plan with
+            // distinct buffers (see `fftw.rs`'s `RealFft1d`-`Sync` doc), so
+            // this is safe without any per-worker scratch.
+            if self.n_threads > 1 {
+                let n_threads = self.n_threads;
+                let pool = self.thread_pool.get_or_insert_with(|| {
+                    rayon::ThreadPoolBuilder::new().num_threads(n_threads).build()
+                        .expect("failed to build rayon thread pool for native RHS (BACKLOG.md S2)")
+                });
+                let eoo = &mut self.radial_eoo;
+                let eto = &mut self.radial_eto;
+                pool.install(|| {
+                    eoo.par_chunks_mut(n_spec_over).zip(eto.par_chunks_mut(n_time_over))
+                        .for_each(|(spec_col, time_col)| fft.inverse(spec_col, time_col));
+                });
+            } else {
+                for r in 0..n_r {
+                    let spec_start = r * n_spec_over;
+                    let time_start = r * n_time_over;
+                    let spec_col = &mut self.radial_eoo[spec_start..spec_start + n_spec_over];
+                    let time_col = &mut self.radial_eto[time_start..time_start + n_time_over];
+                    fft.inverse(spec_col, time_col);
+                }
             }
             let inv_nto = self.fft_norm_over;
             for v in &mut self.radial_eto { *v *= inv_nto; }
@@ -1432,12 +1523,27 @@ impl CpuNativeSim {
         // ── Step 6: to_freq! per r-column (RealGrid r2c) ─────────────────────────
         let scale_inv2 = (n_spec - 1) as f64 / (n_spec_over - 1) as f64;
         if let Some(ref fft) = self.fft_r2c_over {
-            for r in 0..n_r {
-                let time_start = r * n_time_over;
-                let spec_start = r * n_spec_over;
-                let time_col = &mut self.radial_pto[time_start..time_start + n_time_over];
-                let spec_col = &mut self.radial_poo[spec_start..spec_start + n_spec_over];
-                fft.forward(time_col, spec_col);
+            // Same disjoint-slices argument as Step 1 above.
+            if self.n_threads > 1 {
+                let n_threads = self.n_threads;
+                let pool = self.thread_pool.get_or_insert_with(|| {
+                    rayon::ThreadPoolBuilder::new().num_threads(n_threads).build()
+                        .expect("failed to build rayon thread pool for native RHS (BACKLOG.md S2)")
+                });
+                let pto = &mut self.radial_pto;
+                let poo = &mut self.radial_poo;
+                pool.install(|| {
+                    pto.par_chunks_mut(n_time_over).zip(poo.par_chunks_mut(n_spec_over))
+                        .for_each(|(time_col, spec_col)| fft.forward(time_col, spec_col));
+                });
+            } else {
+                for r in 0..n_r {
+                    let time_start = r * n_time_over;
+                    let spec_start = r * n_spec_over;
+                    let time_col = &mut self.radial_pto[time_start..time_start + n_time_over];
+                    let spec_col = &mut self.radial_poo[spec_start..spec_start + n_spec_over];
+                    fft.forward(time_col, spec_col);
+                }
             }
         }
         self.ks[idx].fill(Complex::new(0.0, 0.0));
@@ -1487,12 +1593,29 @@ impl CpuNativeSim {
             }
         }
         if let Some(ref fft) = self.fft_c2c_over {
-            for r in 0..n_r {
-                let spec_start = r * no;
-                let time_start = r * no;
-                let spec_col = &mut self.radial_eoo[spec_start..spec_start + no];
-                let time_col = &mut self.radial_eto_c[time_start..time_start + no];
-                fft.inverse(spec_col, time_col);
+            // Same disjoint-column-slices argument as rhs_radial's Step 1
+            // (BACKLOG.md S2 item 2) — `ComplexFft1d` is `Sync` for the
+            // same reason.
+            if self.n_threads > 1 {
+                let n_threads = self.n_threads;
+                let pool = self.thread_pool.get_or_insert_with(|| {
+                    rayon::ThreadPoolBuilder::new().num_threads(n_threads).build()
+                        .expect("failed to build rayon thread pool for native RHS (BACKLOG.md S2)")
+                });
+                let eoo = &mut self.radial_eoo;
+                let eto_c = &mut self.radial_eto_c;
+                pool.install(|| {
+                    eoo.par_chunks_mut(no).zip(eto_c.par_chunks_mut(no))
+                        .for_each(|(spec_col, time_col)| fft.inverse(spec_col, time_col));
+                });
+            } else {
+                for r in 0..n_r {
+                    let spec_start = r * no;
+                    let time_start = r * no;
+                    let spec_col = &mut self.radial_eoo[spec_start..spec_start + no];
+                    let time_col = &mut self.radial_eto_c[time_start..time_start + no];
+                    fft.inverse(spec_col, time_col);
+                }
             }
             let inv_nto = self.fft_norm_over;
             for v in &mut self.radial_eto_c { *v *= inv_nto; }
@@ -1548,12 +1671,27 @@ impl CpuNativeSim {
         // ── Step 6: to_freq! per r-column (EnvGrid c2c) ──────────────────────────
         let scale_inv2 = n as f64 / no as f64;
         if let Some(ref fft) = self.fft_c2c_over {
-            for r in 0..n_r {
-                let time_start = r * no;
-                let spec_start = r * no;
-                let time_col = &mut self.radial_pto_c[time_start..time_start + no];
-                let spec_col = &mut self.radial_poo[spec_start..spec_start + no];
-                fft.forward(time_col, spec_col);
+            // Same disjoint-column-slices argument as Step 1 above.
+            if self.n_threads > 1 {
+                let n_threads = self.n_threads;
+                let pool = self.thread_pool.get_or_insert_with(|| {
+                    rayon::ThreadPoolBuilder::new().num_threads(n_threads).build()
+                        .expect("failed to build rayon thread pool for native RHS (BACKLOG.md S2)")
+                });
+                let pto_c = &mut self.radial_pto_c;
+                let poo = &mut self.radial_poo;
+                pool.install(|| {
+                    pto_c.par_chunks_mut(no).zip(poo.par_chunks_mut(no))
+                        .for_each(|(time_col, spec_col)| fft.forward(time_col, spec_col));
+                });
+            } else {
+                for r in 0..n_r {
+                    let time_start = r * no;
+                    let spec_start = r * no;
+                    let time_col = &mut self.radial_pto_c[time_start..time_start + no];
+                    let spec_col = &mut self.radial_poo[spec_start..spec_start + no];
+                    fft.forward(time_col, spec_col);
+                }
             }
         }
         self.ks[idx].fill(Complex::new(0.0, 0.0));
@@ -2416,6 +2554,49 @@ unsafe extern "C" fn modal_integrand_v_full(
     match result {
         Ok(()) => 0,
         Err(_) => 1,
+    }
+}
+
+/// Thin wrapper making a raw pointer `Send + Sync` for use inside a rayon
+/// closure — BACKLOG.md S2 item 2 (`apply_plasma_radial`'s per-column
+/// parallelization). Safe here because the pointee (the ionization-rate
+/// LUT, `PptIonizationRate`/`AdkIonizationRate`) is: (a) owned by Julia and
+/// valid for the lifetime of the enclosing `RustNativeStepper` — same
+/// invariant `plasma_ion_ptr`/`plasma_adk_ptr` already document; (b) never
+/// mutated after construction — only `.rate(...)`, a pure read, is called
+/// through it — so concurrent reads from multiple rayon workers are
+/// race-free. Raw pointers are neither `Send` nor `Sync` by default in
+/// Rust (a conservative blanket default, not a specific hazard here), so
+/// this wrapper exists purely to let the borrow/thread checker see what is
+/// already true of the underlying data.
+struct ReadOnlyPtr<T>(*const T);
+// Manual impls (not `#[derive]`): `*const T` is `Copy` for any `T`, but
+// `#[derive(Copy)]` on a generic struct naively adds a `T: Copy` bound,
+// which `PptIonizationRate`/`AdkIonizationRate` don't need to satisfy.
+impl<T> Clone for ReadOnlyPtr<T> {
+    fn clone(&self) -> Self { *self }
+}
+impl<T> Copy for ReadOnlyPtr<T> {}
+unsafe impl<T> Send for ReadOnlyPtr<T> {}
+unsafe impl<T> Sync for ReadOnlyPtr<T> {}
+
+/// Free-function twin of `plasma_rate` (no `&self`) for use inside a rayon
+/// closure that also holds disjoint `&mut self.field` borrows — calling
+/// the `&self` method there would conservatively conflict even though it
+/// only touches `plasma_is_adk`/`plasma_adk_ptr`/`plasma_ion_ptr`. Same
+/// logic as `plasma_rate`, verbatim.
+fn plasma_rate_at(
+    is_adk: bool,
+    adk_ptr: ReadOnlyPtr<crate::ionization::AdkIonizationRate>,
+    ion_ptr: ReadOnlyPtr<crate::ionization::PptIonizationRate>,
+    e_abs: f64,
+) -> f64 {
+    if is_adk {
+        let ion = unsafe { &*adk_ptr.0 };
+        ion.rate(e_abs).unwrap_or(0.0)
+    } else {
+        let ion = unsafe { &*ion_ptr.0 };
+        ion.rate(e_abs).unwrap_or_else(|_| ion.rate(ion.e_max).unwrap_or(0.0))
     }
 }
 

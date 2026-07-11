@@ -905,6 +905,30 @@ mutable struct RustNativeStepper{T<:AbstractArray}
     err::Float64
     errlast::Float64
     _handle::RustNativeSimHandle
+    # GC-safety: `_handle`'s Rust-side `NativeSim` stores *raw pointers* into
+    # a small number of Julia-owned, Rust-allocated objects that are NOT
+    # copied at setup time (unlike e.g. the Raman/dispersion oscillator
+    # data, which Rust copies into its own `Vec`s once and never touches
+    # the original Julia pointer again) — specifically the PPT/ADK
+    # ionization-rate handle (`plasma_ion_ptr`/`plasma_adk_ptr` in
+    # `native.rs`), re-dereferenced on every `native_step` call for the
+    # stepper's entire lifetime. Those handles (`RustIonizationHandle`/
+    # `RustAdkHandle` in `Ionisation.jl`) carry a GC finalizer that frees
+    # the underlying Rust memory. Before this field existed, nothing kept
+    # them Julia-reachable past construction (`RustNativeStepper` never
+    # stored `f!`/`irf`), so Julia's GC — which runs concurrently with a
+    # blocking `ccall`, having no visibility into native Rust threads still
+    # holding the raw pointer — could finalize (free) the handle mid-`solve`,
+    # causing a use-after-free. Confirmed as the root cause of BACKLOG.md S2
+    # Phase 3's reverted heap-corruption bug: reproduced the crash (a rayon
+    # worker segfaulting inside `PptIonizationRate::rate`'s `Vec` access),
+    # confirmed `evaluate()`'s binary search/`get_unchecked` is correct and
+    # thread-safe in isolation, and traced the actual defect to this missing
+    # GC root — threading only widened the race window (longer-lived worker
+    # threads, more concurrent allocation pressure), it didn't cause the
+    # unsoundness. Every Julia object referenced here must simply stay
+    # alive; nothing reads through `_gc_roots` directly.
+    _gc_roots::Vector{Any}
 end
 
 function RustNativeStepper(linop, y0, t, dt; kwargs...)
@@ -937,7 +961,8 @@ end
 
 function RustNativeStepper(f!, linop, y0, t, dt;
                             rtol=1e-6, atol=1e-10, safety=0.9, max_dt=Inf, min_dt=0,
-                            locextrap=true, norm=weaknorm, flength=Inf)
+                            locextrap=true, norm=weaknorm, flength=Inf,
+                            native_threads::Integer=Threads.nthreads())
     n = length(y0)
     is_zdep_mode_avg = linop isa Luna.Capillary.ZDepLinopMarcatili
     is_zdep_free_linop = linop isa Luna.LinearOps.ZDepLinopFree
@@ -952,6 +977,12 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     end
 
     handle.ptr == C_NULL && error("init_native_sim failed")
+
+    # See `RustNativeStepper`'s `_gc_roots` field doc for why this exists:
+    # collects strong references to every Julia object whose Rust-side
+    # pointer `_handle` stores persistently (re-dereferenced on later
+    # `native_step` calls), so Julia's GC can't finalize them mid-solve.
+    gc_roots = Any[]
 
     is_mode_avg = f! isa Luna.NonlinearRHS.TransModeAvg
     is_radial = f! isa Luna.NonlinearRHS.TransRadial
@@ -1042,12 +1073,14 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     check_ffi(rc, "native_set_fftw_plans")
 
     # BACKLOG.md S2 item 1: rayon thread count for later-phase parallel RHS
-    # seams. `Threads.nthreads()` is Julia's own thread count — automatic,
-    # not something users set separately. `n<=1` is sequential on the Rust
-    # side (the pre-S2 default), so single-threaded Julia sessions see no
-    # behavior change.
+    # seams. Defaults to `Threads.nthreads()` (Julia's own thread count) —
+    # automatic, not something users set separately — but can be overridden
+    # via `native_threads` (a Rust-side-only rayon thread count, independent
+    # of Julia's own threading model) for equivalence testing without
+    # restarting Julia. `n<=1` is sequential on the Rust side (the pre-S2
+    # default), so single-threaded Julia sessions see no behavior change.
     rc = ccall((:native_set_threads, _LIBLUNA_RUST_RK45), Cint,
-          (Ptr{Cvoid}, Csize_t), handle.ptr, Threads.nthreads())
+          (Ptr{Cvoid}, Csize_t), handle.ptr, native_threads)
     check_ffi(rc, "native_set_threads")
 
     # BACKLOG.md S5.2: deterministic mode. `LUNA_NATIVE_DETERMINISTIC=1`
@@ -1188,6 +1221,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                         handle.ptr, irf.rust_handle.ptr,
                         r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt, density)
                     check_ffi(rc, "native_set_plasma_params"; ineligible=true)
+                    push!(gc_roots, irf.rust_handle)
                 elseif irf isa Luna.Ionisation.IonRateADK &&
                         !isnothing(irf.rust_handle) &&
                         irf.rust_handle.ptr != C_NULL
@@ -1198,6 +1232,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                         handle.ptr, irf.rust_handle.ptr,
                         r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt, density)
                     check_ffi(rc, "native_set_plasma_params_adk"; ineligible=true)
+                    push!(gc_roots, irf.rust_handle)
                 else
                     throw(NativeIneligible("plasma detected but no Rust ionisation handle is " *
                           "available (library missing, or both LUNA_USE_RUST_IONISATION and " *
@@ -1460,6 +1495,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                         handle.ptr, irf.rust_handle.ptr,
                         r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt, density)
                     check_ffi(rc, "native_set_plasma_params"; ineligible=true)
+                    push!(gc_roots, irf.rust_handle)
                 elseif irf isa Luna.Ionisation.IonRateADK &&
                         !isnothing(irf.rust_handle) &&
                         irf.rust_handle.ptr != C_NULL
@@ -1470,6 +1506,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                         handle.ptr, irf.rust_handle.ptr,
                         r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt, density)
                     check_ffi(rc, "native_set_plasma_params_adk"; ineligible=true)
+                    push!(gc_roots, irf.rust_handle)
                 else
                     throw(NativeIneligible("plasma detected but no Rust ionisation handle is " *
                           "available (library missing, or both LUNA_USE_RUST_IONISATION and " *
@@ -1815,6 +1852,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                             handle.ptr, irf.rust_handle.ptr,
                             r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt, density)
                         check_ffi(rc, "native_set_plasma_params"; ineligible=true)
+                        push!(gc_roots, irf.rust_handle)
                     elseif irf isa Luna.Ionisation.IonRateADK &&
                             !isnothing(irf.rust_handle) &&
                             irf.rust_handle.ptr != C_NULL
@@ -1823,6 +1861,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                             handle.ptr, irf.rust_handle.ptr,
                             r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt, density)
                         check_ffi(rc, "native_set_plasma_params_adk"; ineligible=true)
+                        push!(gc_roots, irf.rust_handle)
                     else
                         throw(NativeIneligible("plasma detected but no Rust ionisation handle is " *
                               "available (library missing, or both LUNA_USE_RUST_IONISATION and " *
@@ -1888,7 +1927,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     RustNativeStepper(
         copy(y0), copy(y0), float(t), float(t), float(dt), float(dt),
         float(rtol), float(atol), float(safety), float(max_dt), float(min_dt),
-        locextrap, false, 0.0, 0.0, handle
+        locextrap, false, 0.0, 0.0, handle, gc_roots
     )
 end
 

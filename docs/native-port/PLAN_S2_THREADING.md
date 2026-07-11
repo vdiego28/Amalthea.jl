@@ -1,18 +1,28 @@
 # Plan: BACKLOG.md S2 — Threading the native RHS
 
-Status: **Phase 1 done (2026-07-10). Phase 2 (measurement) done — result
-justified proceeding. Phase 3 was implemented, committed, pushed, then
-REVERTED (2026-07-10) after a post-push wall-clock benchmark surfaced an
-intermittent segfault root-caused to `apply_plasma_radial`'s parallel
-branch (see BACKLOG.md's S2 entry for the full postmortem).** A re-attempt
-needs a safe redesign (e.g. per-worker scratch/FFTW handles instead of
-shared-pointer/shared-plan patterns) verified under ASAN/valgrind, not
-just bit-identical single-process unit tests — those tests passed and
-still missed this bug, because they never exercised "one stepper
-constructed with n_threads>1, then a *different*, later, sequential
-stepper in the same process," which is the pattern that reproduced the
-corruption. See BACKLOG.md's S2 entry for the live status line; this file
-is the durable plan (survives a context reset), not the status tracker.
+Status: **Phases 1-3 (radial: threading plumbing, measurement, FFT+plasma
+parallelization) all done. RE-LANDED 2026-07-11.** Phase 3 was originally
+implemented, committed, pushed, then REVERTED (2026-07-10) after a
+post-push wall-clock benchmark surfaced an intermittent segfault. The
+revert's isolation experiment correctly implicated
+`apply_plasma_radial`'s parallel branch but misdiagnosed the mechanism as
+a Rust-side out-of-bounds write. **Actual root cause (found 2026-07-11 via
+ASAN + Valgrind + a direct crash repro with `coredumpctl`/gdb): a missing
+GC root, not a memory-safety bug in the parallel code.**
+`native_set_plasma_params` stores a raw pointer into a Julia-owned,
+Rust-allocated `PptIonizationRate`/`AdkIonizationRate`, re-dereferenced on
+every future `native_step` call — but `RustNativeStepper` never kept a
+Julia-level reference to the owning handle after construction, so Julia's
+GC (which runs concurrently with a blocking `ccall`, invisible to native
+Rust threads) could finalize/free it mid-solve. Threading only widened
+the race window; the same latent bug existed on the sequential path too.
+Fixed via a new `_gc_roots::Vector{Any}` field on `RustNativeStepper`
+(`RK45.jl`) that roots every such handle for the stepper's lifetime — see
+BACKLOG.md's S2 entry for the full postmortem, repro method, and
+verification (8-cycle stress repro with forced `GC.gc()` between cycles,
+full 7-group gate). This file is the durable plan (survives a context
+reset), not the status tracker — see BACKLOG.md's S2 entry for the live
+status line.
 
 ## Context
 

@@ -1080,42 +1080,96 @@ exists (Phase G.3).*
      cost this investigation surfaced, which is where the real headroom
      appears to be, rather than the small exp-linop multiply.
 
-### 🟡 S2 — Threading the native RHS (suggestion 2)
-*Started 2026-07-10. Radial geometry only this pass (items 1-2); modal
-(item 3) and free-space (item 4) left as separate, not-started follow-ups
-— see `docs/native-port/PLAN_S2_THREADING.md` for the full phased plan.*
+### 🟢 S2 — Threading the native RHS (suggestion 2) — re-landed 2026-07-11, root cause fixed
+*Started 2026-07-10, reverted same day, root-caused and re-landed
+2026-07-11. Radial geometry only this pass (items 1-2); modal (item 3)
+and free-space (item 4) left as separate, not-started follow-ups — see
+`docs/native-port/PLAN_S2_THREADING.md` for the full phased plan.*
 
-**Phase 3 REVERTED 2026-07-10 — unsound, do not re-land as-is.** After
-Phase 3 was committed/pushed (`d15a25c`), a post-hoc wall-clock benchmark
-(`bench_threads.jl`-style: `n_threads=1`→4 at N=32 then N=128, plasma
-enabled throughout, same process) surfaced an intermittent segfault
-inside `PptIonizationRate::rate`, triggered on a *later*, unrelated,
-purely-sequential (`n_threads=1`) stepper construction — only when an
-*earlier* stepper construction in the same process used `n_threads>1`.
-Root-caused by isolation: replacing the earlier threaded call with a
-Kerr-only config (no plasma at all, so `apply_plasma_radial`'s parallel
-branch is never exercised — only the FFT-loop `par_chunks_mut` seam is)
-made the later sequential plasma call succeed cleanly. This implicates
-`apply_plasma_radial`'s parallel branch (the `ReadOnlyPtr`/
-`plasma_rate_at` free-function pattern) as the corruption source, not the
-FFT-loop `unsafe impl Sync for ComplexFft1d/RealFft1d`. The "crash occurs
-later, in unrelated code, after an earlier concurrent call" signature is
-classic heap corruption (an out-of-bounds write during the `n_threads=4`
-plasma call corrupts the allocator's view of nearby memory; the next,
-unrelated allocation that lands there — e.g. a fresh `PptIonizationRate`'s
-spline LUT — reads garbage and crashes). The bit-identical
-`n_threads=1`-vs-4 unit tests added alongside Phase 3 did NOT catch this:
-they exercise one stepper per test file/process, never the
-"`n_threads=4` construction, then a *different*, later, sequential
-construction in the same process" pattern that surfaced the corruption —
-a real gap in the verification performed before the original push. Full
-commit reverted (`fftw.rs`'s `unsafe impl Sync`, `native.rs`'s
-`ReadOnlyPtr`/`plasma_rate_at`/parallel FFT-and-plasma branches,
-`RK45.jl`'s `native_threads` kwarg, both bit-identical tests) pending a
-safe re-design — e.g. giving each rayon worker its own scratch/FFTW
-handle instead of sharing one plan/pointer set across threads, verified
-under ASAN/valgrind rather than just bit-identical single-process tests,
-before re-attempting item 2.
+**Phase 3 REVERTED 2026-07-10, RE-LANDED 2026-07-11 — root cause was a
+missing GC root, not a Rust-side memory-safety bug in the parallel code
+itself.** After Phase 3 was committed/pushed (`d15a25c`), a post-hoc
+wall-clock benchmark (`bench_threads.jl`-style: `n_threads=1`→4 at N=32
+then N=128, plasma enabled throughout, same process) surfaced an
+intermittent segfault inside `PptIonizationRate::rate`. The revert
+commit's isolation experiment (Kerr-only config never crashed) correctly
+implicated `apply_plasma_radial`'s parallel branch, but its diagnosis —
+"an out-of-bounds write during the `n_threads=4` plasma call corrupts the
+allocator's view of nearby memory" — was wrong about *where* the bug
+lived.
+
+**Actual root cause, found 2026-07-11 by installing ASAN
+(`rustup +nightly` with `-Z build-std` — plain `-Z sanitizer=address`
+silently fails to catch heap corruption on this toolchain because the
+prebuilt stdlib allocator shim isn't itself instrumented) and Valgrind,
+then reproducing the crash directly:**
+- An isolated Rust-only repro of `apply_plasma_radial()` alone (40 varied
+  cycles, real ASAN instrumentation) never crashed — ruling out a
+  self-contained out-of-bounds write in that function.
+- The **full pipeline** (checked out `d15a25c` into a worktree, ran a
+  real `RustNativeStepper` radial+plasma solve at `native_threads=4`)
+  reproduced a genuine `SIGSEGV` reliably. `coredumpctl`/gdb's backtrace
+  showed a rayon worker thread segfaulting *inside*
+  `PptIonizationRate::rate()`, called concurrently by multiple worker
+  threads via `plasma_rate_at`/`rayon::iter::plumbing::bridge_producer_consumer`.
+- Manual review of `CubicSplineLUT::evaluate()`'s binary search and its
+  `get_unchecked(low)` call: logically correct and thread-safe as
+  written — `low` is provably `< segments.len()` by the search's own
+  invariant, and it only reads immutable `&self` data with no interior
+  mutability. So the crash meant the `Vec<SplineSegment>`'s own heap
+  metadata (pointer/len/capacity) was **already corrupted** before this
+  call ran.
+- Tracing how `plasma_ion_ptr`/`plasma_adk_ptr` (`*const
+  PptIonizationRate`/`*const AdkIonizationRate` in `native.rs`) get set
+  found the real defect: `native_set_plasma_params` stores this raw
+  pointer *directly*, re-dereferencing it on every future `native_step`
+  call for the sim's entire lifetime — unlike every other kernel's
+  setup (Raman/dispersion oscillator data), which Rust copies into its
+  own `Vec` once and never touches the original pointer again. The
+  pointee is Julia-allocated-and-owned: `Ionisation.jl`'s
+  `RustIonizationHandle`/`RustAdkHandle` carry a GC finalizer
+  (`free_ppt_ionization_lut`/equivalent) that frees the Rust memory.
+  `RustNativeStepper` (`RK45.jl`) never stored a Julia-level reference
+  to `irf`/`irf.rust_handle` after construction — only the raw pointer
+  value crossed the FFI boundary. Since Julia's `ccall` releases the GC
+  safepoint for the duration of a foreign call (letting other Julia
+  threads/the GC run concurrently, with *no visibility into native Rust
+  threads* still holding the pointer), the handle was eligible for GC
+  finalization **at any point after construction**, including mid-solve
+  while rayon worker threads were still concurrently dereferencing it —
+  a textbook FFI use-after-free. Threading only widened the race window
+  (longer-lived worker threads doing more concurrent work, more
+  allocation pressure to trigger a GC cycle during the window); it did
+  not cause the unsoundness — the same latent bug existed on the
+  sequential path too, just with a race window too small to observe in
+  practice.
+- **Fix** (applied to `main` independently of re-landing threading, since
+  it's a real latent bug regardless): added a `_gc_roots::Vector{Any}`
+  field to `RustNativeStepper` (`RK45.jl`) that the constructor populates
+  with every Julia handle object (`irf.rust_handle`) whose raw pointer
+  the Rust-side `NativeSim` stores persistently, across all three
+  geometries (mode-avg/radial/modal) and both ionization models
+  (PPT/ADK) — six call sites total. Nothing reads `_gc_roots`; its only
+  job is keeping those objects Julia-reachable for the stepper's whole
+  lifetime, preventing early finalization.
+- **Verified the fix holds**: re-applied the Phase 3 diff (`fftw.rs`'s
+  `unsafe impl Sync`, `native.rs`'s `ReadOnlyPtr`/`plasma_rate_at`/
+  parallel FFT-and-plasma branches, `RK45.jl`'s `native_threads` kwarg,
+  both bit-identical tests) on top of the GC-root fix, then re-ran the
+  exact crash-reproducing script for 8 cycles alternating N=32/N=128 and
+  `native_threads` 1/4 with `GC.gc()` forced between every cycle (to
+  maximize GC pressure) — all 8 completed cleanly, versus crashing at
+  cycle 2 before the fix. `n_threads=1` and `n_threads=4` results were
+  bit-identical across every repeated size (confirmed via `yn` norm
+  equality, not just non-crashing). Full 7-group gate green (see "Done
+  (recent)").
+- **Lesson for future FFI kernel wiring**: any `native_set_*_params` call
+  that stores a raw pointer into Julia-owned, Rust-allocated memory
+  *persistently* (re-dereferenced across multiple future calls, not just
+  copied once at setup) needs its Julia-side handle rooted somewhere
+  that outlives construction — `RustNativeStepper._gc_roots` is that
+  place going forward. Kernels that copy data into their own `Vec` at
+  setup time (the common pattern) don't need this.
 1. 🟢 **Done 2026-07-10.** `native_set_threads(handle, n)` FFI, wired from
    `Threads.nthreads()`, default 1 (bit-identical to today — verified via
    full 7-group gate, purely additive plumbing, `n_threads` not yet read

@@ -378,6 +378,18 @@ impl Drop for ComplexFft1d {
     }
 }
 
+/// Safe: `forward`/`inverse` only ever call `fftw_execute_dft` — this
+/// file's own module doc states FFTW's contract that `fftw_execute*` (only
+/// `fftw_plan_*` is unsafe to call concurrently) is reentrant/thread-safe
+/// when invoked against one shared plan with **distinct** buffer
+/// arguments, which is exactly how BACKLOG.md S2 (threading the native
+/// RHS, `native.rs`'s `rhs_radial`) uses this from multiple rayon workers
+/// — each worker's `&mut [Complex<f64>]` chunk is a disjoint slice of the
+/// caller's own column-major buffer. The raw `FftwPlan`/function-pointer
+/// fields otherwise block the auto-derived `Sync` Rust would normally
+/// infer were absent.
+unsafe impl Sync for ComplexFft1d {}
+
 /// A real↔complex 1-D plan pair (RealGrid `rfft`/`irfft`).
 /// Time length `n` (real), spectral length `n/2+1` (complex).
 pub struct RealFft1d {
@@ -439,6 +451,12 @@ impl Drop for RealFft1d {
         unsafe { (self.destroy_plan)(self.r2c); (self.destroy_plan)(self.c2r); }
     }
 }
+
+/// Safe for the same reason as `ComplexFft1d`'s `Sync` impl above —
+/// `forward`/`inverse` only call `fftw_execute_dft_r2c`/`_c2r`, which
+/// FFTW documents as thread-safe against one shared plan with distinct
+/// buffers.
+unsafe impl Sync for RealFft1d {}
 
 /// A real↔complex 3-D plan pair (`TransFree`'s `plan_rfft(x, (1,2,3))` —
 /// RealGrid free-space, transform spans all three axes: time + 2 transverse).
