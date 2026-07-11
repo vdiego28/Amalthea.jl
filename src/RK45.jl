@@ -1050,6 +1050,30 @@ function RustNativeStepper(f!, linop, y0, t, dt;
           (Ptr{Cvoid}, Csize_t), handle.ptr, Threads.nthreads())
     check_ffi(rc, "native_set_threads")
 
+    # BACKLOG.md S5.2: deterministic mode. `LUNA_NATIVE_DETERMINISTIC=1`
+    # forces the radial-geometry QDHT to skip the BLAS-3 `dgemm` path
+    # (`LUNA_QDHT_BLAS`) even if it's enabled, using the row-parallel Rayon
+    # fallback instead. The native path is already run-to-run deterministic
+    # on one machine by default — every parallel seam here (the QDHT
+    # fallback, the older per-kernel `LUNA_USE_RUST_QDHT` batch loops) is
+    # embarrassingly parallel with no cross-thread reduction, and native
+    # FFTW plans only ever use `FFTW_ESTIMATE`. The real lever this flag
+    # has: `BLAS_API` (luna-rust's `blas.rs`) is a process-global
+    # `OnceLock`, populated only by the per-kernel
+    # `LUNA_USE_RUST_QDHT`+`LUNA_QDHT_BLAS` path — once that happens
+    # anywhere in the process, every *later* native-path QDHT call becomes
+    # eligible for BLAS too. `deterministic=true` makes that eligibility
+    # invariant to whether some other part of the process touched BLAS,
+    # and to which BLAS library/thread-count is linked — not a claim that
+    # a fixed BLAS state is otherwise repeat-run unstable at these problem
+    # sizes. Default off (matches every prior behavior exactly).
+    # **Not guaranteed:** bit-identical results across different
+    # machines/CPU targets — the crate is built with `target-cpu=native`,
+    # so a different build host takes a different SIMD/libm path.
+    rc = ccall((:native_set_deterministic, _LIBLUNA_RUST_RK45), Cint,
+          (Ptr{Cvoid}, Cint), handle.ptr, Luna.Config.backend_config().deterministic ? 1 : 0)
+    check_ffi(rc, "native_set_deterministic")
+
     # Set parameters if mode-averaged
     if is_mode_avg
         norm_func = f!.norm!

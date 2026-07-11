@@ -208,6 +208,10 @@ impl NativeBackend for CudaNativeSim {
         0 // No-op: GPU path has no CPU rayon RHS threading to configure.
     }
 
+    unsafe fn set_deterministic(&mut self, _on: c_int) -> i32 {
+        0 // No-op: GPU path has no CPU BLAS/Rayon QDHT fallback to gate.
+    }
+
     unsafe fn set_mode_avg_params(&mut self, n_time: size_t, n_time_over: size_t, towin: *const c_double, _owin: *const c_double, _sidx: *const u8, _pre_re: *const c_double, _pre_im: *const c_double, _beta: *const c_double, kerr_fac: c_double, _nlscale: c_double, _sqrt_aeff: c_double) -> i32 {
         self.n_time = n_time;
         self.n_time_over = n_time_over;

@@ -587,6 +587,14 @@ pub struct CpuNativeSim {
     /// `n_threads > 1` — never touches rayon's process-global pool (see
     /// `set_threads`'s doc on the trait for why).
     pub thread_pool: Option<rayon::ThreadPool>,
+
+    // ── S5.2: deterministic mode (BACKLOG.md) ─────────────────────────────────
+    /// When `true`, skip the QDHT BLAS-3 path (`LUNA_QDHT_BLAS`) even if a
+    /// BLAS library was loaded, forcing the row-parallel Rayon fallback
+    /// instead — see `set_deterministic`'s doc on the trait for why this is
+    /// the one real lever today (no `NativeBackend` RHS code reads
+    /// `n_threads` yet; S2 Phase 3, which would have, was reverted).
+    pub deterministic: bool,
 }
 
 /// Analytic-signal intensity `1/2·|hilbert(field)|²`, matching
@@ -836,6 +844,7 @@ impl CpuNativeSim {
             zdep_modal_last_z: f64::NAN,
             n_threads: 1,
             thread_pool: None,
+            deterministic: false,
         }
     }
 
@@ -2464,6 +2473,33 @@ pub trait NativeBackend {
     /// multiple sims/tests coexisting in one process never contend over a
     /// single global configuration.
     unsafe fn set_threads(&mut self, n: size_t) -> i32;
+    /// BACKLOG.md S5.2: forces the QDHT BLAS-3 `dgemm` path (opt-in via
+    /// `LUNA_QDHT_BLAS`) to be skipped in favor of the row-parallel Rayon
+    /// fallback, regardless of whether a BLAS library was loaded.
+    ///
+    /// **What this actually guards against:** the default native path is
+    /// already run-to-run deterministic on one machine — every other
+    /// parallel seam in the codebase (the QDHT fallback itself, the older
+    /// per-kernel `LUNA_USE_RUST_QDHT` batch loops in `ffi.rs`) is
+    /// embarrassingly parallel (each output row/column computed
+    /// independently, no cross-thread reduction), and FFTW native plans
+    /// only ever use `FFTW_ESTIMATE`, so thread count and repeated runs
+    /// don't change the result even with `deterministic=false`. The one
+    /// real lever this flag has is `BLAS_API`: it's a process-global
+    /// `OnceLock`, populated once (if ever) by the per-kernel
+    /// `LUNA_USE_RUST_QDHT`+`LUNA_QDHT_BLAS` path, and once populated it
+    /// silently makes *every later* native-path QDHT call in that process
+    /// eligible for the BLAS-3 route too. `deterministic=true` is what
+    /// makes that eligibility **invariant to whether some other part of
+    /// the process happened to touch BLAS**, and to which BLAS
+    /// implementation/thread-count is linked — it is not claiming a
+    /// same-process, same-BLAS-state run is otherwise non-reproducible
+    /// (at the problem sizes here, a single-threaded/sub-threshold BLAS
+    /// call is itself almost certainly repeat-run stable). Does **not**
+    /// guarantee bit-identical results across different machines/CPU
+    /// targets (the crate is built with `target-cpu=native`, so a
+    /// different build host takes a different SIMD/libm path).
+    unsafe fn set_deterministic(&mut self, on: c_int) -> i32;
     unsafe fn step(&mut self, yn: *mut Complex<f64>, t_old: f64, t_new: f64, dtn: f64, rtol: f64, atol: f64, safety: f64, max_dt: f64, min_dt: f64, errlast_in: f64, locextrap: i32, result: *mut NativeStepResult) -> i32;
     /// Saves the process's current planner wisdom (accumulated across every
     /// plan created in this process, not just this `NativeSim` — FFTW's
@@ -2627,6 +2663,14 @@ impl NativeBackend for CpuNativeSim {
             // Drop any existing pool so it's rebuilt lazily (correct size)
             // the next time a parallel seam actually runs.
             sim.thread_pool = None;
+        }
+        0
+    }
+    unsafe fn set_deterministic(&mut self, on: c_int) -> i32 {
+        let sim = self;
+        sim.deterministic = on != 0;
+        if let Some(ref mut qdht) = sim.qdht {
+            qdht.set_deterministic(sim.deterministic);
         }
         0
     }
@@ -2814,7 +2858,9 @@ impl NativeBackend for CpuNativeSim {
     s.n_spec_over = if s.is_real { n_time_over / 2 + 1 } else { n_time_over };
 
     let t_mat_sl = unsafe { std::slice::from_raw_parts(t_matrix, n_r * n_r) };
-    s.qdht = Some(QdhtFfiHandle::new(t_mat_sl, n_r, scale_fwd, scale_inv, n_time_over));
+    let mut qdht = QdhtFfiHandle::new(t_mat_sl, n_r, scale_fwd, scale_inv, n_time_over);
+    qdht.set_deterministic(s.deterministic);
+    s.qdht = Some(qdht);
     s.qdht_scale_fwd = scale_fwd;
     s.qdht_scale_inv = scale_inv;
 
@@ -3576,6 +3622,22 @@ pub unsafe extern "C" fn native_set_threads(sim: *mut NativeSim, n: size_t) -> i
     if sim.is_null() { return -1; }
     let s = unsafe { &mut *sim };
     unsafe { s.backend.set_threads(n) }
+}
+
+/// Enables/disables deterministic mode — BACKLOG.md S5.2. `on != 0` skips
+/// the QDHT BLAS-3 path (see `NativeBackend::set_deterministic`'s doc for
+/// why that's the one lever this covers today). Call any time before
+/// `native_set_radial_params` — the flag is also re-applied at radial-QDHT
+/// construction time so call order doesn't matter.
+///
+/// # Safety
+/// `sim` must be a valid, non-null pointer from `init_native_sim`/
+/// `init_cuda_native_sim`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_set_deterministic(sim: *mut NativeSim, on: c_int) -> i32 {
+    if sim.is_null() { return -1; }
+    let s = unsafe { &mut *sim };
+    unsafe { s.backend.set_deterministic(on) }
 }
 
 /// Best-effort planner-wisdom save — BACKLOG.md S1 item 1. Call once, after

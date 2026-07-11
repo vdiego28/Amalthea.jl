@@ -28,6 +28,17 @@ Fields (each `Bool`, default `false` unless noted):
 - `native_wisdom`: `LUNA_NATIVE_FFTW_WISDOM` — on-disk FFTW planner-wisdom
   persistence for the native path (default off; see
   `docs/native-port/PLAN_FFTW_WISDOM_FIX.md`).
+- `deterministic`: `LUNA_NATIVE_DETERMINISTIC` — BACKLOG.md S5.2. Forces
+  both Rust-side QDHT handles — the native-port radial-geometry one
+  (`RK45.jl`'s `native_set_deterministic`) and the older per-kernel
+  `LUNA_USE_RUST_QDHT` one (`NonlinearRHS._make_rust_qdht_handle`) — to
+  skip the BLAS-3 `dgemm` path (`qdht_blas`) even when it's enabled, using
+  the row-parallel Rayon fallback instead. Wiring both matters because
+  `BLAS_API` is a process-global `OnceLock` on the Rust side: only the
+  per-kernel path ever populates it, but once populated it silently makes
+  every later native-path QDHT call in that process BLAS-eligible too —
+  see `native_set_deterministic`'s doc in `RK45.jl` for what this does and
+  does not guarantee.
 """
 Base.@kwdef struct BackendConfig
     native::Bool = true
@@ -39,6 +50,7 @@ Base.@kwdef struct BackendConfig
     qdht::Bool = false
     qdht_blas::Bool = false
     native_wisdom::Bool = false
+    deterministic::Bool = false
 end
 
 _truthy(var, default) = get(ENV, var, default) == "1"
@@ -66,6 +78,7 @@ function backend_config()
         qdht         = _truthy("LUNA_USE_RUST_QDHT", "0"),
         qdht_blas    = _truthy("LUNA_QDHT_BLAS", "0"),
         native_wisdom= _truthy("LUNA_NATIVE_FFTW_WISDOM", "0"),
+        deterministic= _truthy("LUNA_NATIVE_DETERMINISTIC", "0"),
     )
 end
 

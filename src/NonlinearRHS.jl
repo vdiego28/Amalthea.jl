@@ -71,7 +71,13 @@ function _make_rust_qdht_handle(HT, n_time::Int)
               pointer(T_mat_local), Csize_t(n_r), scale_fwd, scale_inv, Csize_t(n_time))
     end
     ptr == C_NULL && (@warn "init_qdht_ffi returned null; QDHT stays on Julia"; return nothing)
-    RustQdhtHandle(ptr)
+    h = RustQdhtHandle(ptr)
+    # BACKLOG.md S5.2: this is the only call site that ever populates the
+    # process-global `BLAS_API` (via `_init_rust_qdht_blas` above), so it's
+    # also where `deterministic` must be applied to actually take effect.
+    ccall((:qdht_ffi_set_deterministic, _LIBLUNA_RUST_RHS), Cint,
+          (Ptr{Cvoid}, Cint), h.ptr, Config.backend_config().deterministic ? 1 : 0)
+    h
 end
 
 # Type-stable dispatch helpers for mul!/ldiv! in the TransRadial hot path

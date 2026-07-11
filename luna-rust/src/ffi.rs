@@ -22,6 +22,11 @@ pub struct QdhtFfiHandle {
     scale_inv: f64,         // 1/scaleRK for ldiv! (inverse, k→r)
     scratch: Vec<f64>,      // 4 × n_r × capacity working space (a_re, a_im, b_re, b_im)
     capacity: usize,        // scratch capacity in n_time units
+    /// BACKLOG.md S5.2: when `true`, skip the BLAS-3 `dgemm` path even if
+    /// `crate::blas::get_blas_api()` succeeds, forcing the row-parallel
+    /// Rayon fallback instead — see `native::NativeBackend::set_deterministic`'s
+    /// doc for why.
+    deterministic: bool,
 }
 
 impl QdhtFfiHandle {
@@ -38,7 +43,11 @@ impl QdhtFfiHandle {
         }
         let capacity = n_time_hint.max(1);
         let scratch = vec![0.0f64; 4 * n_r * capacity];
-        QdhtFfiHandle { t_row_major, n_r, scale_fwd, scale_inv, scratch, capacity }
+        QdhtFfiHandle { t_row_major, n_r, scale_fwd, scale_inv, scratch, capacity, deterministic: false }
+    }
+
+    pub fn set_deterministic(&mut self, on: bool) {
+        self.deterministic = on;
     }
 
     fn ensure_capacity(&mut self, n_time: usize) {
@@ -58,7 +67,7 @@ impl QdhtFfiHandle {
         let block = n_r * n_time;
         self.ensure_capacity(n_time);
 
-        if let Ok(api) = crate::blas::get_blas_api() {
+        if !self.deterministic && let Ok(api) = crate::blas::get_blas_api() {
             // Use BLAS-3 dgemm directly on the col-major array
             self.scratch[..block].copy_from_slice(&data[..block]);
             api.dgemm(
@@ -113,7 +122,7 @@ impl QdhtFfiHandle {
         let block2 = 2 * n_r * n_time; // total f64 elements
         self.ensure_capacity(n_time);
 
-        if let Ok(api) = crate::blas::get_blas_api() {
+        if !self.deterministic && let Ok(api) = crate::blas::get_blas_api() {
             // Use BLAS-3 dgemm directly on the col-major complex array
             // Interleaved complex arrays act exactly as a 2*n_time x n_r real array.
             self.scratch[..block2].copy_from_slice(&data[..block2]);
@@ -219,6 +228,26 @@ pub unsafe extern "C" fn free_qdht_ffi(ptr: *mut QdhtFfiHandle) {
     if !ptr.is_null() {
         unsafe { drop(Box::from_raw(ptr)); }
     }
+}
+
+/// BACKLOG.md S5.2: sets/clears deterministic mode on the per-kernel
+/// (`LUNA_USE_RUST_QDHT`) QDHT handle — `on != 0` skips the BLAS-3 `dgemm`
+/// path (`crate::blas::get_blas_api()`) even when `LUNA_QDHT_BLAS` is
+/// enabled, forcing the row-parallel Rayon fallback instead. Mirrors
+/// `native_set_deterministic`, which covers the resident native-port
+/// radial geometry's own `QdhtFfiHandle` — this one covers the older
+/// per-kernel wiring path (`NonlinearRHS._make_rust_qdht_handle`), the
+/// only call site that ever populates the process-global `BLAS_API`
+/// (`NonlinearRHS._init_rust_qdht_blas`).
+///
+/// # Safety
+/// `ptr` must be a valid, non-null pointer from [`init_qdht_ffi`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn qdht_ffi_set_deterministic(ptr: *mut QdhtFfiHandle, on: c_int) -> i32 {
+    if ptr.is_null() { return -1; }
+    let h = unsafe { &mut *ptr };
+    h.set_deterministic(on != 0);
+    0
 }
 
 /// Batch forward Hankel transform (`mul!`) for a real-valued Julia array.

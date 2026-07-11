@@ -1217,16 +1217,80 @@ the gate test itself was missing.*
   + 14 new assertions).
 
 ### 🟡 S5 — Numerics options (suggestions 10, 11, 12)
-*Not started. Items are independent of each other.*
+*Item 2 done 2026-07-11 (re-scoped, see below). Items 1, 3 not started.*
 1. Mixed-precision spike (item 10) — timeboxed Criterion bench only;
    proceed to real implementation only if >1.4× projected AND the b5−b4
    cancellation analysis (TESTING.md §3) shows the f64-reduced estimate
    keeps the same step sequence on the benchmark case.
-2. Deterministic mode (item 11) — `native_set_deterministic(handle, bool)`
-   forcing sequential reductions + pinning `dispatch.rs` to the portable
-   lane; `deterministic=true` kwarg threaded through `BackendConfig`
-   (hard dependency: S4.1). Test: two runs bit-identical, with a written
-   statement of what's NOT guaranteed (cross-machine libm differences).
+2. 🟢 **Done 2026-07-11 — re-scoped, backlog's own premise was partly
+   wrong.** Deterministic mode (item 11). Investigated before writing any
+   code (per the S1.4/S4 pattern of checking the backlog's premise against
+   current architecture, not just its literal wording):
+   - **"Pinning `dispatch.rs` to the portable lane" — dropped.**
+     `dispatch.rs`'s `SimulationEngine`/`HardwarePath` is a vestigial
+     hardware-path *selector*, never wired into any RHS kernel's actual
+     codegen (same finding class as S1.4: real vectorization comes from
+     `target-cpu=native` at compile time, not a runtime branch this enum
+     could gate). There is nothing to "pin."
+   - **"Forcing sequential reductions" — the default native path already
+     *is* run-to-run deterministic on one machine.** With S2 Phase 3
+     reverted, no RHS code reads `n_threads` yet. Every parallel seam that
+     exists today (the QDHT Rayon fallback, the older per-kernel
+     `LUNA_USE_RUST_QDHT` batch loops in `ffi.rs`) is embarrassingly
+     parallel — each output row/column computed independently with no
+     cross-thread reduction — and native FFTW plans only ever use
+     `FFTW_ESTIMATE` (no wisdom-dependent plan selection by default, see
+     S1 item 1). So a naive "two runs bit-identical" test would pass
+     whether or not a new toggle did anything — and a first implementation
+     attempt shipped exactly that vacuous test before catching it.
+   - **The one real, addressable lever: process-global BLAS-eligibility.**
+     `luna-rust/src/blas.rs`'s `BLAS_API` is an `OnceLock`, populated only
+     by the older per-kernel `LUNA_USE_RUST_QDHT`+`LUNA_QDHT_BLAS` path
+     (`NonlinearRHS._init_rust_qdht_blas`). Once populated, it silently
+     makes *every later* native-path radial-QDHT call in that process
+     BLAS-eligible too, even though nothing in the native construction
+     path asked for it — a process-global-state contamination hazard in
+     the same family as S1 item 1's wisdom-pool finding. BLAS-3 `dgemm`
+     (OpenBLAS/MKL) and the row-parallel Rayon fallback sum in a different
+     order, so which one silently gets taken is a real,
+     configuration-order-dependent effect on the result.
+   - **Fix:** `native_set_deterministic(handle, bool)` FFI (`native.rs`,
+     `NativeBackend` trait + `CpuNativeSim`/`CudaNativeSim` impls) forces
+     the native-port radial `QdhtFfiHandle` to skip the BLAS branch
+     regardless of `BLAS_API` state; a second FFI,
+     `qdht_ffi_set_deterministic` (`ffi.rs`), does the same for the
+     per-kernel handle — needed because that's the only call site that
+     ever populates `BLAS_API` in the first place, so leaving it unwired
+     would make the flag inert exactly where contamination originates.
+     `deterministic::Bool` added to `Config.jl`'s `BackendConfig`
+     (`LUNA_NATIVE_DETERMINISTIC`, default off), read at both call sites
+     (`RK45.jl`'s native construction, `NonlinearRHS._make_rust_qdht_handle`).
+     **What this guarantees: BLAS-eligibility invariance** — the result no
+     longer depends on whether some unrelated earlier construction in the
+     same process touched `LUNA_QDHT_BLAS`, nor on which BLAS
+     implementation/thread-count Julia happens to have linked. **What it
+     does NOT guarantee:** bit-identical results across different
+     machines/CPU targets (`target-cpu=native` means a different build
+     host takes a different SIMD/libm path); it is also not "fixing" a
+     same-process run-to-run instability that was never observed to exist
+     at these problem sizes.
+   - **Test:** `test/test_native_deterministic.jl`, tagged `:rust`.
+     Deliberately does *not* stop at "two runs bit-identical" (that alone
+     can't distinguish a working flag from an inert one, as above) —
+     T1 establishes the two-runs-bit-identical baseline before `BLAS_API`
+     is ever touched; the test then explicitly contaminates process-global
+     `BLAS_API` via `NonlinearRHS._make_rust_qdht_handle` (mirroring a real
+     session that mixes the per-kernel and native-port Rust paths); T2
+     asserts `deterministic=false` vs. `deterministic=true` now produce
+     numerically *different* results (`s_blas.yn != s_det.yn`) — proof the
+     flag actually gates the BLAS branch rather than being unreachable;
+     T3 re-confirms bit-identical repeats under `deterministic=true` even
+     after contamination; T4 confirms toggling back off doesn't crash and
+     still produces a finite result. Gate: full 7-group suite —
+     rust 42111/42111 (42101 baseline + this item's 10 new assertions,
+     zero drift elsewhere), physics/sim-interface/sim-multimode/
+     sim-propagation/io/fields all green (see "Done (recent)" for the
+     dated full run).
 3. 5th-order dense output (item 12) — Shampine's DP5 continuous extension
    in `native.rs::interpolate` (stages already exposed via
    `get_ks_stage`, Phase 8) **and** `RK45.jl`'s `interpC`, same commit —
@@ -1564,6 +1628,29 @@ findings below.
   the package build runs under strict warnings (desired; keeps the Rust code clean).
 
 ## Done (recent)
+
+- ✅ **BACKLOG.md S5.2 — deterministic mode, re-scoped (2026-07-11).** See
+  S5 item 2 above for the full writeup (why "pin `dispatch.rs`" was
+  dropped, why the default native path is already run-to-run deterministic
+  on one machine, and why the real lever turned out to be process-global
+  BLAS-eligibility invariance rather than a run-to-run fix). A first
+  implementation pass shipped a technically-passing but vacuous test
+  (`s1.yn == s2.yn` with the flag never actually reachable, since the
+  native path never touches the process-global `BLAS_API` `OnceLock`
+  itself); caught before commit and fixed by wiring `deterministic` into
+  the per-kernel `LUNA_USE_RUST_QDHT` handle too (the one call site that
+  populates `BLAS_API`) and rewriting the test to force a BLAS-vs-fallback
+  divergence, proving the flag is load-bearing. Full 7-group gate:
+  rust 42111/42111 (42101 baseline + 10 new assertions, zero drift),
+  physics 1645/1657 (12 pre-existing `@test_broken`, unrelated),
+  sim-interface 301/301, sim-multimode 33/33, sim-propagation 18/18,
+  io 2302/2302, fields 334/334 — all green, no regressions.
+  (S2 — threading the native RHS — was deliberately not picked up this
+  pass: Phase 3 was already implemented, committed, pushed, and reverted
+  once for an intermittent heap-corruption segfault that bit-identical
+  single-process unit tests didn't catch, and its own plan document
+  requires ASAN/valgrind verification before a re-attempt. S5.2 was chosen
+  instead as a self-contained, gate-verifiable task.)
 
 - ✅ **GPU-resident stepper (`CudaNativeSim`) verified on real CUDA hardware
   and wired into `RK45.jl` (2026-07-07).** Previously this could never even
