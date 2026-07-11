@@ -43,9 +43,91 @@ We will need CUDA kernels for:
 5. **Cumtrapz:** For plasma (using a work-efficient prefix scan).
 
 ## 7. Scope of V1
-As per `SUGGESTIONS.md`, V1 of `CudaNativeSim` is scoped strictly to **mode-averaged RealGrid Kerr (+plasma)**. Free-space, Modal, and Radial geometries will stay on `CpuNativeSim` initially. The runtime dispatcher will automatically fall back to CPU for unsupported configurations.
+As per `SUGGESTIONS.md`, V1 of `CudaNativeSim` was planned as **mode-averaged RealGrid Kerr (+plasma)**. What actually shipped (see §8) is narrower: **mode-averaged RealGrid, scalar density, exactly one plain Kerr response, and nothing else** — plasma was never implemented (`set_plasma_params` and every other `set_*_params` beyond `set_mode_avg_params` returns `-1`). Free-space, Modal, and Radial geometries stay on `CpuNativeSim`; `RK45.jl`'s `_gpu_native_eligible` falls back to CPU for anything outside this scope.
 
-## 8. Status (2026-07-05 review)
+## 8. Status (updated 2026-07-11 — supersedes the 2026-07-05 review below)
+
+**Reconciled against §4:** implemented as `Box<dyn NativeBackend>`, not the
+`enum { Cpu, Gpu }` described in §4 ("avoids dynamic dispatch overhead"). This
+is a deliberate, permanent deviation, not a TODO — the dynamic-dispatch cost
+is one vtable call per `native_step` (once per accepted step, not once per
+RK45 sub-stage; see §2's traffic budget), immaterial next to a step's actual
+GPU kernel-launch/sync cost, and `Box<dyn NativeBackend>` is what lets
+`CpuNativeSim`/`CudaNativeSim` share the exact same FFI entry points
+(`native_step`, `native_set_*`) as one polymorphic handle instead of every
+call site matching on an enum. §4 above is left as historical design intent;
+treat "`Box<dyn NativeBackend>`, not an `enum`" as current fact everywhere
+else in this document.
+
+**Verified on real CUDA hardware 2026-07-07** (RTX 5060 Ti, CUDA 13.3 —
+the same machine, confirmed via `nvidia-smi`) and **wired into `RK45.jl`**,
+opt-in via `LUNA_USE_RUST_CUDA_NATIVE=1` (`RustNativeSimHandle`'s `use_gpu`
+kwarg, dispatched from `_gpu_native_eligible`). This first real-hardware run
+surfaced and fixed 6 independent bugs invisible to the (self-skipping, no
+real GPU) CI-only unit tests — missing `init_gpu_context()`, a
+backwards `resync_field` copy direction, temporary-lifetime UB in a kernel
+launch that crashed inside `libcuda.so`, a missing `activate_context()`
+before launch, a 7-argument kernel called with 6 (wrong argument, out of
+order), and a cuFFT plan reused across both transform directions. Full list
+with root causes: `BACKLOG.md`'s "GPU-resident stepper" entry under "Done
+(recent)". The §5/§6 "Bug found and fixed (2026-07-05)" DP_B5-accumulation
+fix below *did* hold up once actually run on hardware — it was correct by
+inspection before verification and stayed correct after.
+
+**Actual V1 scope, precisely** (§7 said "mode-averaged RealGrid Kerr
+(+plasma)" — the "(+plasma)" was aspirational and is wrong; plasma was never
+implemented on the GPU path). `CudaNativeSim`'s `NativeBackend` impl
+(`cuda_native.rs`) only implements `set_mode_avg_params`; every other
+`set_*_params` (`set_plasma_params[_adk]`, `set_radial_params`,
+`set_raman_params[_fft]`, `set_modal_params`, `set_free_params`, every
+`_zdep_*` variant, `set_mode_avg_noise[_cplx]`) unconditionally returns
+`-1`. `RK45.jl`'s own `_gpu_native_eligible` docstring has always stated
+this correctly ("mode-averaged... a scalar... density, and exactly one
+plain Kerr response" — no plasma, no noise); this document just hadn't
+caught up. Concretely, eligible configs are: `TransModeAvg`, `RealGrid`, a
+constant (non-z-dependent) linop, scalar (non-mixture) density, exactly one
+plain Kerr response, no shot noise.
+
+**Known, documented, un-fixed fidelity gap** (not a correctness bug — a
+bounded, intentional approximation): the GPU Kerr FFT buffers/plans are
+sized `n_time` (`grid.t`), not `n_time_over` (`grid.to`) — it skips the
+oversampling/anti-aliasing padding both `CpuNativeSim` and Julia apply. Full
+-solve agreement against `PreconStepper` is ~4.5e-4 (test tolerance
+`<1e-3`), versus the CPU-resident native path's ~1e-6 (Phase 1). Fixing
+this is a real buffer-sizing change in `cuda_native.rs`/`kernels.cu`, not
+attempted yet.
+
+**Test coverage:** `test/test_native_cuda.jl` constructs a GPU-backed
+stepper via `withenv("LUNA_USE_RUST_CUDA_NATIVE" => "1")`; self-skips
+cleanly on CI (no GPU/toolkit) but on real hardware asserts
+`_gpu_native_eligible` actually returned `true` (not a vacuous CPU-vs-CPU
+comparison) and checks full-solve field agreement against `PreconStepper`.
+`luna-rust/src/lib.rs` and `luna-rust/tests/test_gpu_cuda.jl` also
+self-skip without a GPU — **still true in CI today**: no CI runner has a
+GPU, so none of this executes except when run by hand on hardware like this
+machine. This is `BACKLOG.md`'s open "GPU CI coverage" item (Phase G.2) —
+not resolved by the 2026-07-07 verification pass, which was a one-time
+manual run, not a standing CI job.
+
+**What's still open, per `BACKLOG.md`'s S3 list:**
+1. ~~Design doc reconciliation~~ — done, this section.
+2. Plasma, Raman, radial/modal/free-space geometries on `CudaNativeSim` —
+   not started; every `set_*_params` beyond mode-avg Kerr still returns
+   `-1` as noted above.
+3. Problem-size dispatch threshold (measured crossover, not guessed) so
+   small grids stay on CPU; `LUNA_NATIVE_GPU=0/1/auto` env override — not
+   started. Today it's all-or-nothing per `LUNA_USE_RUST_CUDA_NATIVE`.
+4. cumtrapz (plasma scan) / Raman ADE GPU kernels, or an explicit
+   `NativeIneligible`-style split — blocked on item 2.
+5. `test/test_native_gpu.jl`-style phase-test coverage of items 2-4, once
+   they exist.
+6. The `n_time_over` Kerr-buffer fidelity gap above.
+7. Phase G.2 / "GPU CI coverage" — a scheduled/dedicated GPU CI runner so
+   this doesn't silently bit-rot un-exercised again between manual runs.
+
+---
+
+## Historical: Status (2026-07-05 review, pre-hardware — superseded above)
 Implemented as `Box<dyn NativeBackend>` rather than the `enum` described in §4 (functionally
 equivalent, just not what was planned). **Not wired to Julia** — no `src/*.jl` file calls
 `init_cuda_native_sim`; this is inert scaffolding with zero effect on the shipped CPU native

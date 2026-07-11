@@ -1219,14 +1219,31 @@ then reproducing the crash directly:**
 
 ### 🟠 S3 — GPU-resident propagation (suggestion 1) — partially started, see note above
 *Large (5+ sessions). Plan's own stated dependency (GPU CI) is not yet
-met — see "GPU CI coverage" below.*
+met — see "GPU CI coverage" below. This machine has real GPU hardware
+(RTX 5060 Ti, CUDA 13.3) usable for manual verification of future slices,
+confirmed 2026-07-11 (`nvidia-smi` needs the sandbox disabled to reach the
+driver — a standing requirement for any GPU work in this repo, not a
+one-off).*
 Already landed (2026-07-05/07, ahead of the plan's own sequencing): the
 `NativeBackend` trait extraction, `CudaNativeSim` scoped to mode-averaged
-RealGrid Kerr-only, verified on real hardware, wired behind
+RealGrid Kerr-only (not "+plasma" — see item 1 below, plasma was never
+implemented), verified on real hardware, wired behind
 `LUNA_USE_RUST_CUDA_NATIVE=1`. Still open, per the original design:
-1. Design doc (`docs/native-port/GPU.md` exists from the prior pass but
-   deviates from what was built — reconcile or rewrite: it specifies an
-   `enum{Cpu,Gpu}` dispatch, the actual code uses `Box<dyn NativeBackend>`).
+1. 🟢 **Done 2026-07-11.** Design doc reconciliation
+   (`docs/native-port/GPU.md`). Rewrote §8 (was still the stale
+   2026-07-05, pre-hardware "untested" text — the 2026-07-07 verification
+   pass and Julia wiring had updated `BACKLOG.md` but never made it back
+   into this doc) and §7 (claimed V1 scope was "Kerr (+plasma)"; actual
+   shipped scope is Kerr-only — every `set_*_params` beyond
+   `set_mode_avg_params`, including `set_plasma_params`, returns `-1`,
+   confirmed by reading `cuda_native.rs` directly). §4's `enum{Cpu,Gpu}` vs
+   the actual `Box<dyn NativeBackend>` deviation: kept as a documented,
+   deliberate divergence (dynamic-dispatch cost is one vtable call per
+   accepted step, immaterial next to actual kernel-launch cost; it's also
+   what lets `CpuNativeSim`/`CudaNativeSim` share one FFI surface) rather
+   than treated as a TODO to "fix" — the doc previously implied this
+   should eventually match §4, which it never needs to. No code changed;
+   documentation-only.
 2. Plasma, Raman, radial/modal/free-space geometries on `CudaNativeSim`
    (every `set_*_params` beyond mode-avg Kerr currently returns `-1`).
 3. Problem-size dispatch threshold (measured crossover, not guessed) so
