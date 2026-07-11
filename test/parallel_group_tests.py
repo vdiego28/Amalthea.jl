@@ -31,13 +31,32 @@ TEST_DIR = REPO_ROOT / "test"
 BUCKET_RUNNER = TEST_DIR / "run_group_bucket.jl"
 DEFAULT_MAX_WORKERS = 10
 
+
+# Julia's OpenBLAS defaults to using half the machine's cores per process
+# (confirmed: 6 threads/process on this 12-core box), oblivious to how many
+# sibling worker processes are running concurrently. With N concurrent
+# workers that's N*6 BLAS threads fighting over `os.cpu_count()` cores —
+# e.g. sim-multimode's 4 workers oversubscribed a 12-core machine 2x, and
+# its single 334s-standalone file measured 417s wall-clock under that
+# contention. Capping OPENBLAS_NUM_THREADS (also read by the Rust QDHT
+# BLAS-3 path, same OpenBLAS binary) to cpu_count // n_workers keeps total
+# BLAS threads across all concurrent workers near the core count.
+def _blas_threads_for(n_workers):
+    return max(1, (os.cpu_count() or 1) // max(1, n_workers))
+
 # `rust`'s timings file predates this generic script and is kept under its
 # original name for backward compatibility (CLAUDE.md, existing tooling).
 TIMINGS_FILE_OVERRIDE = {"rust": TEST_DIR / "rust_test_timings.txt"}
 
 
 def timings_file_for(group):
-    return TIMINGS_FILE_OVERRIDE.get(group, TEST_DIR / f"{group}_test_timings.txt")
+    # Normalize hyphen/underscore the same way discover_group_files() does
+    # (tag_sym) before building the filename — otherwise passing the
+    # CLAUDE.md-documented hyphenated group name (e.g. "sim-interface")
+    # silently misses the on-disk underscored timings file and falls back
+    # to a blind median-duration estimate for every file, degrading LPT
+    # bin-packing to near-random assignment.
+    return TIMINGS_FILE_OVERRIDE.get(group, TEST_DIR / f"{tag_sym(group)}_test_timings.txt")
 
 
 def tag_sym(group):
@@ -84,8 +103,15 @@ def lpt_bins(files, timings, max_workers):
     return bins, loads
 
 
-def run_bucket(group, bucket_id, files, log_path):
-    env = {**os.environ, "LUNA_BUCKET_TAG": tag_sym(group), "LUNA_BUCKET_FILES": "\n".join(files)}
+def run_bucket(group, bucket_id, files, log_path, n_workers=1):
+    blas_threads = str(_blas_threads_for(n_workers))
+    env = {
+        **os.environ,
+        "LUNA_BUCKET_TAG": tag_sym(group),
+        "LUNA_BUCKET_FILES": "\n".join(files),
+        "OPENBLAS_NUM_THREADS": blas_threads,
+        "OMP_NUM_THREADS": blas_threads,
+    }
     with open(log_path, "w") as log:
         proc = subprocess.run(
             ["julia", "--project", str(BUCKET_RUNNER)],
@@ -139,9 +165,17 @@ def update_timings(group, files, max_workers, log_dir, timings_file):
     durations = {}
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
+    blas_threads = str(_blas_threads_for(max_workers))
+
     def run_one(name):
         log_path = log_dir / f"timing_{name}.log"
-        env = {**os.environ, "LUNA_BUCKET_TAG": tag_sym(group), "LUNA_BUCKET_FILES": name}
+        env = {
+            **os.environ,
+            "LUNA_BUCKET_TAG": tag_sym(group),
+            "LUNA_BUCKET_FILES": name,
+            "OPENBLAS_NUM_THREADS": blas_threads,
+            "OMP_NUM_THREADS": blas_threads,
+        }
         start = time.time()
         with open(log_path, "w") as log:
             subprocess.run(
@@ -192,7 +226,7 @@ def run_group(group, max_workers, log_dir, do_update_timings):
     from concurrent.futures import ThreadPoolExecutor, as_completed
     with ThreadPoolExecutor(max_workers=len(bins)) as pool:
         futs = {
-            pool.submit(run_bucket, group, i, b, log_dir / f"{group}_worker{i}.log"): i
+            pool.submit(run_bucket, group, i, b, log_dir / f"{group}_worker{i}.log", len(bins)): i
             for i, b in enumerate(bins) if b
         }
         for fut in as_completed(futs):
