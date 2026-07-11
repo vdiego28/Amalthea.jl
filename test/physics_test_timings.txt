@@ -1,0 +1,22 @@
+# Historical per-file wall-clock durations (seconds) for the `physics` test
+# group, one file per process (measured 2026-07-11, via
+# parallel_group_tests.py --group physics --update-timings). Used by
+# parallel_group_tests.py to load-balance files across worker processes
+# via LPT (longest-processing-time-first) bin packing. Files not listed
+# here (new test files) fall back to the median duration below. Stale
+# entries are harmless — they only affect scheduling, never correctness.
+# Re-measure periodically with --update-timings.
+test_antiresonant.jl 28.7
+test_capillary.jl 27.3
+test_dopri.jl 24.0
+test_dynamic_materials.jl 31.6
+test_grid.jl 25.3
+test_ionisation.jl 48.8
+test_linops.jl 37.1
+test_maths.jl 45.7
+test_modes.jl 63.2
+test_physdata.jl 32.5
+test_rect_modes.jl 25.4
+test_rk45.jl 27.8
+test_simplefibre.jl 17.2
+test_tapers.jl 44.3

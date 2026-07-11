@@ -1,0 +1,13 @@
+# Historical per-file wall-clock durations (seconds) for the `io` test
+# group, one file per process (measured 2026-07-11, via
+# parallel_group_tests.py --group io --update-timings). Used by
+# parallel_group_tests.py to load-balance files across worker processes
+# via LPT (longest-processing-time-first) bin packing. Files not listed
+# here (new test files) fall back to the median duration below. Stale
+# entries are harmless — they only affect scheduling, never correctness.
+# Re-measure periodically with --update-timings.
+test_mixtures.jl 25.8
+test_output.jl 34.4
+test_scans.jl 152.4
+test_stats.jl 22.1
+test_vectorplasma.jl 58.1

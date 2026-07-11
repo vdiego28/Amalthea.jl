@@ -1,0 +1,14 @@
+# Historical per-file wall-clock durations (seconds) for the `sim_propagation` test
+# group, one file per process (measured 2026-07-11, via
+# parallel_group_tests.py --group sim_propagation --update-timings). Used by
+# parallel_group_tests.py to load-balance files across worker processes
+# via LPT (longest-processing-time-first) bin packing. Files not listed
+# here (new test files) fall back to the median duration below. Stale
+# entries are harmless — they only affect scheduling, never correctness.
+# Re-measure periodically with --update-timings.
+test_full_freespace.jl 38.0
+test_gnlse.jl 29.0
+test_kerr.jl 16.0
+test_linearprop.jl 22.3
+test_radial.jl 25.3
+test_raman.jl 19.8

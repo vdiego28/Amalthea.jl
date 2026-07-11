@@ -52,9 +52,15 @@ cargo bench
 LUNA_TEST_GROUP=physics julia --project test/runtests.jl
 # Valid groups: physics, rust, sim-interface, sim-multimode, sim-propagation, io, fields, All (default)
 
-# Run the `rust` group as load-balanced parallel workers (max 10, LPT-scheduled
-# by test/rust_test_timings.txt so workers finish at roughly the same time)
-python3 test/parallel_rust_tests.py
+# Run any group as load-balanced parallel workers (max 10, LPT-scheduled by
+# test/<group>_test_timings.txt so workers finish at roughly the same time —
+# `rust` keeps its original test/rust_test_timings.txt filename)
+python3 test/parallel_group_tests.py --group physics
+python3 test/parallel_rust_tests.py   # thin wrapper, same as --group rust
+
+# Run the full 7-group gate, each group load-balanced in turn (not
+# concurrently across groups, to avoid oversubscribing cores)
+python3 test/run_full_gate.py
 ```
 
 > Tests use `:estimate` FFTW mode to run faster; the package itself defaults to `:patient`.
