@@ -1183,25 +1183,38 @@ RealGrid Kerr-only, verified on real hardware, wired behind
 5. `test/test_native_gpu.jl`-style coverage of the above, mirroring the
    phase-test structure used throughout the CPU native port.
 
-### 🟡 S4 — Architecture cleanups (suggestions 6, 7, 8)
-*Not started. Plan says do this BEFORE S3 (S3 multiplies the toggle zoo
-otherwise) — that ordering was already missed once S3 partially started;
-land this before extending S3 further.*
-1. Config struct (item 6) — `src/Config.jl` `BackendConfig` (native ∈
-   {:auto,:on,:off}, per-kernel overrides, gpu, threads, qdht_blas), one
-   `Luna.backend_config()` resolver reading env vars once; migrate every
-   `get(ENV, "LUNA_USE_RUST_*")` call site to consult it instead. Add
-   `Luna.backend_report()` (also closes BACKLOG's own `_LAST_STEPPER_TYPE`
-   test-hook item under a public API).
-2. FFI error enum (item 7) — `#[repr(i32)] enum FfiStatus{Ok=0,
-   Ineligible>0,Bug<0}` in `ffi.rs`; one Julia `check_ffi(rc, what)`
-   replacing the per-call-site `rc == 0 ||` patterns in `RK45.jl`.
-3. Explicit accessor seams (item 8) — `NonlinearRHS.jl`/`Nonlinear.jl`
-   gain `kerr_γ3(resp)`, `norm_pre(norm!)`, `norm_βfun(norm!)`; delete the
-   `occursin("γ3", string(fld))`/`getfield(norm_func, :pre)` reflective
-   probes in `RK45.jl`.
-- Gate: universal + a `backend_report()` test asserting `RustNativeStepper`
-  for default `prop_capillary` and Julia stepper under `native=:off`.
+### 🟢 S4 — Architecture cleanups (suggestions 6, 7, 8) — done, gate closed 2026-07-11
+*Found already substantially implemented (undated prior session, not
+reflected here) when picked up per the suggested execution order — only
+the gate test itself was missing.*
+1. 🟢 **Done.** Config struct (item 6) — `src/Config.jl`'s `BackendConfig`
+   (one `Bool` field per `LUNA_USE_RUST_*`/`LUNA_*` toggle, default `false`
+   except `native`) + `Luna.Config.backend_config()` resolver (re-reads
+   `ENV` every call, not cached — the test suite flips toggles mid-session
+   via `withenv`). Every call site migrated off raw `get(ENV, "LUNA_USE_RUST_*", ...)`
+   (confirmed via grep — none remain outside `Config.jl`'s own docstring).
+   `Luna.backend_report()` added (`src/Luna.jl:100`), exposing
+   `(config, last_stepper_type)` as a public API wrapping the
+   `RK45._LAST_STEPPER_TYPE` test-only hook.
+2. 🟢 **Done.** FFI error enum (item 7) — implemented as `RK45.check_ffi(rc,
+   what; ineligible=false)` (`src/RK45.jl:798`), used at every native FFI
+   call site. **Deliberately not a Rust-side `FfiStatus` enum**: the same
+   numeric nonzero code means "ineligible" at one call site and "bug" at
+   another depending on what Julia already validated before calling, so
+   the ineligible/bug classification is a call-site policy decision, not
+   encodable in the return code itself — documented at `check_ffi`'s
+   docstring.
+3. 🟢 **Done.** Explicit accessor seams (item 8) — `Nonlinear.kerr_γ3(resp)`,
+   `NonlinearRHS.norm_pre(norm!)`, `NonlinearRHS.norm_βfun(norm!)`,
+   `RK45._is_plain_kerr_resp(r)` centralize what were 4 duplicated inline
+   reflective loops across `RK45.jl`'s native-stepper construction paths
+   into one place each.
+- Gate: **closed 2026-07-11** — `test/test_backend_config.jl` added (was
+  the one actually-missing piece): `backend_config()` defaults/truthiness
+  under `withenv`, plus `backend_report()` asserting `RustNativeStepper`
+  for a default `prop_capillary` call and `PreconStepper` under
+  `LUNA_USE_RUST_NATIVE=0`. Full `rust` group: 42101/42101 (42087 baseline
+  + 14 new assertions).
 
 ### 🟡 S5 — Numerics options (suggestions 10, 11, 12)
 *Not started. Items are independent of each other.*
