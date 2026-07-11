@@ -199,14 +199,17 @@ def update_timings(group, files, max_workers, log_dir, timings_file):
     return durations
 
 
-def run_group(group, max_workers, log_dir, do_update_timings):
+def prepare_group_bins(group, max_workers, log_dir, do_update_timings):
+    """Discover a group's tagged files and LPT-bin-pack them. Returns
+    `bins` (list of file-lists, len <= max_workers) or None if the group
+    has no tagged files."""
     log_dir.mkdir(parents=True, exist_ok=True)
     timings_file = timings_file_for(group)
 
     files = discover_group_files(group)
     if not files:
         print(f"No {group!r}-tagged test files found.", file=sys.stderr)
-        return 1, 0, 0, 0.0
+        return None
 
     if do_update_timings:
         print(f"[{group}] Re-measuring {len(files)} files individually "
@@ -220,36 +223,75 @@ def run_group(group, max_workers, log_dir, do_update_timings):
           f"(max {max_workers}):")
     for i, (b, load) in enumerate(zip(bins, loads)):
         print(f"  worker {i}: {len(b)} files, est. {load:.1f}s")
+    return bins
+
+
+def run_groups(group_bins, log_dir):
+    """Execute one or more groups' pre-computed bins in a single shared
+    worker pool, so groups can run concurrently instead of one-at-a-time.
+    `group_bins`: dict {group: bins}. Every bucket across every group is
+    launched in the same ThreadPoolExecutor, sized to the *total* worker
+    count across all groups — BLAS/OMP threads per worker are capped
+    against that total (see `_blas_threads_for`), not just the owning
+    group's own worker count, so e.g. pairing sim-interface (2 workers)
+    alongside sim-multimode (4 workers) still keeps combined BLAS threads
+    near the core count instead of each group capping independently and
+    compounding. Returns {group: (rc, total_pass, total_all)} plus the
+    combined wall-clock elapsed seconds."""
+    tasks = [
+        (group, i, files)
+        for group, bins in group_bins.items()
+        for i, files in enumerate(bins) if files
+    ]
+    total_workers = len(tasks)
 
     start = time.time()
     results = []
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    with ThreadPoolExecutor(max_workers=len(bins)) as pool:
+    with ThreadPoolExecutor(max_workers=total_workers) as pool:
         futs = {
-            pool.submit(run_bucket, group, i, b, log_dir / f"{group}_worker{i}.log", len(bins)): i
-            for i, b in enumerate(bins) if b
+            pool.submit(
+                run_bucket, group, i, files,
+                log_dir / f"{group}_worker{i}.log", total_workers,
+            ): (group, i)
+            for group, i, files in tasks
         }
         for fut in as_completed(futs):
-            results.append(fut.result())
+            group, bucket_id = futs[fut]
+            _, rc = fut.result()
+            results.append((group, bucket_id, rc))
     elapsed = time.time() - start
 
-    total_pass = 0
-    total_all = 0
-    any_fail = False
-    for bucket_id, rc in sorted(results):
+    per_group = {group: [0, 0, False] for group in group_bins}
+    for group, bucket_id, rc in sorted(results):
         log_path = log_dir / f"{group}_worker{bucket_id}.log"
         passed, total, summary_ok = parse_summary(log_path)
         ok = rc == 0 and passed is not None and summary_ok
-        any_fail = any_fail or not ok
         print(f"[{group}] worker {bucket_id}: rc={rc} pass={passed} total={total} "
               f"{'OK' if ok else 'FAIL'} (log: {log_path})")
         if passed is not None:
-            total_pass += passed
-            total_all += total
+            per_group[group][0] += passed
+            per_group[group][1] += total
+        per_group[group][2] = per_group[group][2] or not ok
 
-    print(f"[{group}] TOTAL: {total_pass}/{total_all} in {elapsed:.1f}s wall-clock "
-          f"across {len(bins)} workers\n")
-    return (1 if any_fail else 0), total_pass, total_all, elapsed
+    out = {}
+    for group, (total_pass, total_all, any_fail) in per_group.items():
+        print(f"[{group}] TOTAL: {total_pass}/{total_all}")
+        out[group] = (1 if any_fail else 0, total_pass, total_all)
+    print(f"Batch [{', '.join(group_bins)}] TOTAL in {elapsed:.1f}s wall-clock "
+          f"across {total_workers} workers\n")
+    return out, elapsed
+
+
+def run_group(group, max_workers, log_dir, do_update_timings):
+    """Single-group convenience wrapper around prepare_group_bins/run_groups
+    (kept for parallel_rust_tests.py and standalone --group usage)."""
+    bins = prepare_group_bins(group, max_workers, log_dir, do_update_timings)
+    if bins is None:
+        return 1, 0, 0, 0.0
+    results, elapsed = run_groups({group: bins}, log_dir)
+    rc, total_pass, total_all = results[group]
+    return rc, total_pass, total_all, elapsed
 
 
 def main():
