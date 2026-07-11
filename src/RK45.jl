@@ -941,10 +941,13 @@ end
 True iff the experimental GPU-resident stepper (`CudaNativeSim`,
 `luna-rust/src/cuda_native.rs`) can handle this exact config: mode-averaged
 (`TransModeAvg`), RealGrid, a constant (non-z-dependent) linop, a scalar
-(non-mixture) density, and exactly one plain Kerr response. That is the only
-geometry/physics `cuda_native.rs`'s `NativeBackend` impl actually implements
-— every other method on it returns -1. Also requires the
-`LUNA_USE_RUST_CUDA_NATIVE=1` opt-in; Rust's `init_cuda_native_sim`
+(non-mixture) density, no shot noise, exactly one plain Kerr response, and
+at most one plasma response using PPT ionisation (`IonRatePPTAccel` —
+`CudaNativeSim::set_plasma_params_adk` still returns -1, ADK is not
+implemented on the GPU path yet; BACKLOG.md S3 item 2). No other response
+kind (e.g. Raman) is implemented on `CudaNativeSim` — every `set_*_params`
+beyond `set_mode_avg_params`/`set_plasma_params` returns -1. Also requires
+the `LUNA_USE_RUST_CUDA_NATIVE=1` opt-in; Rust's `init_cuda_native_sim`
 re-checks the same env var independently, so this is purely to avoid
 attempting GPU init for an ineligible config where it would return a
 confusing null pointer instead of the real reason.
@@ -955,7 +958,13 @@ function _gpu_native_eligible(f!, linop)
     linop isa Array{ComplexF64} || return false
     f!.grid isa Luna.Grid.RealGrid || return false
     f!.densityfun(0.0) isa Real || return false
-    length(f!.resp) == 1 && _is_plain_kerr_resp(f!.resp[1]) || return false
+    isnothing(f!.Et_noise) || return false
+    kerr_resps = filter(_is_plain_kerr_resp, f!.resp)
+    plasma_resps = filter(r -> r isa Luna.Nonlinear.PlasmaCumtrapz, f!.resp)
+    length(kerr_resps) == 1 || return false
+    length(plasma_resps) + length(kerr_resps) == length(f!.resp) || return false
+    length(plasma_resps) <= 1 || return false
+    isempty(plasma_resps) || plasma_resps[1].ratefunc isa Luna.Ionisation.IonRatePPTAccel || return false
     true
 end
 

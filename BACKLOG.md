@@ -1244,15 +1244,74 @@ implemented), verified on real hardware, wired behind
    than treated as a TODO to "fix" — the doc previously implied this
    should eventually match §4, which it never needs to. No code changed;
    documentation-only.
-2. Plasma, Raman, radial/modal/free-space geometries on `CudaNativeSim`
-   (every `set_*_params` beyond mode-avg Kerr currently returns `-1`).
+2. 🟡 **PPT plasma done 2026-07-11 (mode-avg only); Raman, radial/modal/
+   free-space, ADK still open.** Added to `CudaNativeSim`
+   (`cuda_native.rs`/`kernels.cu`/`cuda.rs`): `set_plasma_params` uploads
+   the same `SplineSegment` LUT format `PptIonizationRate::rate_vector_gpu`
+   already uses (reused directly, no new upload format), then `step()`
+   runs a 5-kernel sequence per RK stage — `ppt_ionization_kernel` (reused
+   from the standalone `LUNA_USE_RUST_IONISATION` path, parallel over
+   `n_time`) → `plasma_fraction_kernel` (fused cumtrapz+ρ-transform,
+   single-thread sequential scan) → `plasma_phase_kernel` (parallel) →
+   `plasma_current_kernel` (fused cumtrapz+loss-current, single-thread) →
+   `plasma_polarization_kernel` (fused cumtrapz+accumulate-into-Pto,
+   single-thread) — mirroring `native.rs`'s `apply_plasma_real` exactly.
+   Single-thread sequential kernels for the 3 cumtrapz stages, not a
+   work-efficient parallel prefix scan (GPU.md's original sketch,
+   item 4 below) — a deliberate V1 tradeoff: `n_time` (~2^13-2^16) is
+   small enough that one thread looping over it is negligible next to this
+   step's FFT/launch cost at mode-averaged scale; would matter more for
+   radial's much larger per-column state, not in scope here. `_gpu_native_eligible`
+   (`RK45.jl`) relaxed to allow exactly one plain Kerr response plus at
+   most one PPT-only plasma response (ADK still returns `-1` from
+   `set_plasma_params_adk`, unimplemented) — the shared FFI call
+   (`native_set_plasma_params`) needed zero Julia-side changes beyond the
+   eligibility gate, since it already dispatches through the same
+   `Box<dyn NativeBackend>` handle both CPU and GPU sims share.
+   **Real pre-existing bug found and fixed while wiring this in**:
+   `rhs_mode_avg_real_kernel`'s call site passed `(eto_d, pto_d, ...)` but
+   the kernel's own declared parameter order is `(pto, eto, ...)` —
+   swapped, so the kernel's `pto` write target was actually bound to
+   `eto_d` (overwriting the just-FFT'd field with the Kerr result, silently
+   discarded before ever being read again) and its `eto` read source was
+   bound to `pto_d` (stale/uninitialized memory, not the field) — meaning
+   every accepted step's forward FFT (`cufftExecD2Z` on `pto_d`) transformed
+   whatever was left in `pto_d` from a previous call, not the real Kerr
+   polarisation. Present since the 2026-07-05/07 GPU work, never caught by
+   the existing Kerr-only equivalence test because that test's energy is
+   weak enough that the resulting error stayed under the test's existing
+   ~4.5e-4-driven `<1e-3` tolerance regardless. Fixed by correcting the
+   argument order to match the kernel's declaration (also documented
+   in-line in `cuda_native.rs`, right at the call site, so it can't silently
+   regress again). Every new kernel-arg array is bound through named `let`
+   locals, not inline temporaries — the exact UB pattern (`&mut {expr} as
+   *mut _`) that caused a real `SIGSEGV` inside `libcuda.so` in the original
+   2026-07-07 verification pass; caught in review before this landed.
+   **Verified on real CUDA hardware** (RTX 5060 Ti): new
+   `test/test_native_cuda.jl` testitem (`"...Kerr+plasma"`) passes,
+   `rel_solve ≈ 2.0e-2` at `gas=:Ar, energy=6e-6`. This is *not* the same
+   tolerance tier as the Kerr-only sibling test (~1e-3) — diagnosed, not
+   assumed: the CPU-resident native path (`LUNA_USE_RUST_NATIVE=1`, no
+   CUDA — proper `n_time_over`-sized buffers) matches the Julia oracle for
+   this exact config to `1.3e-16`, and sweeping energy 1e-7→6e-6 (60×)
+   showed `rel_solve` scaling almost exactly linearly with energy at every
+   point — the signature of the same pre-existing, documented
+   `n_time`-vs-`n_time_over` Kerr buffer-sizing gap (item 6 below; GPU.md
+   §8) amplified roughly 40× by plasma's Keldysh-exponential sensitivity to
+   field amplitude, not a new bug. Full 7-group gate green, zero
+   regressions (rust 42117/42117 = 42113 baseline + 4 new assertions).
 3. Problem-size dispatch threshold (measured crossover, not guessed) so
    small grids stay on CPU; `LUNA_NATIVE_GPU=0/1/auto` env override.
-4. cumtrapz (plasma scan, work-efficient prefix scan) and Raman ADE
-   kernels — or explicit `NativeIneligible`-style eligibility split
-   keeping those configs on CPU for GPU v1, documented as such.
+4. Raman ADE kernel, ADK plasma kernel, radial/modal/free-space geometries
+   — or explicit `NativeIneligible`-style eligibility split keeping those
+   configs on CPU for GPU v1, documented as such. A work-efficient parallel
+   prefix scan for cumtrapz (superseding item 2's single-thread kernels)
+   would matter here, at radial's much larger per-column plasma-state size.
 5. `test/test_native_gpu.jl`-style coverage of the above, mirroring the
    phase-test structure used throughout the CPU native port.
+6. The `n_time`-vs-`n_time_over` Kerr/plasma buffer-sizing fidelity gap
+   itself (GPU.md §8) — not fixed by item 2 above, which worked within the
+   existing buffer sizing rather than changing it.
 
 ### 🟢 S4 — Architecture cleanups (suggestions 6, 7, 8) — done, gate closed 2026-07-11
 *Found already substantially implemented (undated prior session, not

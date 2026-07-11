@@ -27,6 +27,27 @@ pub struct CudaNativeSim {
     pub towin_d: GpuBuffer,
     pub kerr_fac: c_double,
 
+    // Plasma (mode-averaged, PPT only — see BACKLOG.md S3 item 2; ADK
+    // still returns -1 from set_plasma_params_adk). Buffers sized
+    // `n_time` (set in set_mode_avg_params), matching this file's existing
+    // `eto_d`/`pto_d` — same documented n_time-vs-n_time_over fidelity gap
+    // as the Kerr path, not something this item fixes.
+    pub has_plasma: bool,
+    pub plasma_segments_d: GpuBuffer,
+    pub plasma_num_segments: usize,
+    pub plasma_e_min: c_double,
+    pub plasma_e_max: c_double,
+    pub plasma_strict: c_int,
+    pub plasma_ionpot: c_double,
+    pub plasma_e_ratio: c_double,
+    pub plasma_preionfrac: c_double,
+    pub plasma_dt: c_double,
+    pub plasma_density: c_double,
+    pub plas_rate_d: GpuBuffer,
+    pub plas_fraction_d: GpuBuffer,
+    pub plas_phase_d: GpuBuffer,
+    pub plas_current_d: GpuBuffer,
+
     // cuFFT plans are transform-type-specific — a `CUFFT_D2Z` (forward,
     // real->complex) plan cannot be reused for `cufftExecZ2D` (inverse,
     // complex->real): they need separate plan handles even though both
@@ -76,6 +97,12 @@ impl CudaNativeSim {
         let poo_d = GpuBuffer::alloc(16)?;
         let towin_d = GpuBuffer::alloc(8)?;
 
+        let plasma_segments_d = GpuBuffer::alloc(8)?;
+        let plas_rate_d = GpuBuffer::alloc(8)?;
+        let plas_fraction_d = GpuBuffer::alloc(8)?;
+        let plas_phase_d = GpuBuffer::alloc(8)?;
+        let plas_current_d = GpuBuffer::alloc(8)?;
+
         Ok(Self {
             n,
             n_time: 0,
@@ -93,6 +120,21 @@ impl CudaNativeSim {
             poo_d,
             towin_d,
             kerr_fac: 0.0,
+            has_plasma: false,
+            plasma_segments_d,
+            plasma_num_segments: 0,
+            plasma_e_min: 0.0,
+            plasma_e_max: 0.0,
+            plasma_strict: 0,
+            plasma_ionpot: 0.0,
+            plasma_e_ratio: 0.0,
+            plasma_preionfrac: 0.0,
+            plasma_dt: 0.0,
+            plasma_density: 0.0,
+            plas_rate_d,
+            plas_fraction_d,
+            plas_phase_d,
+            plas_current_d,
             fft_r2c: 0,
             fft_c2r: 0,
         })
@@ -219,7 +261,11 @@ impl NativeBackend for CudaNativeSim {
         
         self.eto_d = GpuBuffer::alloc(n_time * 8).unwrap();
         self.pto_d = GpuBuffer::alloc(n_time * 8).unwrap();
-        
+        self.plas_rate_d = GpuBuffer::alloc(n_time * 8).unwrap();
+        self.plas_fraction_d = GpuBuffer::alloc(n_time * 8).unwrap();
+        self.plas_phase_d = GpuBuffer::alloc(n_time * 8).unwrap();
+        self.plas_current_d = GpuBuffer::alloc(n_time * 8).unwrap();
+
         let slice = unsafe { std::slice::from_raw_parts(towin, n_time) };
         self.towin_d = GpuBuffer::alloc(n_time * 8).unwrap();
         self.towin_d.copy_to_device(slice).unwrap();
@@ -253,7 +299,43 @@ impl NativeBackend for CudaNativeSim {
 
     unsafe fn set_zdep_mode_avg_params(&mut self, _n_z: size_t, _z_pts: *const c_double, _p_pts: *const c_double, _n_dspl: size_t, _dspl_x: *const c_double, _dspl_y: *const c_double, _dspl_d: *const c_double, _gamma: *const c_double, _nwg_re: *const c_double, _nwg_im: *const c_double, _omega: *const c_double, _model: c_uint, _loss_on: c_uint, _eps0_gamma3: c_double, _omega0: c_double, _gamma0: c_double, _dgamma0: c_double, _nwg0_re: c_double, _nwg0_im: c_double, _dnwg0_re: c_double, _dnwg0_im: c_double) -> i32 { -1 }
 
-    unsafe fn set_plasma_params(&mut self, _ion_ptr: *const crate::ionization::PptIonizationRate, _ionpot: c_double, _e_ratio: c_double, _preionfrac: c_double, _dt: c_double, _density: c_double) -> i32 { -1 }
+    // PPT only (BACKLOG.md S3 item 2, first slice — 2026-07-11). Mirrors
+    // native.rs's `CpuNativeSim::set_plasma_params`: uploads the same
+    // `SplineSegment` table `PptIonizationRate::rate_vector_gpu` already
+    // uploads for the standalone `LUNA_USE_RUST_IONISATION` path (identical
+    // repr(C) layout, reused directly — no new upload format invented) and
+    // stores the scalar params for use in `step()`'s plasma kernel sequence.
+    // Requires `set_mode_avg_params` to have already run (needs `n_time`
+    // to size the plasma scratch buffers) — same ordering requirement the
+    // CPU backend documents for its own `set_plasma_params`.
+    unsafe fn set_plasma_params(&mut self, ion_ptr: *const crate::ionization::PptIonizationRate, ionpot: c_double, e_ratio: c_double, preionfrac: c_double, dt: c_double, density: c_double) -> i32 {
+        if self.n_time == 0 || ion_ptr.is_null() {
+            return -2;
+        }
+        let ion = unsafe { &*ion_ptr };
+        let segments = &ion.spline_lut.segments;
+        if segments.is_empty() {
+            return -2;
+        }
+        self.plasma_segments_d = match GpuBuffer::alloc(segments.len() * std::mem::size_of::<crate::ionization::SplineSegment>()) {
+            Ok(b) => b,
+            Err(_) => return -1,
+        };
+        if self.plasma_segments_d.copy_to_device(segments).is_err() {
+            return -1;
+        }
+        self.plasma_num_segments = segments.len();
+        self.plasma_e_min = ion.e_min;
+        self.plasma_e_max = ion.e_max;
+        self.plasma_strict = if ion.strict { 1 } else { 0 };
+        self.plasma_ionpot = ionpot;
+        self.plasma_e_ratio = e_ratio;
+        self.plasma_preionfrac = preionfrac;
+        self.plasma_dt = dt;
+        self.plasma_density = density;
+        self.has_plasma = true;
+        0
+    }
     unsafe fn set_plasma_params_adk(&mut self, _ion_ptr: *const crate::ionization::AdkIonizationRate, _ionpot: c_double, _e_ratio: c_double, _preionfrac: c_double, _dt: c_double, _density: c_double) -> i32 { -1 }
 
     unsafe fn set_radial_params(&mut self, _n_time: size_t, _n_time_over: size_t, _n_r: size_t, _t_matrix: *const c_double, _scale_fwd: c_double, _scale_inv: c_double, _towin: *const c_double, _kerr_fac: c_double, _m_re: *const c_double, _m_im: *const c_double) -> i32 { -1 }
@@ -362,15 +444,122 @@ impl NativeBackend for CudaNativeSim {
 
                 let n_time_u32 = self.n_time as u32;
                 let grid_size_t = (n_time_u32 + block_size - 1) / block_size;
-                let mut kerr_args: [*mut libc::c_void; 5] = [
-                    &mut self.eto_d.dptr as *mut _ as *mut _,
+                // Args must match rhs_mode_avg_real_kernel's own declared
+                // parameter order `(pto, eto, kerr_fac, n_time)` — the
+                // previous version of this call passed `(eto_d, pto_d, ...)`,
+                // backwards, so the kernel's `pto` parameter was actually
+                // bound to `eto_d` (silently overwriting the just-FFT'd
+                // field with the Kerr result) and its `eto` parameter was
+                // bound to `pto_d` (reading whatever stale/uninitialized
+                // memory happened to be there, not the field). The
+                // subsequent forward FFT below reads `pto_d`, which this
+                // kernel — under the old argument order — never actually
+                // wrote: every accepted step's nonlinear contribution was
+                // computed from garbage, not from `eto`. Found while adding
+                // plasma support alongside it (BACKLOG.md S3 item 2); fixed
+                // here since plasma's own final kernel
+                // (`plasma_polarization_kernel`) also writes into `pto_d`
+                // and depends on it being the buffer that actually gets
+                // forward-transformed.
+                let mut kerr_args: [*mut libc::c_void; 4] = [
                     &mut self.pto_d.dptr as *mut _ as *mut _,
-                    &mut self.towin_d.dptr as *mut _ as *mut _,
+                    &mut self.eto_d.dptr as *mut _ as *mut _,
                     &mut self.kerr_fac as *mut _ as *mut _,
                     &mut self.n_time as *mut _ as *mut _,
                 ];
                 launch_checked(driver, ctx.rhs_mode_avg_real_fn, grid_size_t, block_size, 0, &mut kerr_args,
                     &format!("rhs_mode_avg_real(ii={ii})"))?;
+
+                if self.has_plasma {
+                    // Reuses ppt_ionization_kernel from the standalone
+                    // LUNA_USE_RUST_IONISATION path (same SplineSegment
+                    // upload format, same kernel) — its `err_code` output is
+                    // unused here: `plasma_rate` (native.rs, CPU reference)
+                    // never propagates a strict-mode error either, it always
+                    // has a non-strict fallback (clamp to rate(e_max)). GPU
+                    // plasma is PPT-only and always non-strict for the same
+                    // reason; `err_code_d` is write-only scratch.
+                    //
+                    // Every arg is bound to a named local first (not an
+                    // inline temporary) — `&mut {expr} as *mut _` on an
+                    // anonymous temporary is exactly the UB pattern that
+                    // crashed this file's step() on real hardware before
+                    // (see apply_prop's dt0/b6/dt_prop comments above); a
+                    // cast breaks Rust's temporary-lifetime extension, a
+                    // named `let` binding doesn't.
+                    let mut err_code_d = GpuBuffer::alloc(4)?;
+                    let zero = [0i32];
+                    err_code_d.copy_to_device(&zero)?;
+                    let mut num_segments_val = self.plasma_num_segments as c_int;
+                    let mut strict_val = self.plasma_strict;
+                    let mut rate_args: [*mut libc::c_void; 9] = [
+                        &mut self.eto_d.dptr as *mut _ as *mut _,
+                        &mut self.plas_rate_d.dptr as *mut _ as *mut _,
+                        &mut self.plasma_segments_d.dptr as *mut _ as *mut _,
+                        &mut self.plasma_e_min as *mut _ as *mut _,
+                        &mut self.plasma_e_max as *mut _ as *mut _,
+                        &mut num_segments_val as *mut _ as *mut _,
+                        &mut self.n_time as *mut _ as *mut _,
+                        &mut err_code_d.dptr as *mut _ as *mut _,
+                        &mut strict_val as *mut _ as *mut _,
+                    ];
+                    launch_checked(driver, ctx.ppt_fn, grid_size_t, block_size, 0, &mut rate_args,
+                        &format!("plasma_rate(ii={ii})"))?;
+
+                    let mut fraction_args: [*mut libc::c_void; 5] = [
+                        &mut self.plas_rate_d.dptr as *mut _ as *mut _,
+                        &mut self.plas_fraction_d.dptr as *mut _ as *mut _,
+                        &mut self.plasma_preionfrac as *mut _ as *mut _,
+                        &mut self.plasma_dt as *mut _ as *mut _,
+                        &mut self.n_time as *mut _ as *mut _,
+                    ];
+                    launch_checked(driver, ctx.plasma_fraction_fn, 1, 1, 0, &mut fraction_args,
+                        &format!("plasma_fraction(ii={ii})"))?;
+
+                    let mut phase_args: [*mut libc::c_void; 5] = [
+                        &mut self.plas_fraction_d.dptr as *mut _ as *mut _,
+                        &mut self.eto_d.dptr as *mut _ as *mut _,
+                        &mut self.plasma_e_ratio as *mut _ as *mut _,
+                        &mut self.plas_phase_d.dptr as *mut _ as *mut _,
+                        &mut self.n_time as *mut _ as *mut _,
+                    ];
+                    launch_checked(driver, ctx.plasma_phase_fn, grid_size_t, block_size, 0, &mut phase_args,
+                        &format!("plasma_phase(ii={ii})"))?;
+
+                    let mut current_args: [*mut libc::c_void; 8] = [
+                        &mut self.plas_phase_d.dptr as *mut _ as *mut _,
+                        &mut self.plas_rate_d.dptr as *mut _ as *mut _,
+                        &mut self.plas_fraction_d.dptr as *mut _ as *mut _,
+                        &mut self.eto_d.dptr as *mut _ as *mut _,
+                        &mut self.plasma_ionpot as *mut _ as *mut _,
+                        &mut self.plasma_dt as *mut _ as *mut _,
+                        &mut self.plas_current_d.dptr as *mut _ as *mut _,
+                        &mut self.n_time as *mut _ as *mut _,
+                    ];
+                    launch_checked(driver, ctx.plasma_current_fn, 1, 1, 0, &mut current_args,
+                        &format!("plasma_current(ii={ii})"))?;
+
+                    let mut polarization_args: [*mut libc::c_void; 5] = [
+                        &mut self.plas_current_d.dptr as *mut _ as *mut _,
+                        &mut self.pto_d.dptr as *mut _ as *mut _,
+                        &mut self.plasma_density as *mut _ as *mut _,
+                        &mut self.plasma_dt as *mut _ as *mut _,
+                        &mut self.n_time as *mut _ as *mut _,
+                    ];
+                    launch_checked(driver, ctx.plasma_polarization_fn, 1, 1, 0, &mut polarization_args,
+                        &format!("plasma_polarization(ii={ii})"))?;
+                }
+
+                // Time-domain window apodization — applied once to the
+                // combined Pto (Kerr [+ plasma]), matching native.rs's
+                // ordering (see rhs_mode_avg_real_kernel's doc comment).
+                let mut window_args: [*mut libc::c_void; 3] = [
+                    &mut self.pto_d.dptr as *mut _ as *mut _,
+                    &mut self.towin_d.dptr as *mut _ as *mut _,
+                    &mut self.n_time as *mut _ as *mut _,
+                ];
+                launch_checked(driver, ctx.apply_time_window_fn, grid_size_t, block_size, 0, &mut window_args,
+                    &format!("apply_time_window(ii={ii})"))?;
 
                 // FFT R2C (D2Z) -> pto_d to ks_d[ii+1]
                 let rc = (cufft.cufftExecD2Z)(self.fft_r2c, self.pto_d.dptr as *mut _, self.ks_d[ii+1].dptr as *mut _);

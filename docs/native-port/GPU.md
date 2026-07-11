@@ -75,53 +75,81 @@ fix below *did* hold up once actually run on hardware — it was correct by
 inspection before verification and stayed correct after.
 
 **Actual V1 scope, precisely** (§7 said "mode-averaged RealGrid Kerr
-(+plasma)" — the "(+plasma)" was aspirational and is wrong; plasma was never
-implemented on the GPU path). `CudaNativeSim`'s `NativeBackend` impl
-(`cuda_native.rs`) only implements `set_mode_avg_params`; every other
-`set_*_params` (`set_plasma_params[_adk]`, `set_radial_params`,
-`set_raman_params[_fft]`, `set_modal_params`, `set_free_params`, every
-`_zdep_*` variant, `set_mode_avg_noise[_cplx]`) unconditionally returns
-`-1`. `RK45.jl`'s own `_gpu_native_eligible` docstring has always stated
-this correctly ("mode-averaged... a scalar... density, and exactly one
-plain Kerr response" — no plasma, no noise); this document just hadn't
-caught up. Concretely, eligible configs are: `TransModeAvg`, `RealGrid`, a
-constant (non-z-dependent) linop, scalar (non-mixture) density, exactly one
-plain Kerr response, no shot noise.
+(+plasma)" — the "(+plasma)" was aspirational and was wrong until
+2026-07-11, see below). `CudaNativeSim`'s `NativeBackend` impl
+(`cuda_native.rs`) implements `set_mode_avg_params` and (as of 2026-07-11)
+`set_plasma_params` (PPT only); every other `set_*_params`
+(`set_plasma_params_adk`, `set_radial_params`, `set_raman_params[_fft]`,
+`set_modal_params`, `set_free_params`, every `_zdep_*` variant,
+`set_mode_avg_noise[_cplx]`) unconditionally returns `-1`. `RK45.jl`'s
+`_gpu_native_eligible` docstring is the source of truth for exact scope.
+Concretely, eligible configs are: `TransModeAvg`, `RealGrid`, a constant
+(non-z-dependent) linop, scalar (non-mixture) density, no shot noise,
+exactly one plain Kerr response, and at most one plasma response using PPT
+ionisation (`IonRatePPTAccel` — ADK still returns `-1`).
+
+**Plasma support added 2026-07-11** (BACKLOG.md S3 item 2): PPT ionisation
+rate lookup (reuses `ppt_ionization_kernel`, the same kernel and
+`SplineSegment` upload format the standalone `LUNA_USE_RUST_IONISATION`
+path already uses) → a 3-stage cumtrapz sequence (ionisation fraction,
+free-electron current, plasma polarisation — each fused with its adjacent
+elementwise transform into one single-thread sequential kernel, since
+cumtrapz is an inherently sequential prefix sum and `n_time` is small
+enough at mode-averaged scale for one thread to be negligible next to this
+step's FFT cost) → accumulated into `pto` before the shared time-window
+kernel. Found and fixed a genuine pre-existing bug while wiring this in:
+`rhs_mode_avg_real_kernel`'s call site passed its arguments in the wrong
+order relative to the kernel's own declaration, so the Kerr kernel had
+never actually written its result into the buffer that gets forward-FFT'd
+— present since the original 2026-07-05/07 GPU work, never caught because
+the existing Kerr-only test's energy was weak enough for the resulting
+error to stay under tolerance regardless. See BACKLOG.md's S3 item 2 for
+the full writeup, including why the new Kerr+plasma equivalence test uses
+a looser (~5e-2) tolerance than the Kerr-only test's ~1e-3 (diagnosed, not
+assumed — plasma's Keldysh-exponential field sensitivity amplifies the
+existing `n_time`-vs-`n_time_over` gap below, confirmed via an energy sweep
+showing linear scaling, and via the CPU-resident native path matching the
+Julia oracle to `1.3e-16` on the identical config).
 
 **Known, documented, un-fixed fidelity gap** (not a correctness bug — a
-bounded, intentional approximation): the GPU Kerr FFT buffers/plans are
-sized `n_time` (`grid.t`), not `n_time_over` (`grid.to`) — it skips the
-oversampling/anti-aliasing padding both `CpuNativeSim` and Julia apply. Full
--solve agreement against `PreconStepper` is ~4.5e-4 (test tolerance
-`<1e-3`), versus the CPU-resident native path's ~1e-6 (Phase 1). Fixing
-this is a real buffer-sizing change in `cuda_native.rs`/`kernels.cu`, not
-attempted yet.
+bounded, intentional approximation): the GPU Kerr/plasma FFT buffers/plans
+are sized `n_time` (`grid.t`), not `n_time_over` (`grid.to`) — it skips the
+oversampling/anti-aliasing padding both `CpuNativeSim` and Julia apply.
+Kerr-only full-solve agreement against `PreconStepper` is ~4.5e-4 (test
+tolerance `<1e-3`); Kerr+plasma is ~2.0e-2 at the tested energy (test
+tolerance `<5e-2`) — both versus the CPU-resident native path's ~1e-6
+(Phase 1) / ~1e-16 (this exact plasma config). Fixing this is a real
+buffer-sizing change in `cuda_native.rs`/`kernels.cu`, not attempted yet.
 
-**Test coverage:** `test/test_native_cuda.jl` constructs a GPU-backed
-stepper via `withenv("LUNA_USE_RUST_CUDA_NATIVE" => "1")`; self-skips
-cleanly on CI (no GPU/toolkit) but on real hardware asserts
-`_gpu_native_eligible` actually returned `true` (not a vacuous CPU-vs-CPU
-comparison) and checks full-solve field agreement against `PreconStepper`.
-`luna-rust/src/lib.rs` and `luna-rust/tests/test_gpu_cuda.jl` also
-self-skip without a GPU — **still true in CI today**: no CI runner has a
-GPU, so none of this executes except when run by hand on hardware like this
-machine. This is `BACKLOG.md`'s open "GPU CI coverage" item (Phase G.2) —
-not resolved by the 2026-07-07 verification pass, which was a one-time
-manual run, not a standing CI job.
+**Test coverage:** `test/test_native_cuda.jl` has two testitems (Kerr-only,
+Kerr+plasma), each constructing a GPU-backed stepper via
+`withenv("LUNA_USE_RUST_CUDA_NATIVE" => "1")`; both self-skip cleanly on CI
+(no GPU/toolkit) but on real hardware assert `_gpu_native_eligible`
+actually returned `true` (not a vacuous CPU-vs-CPU comparison) and check
+full-solve field agreement against `PreconStepper`. `luna-rust/src/lib.rs`
+and `luna-rust/tests/test_gpu_cuda.jl` also self-skip without a GPU —
+**still true in CI today**: no CI runner has a GPU, so none of this
+executes except when run by hand on hardware like this machine. This is
+`BACKLOG.md`'s open "GPU CI coverage" item (Phase G.2) — not resolved by
+either the 2026-07-07 or 2026-07-11 verification passes, both one-time
+manual runs, not a standing CI job.
 
 **What's still open, per `BACKLOG.md`'s S3 list:**
-1. ~~Design doc reconciliation~~ — done, this section.
-2. Plasma, Raman, radial/modal/free-space geometries on `CudaNativeSim` —
-   not started; every `set_*_params` beyond mode-avg Kerr still returns
-   `-1` as noted above.
+1. ~~Design doc reconciliation~~ — done 2026-07-11.
+2. ~~PPT plasma~~ — done 2026-07-11 (mode-averaged only). Raman, radial/
+   modal/free-space geometries, and ADK plasma remain unimplemented; every
+   other `set_*_params` still returns `-1` as noted above.
 3. Problem-size dispatch threshold (measured crossover, not guessed) so
    small grids stay on CPU; `LUNA_NATIVE_GPU=0/1/auto` env override — not
    started. Today it's all-or-nothing per `LUNA_USE_RUST_CUDA_NATIVE`.
-4. cumtrapz (plasma scan) / Raman ADE GPU kernels, or an explicit
-   `NativeIneligible`-style split — blocked on item 2.
-5. `test/test_native_gpu.jl`-style phase-test coverage of items 2-4, once
+4. Raman ADE / ADK plasma GPU kernels, radial/modal/free-space geometries —
+   or an explicit `NativeIneligible`-style split keeping those configs on
+   CPU, documented as such. A work-efficient parallel prefix scan for
+   cumtrapz (superseding item 2's single-thread kernels) would matter for
+   radial's much larger per-column plasma state, not at mode-averaged scale.
+5. `test/test_native_gpu.jl`-style phase-test coverage of items 3-4, once
    they exist.
-6. The `n_time_over` Kerr-buffer fidelity gap above.
+6. The `n_time_over` Kerr/plasma-buffer fidelity gap above.
 7. Phase G.2 / "GPU CI coverage" — a scheduled/dedicated GPU CI runner so
    this doesn't silently bit-rot un-exercised again between manual runs.
 

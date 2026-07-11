@@ -259,6 +259,11 @@ pub struct GpuContext {
     pub weaknorm_reduce_fn: CUfunction,
     pub rhs_mode_avg_real_fn: CUfunction,
     pub rhs_mode_avg_env_fn: CUfunction,
+    pub apply_time_window_fn: CUfunction,
+    pub plasma_fraction_fn: CUfunction,
+    pub plasma_phase_fn: CUfunction,
+    pub plasma_current_fn: CUfunction,
+    pub plasma_polarization_fn: CUfunction,
 }
 
 unsafe impl Send for GpuContext {}
@@ -382,10 +387,32 @@ pub fn init_gpu_context() -> Result<&'static GpuContext, String> {
             res = (driver.cuModuleGetFunction)(&mut rhs_mode_avg_env_fn, module, CString::new("rhs_mode_avg_env_kernel").unwrap().as_ptr());
             if res != 0 { return Err("cuModuleGetFunction rhs_mode_avg_env_kernel failed".to_string()); }
 
+            let mut apply_time_window_fn = std::ptr::null_mut();
+            res = (driver.cuModuleGetFunction)(&mut apply_time_window_fn, module, CString::new("apply_time_window_kernel").unwrap().as_ptr());
+            if res != 0 { return Err("cuModuleGetFunction apply_time_window_kernel failed".to_string()); }
+
+            let mut plasma_fraction_fn = std::ptr::null_mut();
+            res = (driver.cuModuleGetFunction)(&mut plasma_fraction_fn, module, CString::new("plasma_fraction_kernel").unwrap().as_ptr());
+            if res != 0 { return Err("cuModuleGetFunction plasma_fraction_kernel failed".to_string()); }
+
+            let mut plasma_phase_fn = std::ptr::null_mut();
+            res = (driver.cuModuleGetFunction)(&mut plasma_phase_fn, module, CString::new("plasma_phase_kernel").unwrap().as_ptr());
+            if res != 0 { return Err("cuModuleGetFunction plasma_phase_kernel failed".to_string()); }
+
+            let mut plasma_current_fn = std::ptr::null_mut();
+            res = (driver.cuModuleGetFunction)(&mut plasma_current_fn, module, CString::new("plasma_current_kernel").unwrap().as_ptr());
+            if res != 0 { return Err("cuModuleGetFunction plasma_current_kernel failed".to_string()); }
+
+            let mut plasma_polarization_fn = std::ptr::null_mut();
+            res = (driver.cuModuleGetFunction)(&mut plasma_polarization_fn, module, CString::new("plasma_polarization_kernel").unwrap().as_ptr());
+            if res != 0 { return Err("cuModuleGetFunction plasma_polarization_kernel failed".to_string()); }
+
             Ok(GpuContext {
                 device, context, cublas_handle, module, raman_fn, ppt_fn,
                 apply_prop_fn, rk45_accumulate_stage_fn, rk45_accumulate_error_fn,
-                weaknorm_elem_fn, weaknorm_reduce_fn, rhs_mode_avg_real_fn, rhs_mode_avg_env_fn
+                weaknorm_elem_fn, weaknorm_reduce_fn, rhs_mode_avg_real_fn, rhs_mode_avg_env_fn,
+                apply_time_window_fn, plasma_fraction_fn, plasma_phase_fn,
+                plasma_current_fn, plasma_polarization_fn,
             })
         }
     }).as_ref().map_err(|e| e.clone())

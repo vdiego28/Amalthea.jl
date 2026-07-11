@@ -216,21 +216,125 @@ extern "C" __global__ void weaknorm_elem_kernel(
     out_sq[idx] = err_sq;
 }
 
-// Mode average real kerr
+// Mode average real kerr. Deliberately does NOT apply `towin` (unlike its
+// pre-plasma version) — matches native.rs's CpuNativeSim::rhs_mode_avg_real,
+// where the time-domain window is applied once to the *combined* Pto
+// (Kerr + plasma [+ Raman]), not to Kerr alone. See apply_time_window_kernel
+// below, always run after every additive Pto contribution.
 extern "C" __global__ void rhs_mode_avg_real_kernel(
     double* pto,
     const double* eto,
-    const double* towin,
     double kerr_fac,
     int n_time
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n_time) return;
-    
+
     double e = eto[idx];
-    double w = towin ? towin[idx] : 1.0;
-    
-    pto[idx] = w * kerr_fac * e * e * e;
+    pto[idx] = kerr_fac * e * e * e;
+}
+
+// Time-domain window apodization: Pto *= towin. Split out from
+// rhs_mode_avg_real_kernel so it can run once, after Kerr AND plasma have
+// both contributed to `pto` — reproduces native.rs's Step 4 (applied to the
+// combined Pto), not a per-response window.
+extern "C" __global__ void apply_time_window_kernel(
+    double* pto,
+    const double* towin,
+    int n_time
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n_time) return;
+    pto[idx] *= towin[idx];
+}
+
+// Plasma ionization fraction: fused cumtrapz(rate)*dt + rho transform.
+// Reproduces native.rs's apply_plasma_real steps 2-3 (Maths.cumtrapz! then
+// `preionfrac + 1 - exp(-integral)`) in one single-thread sequential pass —
+// cumtrapz is an inherently sequential prefix sum (each element depends on
+// the previous), and n_time is small enough (~2^13-2^16) that a single
+// thread looping over it is negligible next to this step's FFT/kernel-launch
+// cost; not the work-efficient parallel prefix scan GPU.md's original design
+// sketch mentions; a fine V1 tradeoff at this problem size; a parallel scan
+// would matter at radial's much larger N=n_time*n_r plasma-state size, not
+// implemented here.
+extern "C" __global__ void plasma_fraction_kernel(
+    const double* rate,
+    double* fraction,
+    double preionfrac,
+    double dt,
+    int n_time
+) {
+    if (blockIdx.x != 0 || threadIdx.x != 0) return;
+    double acc = 0.0;
+    fraction[0] = preionfrac + 1.0 - exp(-acc);
+    for (int i = 1; i < n_time; i++) {
+        acc += 0.5 * (rate[i - 1] + rate[i]) * dt;
+        fraction[i] = preionfrac + 1.0 - exp(-acc);
+    }
+}
+
+// Plasma phase: phase[i] = fraction[i] * e_ratio * eto[i] — elementwise,
+// parallel (native.rs step 4).
+extern "C" __global__ void plasma_phase_kernel(
+    const double* fraction,
+    const double* eto,
+    double e_ratio,
+    double* phase,
+    int n_time
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n_time) return;
+    phase[idx] = fraction[idx] * e_ratio * eto[idx];
+}
+
+// Free-electron current: fused cumtrapz(phase)*dt + ionization-loss-current
+// add-in. Reproduces native.rs steps 5-6 (`cumtrapz(J, phase, dt)` then
+// `J[i] += Ip*W[i]*(1-rho[i])/E[i]`) in one sequential pass, same rationale
+// as plasma_fraction_kernel above.
+extern "C" __global__ void plasma_current_kernel(
+    const double* phase,
+    const double* rate,
+    const double* fraction,
+    const double* eto,
+    double ionpot,
+    double dt,
+    double* current,
+    int n_time
+) {
+    if (blockIdx.x != 0 || threadIdx.x != 0) return;
+    double acc = 0.0;
+    for (int i = 0; i < n_time; i++) {
+        if (i > 0) {
+            acc += 0.5 * (phase[i - 1] + phase[i]) * dt;
+        }
+        double e = eto[i];
+        double loss = (e != 0.0) ? ionpot * rate[i] * (1.0 - fraction[i]) / e : 0.0;
+        current[i] = acc + loss;
+    }
+}
+
+// Plasma polarisation: fused cumtrapz(current)*dt + accumulate into Pto.
+// Reproduces native.rs steps 7-8 (`cumtrapz(P, J, dt)` then
+// `pto[i] += density * P[i]`) in one sequential pass, same rationale as
+// plasma_fraction_kernel above. Writes directly into the shared `pto`
+// buffer that rhs_mode_avg_real_kernel already populated with the Kerr
+// contribution — additive, matches native.rs's `self.pto[i] += ...`.
+extern "C" __global__ void plasma_polarization_kernel(
+    const double* current,
+    double* pto,
+    double density,
+    double dt,
+    int n_time
+) {
+    if (blockIdx.x != 0 || threadIdx.x != 0) return;
+    double acc = 0.0;
+    for (int i = 0; i < n_time; i++) {
+        if (i > 0) {
+            acc += 0.5 * (current[i - 1] + current[i]) * dt;
+        }
+        pto[i] += density * acc;
+    }
 }
 
 // Mode average env kerr
