@@ -915,11 +915,52 @@ exists (Phase G.3).*
    different". Confirmed by the full green gate: no cache-invalidation
    misses surfaced across any geometry (radial, modal, free-space,
    mode-avg z-dependent linop) or grid type.
-4. SIMD Kerr + window/norm broadcasts (item 3a) — route through
-   `dispatch.rs`'s existing AVX2/AVX-512 lanes (see ISA sync note above:
-   this is the fix for "dispatch selects a path but only Raman uses it").
-   Add a Rust unit test asserting SIMD lane == scalar lane bitwise (or
-   ≤1 ulp where FMA contraction differs).
+4. 🟢 **Resolved 2026-07-10 — de-branch, not hand-SIMD.** SIMD Kerr +
+   window/norm broadcasts (item 3a) — measured first (temporary
+   `Instant`-counter pass on `rhs_mode_avg_real`, same discipline as
+   S1.6/S2 Phase 2, add/measure/revert): Kerr+window+norm was ~10.3% of
+   `rhs_mode_avg_real`'s own time (~9.7% of full `step()` wall time, since
+   the RHS is ~94% of `step()`) on the mode-avg+plasma default benchmark
+   workload (`test/benchmark_native_default.jl`'s shape, 2000 fixed-dt
+   steps) — well clear of S1.6's ~1-2% park threshold, so proceeded.
+   **The backlog's own premise ("route through dispatch.rs's existing
+   AVX2/AVX-512 lanes") was wrong** — `dispatch.rs` is only a
+   hardware-path *selector* (`SimulationEngine`), not a library of
+   elementwise SIMD kernels; the only hand-written lane in the codebase is
+   Raman's own `solve_avx2` (`raman.rs`), needed there because Raman's ADE
+   update is a sequential recurrence the compiler can't auto-vectorize —
+   the opposite of Kerr/window's flat broadcasts. Confirmed via
+   `objdump`/`nm` on the release `.so` before writing any code: Steps 1-5
+   (FFT, scale, Kerr cube, noise, window) were **already** auto-vectorized
+   by LLVM (79 `%ymm` ops, `target-cpu=native` per `.cargo/config.toml`) —
+   hand intrinsics there would have been redundant, unsafe-code risk for
+   zero gain (exactly the risk class that cost the S2 revert). The real,
+   *addressable* headroom was Steps 6-7 (norm + freq-window): a per-element
+   `if self.sidx[i] { ... }` branch inside the loop, which does defeat
+   auto-vectorization (confirmed scalar `%xmm`/`cmpb` in the disassembly).
+   **Fix: de-branch, not intrinsics.** `sidx`/`pre`/`beta`/`sqrt_aeff`/
+   `owin` are fixed for the life of a construction *except* for
+   z-dependent-linop configs (Phase 7), where `ensure_linop_at` mutates
+   `self.beta[i]` on every real z-update — so a naive one-time
+   precomputation at `set_mode_avg_params` first shipped a real bug
+   (caught by the full gate, not the Rust unit tests: `rtol=1e-8`
+   single-step mismatch in `test_native_zdep_linop.jl`, ~1.8e-5 relative —
+   caught only because the full gate was run, not a phase-specific
+   subset). Fixed by refreshing the precomputed factor inside
+   `ensure_linop_at` right after it mutates `beta[i]`, keeping the two in
+   sync. New `norm_pre_beta: Vec<Complex<f64>>` field holds
+   `pre[i]/beta[i]*sqrt_aeff` at `sidx` positions, `1+0i` (exact identity)
+   elsewhere; `owin` is folded to `1.0` outside `sidx` at construction
+   (it's read nowhere else). Both `rhs_mode_avg_real` and
+   `rhs_mode_avg_env`'s Steps 6-7 become plain unconditional multiply
+   loops. Bit-identical by construction (`x*1.0 == x` exactly in IEEE 754
+   for any finite/NaN/Inf `x`; the precomputed `pre[i]/beta[i]*sqrt_aeff`
+   value is the same deterministic FP result whether computed once or
+   recomputed every call). Verified: 50/50 Rust unit tests, full 7-group
+   gate exactly matching baseline (rust 42087/42087, physics 1645/1657+12
+   pre-existing broken, sim-interface 301/301, sim-multimode 33/33,
+   sim-propagation 18/18, io 2302/2302, fields 334/334) — including the
+   z-dependent-linop Phase 7 test that caught the bug, now passing.
 5. 🟢 **Resolved 2026-07-09.** BLAS-3 QDHT (item 5) — wired 2026-07-07,
    found broken (`cblas_dgemm` dispatch-stub issue, see below), fixed by
    rewriting `blas.rs` to bind the real ILP64 Fortran entry point instead.

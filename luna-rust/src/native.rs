@@ -160,6 +160,16 @@ pub struct CpuNativeSim {
     pub sidx: Vec<bool>,
     pub pre: Vec<Complex<f64>>,
     pub beta: Vec<f64>,
+    /// De-branched `pre[i]/beta[i]*sqrt_aeff` at `sidx` positions, identity
+    /// (`1+0i`) elsewhere — precomputed once so `rhs_mode_avg_{real,env}`'s
+    /// norm+freq-window steps become a plain unconditional multiply loop
+    /// (compiler auto-vectorizes; the branchy per-element `if sidx[i]` form
+    /// did not — confirmed via `objdump`, BACKLOG.md S1 item 4). `owin`
+    /// itself is folded to `1.0` outside `sidx` at construction time for the
+    /// same reason (only ever read at these two sidx-gated call sites).
+    /// `x*1.0 == x` exactly in IEEE 754 for any finite/NaN/Inf `x`, so this
+    /// is bit-identical to the branchy original, not merely equivalent.
+    pub norm_pre_beta: Vec<Complex<f64>>,
     pub kerr_fac: f64,
     pub nlscale: f64,
     pub sqrt_aeff: f64,
@@ -670,6 +680,7 @@ impl CpuNativeSim {
             sidx: Vec::new(),
             pre: Vec::new(),
             beta: Vec::new(),
+            norm_pre_beta: Vec::new(),
             kerr_fac: 0.0,
             nlscale: 0.0,
             sqrt_aeff: 1.0,
@@ -891,18 +902,16 @@ impl CpuNativeSim {
             }
         }
 
-        // ── Step 6: norm! — apply pre[i]/β[i]*sqrt_aeff at sidx positions ────────
+        // ── Step 6: norm! — pre[i]/β[i]*sqrt_aeff, precomputed (identity outside
+        // sidx) so this is a plain vectorizable multiply, not a per-element branch.
         for i in 0..self.n_spec {
-            if self.sidx[i] {
-                self.ks[idx][i] *= self.pre[i] / self.beta[i] * self.sqrt_aeff;
-            }
+            self.ks[idx][i] *= self.norm_pre_beta[i];
         }
 
-        // ── Step 7: freq-window apodization at sidx positions ────────────────────
+        // ── Step 7: freq-window apodization — owin already folded to 1.0 outside
+        // sidx at construction time (set_mode_avg_params).
         for i in 0..self.n_spec {
-            if self.sidx[i] {
-                self.ks[idx][i] *= self.owin[i];
-            }
+            self.ks[idx][i] *= self.owin[i];
         }
     }
 
@@ -1319,16 +1328,13 @@ impl CpuNativeSim {
             }
         }
 
-        // ── Step 6: norm! and freq-window ────────────────────────────────────────
+        // ── Step 6: norm! and freq-window — precomputed, identity outside sidx
+        // (see set_mode_avg_params / rhs_mode_avg_real's Step 6/7 comment).
         for i in 0..n {
-            if self.sidx[i] {
-                self.ks[idx][i] *= self.pre[i] / self.beta[i] * self.sqrt_aeff;
-            }
+            self.ks[idx][i] *= self.norm_pre_beta[i];
         }
         for i in 0..n {
-            if self.sidx[i] {
-                self.ks[idx][i] *= self.owin[i];
-            }
+            self.ks[idx][i] *= self.owin[i];
         }
     }
 
@@ -2092,6 +2098,13 @@ impl CpuNativeSim {
             if i < self.beta.len() {
                 self.beta[i] = omega / C * neff.re;
             }
+            // beta[i] just changed — norm_pre_beta (rhs_mode_avg_{real,env}'s
+            // precomputed Step 6 factor, S1 item 4) must be refreshed to stay
+            // in sync; it is not recomputed per-RHS-call like the un-cached
+            // original `pre[i]/beta[i]*sqrt_aeff`, only here, on real z-updates.
+            if i < self.norm_pre_beta.len() && self.sidx[i] {
+                self.norm_pre_beta[i] = self.pre[i] / self.beta[i] * self.sqrt_aeff;
+            }
         }
         // TransModeAvg calls `t.densityfun(z)` fresh every RK stage
         // (NonlinearRHS.jl), so `kerr_fac = density(z)·ε₀·γ3` must be
@@ -2685,6 +2698,18 @@ impl NativeBackend for CpuNativeSim {
     s.has_noise = false;
     s.et_noise = Vec::new();
     s.et_noise_cplx = Vec::new();
+
+    // De-branch the sidx-gated norm/freq-window steps (BACKLOG.md S1 item
+    // 4): fold sidx into owin, and precompute pre/beta*sqrt_aeff, both as
+    // the identity (1+0i) outside sidx. pre/beta/sqrt_aeff/owin are fixed
+    // for the whole solve (never mutated after this call), so this is a
+    // one-time cost, not a per-RHS-call one.
+    s.norm_pre_beta = (0..s.n_spec).map(|i| {
+        if s.sidx[i] { s.pre[i] / s.beta[i] * s.sqrt_aeff } else { Complex::new(1.0, 0.0) }
+    }).collect();
+    for i in 0..s.n_spec {
+        if !s.sidx[i] { s.owin[i] = 1.0; }
+    }
     0
 }
     unsafe fn set_mode_avg_noise(&mut self, noise: *const c_double, n: size_t) -> i32 {
