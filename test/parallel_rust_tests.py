@@ -90,10 +90,54 @@ def parse_summary(log_path):
     return None, None
 
 
+def write_timings(durations):
+    header = TIMINGS_FILE.read_text().splitlines() if TIMINGS_FILE.exists() else []
+    header = [l for l in header if l.strip().startswith("#")]
+    lines = header + [f"{name} {secs:.1f}" for name, secs in sorted(durations.items())]
+    TIMINGS_FILE.write_text("\n".join(lines) + "\n")
+
+
+def update_timings(files, max_workers, log_dir):
+    """Re-measure each file's wall-clock duration in its own process (one
+    file per bucket, run up to max_workers at a time), then overwrite
+    rust_test_timings.txt. Run on an otherwise-idle machine for stable
+    numbers — measurements are wall-clock, so contention from other bins
+    running concurrently inflates them."""
+    durations = {}
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def run_one(name):
+        log_path = log_dir / f"timing_{name}.log"
+        start = time.time()
+        with open(log_path, "w") as log:
+            subprocess.run(
+                ["julia", "--project", str(BUCKET_RUNNER), name],
+                cwd=REPO_ROOT,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+            )
+        return name, time.time() - start
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futs = {pool.submit(run_one, f): f for f in files}
+        for fut in as_completed(futs):
+            name, dur = fut.result()
+            durations[name] = dur
+            print(f"  measured {name}: {dur:.1f}s")
+
+    write_timings(durations)
+    print(f"Updated {TIMINGS_FILE} with {len(durations)} fresh timings.")
+    return durations
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
     ap.add_argument("--log-dir", default=str(REPO_ROOT / ".rust_test_logs"))
+    ap.add_argument("--update-timings", action="store_true",
+                     help="Re-measure each file's duration individually "
+                          "(one file per process) and overwrite "
+                          "rust_test_timings.txt before scheduling.")
     args = ap.parse_args()
 
     log_dir = Path(args.log_dir)
@@ -104,7 +148,12 @@ def main():
         print("No rust-tagged test files found.", file=sys.stderr)
         return 1
 
-    timings = load_timings()
+    if args.update_timings:
+        print(f"Re-measuring {len(files)} files individually "
+              f"(max {args.max_workers} concurrent)...")
+        timings = update_timings(files, args.max_workers, log_dir)
+    else:
+        timings = load_timings()
     bins, loads = lpt_bins(files, timings, args.max_workers)
 
     print(f"Distributing {len(files)} files across {len(bins)} workers "
