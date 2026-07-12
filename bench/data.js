@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783880872435,
+  "lastUpdate": 1783888607037,
   "repoUrl": "https://github.com/vdiego28/Luna-Rust.jl",
   "entries": {
     "Benchmark": [
@@ -57,6 +57,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.988912,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "53799316+vdiego28@users.noreply.github.com",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "00a4821a84e568054e0ab023499b68a7b137b5b5",
+          "message": "Merge pull request #57 from vdiego28/imgbot\n\n[ImgBot] Optimize images",
+          "timestamp": "2026-07-12T16:28:45-04:00",
+          "tree_id": "49b401f44949028adde3bcd1d59e2b0672e6ce93",
+          "url": "https://github.com/vdiego28/Luna-Rust.jl/commit/00a4821a84e568054e0ab023499b68a7b137b5b5"
+        },
+        "date": 1783888606294,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.975871,
             "unit": "ms/step"
           }
         ]
