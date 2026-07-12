@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783878718466,
+  "lastUpdate": 1783880872435,
   "repoUrl": "https://github.com/vdiego28/Luna-Rust.jl",
   "entries": {
     "Benchmark": [
@@ -28,6 +28,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.960685,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "distinct": true,
+          "id": "3b33302514d2443e661641a0ccf71babb5405736",
+          "message": "Point benchmark-action at bench/ instead of the default dev/bench\n\nAvoids colliding with Documenter's default gh-pages:dev/ deploy\nfolder, which it clears on every deploy of push-to-main docs. The\nexisting tracked history was already migrated on gh-pages itself\n(dev/bench -> bench).",
+          "timestamp": "2026-07-12T14:23:43-04:00",
+          "tree_id": "103309b13a640722dbf63f707ddc629fabf7182a",
+          "url": "https://github.com/vdiego28/Luna-Rust.jl/commit/3b33302514d2443e661641a0ccf71babb5405736"
+        },
+        "date": 1783880872152,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.988912,
             "unit": "ms/step"
           }
         ]
