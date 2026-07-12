@@ -368,11 +368,6 @@ function prop_capillary(args...; status_period=5, kwargs...)
     output
 end
 
-function prop_capillary_args(args...; kwargs...)
-    kw = Fields.resolve_greek_aliases(kwargs)
-    _prop_capillary_args(args...; kw...)
-end
-
 """
     prop_capillary_args(radius, flength, gas, pressure; λ0, λlims, trange, kwargs...)
 
@@ -382,6 +377,11 @@ simulation and returning the output, it returns the required arguments for `Amal
 which is useful for repeated simulations in an indentical fibre with different initial
 conditions.
 """
+function prop_capillary_args(args...; kwargs...)
+    kw = Fields.resolve_greek_aliases(kwargs)
+    _prop_capillary_args(args...; kw...)
+end
+
 function _prop_capillary_args(radius, flength, gas, pressure;
                         λlims, trange, envelope=false, thg=nothing, δt=1,
                         λ0, τfwhm=nothing, τw=nothing, ϕ=Float64[],

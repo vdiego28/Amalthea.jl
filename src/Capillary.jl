@@ -630,6 +630,16 @@ end
 # `docs/dev/native-port/BETA1_ANALYTIC.md` for the derivation, the adaptive-FD
 # noise floor this replaces, and verification against both Julia's own
 # `dispersion` and an independent BigFloat cross-check.
+"""
+    ZDepLinopMarcatili{F, DF}
+
+Wraps a z-dependent `linop!(out, z)` closure for a constant-radius, graded-core
+`MarcatiliMode` (see [`gradient`](@ref)) together with the precomputed density-spline
+knots and β1(z) constants `RustNativeStepper`'s native path needs to reconstruct the
+same closure in Rust without re-fitting or re-differentiating anything. Callable as
+`(w::ZDepLinopMarcatili)(out, z)`, so it behaves identically to the plain `linop!`
+closure everywhere a z-dependent linop is used.
+"""
 struct ZDepLinopMarcatili{F, DF}
     linop!::F
     densf::DF        # dens(z) = dspl(pfun(z))

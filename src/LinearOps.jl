@@ -91,6 +91,16 @@ end
 # BigFloat-derivative trick `Capillary.make_linop`'s Phase 7 specialization
 # already uses, reused verbatim here since `γ` is the same kind of opaque
 # per-gas Sellmeier closure).
+"""
+    ZDepLinopFree{F, D}
+
+Free-space (`TransFree`) analogue of [`Amalthea.Capillary.ZDepLinopMarcatili`](@ref) for a
+two-point pressure-gradient gas cell: wraps a z-dependent `linop!(out, z)` closure
+together with the precomputed density-spline knots and β1(z) constants
+`RustNativeStepper`'s native path needs. Callable as `(w::ZDepLinopFree)(out, z)`, so
+it behaves identically to the plain `linop!` closure everywhere a z-dependent linop
+is used.
+"""
 struct ZDepLinopFree{F, D}
     linop!::F
     densf::D          # dens(z) = dspl(pfun(z))
@@ -115,13 +125,13 @@ end
 """
     make_linop_free_gradient(grid, xygrid, gas, L, p0, p1; T=PhysData.roomtemp)
 
-Convenience constructor (mirrors [`Capillary.gradient`](@ref)) for a
+Convenience constructor (mirrors [`Amalthea.Capillary.gradient`](@ref)) for a
 free-space two-point pressure-gradient gas cell: builds the ordinary
 z-dependent `linop!` (`make_linop`) and wraps it in a [`ZDepLinopFree`](@ref)
 carrying the metadata `RustNativeStepper`'s Phase D.5 native path needs.
 Returns `(wrapped_linop, densf)` — `densf(z)` should also be passed as the
 `densityfun` for `Amalthea.setup`/`TransFree` construction, and to
-[`NonlinearRHS.norm_free_gradient`](@ref) so the linop and nonlinear-norm
+[`Amalthea.NonlinearRHS.norm_free_gradient`](@ref) so the linop and nonlinear-norm
 paths share an identical density profile (not just numerically equal —
 the same spline object).
 """

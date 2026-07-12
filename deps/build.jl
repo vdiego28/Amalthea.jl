@@ -48,35 +48,35 @@ function try_download_prebuilt(rust_dir)
 
     dest_dir = joinpath(rust_dir, "target", "release")
     mkpath(dest_dir)
-    tmp_lib = joinpath(dest_dir, asset * ".download")
-    tmp_sums = joinpath(dest_dir, "SHA256SUMS.txt")
     try
-        Downloads.download("$base_url/$asset", tmp_lib)
-        Downloads.download("$base_url/SHA256SUMS.txt", tmp_sums)
+        return mktempdir() do tmp_dir
+            tmp_lib = joinpath(tmp_dir, asset * ".download")
+            tmp_sums = joinpath(tmp_dir, "SHA256SUMS.txt")
 
-        expected = nothing
-        for line in eachline(tmp_sums)
-            parts = split(line)
-            if length(parts) == 2 && parts[2] == asset
-                expected = parts[1]
-                break
+            Downloads.download("$base_url/$asset", tmp_lib)
+            Downloads.download("$base_url/SHA256SUMS.txt", tmp_sums)
+
+            expected = nothing
+            for line in eachline(tmp_sums)
+                parts = split(line)
+                if length(parts) == 2 && parts[2] == asset
+                    expected = parts[1]
+                    break
+                end
             end
+            expected === nothing && error("no checksum entry for $asset in SHA256SUMS.txt")
+
+            actual = bytes2hex(open(SHA.sha256, tmp_lib))
+            actual == expected || error("checksum mismatch for $asset " *
+                                         "(expected $expected, got $actual)")
+
+            mv(tmp_lib, joinpath(dest_dir, libname); force=true)
+            @info "Downloaded prebuilt luna-rust library ($triple, v$version), skipping cargo build."
+            true
         end
-        expected === nothing && error("no checksum entry for $asset in SHA256SUMS.txt")
-
-        actual = bytes2hex(open(SHA.sha256, tmp_lib))
-        actual == expected || error("checksum mismatch for $asset " *
-                                     "(expected $expected, got $actual)")
-
-        mv(tmp_lib, joinpath(dest_dir, libname); force=true)
-        @info "Downloaded prebuilt luna-rust library ($triple, v$version), skipping cargo build."
-        return true
     catch e
         @info "No usable prebuilt luna-rust binary (falling back to source build): $e"
         return false
-    finally
-        isfile(tmp_lib) && rm(tmp_lib; force=true)
-        isfile(tmp_sums) && rm(tmp_sums; force=true)
     end
 end
 

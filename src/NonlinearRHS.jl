@@ -960,7 +960,7 @@ end
 Convenience constructor (mirrors [`norm_free`](@ref)) for a free-space
 two-point pressure-gradient gas cell — docs/dev/BACKLOG.md Phase D.5. `densf(z)`
 should be the *same* density function
-[`LinearOps.make_linop_free_gradient`](@ref) returns, so the linop and
+[`Amalthea.LinearOps.make_linop_free_gradient`](@ref) returns, so the linop and
 nonlinear-norm paths share an identical density profile.
 """
 function norm_free_gradient(grid, xygrid, gas::Symbol, densf)
