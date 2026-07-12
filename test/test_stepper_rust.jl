@@ -2,7 +2,7 @@ using TestItems
 
 @testitem "Rust PreconStepper equivalence" tags=[:rust] begin
     import Test: @test, @testset
-    using Luna
+    using Amalthea
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 

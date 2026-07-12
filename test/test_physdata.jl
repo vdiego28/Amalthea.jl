@@ -2,7 +2,7 @@ using TestItems
 
 @testitem "Physdata" tags=[:physics] begin
 import Test: @test, @test_throws, @testset
-import Luna: PhysData
+import Amalthea: PhysData
 
 @testset "All" begin
 @testset "Exceptions" begin

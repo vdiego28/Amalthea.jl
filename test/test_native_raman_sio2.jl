@@ -2,8 +2,8 @@ using TestItems
 
 @testitem "Native-Rust Phase I item 2 (ramanmodel=:SiO2, mode-avg EnvGrid)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
-    using Luna
-    using Luna.RK45: PreconStepper, RustNativeStepper, step!, solve
+    using Amalthea
+    using Amalthea.RK45: PreconStepper, RustNativeStepper, step!, solve
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 
@@ -54,7 +54,7 @@ using TestItems
             Interface.prop_gnlse_args(γ, flength, βs; kw_noraman...)
         end
 
-        @assert grid isa Luna.Grid.EnvGrid "prop_gnlse uses EnvGrid"
+        @assert grid isa Amalthea.Grid.EnvGrid "prop_gnlse uses EnvGrid"
 
         t0 = 0.0
         dt = flength / 2000

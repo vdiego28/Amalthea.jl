@@ -1,10 +1,10 @@
 module RectModes
 import StaticArrays: SVector
 using Reexport
-@reexport using Luna.Modes
-import Luna: Maths
-import Luna.PhysData: c, ε_0, μ_0, ref_index_fun, roomtemp
-import Luna.Modes: AbstractMode, dimlimits, neff, field, Aeff, N, modeinfo
+@reexport using Amalthea.Modes
+import Amalthea: Maths
+import Amalthea.PhysData: c, ε_0, μ_0, ref_index_fun, roomtemp
+import Amalthea.Modes: AbstractMode, dimlimits, neff, field, Aeff, N, modeinfo
 import Base: show
 
 export RectMode, dimlimits, neff, field, N, Aeff

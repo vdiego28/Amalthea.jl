@@ -2,8 +2,8 @@ using TestItems
 
 @testitem "Native-Rust Phase 0 (callback-free stepper)" tags=[:rust] begin
     import Test: @test, @test_skip
-    using Luna
-    using Luna.RK45: PreconStepper, RustNativeStepper, step!
+    using Amalthea
+    using Amalthea.RK45: PreconStepper, RustNativeStepper, step!
     import FFTW
 
     use_native = get(ENV, "LUNA_USE_RUST_NATIVE", "0") == "1"

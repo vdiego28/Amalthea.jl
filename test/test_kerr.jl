@@ -2,7 +2,7 @@ using TestItems
 
 @testitem "Kerr" tags=[:sim_propagation] begin
 import Test: @test, @testset
-import Luna: Maths, Nonlinear, PhysData
+import Amalthea: Maths, Nonlinear, PhysData
 import FFTW
 
 # test full / nothg / envelope kerr effect

@@ -6,7 +6,7 @@ import Base: getindex, show, haskey
 using EllipsisNotation
 import EllipsisNotation: Ellipsis
 import Printf: @sprintf
-import Luna: Scans, Utils
+import Amalthea: Scans, Utils
 import FileWatching.Pidfile: mkpidlock
 
 abstract type AbstractOutput end

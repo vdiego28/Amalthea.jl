@@ -2,8 +2,8 @@ using TestItems
 
 @testitem "Native-Rust Phase I item 7 (NativeIneligible guard regressions)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
-    using Luna
-    using Luna.RK45: RustNativeStepper, NativeIneligible
+    using Amalthea
+    using Amalthea.RK45: RustNativeStepper, NativeIneligible
     import Logging: with_logger, NullLogger
 
     libpath = RK45._LIBLUNA_RUST_RK45
@@ -50,7 +50,7 @@ using TestItems
             Eω, grid, linop, transform, FT, output = with_logger(NullLogger()) do
                 Interface.prop_capillary_args(radius, flength, gas, pressure; kw...)
             end
-            @test linop isa Luna.Capillary.ZDepLinopMarcatili
+            @test linop isa Amalthea.Capillary.ZDepLinopMarcatili
 
             # Deliberately omit `flength` (defaults to `Inf`) — must throw,
             # not silently build a bogus resident linop-LUT.
@@ -72,7 +72,7 @@ using TestItems
             # totally-absent contribution instead of a partially-wrong one.
             gas = :Ar; pres = 1.5; τ = 15e-15; λ0 = 800e-9
             w0 = 150e-6; energy = 6e-5; L = 0.02
-            import Luna: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear, Ionisation
+            import Amalthea: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear, Ionisation
             import Hankel
             grid = Grid.RealGrid(L, λ0, (150e-9, 2000e-9), 0.5e-12)
             q    = Hankel.QDHT(4e-3, 32, dim=2)
@@ -96,7 +96,7 @@ using TestItems
             inputs  = Fields.GaussGaussField(λ0=λ0, τfwhm=τ, energy=energy, w0=w0, propz=-0.1)
 
             Eω, transform, FT = with_logger(NullLogger()) do
-                Luna.setup(grid, q, densityfun, normfun, responses, inputs)
+                Amalthea.setup(grid, q, densityfun, normfun, responses, inputs)
             end
 
             @test_throws NativeIneligible RustNativeStepper(transform, linop, copy(Eω), 0.0, 0.0005)

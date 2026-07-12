@@ -2,8 +2,8 @@ using TestItems
 
 @testitem "Native-Rust Phase F.4 (gas mixtures, mode-avg Kerr)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
-    using Luna
-    using Luna.RK45: PreconStepper, RustNativeStepper, step!, solve
+    using Amalthea
+    using Amalthea.RK45: PreconStepper, RustNativeStepper, step!, solve
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 
@@ -39,7 +39,7 @@ using TestItems
             (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),)
         )
         linop, βfun!, _, _ = LinearOps.make_const_linop(grid, m, λ0)
-        Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs, βfun!, aeff)
+        Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs, βfun!, aeff)
 
         t0 = 0.0
         dt = 0.01
@@ -81,7 +81,7 @@ using TestItems
                 (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),),
                 (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)), Nonlinear.Kerr_field(PhysData.γ3_gas(gas)))
             )
-            Eω_bad, transform_bad, _ = Luna.setup(grid, densityfun, responses_bad, inputs, βfun!, aeff)
+            Eω_bad, transform_bad, _ = Amalthea.setup(grid, densityfun, responses_bad, inputs, βfun!, aeff)
             @test_throws RK45.NativeIneligible RustNativeStepper(
                 transform_bad, linop, copy(Eω_bad), t0, dt, rtol=1e-6, atol=1e-10)
         end

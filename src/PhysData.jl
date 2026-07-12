@@ -6,7 +6,7 @@ import Unitful: ustrip
 import CSV
 import DelimitedFiles: readdlm
 import Polynomials
-import Luna: Maths, Utils
+import Amalthea: Maths, Utils
 
 include("data/lookup_tables.jl")
 

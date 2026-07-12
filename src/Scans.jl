@@ -3,7 +3,7 @@ import ArgParse: ArgParseSettings, parse_args, parse_item, @add_arg_table!
 import Logging: @info, @warn
 import Printf: @sprintf
 import Base: length, size
-import Luna: Utils
+import Amalthea: Utils
 import FileWatching.Pidfile: mkpidlock
 import HDF5
 import Distributed: @spawnat, addprocs, rmprocs, fetch, Future, @everywhere
@@ -365,7 +365,7 @@ function runscan(f, scan::Scan{QueueExec})
     else
         nproc = (scan.exec.nproc == -1) ? Base.Sys.CPU_THREADS : scan.exec.nproc
         procs = addprocs(nproc)
-        @everywhere eval(:(using Luna))
+        @everywhere eval(:(using Amalthea))
         futures = Future[]
         for p in procs
             fut = @spawnat p _runscan(f, scan)
@@ -548,7 +548,7 @@ function runscan(f, scan::Scan{<:SSHExec})
                 read(Cmd(["scp", fi, "$host:$remotedir"]))
             end
         end
-        @info "Running Luna script on remote host $host"
+        @info "Running Amalthea script on remote host $host"
         read(Cmd(["ssh", host, "julia", "$remotedir/$scriptfile_esc"]), String)
     end
 end

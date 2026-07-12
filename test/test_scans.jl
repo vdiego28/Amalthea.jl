@@ -2,7 +2,7 @@ using TestItems
 
 @testitem "Scans" tags=[:io] begin
 import Test: @test, @testset, @test_throws
-using Luna
+using Amalthea
 import HDF5
 using Distributed
 import Logging: with_logger, NullLogger
@@ -150,7 +150,7 @@ if ~("GITHUB_ACTIONS" in keys(ENV))
 @testset "multi-process queue scan" begin
     ps = addprocs(2)
     @everywhere begin
-        using Luna
+        using Amalthea
         function worker_scans()
             energies = collect(range(5e-6, 20e-6; length=16))
             scan = Scan("scantest_queue_multiproc", Scans.QueueExec(); energy=energies)
@@ -180,7 +180,7 @@ end
 @testset "multi-process queue scan with error" begin
     ps = addprocs(2)
     @everywhere begin
-        using Luna
+        using Amalthea
         import Logging: with_logger, NullLogger
         function worker_err(scanname)
             energies = collect(range(5e-6, 20e-6; length=16))

@@ -5,7 +5,7 @@ import Test: @test, @testset
 
 @testset "Vector plasma" begin
     # scalar modal model, vector modal at 0 degrees and vector modal at 45 degrees should be identical
-    using Luna
+    using Amalthea
     a = 9e-6
     gas = :Ar
     pres = 5
@@ -28,21 +28,21 @@ import Test: @test, @testset
     responses = (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),
                 plasma)
     inputs = Fields.GaussField(λ0=λ0, τfwhm=τfwhm, energy=energy)
-    Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs, modes,
+    Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs, modes,
                                 :y; full=false)
     linop = LinearOps.make_const_linop(grid, modes, λ0)
     statsfun = Stats.default(grid, Eω, modes, linop, transform; gas=gas)
     outscalar = Output.MemoryOutput(0, grid.zmax, 2, statsfun)
-    Luna.run(Eω, grid, linop, transform, FT, outscalar)
+    Amalthea.run(Eω, grid, linop, transform, FT, outscalar)
     # vector linear 0 degrees
     plasma = Nonlinear.PlasmaCumtrapz(grid.to, Array{Float64}(undef, length(grid.to), 2),
                                       ionrate, ionpot)
     responses = (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),
              plasma)
-    Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs, modes,
+    Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs, modes,
                                    :xy; full=false)
     outvector = Output.MemoryOutput(0, grid.zmax, 2, statsfun)
-    Luna.run(Eω, grid, linop, transform, FT, outvector)
+    Amalthea.run(Eω, grid, linop, transform, FT, outvector)
 
     Iωs = abs2.(outscalar.data["Eω"][:,1,1])
     Iωv = abs2.(outvector.data["Eω"][:,1,1])
@@ -55,12 +55,12 @@ import Test: @test, @testset
 
     inputs = ((mode=1, fields=(Fields.GaussField(λ0=λ0, τfwhm=τfwhm, energy=energy/2),)),
               (mode=2, fields=(Fields.GaussField(λ0=λ0, τfwhm=τfwhm, energy=energy/2),)))
-    Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs, modes,
+    Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs, modes,
                                    :xy; full=false)
     linop = LinearOps.make_const_linop(grid, modes, λ0)
     statsfun = Stats.default(grid, Eω, modes, linop, transform; gas=gas)
     outvector45 = Output.MemoryOutput(0, grid.zmax, 2, statsfun)
-    Luna.run(Eω, grid, linop, transform, FT, outvector45)
+    Amalthea.run(Eω, grid, linop, transform, FT, outvector45)
     Iωv45 = abs2.(outvector45.data["Eω"][:,1,1]) .+ abs2.(outvector45.data["Eω"][:,2,1])
     @test Iωs ≈ Iωv45
 end

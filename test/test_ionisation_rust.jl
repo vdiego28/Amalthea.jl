@@ -7,7 +7,7 @@ using TestItems
 # the skip-guard pattern used in test_rust_ffi.jl.
 @testitem "Rust PPT ionization equivalence" tags=[:rust] begin
     import Test: @test, @testset
-    using Luna
+    using Amalthea
     import Logging
     import Logging: with_logger, NullLogger
 
@@ -22,7 +22,7 @@ using TestItems
     libpath = joinpath(@__DIR__, "..", "luna-rust", "target", "release", libname)
     if !isfile(libpath)
         @warn "Skipping Rust ionization equivalence test: shared library not found at $libpath. " *
-              "Build it with `cargo build --release` in luna-rust/ (or run `]build Luna`)."
+              "Build it with `cargo build --release` in luna-rust/ (or run `]build Amalthea`)."
         return
     end
 

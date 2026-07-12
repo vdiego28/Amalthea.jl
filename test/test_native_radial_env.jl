@@ -2,9 +2,9 @@ using TestItems
 
 @testitem "Native-Rust Phase D.1 (EnvGrid radial, resident QDHT)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
-    using Luna
-    import Luna: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear
-    using Luna.RK45: PreconStepper, RustNativeStepper, step!, solve
+    using Amalthea
+    import Amalthea: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear
+    using Amalthea.RK45: PreconStepper, RustNativeStepper, step!, solve
     import Hankel
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
@@ -31,10 +31,10 @@ using TestItems
         inputs  = Fields.GaussGaussField(λ0=λ0, τfwhm=τ, energy=energy, w0=w0, propz=-0.15)
 
         Eω, transform, FT = with_logger(NullLogger()) do
-            Luna.setup(grid, q, densityfun, normfun, responses, inputs)
+            Amalthea.setup(grid, q, densityfun, normfun, responses, inputs)
         end
 
-        @assert transform isa Luna.NonlinearRHS.TransRadial "Expected TransRadial"
+        @assert transform isa Amalthea.NonlinearRHS.TransRadial "Expected TransRadial"
 
         t0 = 0.0
         dt = 0.001
@@ -76,7 +76,7 @@ using TestItems
             # no-Kerr control run uses the (independently-trusted) Julia
             # PreconStepper on both sides — this isolates "does Kerr matter
             # here at all" from the Rust-vs-Julia correctness check above.
-            # Direct TransRadial construction (not Luna.setup) — an empty
+            # Direct TransRadial construction (not Amalthea.setup) — an empty
             # `responses` tuple is ambiguous between `setup`'s radial and
             # modal methods (both accept an empty-tuple-compatible arg in
             # that position), so build the no-Kerr transform directly instead.
@@ -95,7 +95,7 @@ using TestItems
             # comfortably.
             inputs_strong = Fields.GaussGaussField(λ0=λ0, τfwhm=τ, energy=1e-7, w0=w0, propz=-0.15)
             Eω_strong, transform_strong, _ = with_logger(NullLogger()) do
-                Luna.setup(grid, q, densityfun, normfun, responses, inputs_strong)
+                Amalthea.setup(grid, q, densityfun, normfun, responses, inputs_strong)
             end
             no_kerr_transform = NonlinearRHS.TransRadial(grid, q, transform_strong.FT, (),
                                                           densityfun, normfun)

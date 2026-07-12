@@ -1,12 +1,12 @@
 # Changelog
 
-All notable changes to Luna-Rust.jl are documented here. This project is a
+All notable changes to Amalthea.jl are documented here. This project is a
 fork of [Luna.jl](https://github.com/LupoLab/Luna.jl); versions below are
 this fork's own, starting from the point the Rust backend was introduced.
 
 ## [1.0.0]
 
-First stable release. Luna-Rust.jl keeps Luna.jl's Julia interface fully
+First stable release. Amalthea.jl keeps Luna.jl's Julia interface fully
 backwards-compatible while replacing performance-critical numerical kernels
 with a native Rust backend (`luna-rust`), called transparently via `ccall` —
 no Rust knowledge is required to use the package.
@@ -39,7 +39,8 @@ no Rust knowledge is required to use the package.
   Windows), validated by CI on all three platforms.
 
 ### Changed
-- Package renamed to Luna-Rust.jl; citation metadata updated (Zenodo DOI).
+- Package renamed to Amalthea.jl (previously Luna-Rust.jl, itself a fork of
+  Luna.jl); citation metadata updated (Zenodo DOI), new package UUID minted.
 
 ### Fixed
 - `Polarisation.ellipse` angle calculation (was always 0; now

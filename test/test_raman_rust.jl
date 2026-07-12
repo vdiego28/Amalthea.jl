@@ -7,8 +7,8 @@ using TestItems
 # skip-guard pattern used in test_rust_ffi.jl and test_ionisation_rust.jl.
 @testitem "Rust Raman equivalence" tags=[:rust] begin
     import Test: @test, @testset
-    using Luna
-    import Luna: Nonlinear, Raman
+    using Amalthea
+    import Amalthea: Nonlinear, Raman
     import Logging: with_logger, NullLogger
 
     # ── locate the shared library ──────────────────────────────────────────────
@@ -22,7 +22,7 @@ using TestItems
     libpath = joinpath(@__DIR__, "..", "luna-rust", "target", "release", libname)
     if !isfile(libpath)
         @warn "Skipping Rust Raman equivalence test: shared library not found at $libpath. " *
-              "Build it with `cargo build --release` in luna-rust/ (or run `]build Luna`)."
+              "Build it with `cargo build --release` in luna-rust/ (or run `]build Amalthea`)."
         return
     end
 

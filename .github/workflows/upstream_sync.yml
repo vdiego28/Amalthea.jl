@@ -20,7 +20,7 @@ jobs:
       - name: Diff against last-synced base
         id: diff
         run: |
-          # Fork base commit: the point at which Luna-Rust.jl's history diverged
+          # Fork base commit: the point at which Amalthea.jl's history diverged
           # from upstream/master (kept in sync with BACKLOG.md's Phase A notes).
           BASE=0a52ffb
           NEW=$(git log --oneline ${BASE}..upstream/master -- . ':!.github' 2>/dev/null || true)

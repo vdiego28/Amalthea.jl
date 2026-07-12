@@ -2,9 +2,9 @@ using TestItems
 
 @testitem "Native-Rust Phase D.5 (free-space, z-dependent linop+normfun)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
-    using Luna
-    import Luna: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear
-    using Luna.RK45: PreconStepper, RustNativeStepper, step!, solve
+    using Amalthea
+    import Amalthea: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear
+    using Amalthea.RK45: PreconStepper, RustNativeStepper, step!, solve
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 
@@ -32,11 +32,11 @@ using TestItems
         inputs = Fields.GaussGaussField(λ0=λ0, τfwhm=τ, energy=energy, w0=w0)
 
         Eω, transform, FT = with_logger(NullLogger()) do
-            Luna.setup(grid, xygrid, densf, normfun, responses, inputs)
+            Amalthea.setup(grid, xygrid, densf, normfun, responses, inputs)
         end
 
-        @assert transform isa Luna.NonlinearRHS.TransFree "Expected TransFree"
-        @assert linop isa Luna.LinearOps.ZDepLinopFree "Expected ZDepLinopFree"
+        @assert transform isa Amalthea.NonlinearRHS.TransFree "Expected TransFree"
+        @assert linop isa Amalthea.LinearOps.ZDepLinopFree "Expected ZDepLinopFree"
 
         t0 = 0.0
         dt = 0.0005
@@ -82,7 +82,7 @@ using TestItems
             linop_const, densf_const = LinearOps.make_linop_free_gradient(grid, xygrid, gas, L, p0, p0)
             normfun_const = NonlinearRHS.norm_free_gradient(grid, xygrid, gas, densf_const)
             Eω_const, transform_const, _ = with_logger(NullLogger()) do
-                Luna.setup(grid, xygrid, densf_const, normfun_const, responses, inputs)
+                Amalthea.setup(grid, xygrid, densf_const, normfun_const, responses, inputs)
             end
             s_jl_grad = PreconStepper(transform, linop, copy(Eω), t0, dt,
                                        rtol=1e-6, atol=1e-10, max_dt=dt, min_dt=dt)

@@ -5,9 +5,9 @@ import HDF5
 import FileWatching.Pidfile: mkpidlock
 import HypergeometricFunctions: pFq
 import Logging: @info
-import Luna.PhysData: c, ħ, electron, m_e, au_energy, au_time, au_Efield, wlfreq, polarisability_difference, polarisability, au_polarisability
-import Luna.PhysData: ionisation_potential, quantum_numbers
-import Luna: Maths, Utils, Config
+import Amalthea.PhysData: c, ħ, electron, m_e, au_energy, au_time, au_Efield, wlfreq, polarisability_difference, polarisability, au_polarisability
+import Amalthea.PhysData: ionisation_potential, quantum_numbers
+import Amalthea: Maths, Utils, Config
 import Printf: @sprintf
 
 # ─── Rust FFI helpers ────────────────────────────────────────────────────────

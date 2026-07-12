@@ -2,8 +2,8 @@ using TestItems
 
 @testitem "Native-Rust Phase 4 (Raman, RealGrid)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
-    using Luna
-    using Luna.RK45: PreconStepper, RustNativeStepper, step!, solve
+    using Amalthea
+    using Amalthea.RK45: PreconStepper, RustNativeStepper, step!, solve
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 
@@ -37,8 +37,8 @@ using TestItems
             Interface.prop_capillary_args(args...; kw...)
         end
 
-        @assert grid isa Luna.Grid.RealGrid "Raman test uses RealGrid"
-        @assert any(r isa Luna.Nonlinear.RamanPolarField for r in transform.resp) "Expected a RamanPolarField response"
+        @assert grid isa Amalthea.Grid.RealGrid "Raman test uses RealGrid"
+        @assert any(r isa Amalthea.Nonlinear.RamanPolarField for r in transform.resp) "Expected a RamanPolarField response"
 
         t0 = 0.0
         dt = 0.01

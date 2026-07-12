@@ -2,8 +2,8 @@ using TestItems
 
 @testitem "Maths" tags=[:physics] begin
 import Test: @test, @testset, @test_throws
-import Luna: Maths, Grid, Fields
-import Luna.Modes: hquadrature
+import Amalthea: Maths, Grid, Fields
+import Amalthea.Modes: hquadrature
 import Random: seed!
 import FFTW
 

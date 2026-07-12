@@ -10,7 +10,7 @@ Pkg.build("PyCall")
 # to `cargo build --release` from source — the from-source path is kept as
 # the canonical dev path and as the fallback for platforms/versions with no
 # published release asset.
-const _LUNA_RUST_RELEASE_REPO = "vdiego28/Luna-Rust.jl"
+const _LUNA_RUST_RELEASE_REPO = "vdiego28/Amalthea.jl"
 
 _libluna_rust_name() = Sys.iswindows() ? "luna_rust.dll" :
                         Sys.isapple()  ? "libluna_rust.dylib" :

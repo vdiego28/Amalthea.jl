@@ -1,6 +1,6 @@
 # N = 5 soliton
 
-using Luna
+using Amalthea
 
 γ = 0.1
 β2 = -1e-26

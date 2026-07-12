@@ -2,8 +2,8 @@ using TestItems
 
 @testitem "Native-Rust Phase I item 1 (mode-averaged shot noise, RealGrid)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
-    using Luna
-    using Luna.RK45: PreconStepper, RustNativeStepper, step!, solve
+    using Amalthea
+    using Amalthea.RK45: PreconStepper, RustNativeStepper, step!, solve
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
     import Random: MersenneTwister

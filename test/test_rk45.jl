@@ -2,7 +2,7 @@ using TestItems
 
 @testitem "Rk45" tags=[:physics] begin
 import FFTW
-import Luna: RK45
+import Amalthea: RK45
 import Test: @test
 
 function testinit()

@@ -15,7 +15,7 @@ using TestItems
     # all — the exact out-of-the-box configuration a new user gets — and
     # asserts the stepper `solve_precon` actually picked is
     # `RK45.RustNativeStepper`, not a silent fallback.
-    using Luna
+    using Amalthea
     import Logging: with_logger, NullLogger
 
     libpath = RK45._LIBLUNA_RUST_RK45

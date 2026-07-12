@@ -1,4 +1,4 @@
-using Luna
+using Amalthea
 
 a = 13e-6
 gas = :Ar
@@ -38,12 +38,12 @@ linop = LinearOps.make_linop(grid, modes, λ0);
 
 inputs = Fields.GaussField(λ0=λ0, τfwhm=τfwhm, energy=energy)
 
-Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs, modes, :y; full=false)
+Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs, modes, :y; full=false)
 
 statsfun = Stats.default(grid, Eω, modes, linop, transform; gas=gas, windows=((150e-9, 300e-9),))
 output = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
 
-Luna.run(Eω, grid, linop, transform, FT, output)
+Amalthea.run(Eω, grid, linop, transform, FT, output)
 
 ##
 Plotting.pygui(true)

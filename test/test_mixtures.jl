@@ -1,7 +1,7 @@
 using TestItems
 
 @testitem "Mixtures" tags=[:io] begin
-using Luna
+using Amalthea
 import Test: @test, @testset
 import LinearAlgebra: norm
 
@@ -49,10 +49,10 @@ end
 responses = (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),)
 
 linop, βfun!, _, _ = LinearOps.make_const_linop(grid, m, λ0)
-Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs, βfun!, aeff)
+Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs, βfun!, aeff)
 statsfun = Stats.default(grid, Eω, m, linop, transform; gas=gas)
 output_single = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
-Luna.run(Eω, grid, linop, transform, FT, output_single)
+Amalthea.run(Eω, grid, linop, transform, FT, output_single)
 
 # Mixture
 m = Capillary.MarcatiliMode(a, (gas, gas), (halfpres, halfpres); loss=false)
@@ -66,10 +66,10 @@ responses = (
 )
 
 linop, βfun!, _, _ = LinearOps.make_const_linop(grid, m, λ0)
-Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs, βfun!, aeff)
+Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs, βfun!, aeff)
 statsfun = Stats.default(grid, Eω, m, linop, transform; gas=(gas, gas))
 output_mix = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
-Luna.run(Eω, grid, linop, transform, FT, output_mix)
+Amalthea.run(Eω, grid, linop, transform, FT, output_mix)
 
 
 # Gas mixtures give `densityfun(z)` a per-species Vector return, which the

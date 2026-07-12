@@ -7,7 +7,7 @@ import Test: @test, @testset
     # compare radial single pol, to radial linear pol at 45 degrees,
     # in capillary (non birefringent) these should be identical
 
-    using Luna
+    using Amalthea
     import LinearAlgebra: norm
     a = 13e-6
     gas = :Ar
@@ -25,7 +25,7 @@ import Test: @test, @testset
          Capillary.MarcatiliMode(a, gas, pres, n=1, m=1, kind=:HE, ϕ=0.0, loss=false),
     )
     inputs = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=energy)
-    Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs,
+    Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs,
                                 modes, :y; full=true)
     statsfun = Stats.collect_stats(grid, Eω,
                                 Stats.ω0(grid),
@@ -34,7 +34,7 @@ import Test: @test, @testset
                                 Stats.energy(grid, energyfunω))
     output = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
     linop = LinearOps.make_const_linop(grid, modes, λ0)
-    Luna.run(Eω, grid, linop, transform, FT, output, status_period=10, init_dz=1e-3)
+    Amalthea.run(Eω, grid, linop, transform, FT, output, status_period=10, init_dz=1e-3)
 
     modes = (
         Capillary.MarcatiliMode(a, gas, pres, n=1, m=1, kind=:HE, ϕ=0.0, loss=false),
@@ -43,7 +43,7 @@ import Test: @test, @testset
     inf = (Fields.GaussField(λ0=λ0, τfwhm=τ, energy=energy/2.0),)
     # same field in each mode
     inputs = ((mode=1, fields=inf), (mode=2, fields=inf))
-    Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs,
+    Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs,
                                 modes, :xy; full=true)
     statsfun = Stats.collect_stats(grid, Eω,
                                 Stats.ω0(grid),
@@ -52,7 +52,7 @@ import Test: @test, @testset
                                 Stats.energy(grid, energyfunω))
     outputp = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
     linop = LinearOps.make_const_linop(grid, modes, λ0)
-    Luna.run(Eω, grid, linop, transform, FT, outputp, status_period=10, init_dz=1e-3)
+    Amalthea.run(Eω, grid, linop, transform, FT, outputp, status_period=10, init_dz=1e-3)
 
     Iω = dropdims(abs2.(output.data["Eω"]), dims=2)
     Iωp = dropdims(sum(abs2.(outputp.data["Eω"]), dims=2), dims=2)

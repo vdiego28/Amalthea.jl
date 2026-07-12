@@ -2,7 +2,7 @@ using TestItems
 
 @testitem "Utils" tags=[:fields] begin
 import Test: @test, @testset, @test_throws
-import Luna: Utils
+import Amalthea: Utils
 import HDF5
 import Dates
 

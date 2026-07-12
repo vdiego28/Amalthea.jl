@@ -1,7 +1,7 @@
 using TestItems
 
 @testitem "Greek aliases" tags=[:sim_interface] begin
-    using Luna
+    using Amalthea
     # Compare prop_capillary with Unicode and ASCII aliases
     kwargs_unicode = (λ0=800e-9, τfwhm=10e-15, energy=1e-12, trange=400e-15,
                       λlims=(200e-9, 4e-6), shotnoise=false)

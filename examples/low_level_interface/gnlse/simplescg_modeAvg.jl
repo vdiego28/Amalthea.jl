@@ -1,7 +1,7 @@
 # supercontinuum from simple GNLSE parameters
 # Fig.3 of Dudley et. al, RMP 78 1135 (2006)
 
-using Luna
+using Amalthea
 
 βs =  [0.0, 0.0, -1.1830e-26, 8.1038e-41, -9.5205e-56,  2.0737e-70, -5.3943e-85,  1.3486e-99, -2.5495e-114,  3.0524e-129, -1.7140e-144]
 γ = 0.11
@@ -27,10 +27,10 @@ responses = (Nonlinear.Kerr_field((1 - fr)*χ3),
 
 inputs = (Fields.SechField(λ0=λ0, τfwhm=τfwhm, energy=energy), Fields.ShotNoise())
 norm! = NonlinearRHS.norm_mode_average_gnlse(grid, aeff)
-Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs, βfun!, aeff, norm! = norm!)
+Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs, βfun!, aeff, norm! = norm!)
 
 output = Output.MemoryOutput(0, grid.zmax, 201)
-Luna.run(Eω, grid, linop, transform, FT, output)
+Amalthea.run(Eω, grid, linop, transform, FT, output)
 
 ##
 Plotting.pygui(true)

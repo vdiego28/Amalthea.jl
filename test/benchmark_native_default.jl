@@ -30,9 +30,9 @@
 #      full-`prop_capillary` figure) — trend-relative alerting on native's
 #      own time avoids baking in an assumption that didn't reproduce.
 
-using Luna
-import Luna: Interface, set_fftw_mode
-using Luna.RK45: PreconStepper, RustNativeStepper, step!
+using Amalthea
+import Amalthea: Interface, set_fftw_mode
+using Amalthea.RK45: PreconStepper, RustNativeStepper, step!
 import Logging: with_logger, NullLogger
 import Printf: @sprintf
 

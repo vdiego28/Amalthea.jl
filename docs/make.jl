@@ -1,10 +1,10 @@
 using Documenter
-using Luna
+using Amalthea
 
-modulesdir = joinpath(Luna.Utils.lunadir(), "docs", "src", "modules")
+modulesdir = joinpath(Amalthea.Utils.lunadir(), "docs", "src", "modules")
 
 makedocs(
-    sitename = "Luna-Rust.jl Documentation",
+    sitename = "Amalthea.jl Documentation",
     authors = "Diego Andrés Valenzuela Berríos, Christian Brahms, and John C. Travers",
     pages = Any[
         "Home" => "index.md",
@@ -26,5 +26,5 @@ makedocs(
 )
 
 deploydocs(
-    repo = "github.com/vdiego28/Luna-Rust.jl.git",
+    repo = "github.com/vdiego28/Amalthea.jl.git",
 )

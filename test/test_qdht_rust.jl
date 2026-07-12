@@ -6,8 +6,8 @@ using TestItems
 # (not failed) when the Rust shared library has not been built.
 @testitem "Rust QDHT equivalence" tags=[:rust] begin
     import Test: @test, @testset
-    using Luna
-    import Luna: Grid, NonlinearRHS, Fields, Output, LinearOps, PhysData, Nonlinear, Ionisation
+    using Amalthea
+    import Amalthea: Grid, NonlinearRHS, Fields, Output, LinearOps, PhysData, Nonlinear, Ionisation
     import Hankel
     import LinearAlgebra: mul!, ldiv!, norm
     import Logging: with_logger, NullLogger
@@ -19,7 +19,7 @@ using TestItems
     libpath = joinpath(@__DIR__, "..", "luna-rust", "target", "release", libname)
     if !isfile(libpath)
         @warn "Skipping Rust QDHT test: shared library not found at $libpath. " *
-              "Build with `cargo build --release` in luna-rust/ (or `]build Luna`)."
+              "Build with `cargo build --release` in luna-rust/ (or `]build Amalthea`)."
         return
     end
 
@@ -105,20 +105,20 @@ using TestItems
 
         # ── Julia path ────────────────────────────────────────────────────────
         Eω_julia, tr_julia, FT_julia = with_logger(NullLogger()) do
-            Luna.setup(grid, q, densityfun, normfun, responses, inputs)
+            Amalthea.setup(grid, q, densityfun, normfun, responses, inputs)
         end
         out_julia = Output.MemoryOutput(0, grid.zmax, 2)
-        Luna.run(Eω_julia, grid, linop, tr_julia, FT_julia, out_julia)
+        Amalthea.run(Eω_julia, grid, linop, tr_julia, FT_julia, out_julia)
         Eω_final_julia = out_julia.data["Eω"][:, :, end]
 
         # ── Rust path ─────────────────────────────────────────────────────────
         Eω_rust, tr_rust, FT_rust = withenv("LUNA_USE_RUST_QDHT" => "1") do
             with_logger(NullLogger()) do
-                Luna.setup(grid, q, densityfun, normfun, responses, inputs)
+                Amalthea.setup(grid, q, densityfun, normfun, responses, inputs)
             end
         end
         out_rust = Output.MemoryOutput(0, grid.zmax, 2)
-        Luna.run(Eω_rust, grid, linop, tr_rust, FT_rust, out_rust)
+        Amalthea.run(Eω_rust, grid, linop, tr_rust, FT_rust, out_rust)
         Eω_final_rust = out_rust.data["Eω"][:, :, end]
 
         @test tr_rust.rust_ht isa NonlinearRHS.RustQdhtHandle

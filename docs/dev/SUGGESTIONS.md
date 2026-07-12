@@ -130,7 +130,7 @@ tolerance tier (saved-grid interpolation) entirely.
 Requiring a Rust toolchain at `Pkg.build` time is the biggest adoption
 barrier vs upstream Luna. Publishing `libluna_rust` as a JLL artifact
 (Yggdrasil build recipe, or GitHub-release binaries fetched by
-`deps/build.jl` with a source-build fallback) makes `]add Luna-Rust`
+`deps/build.jl` with a source-build fallback) makes `]add Amalthea`
 just work — and pins the exact rustc for reproducibility.
 
 ### 14. Standalone Rust CLI / WASM demo
@@ -188,7 +188,7 @@ each track are hard requirements.
 
 **To resume on a later date, paste this to a fresh session:**
 > Read `SUGGESTIONS.md` (Implementation plan section), `AGENTS.md`, and the
-> latest `docs/native-port/PORT_LOG.md` entry in Luna-Rust.jl. Then
+> latest `docs/native-port/PORT_LOG.md` entry in Amalthea.jl. Then
 > implement Track S<N>, following its steps and gate. Log the postmortem in
 > PORT_LOG.md when done.
 

@@ -1,4 +1,4 @@
-module Luna
+module Amalthea
 import FFTW
 import Hankel
 import Logging
@@ -6,9 +6,9 @@ import LinearAlgebra: mul!, ldiv!
 Logging.disable_logging(Logging.BelowMinLevel)
 
 """
-    Luna.settings
+    Amalthea.settings
 
-Dictionary of global settings for `Luna`.
+Dictionary of global settings for `Amalthea`.
 """
 settings = Dict{String, Any}("fftw_flag" => FFTW.PATIENT,
                              "fftw_threads" => 0)
@@ -16,14 +16,14 @@ settings = Dict{String, Any}("fftw_flag" => FFTW.PATIENT,
 """
     set_fftw_mode(mode)
 
-Set FFTW planning mode for all FFTW transform planning in `Luna`.
+Set FFTW planning mode for all FFTW transform planning in `Amalthea`.
 
 Possible values for `mode` are `:estimate`, `:measure`, `:patient`, and `:exhaustive`.
-The initial value upon loading `Luna` is `:patient`
+The initial value upon loading `Amalthea` is `:patient`
 
 # Examples
 ```jldoctest
-julia> Luna.set_fftw_mode(:patient)
+julia> Amalthea.set_fftw_mode(:patient)
 0x00000020
 ```
 """

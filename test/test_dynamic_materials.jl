@@ -1,7 +1,7 @@
 using TestItems
 
 @testitem "Dynamic material registry" tags=[:physics] begin
-    using Luna
+    using Amalthea
     # Register a custom gas with known Sellmeier coefficients (using HeB values)
     PhysData.register_material!(:TestGas;
         B=[4977.77e-8, 1856.94e-8],

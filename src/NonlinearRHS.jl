@@ -6,10 +6,10 @@ import Base: show
 import LinearAlgebra
 import LinearAlgebra: mul!, ldiv!
 import NumericalIntegration: integrate, SimpsonEven
-import Luna: PhysData, Modes, Maths, Grid, Config
-import Luna.PhysData: wlfreq
+import Amalthea: PhysData, Modes, Maths, Grid, Config
+import Amalthea.PhysData: wlfreq
 import Logging: @warn
-import Luna.Utils: lunadir
+import Amalthea.Utils: lunadir
 import Libdl
 
 # ── Rust QDHT FFI (opt-in via LUNA_USE_RUST_QDHT=1) ──────────────────────────
@@ -342,7 +342,7 @@ Construct a `TransModal`, transform E(ω) -> Pₙₗ(ω) for modal fields.
 - `full::Bool=false` : if `true`, use full 2-D mode integral, if `false`, only do radial integral
 - `noise_field=nothing` : optional `(nω, nmodes)` noise field for the modified shot-noise
   model. Each mode column should contain independent noise with the one-photon-per-mode
-  spectral density. Generate with [`Fields.generate_noise_field`](@ref Luna.Fields.generate_noise_field).
+  spectral density. Generate with [`Fields.generate_noise_field`](@ref Amalthea.Fields.generate_noise_field).
 """
 function TransModal(tT, grid, ts::Modes.ToSpace, FT, resp, densityfun, norm!;
                     rtol=1e-3, atol=0.0, mfcn=512, full=false, noise_field=nothing)
@@ -524,7 +524,7 @@ Construct a `TransModeAvg` transform for mode-averaged propagation.
 - `noise_field=nothing`: optional frequency-domain noise field (on the normal grid) for the
   modified shot-noise model. When provided, it is converted to the oversampled time grid and
   stored as `Et_noise` for injection into the nonlinear operator at every propagation step.
-  Generate with [`Fields.generate_noise_field`](@ref Luna.Fields.generate_noise_field).
+  Generate with [`Fields.generate_noise_field`](@ref Amalthea.Fields.generate_noise_field).
 """
 function TransModeAvg(TT, grid, FT, resp, densityfun, norm!, aeff; noise_field=nothing)
     Eωo = zeros(ComplexF64, length(grid.ωo))
@@ -672,7 +672,7 @@ Construct a `TransRadial` to calculate the reciprocal-domain nonlinear polarisat
 - `noise_field=nothing`: optional `(nω, nk)` frequency/k-space noise field for the modified
   shot-noise model. When provided, it is converted to the real-space time domain `(nto, nr)`
   via inverse FFT and inverse Hankel transform, and stored as `Et_noise`.
-  Generate with [`Fields.generate_noise_field`](@ref Luna.Fields.generate_noise_field).
+  Generate with [`Fields.generate_noise_field`](@ref Amalthea.Fields.generate_noise_field).
 """
 function TransRadial(TT, grid, HT, FT, responses, densityfun, normfun; noise_field=nothing)
     Eωo = zeros(ComplexF64, (length(grid.ωo), HT.N))
@@ -824,7 +824,7 @@ free-space propagation.
 - `noise_field=nothing`: optional `(nω, ny, nx)` frequency/k-space noise field for the
   modified shot-noise model. When provided, it is converted to the real-space oversampled
   time domain `(nto, ny, nx)` via `copy_scale!` and 3D inverse FFT, and stored as `Et_noise`.
-  Generate with [`Fields.generate_noise_field`](@ref Luna.Fields.generate_noise_field).
+  Generate with [`Fields.generate_noise_field`](@ref Amalthea.Fields.generate_noise_field).
 """
 function TransFree(TT, scale, grid, xygrid, FT, responses, densityfun, normfun;
                    noise_field=nothing)

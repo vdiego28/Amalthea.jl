@@ -1,6 +1,6 @@
 module Fields
-import Luna: Grid, Maths, PhysData, Modes
-import Luna.PhysData: wlfreq, ε_0, μ_0
+import Amalthea: Grid, Maths, PhysData, Modes
+import Amalthea.PhysData: wlfreq, ε_0, μ_0
 import StaticArrays: SVector
 import HCubature: hcubature
 import NumericalIntegration: integrate, SimpsonEven
@@ -609,7 +609,7 @@ end
 """
     coupled_field(i, mode, E, fieldfunc; energy, kwargs...)
 
-Create an element of an input field tuple (for use in `Luna.setup`) based on coupling
+Create an element of an input field tuple (for use in `Amalthea.setup`) based on coupling
 field `E` into a `mode`. The index `i` species the mode index. The temporal fields are 
 initialised using `fieldfunc` (e.g. one of `GaussField`, `SechField` etc.) with the
 same keyword arguments.
@@ -622,7 +622,7 @@ end
 """
     gauss_beam_init(modes, k, ω0, fieldfunc; energy, kwargs...)
 
-Create an input field tuple (for use in `Luna.setup`) based on coupling a focused
+Create an input field tuple (for use in `Amalthea.setup`) based on coupling a focused
 Gaussian beam with focused spot size `ω0` and wavenumber `k` into `modes`.
 The temporal fields are initialised using `fieldfunc` (e.g. one of `GaussField`,
 `SechField` etc.) with the same keyword arguments.

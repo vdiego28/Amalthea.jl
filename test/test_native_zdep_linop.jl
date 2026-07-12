@@ -2,13 +2,13 @@ using TestItems
 
 @testitem "Native-Rust Phase 7 (z-dependent linop, pressure-gradient capillary)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
-    using Luna
-    using Luna.RK45: PreconStepper, RustNativeStepper, step!, solve
+    using Amalthea
+    using Amalthea.RK45: PreconStepper, RustNativeStepper, step!, solve
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
-    import Luna.Capillary: gradient, MarcatiliMode
-    import Luna.PhysData: wlfreq, c
-    import Luna: Maths
+    import Amalthea.Capillary: gradient, MarcatiliMode
+    import Amalthea.PhysData: wlfreq, c
+    import Amalthea: Maths
 
     libpath = RK45._LIBLUNA_RUST_RK45
     if !isfile(libpath)
@@ -37,7 +37,7 @@ using TestItems
             Interface.prop_capillary_args(args...; kw...)
         end
 
-        @test linop isa Luna.Capillary.ZDepLinopMarcatili
+        @test linop isa Amalthea.Capillary.ZDepLinopMarcatili
 
         t0 = 0.0
         dt = 0.01 # 10 mm step size to get error far above machine precision floor
@@ -62,7 +62,7 @@ using TestItems
                 ccall((:native_debug_beta1_at, RK45._LIBLUNA_RUST_RK45), Cint,
                       (Ptr{Cvoid}, Float64, Ptr{Float64}, Ptr{Float64}),
                       s_ru._handle.ptr, z, dens_r, beta1_r)
-                β_of_ω(ω) = ω/c*real(Luna.Capillary.neff(mode, ω; z=z))
+                β_of_ω(ω) = ω/c*real(Amalthea.Capillary.neff(mode, ω; z=z))
                 β1_bigfloat = Float64(Maths.derivative(β_of_ω, BigFloat(ω0), 1))
                 rel = abs(beta1_r[] - β1_bigfloat) / abs(β1_bigfloat)
                 @test rel < 1e-9

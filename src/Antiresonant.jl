@@ -2,11 +2,11 @@ module Antiresonant
 using Reexport
 import Logging: @warn
 import Printf: @sprintf
-import Luna: Capillary, Utils, Config
-import Luna.PhysData: c, wlfreq, ref_index_fun
-import Luna.LinearOps: neff_β_grid
-@reexport using Luna.Modes
-import Luna.Modes: AbstractMode, dimlimits, neff, field, Aeff, N, α, chkzkwarg
+import Amalthea: Capillary, Utils, Config
+import Amalthea.PhysData: c, wlfreq, ref_index_fun
+import Amalthea.LinearOps: neff_β_grid
+@reexport using Amalthea.Modes
+import Amalthea.Modes: AbstractMode, dimlimits, neff, field, Aeff, N, α, chkzkwarg
 
 # ─── Rust FFI helpers for Zeisberger dispersion ──────────────────────────────
 #

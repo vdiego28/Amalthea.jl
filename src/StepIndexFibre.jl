@@ -1,15 +1,15 @@
 module StepIndexFibre
 import StaticArrays: SVector
 using Reexport
-@reexport using Luna.Modes
-import Luna.PhysData: c, ε_0, μ_0, ref_index_fun, wlfreq
-import Luna.Modes: AbstractMode, dimlimits, neff, field, dispersion, dispersion_func
+@reexport using Amalthea.Modes
+import Amalthea.PhysData: c, ε_0, μ_0, ref_index_fun, wlfreq
+import Amalthea.Modes: AbstractMode, dimlimits, neff, field, dispersion, dispersion_func
 export StepIndexMode, dimlimits, neff, field
 import SpecialFunctions: besselj, besselk
 import Roots: find_zeros
-import Luna.Utils: subscript
+import Amalthea.Utils: subscript
 import Base: show
-import Luna.Maths: BSpline, differentiate_spline
+import Amalthea.Maths: BSpline, differentiate_spline
 
 """
     StepIndexMode(a, n, m, kind, coren, cladn; parity=:even, pts=100)

@@ -2,10 +2,10 @@ module Processing
 import FFTW
 using EllipsisNotation
 import Glob: glob
-using Luna
-import Luna.PhysData: wlfreq, c
-import Luna.Grid: AbstractGrid, RealGrid, EnvGrid, from_dict
-import Luna.Output: AbstractOutput, HDF5Output
+using Amalthea
+import Amalthea.PhysData: wlfreq, c
+import Amalthea.Grid: AbstractGrid, RealGrid, EnvGrid, from_dict
+import Amalthea.Output: AbstractOutput, HDF5Output
 import Cubature: hcubature
 import ProgressLogging: @progress
 import Logging: @warn

@@ -2,9 +2,9 @@ using TestItems
 
 @testitem "Native-Rust Phase D.2 (plasma, radial)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
-    using Luna
-    import Luna: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear, Ionisation
-    using Luna.RK45: PreconStepper, RustNativeStepper, step!, solve
+    using Amalthea
+    import Amalthea: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear, Ionisation
+    using Amalthea.RK45: PreconStepper, RustNativeStepper, step!, solve
     import Hankel
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
@@ -48,10 +48,10 @@ using TestItems
         inputs  = Fields.GaussGaussField(λ0=λ0, τfwhm=τ, energy=energy, w0=w0, propz=-0.1)
 
         Eω, transform, FT = with_logger(NullLogger()) do
-            Luna.setup(grid, q, densityfun, normfun, responses, inputs)
+            Amalthea.setup(grid, q, densityfun, normfun, responses, inputs)
         end
 
-        @assert transform isa Luna.NonlinearRHS.TransRadial "Expected TransRadial"
+        @assert transform isa Amalthea.NonlinearRHS.TransRadial "Expected TransRadial"
 
         t0 = 0.0
         dt = 0.0005
@@ -109,7 +109,7 @@ using TestItems
             inputs_strong = Fields.GaussGaussField(λ0=λ0, τfwhm=τ, energy=energy_strong,
                                                     w0=w0, propz=-0.1)
             Eω_strong, transform_strong, _ = with_logger(NullLogger()) do
-                Luna.setup(grid, q, densityfun, normfun, responses, inputs_strong)
+                Amalthea.setup(grid, q, densityfun, normfun, responses, inputs_strong)
             end
             no_plasma_transform = NonlinearRHS.TransRadial(grid, q, transform_strong.FT,
                 (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),), densityfun, normfun)

@@ -4,9 +4,9 @@ using TestItems
 import Test: @test, @testset
 import Cubature: hcubature
 import LinearAlgebra: dot
-import Luna: RectModes
-import Luna.Modes
-import Luna.PhysData: ε_0, μ_0, wlfreq
+import Amalthea: RectModes
+import Amalthea.Modes
+import Amalthea.PhysData: ε_0, μ_0, wlfreq
 
 a = 50e-6
 b = 12.5e-6

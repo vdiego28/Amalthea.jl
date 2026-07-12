@@ -5,7 +5,7 @@ import Test: @test, @testset
 
 @testset "Radial" begin
     # mode average and radial integral for single mode and only Kerr should be identical
-    using Luna
+    using Amalthea
     import LinearAlgebra: norm
     a = 13e-6
     gas = :Ar
@@ -22,23 +22,23 @@ import Test: @test, @testset
     responses = (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),)
     linop, βfun!, _, _ = LinearOps.make_const_linop(grid, m, λ0)
     inputs = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=1e-6)
-    Eω, transform, FT = Luna.setup(
+    Eω, transform, FT = Amalthea.setup(
         grid, densityfun, responses, inputs, βfun!, aeff)
     statsfun = Stats.collect_stats(grid, Eω,
                                Stats.ω0(grid),
                                Stats.energy(grid, energyfunω))
     output = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
-    Luna.run(Eω, grid, linop, transform, FT, output, status_period=5)
+    Amalthea.run(Eω, grid, linop, transform, FT, output, status_period=5)
 
     modes = (
          Capillary.MarcatiliMode(a, gas, pres, n=1, m=1, kind=:HE, ϕ=0.0, loss=false),
     )
     inputs = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=1e-6)
-    Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs,
+    Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs,
                                 modes, :y; full=false)
     outputr = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
     linop = LinearOps.make_const_linop(grid, modes, λ0)
-    Luna.run(Eω, grid, linop, transform, FT, outputr, status_period=10)
+    Amalthea.run(Eω, grid, linop, transform, FT, outputr, status_period=10)
 
     Iω = abs2.(output.data["Eω"])
     Iωr = abs2.(dropdims(outputr.data["Eω"], dims=2))
@@ -47,7 +47,7 @@ end
 
 @testset "Full" begin
     # mode average and full integral for single mode and only Kerr should be identical
-    using Luna
+    using Amalthea
     import LinearAlgebra: norm
     a = 13e-6
     gas = :Ar
@@ -64,23 +64,23 @@ end
     responses = (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),)
     linop, βfun!, _, _ = LinearOps.make_const_linop(grid, m, λ0)
     inputs = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=1e-6)
-    Eω, transform, FT = Luna.setup(
+    Eω, transform, FT = Amalthea.setup(
         grid, densityfun, responses, inputs, βfun!, aeff)
     statsfun = Stats.collect_stats(grid, Eω,
                                Stats.ω0(grid),
                                Stats.energy(grid, energyfunω))
     output = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
-    Luna.run(Eω, grid, linop, transform, FT, output, status_period=5)
+    Amalthea.run(Eω, grid, linop, transform, FT, output, status_period=5)
 
     modes = (
          Capillary.MarcatiliMode(a, gas, pres, n=1, m=1, kind=:HE, ϕ=0.0, loss=false),
     )
     inputs = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=1e-6)
-    Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs,
+    Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs,
                                 modes, :y; full=true)
     outputf = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
     linop = LinearOps.make_const_linop(grid, modes, λ0)
-    Luna.run(Eω, grid, linop, transform, FT, outputf, status_period=10)
+    Amalthea.run(Eω, grid, linop, transform, FT, outputf, status_period=10)
 
     Iω = abs2.(output.data["Eω"])
     Iωf = abs2.(dropdims(outputf.data["Eω"], dims=2))
@@ -91,7 +91,7 @@ end
     # TM01 and LP11 (which is TM01+HE21) have the same dispersion and a ratio of effective
     # areas of 2/3 -- mode averaged propagation in TM01 with 2/3x Aeff should be identical
     # to full modal propagation in LP11, as long as only Kerr is considered.
-    using Luna
+    using Amalthea
     import LinearAlgebra: norm
     a = 13e-6
     gas = :Ar
@@ -109,13 +109,13 @@ end
     responses = (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),)
     linop, βfun!, _, _ = LinearOps.make_const_linop(grid, m, λ0)
     inputs = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=energy)
-    Eω, transform, FT = Luna.setup(
+    Eω, transform, FT = Amalthea.setup(
         grid, densityfun, responses, inputs, βfun!, aeff)
     statsfun = Stats.collect_stats(grid, Eω,
                                Stats.ω0(grid),
                                Stats.energy(grid, energyfunω))
     output = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
-    Luna.run(Eω, grid, linop, transform, FT, output, status_period=5)
+    Amalthea.run(Eω, grid, linop, transform, FT, output, status_period=5)
 
     # vertical LP11 double-lobe
     modes = (
@@ -126,11 +126,11 @@ end
     field = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=energy/2)
     inputs = ((mode=1, fields=(field,)), (mode=2, fields=(field,)))
     # inputs = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=energy)
-    Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs,
+    Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs,
                                    modes, :xy; full=true)
     outputf = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
     linop = LinearOps.make_const_linop(grid, modes, λ0)
-    Luna.run(Eω, grid, linop, transform, FT, outputf, status_period=10)
+    Amalthea.run(Eω, grid, linop, transform, FT, outputf, status_period=10)
 
     Iω = abs2.(output["Eω"])
     Iωf = dropdims(sum(abs2.(outputf["Eω"]); dims=2), dims=2)
@@ -138,7 +138,7 @@ end
 end
 
 @testset "FieldInputs" begin
-    using Luna
+    using Amalthea
     a = 13e-6
     gas = :Ar
     pres = 5
@@ -153,20 +153,20 @@ end
     densityfun(z) = dens0
     responses = (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),)
     inputs = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=1e-6)
-    Eω_single, _, _ = Luna.setup(grid, densityfun, responses, inputs,
+    Eω_single, _, _ = Amalthea.setup(grid, densityfun, responses, inputs,
                                 modes, :y; full=false)
     inputs = (Fields.GaussField(λ0=λ0, τfwhm=τ, energy=1e-6),)
-    Eω_tuple, _, _ = Luna.setup(grid, densityfun, responses, inputs,
+    Eω_tuple, _, _ = Amalthea.setup(grid, densityfun, responses, inputs,
                                 modes, :y; full=false)
     inputs = ((mode=1, fields=(Fields.GaussField(λ0=λ0, τfwhm=τ, energy=1e-6),)),)
-    Eω_tuple_of_namedtuples, _, _ = Luna.setup(grid, densityfun, responses, inputs,
+    Eω_tuple_of_namedtuples, _, _ = Amalthea.setup(grid, densityfun, responses, inputs,
                                 modes, :y; full=false)
     @test Eω_single ≈ Eω_tuple
     @test Eω_single ≈ Eω_tuple_of_namedtuples
 end
 
 @testset "Nonlinear coupling" begin
-    using Luna
+    using Amalthea
     import LinearAlgebra: norm
     a = 125e-6
     gas = :Ar
@@ -194,7 +194,7 @@ end
     field = Fields.GaussField(;λ0, τfwhm, energy=energy/2)
     inputs = ((mode=1, fields=(field,)), (mode=2, fields=(field,)))
 
-    Eω, transform, _ = Luna.setup(
+    Eω, transform, _ = Amalthea.setup(
         grid, densityfun, responses, inputs, modes, :xy; full=true)
     nl = similar(Eω)
 

@@ -1,9 +1,9 @@
 using TestItems
 
 @testitem "Noise" tags=[:fields] begin
-using Luna
+using Amalthea
 import Test: @test, @testset, @test_throws
-import Luna: Fields, Grid, Processing
+import Amalthea: Fields, Grid, Processing
 import Random
 import Logging
 

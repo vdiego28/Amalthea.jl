@@ -2,7 +2,7 @@ using TestItems
 
 @testitem "Polarisation" tags=[:sim_multimode] begin
 import Test: @test, @testset
-import Luna: Polarisation
+import Amalthea: Polarisation
 import LinearAlgebra: norm
 
 @testset "Jones" begin

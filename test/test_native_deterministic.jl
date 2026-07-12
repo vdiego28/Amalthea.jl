@@ -2,9 +2,9 @@ using TestItems
 
 @testitem "Native deterministic mode (LUNA_NATIVE_DETERMINISTIC)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
-    using Luna
-    import Luna: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear
-    using Luna.RK45: RustNativeStepper, solve
+    using Amalthea
+    import Amalthea: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear
+    using Amalthea.RK45: RustNativeStepper, solve
     import Hankel
     import Logging: with_logger, NullLogger
 
@@ -44,23 +44,23 @@ using TestItems
         inputs  = Fields.GaussGaussField(λ0=λ0, τfwhm=τ, energy=energy, w0=w0, propz=-0.15)
 
         Eω, transform, FT = with_logger(NullLogger()) do
-            Luna.setup(grid, q, densityfun, normfun, responses, inputs)
+            Amalthea.setup(grid, q, densityfun, normfun, responses, inputs)
         end
 
-        @assert transform isa Luna.NonlinearRHS.TransRadial "Expected TransRadial"
+        @assert transform isa Amalthea.NonlinearRHS.TransRadial "Expected TransRadial"
 
         t0 = 0.0
         dt = 0.001
 
         @testset "backend_config default is off" begin
             withenv("LUNA_NATIVE_DETERMINISTIC" => nothing) do
-                @test !Luna.Config.backend_config().deterministic
+                @test !Amalthea.Config.backend_config().deterministic
             end
         end
 
         @testset "T1: deterministic=1, two runs bit-identical (BLAS never engaged)" begin
             withenv("LUNA_NATIVE_DETERMINISTIC" => "1") do
-                @test Luna.Config.backend_config().deterministic
+                @test Amalthea.Config.backend_config().deterministic
 
                 s1 = RustNativeStepper(transform, linop, copy(Eω), t0, dt,
                                         rtol=1e-6, atol=1e-10, max_dt=dt, min_dt=dt)
@@ -126,7 +126,7 @@ using TestItems
 
         @testset "T4: toggle off restores default behavior (no crash, sane result)" begin
             withenv("LUNA_NATIVE_DETERMINISTIC" => nothing) do
-                @test !Luna.Config.backend_config().deterministic
+                @test !Amalthea.Config.backend_config().deterministic
                 s = RustNativeStepper(transform, linop, copy(Eω), t0, dt,
                                        rtol=1e-6, atol=1e-10, max_dt=dt, min_dt=dt)
                 solve(s, L)

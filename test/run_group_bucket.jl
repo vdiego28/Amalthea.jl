@@ -1,5 +1,5 @@
 using TestItemRunner
-import Luna: set_fftw_mode
+import Amalthea: set_fftw_mode
 
 # Runs the test items belonging to one or more files, filtered to a single
 # CI test-group tag, in this single process. Used by

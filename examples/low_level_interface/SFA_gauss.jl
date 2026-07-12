@@ -1,6 +1,6 @@
 import FFTW
-import Luna: SFA, Tools, Grid, Maths, PhysData, Ionisation
-import Luna.PhysData: wlfreq
+import Amalthea: SFA, Tools, Grid, Maths, PhysData, Ionisation
+import Amalthea.PhysData: wlfreq
 import PyPlot: plt, pygui
 pygui(true)
 

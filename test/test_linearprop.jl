@@ -1,7 +1,7 @@
 using TestItems
 
 @testitem "Linearprop" tags=[:sim_propagation] begin
-using Luna
+using Amalthea
 import Test: @test
 
 radius = 125e-6 # HCF core radius

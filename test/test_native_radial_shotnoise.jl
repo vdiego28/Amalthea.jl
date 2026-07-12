@@ -2,9 +2,9 @@ using TestItems
 
 @testitem "Native-Rust Phase I item 1 (radial shot noise, RealGrid)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
-    using Luna
-    import Luna: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear
-    using Luna.RK45: PreconStepper, RustNativeStepper, step!, solve
+    using Amalthea
+    import Amalthea: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear
+    using Amalthea.RK45: PreconStepper, RustNativeStepper, step!, solve
     import Hankel
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
@@ -30,10 +30,10 @@ using TestItems
         noise_field = Fields.generate_noise_field(grid; rng=MersenneTwister(7), nmodes=N)
 
         Eω, transform, FT = with_logger(NullLogger()) do
-            Luna.setup(grid, q, densityfun, normfun, responses, inputs; noise_field)
+            Amalthea.setup(grid, q, densityfun, normfun, responses, inputs; noise_field)
         end
 
-        @assert transform isa Luna.NonlinearRHS.TransRadial "Expected TransRadial"
+        @assert transform isa Amalthea.NonlinearRHS.TransRadial "Expected TransRadial"
         @test !isnothing(transform.Et_noise)
 
         t0 = 0.0
@@ -53,7 +53,7 @@ using TestItems
 
         @testset "Noise actually changes the native result (regression guard)" begin
             Eω_clean, transform_clean, FT_clean = with_logger(NullLogger()) do
-                Luna.setup(grid, q, densityfun, normfun, responses, inputs)
+                Amalthea.setup(grid, q, densityfun, normfun, responses, inputs)
             end
             s_ru_noisy = RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10)
             s_ru_clean = RustNativeStepper(transform_clean, linop, copy(Eω_clean), t0, dt, rtol=1e-6, atol=1e-10)

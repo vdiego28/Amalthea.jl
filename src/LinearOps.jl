@@ -1,9 +1,9 @@
 module LinearOps
 import FFTW
 import Hankel
-import Luna: Modes, Grid, PhysData, Maths
-import Luna.PhysData: wlfreq
-import ..Luna
+import Amalthea: Modes, Grid, PhysData, Maths
+import Amalthea.PhysData: wlfreq
+import ..Amalthea
 
 #=================================================#
 #===============    FREE SPACE     ===============#
@@ -120,7 +120,7 @@ free-space two-point pressure-gradient gas cell: builds the ordinary
 z-dependent `linop!` (`make_linop`) and wraps it in a [`ZDepLinopFree`](@ref)
 carrying the metadata `RustNativeStepper`'s Phase D.5 native path needs.
 Returns `(wrapped_linop, densf)` — `densf(z)` should also be passed as the
-`densityfun` for `Luna.setup`/`TransFree` construction, and to
+`densityfun` for `Amalthea.setup`/`TransFree` construction, and to
 [`NonlinearRHS.norm_free_gradient`](@ref) so the linop and nonlinear-norm
 paths share an identical density profile (not just numerically equal —
 the same spline object).
@@ -129,7 +129,7 @@ function make_linop_free_gradient(grid::Grid.RealGrid, xygrid::Grid.FreeGrid,
                                    gas::Symbol, L, p0, p1; T=PhysData.roomtemp)
     γ = PhysData.sellmeier_gas(gas)
     dspl = PhysData.densityspline(gas, Pmin=p0==p1 ? 0 : min(p0, p1), Pmax=max(p0, p1); T)
-    pfun = Luna.Capillary.TwoPointGradient(Float64(L), Float64(p0), Float64(p1))
+    pfun = Amalthea.Capillary.TwoPointGradient(Float64(L), Float64(p0), Float64(p1))
     densf(z) = dspl(pfun(z))
     nfun(ω; z) = sqrt(1 + γ(wlfreq(ω)*1e6)*densf(z))
     linop! = make_linop(grid, xygrid, nfun)
@@ -329,7 +329,7 @@ Simultaneously conjugate and clamp the effective index `n` to safe levels.
 
 The real part is lower-bounded at 1e-3 and the imaginary part upper-bounded at an attenuation
 coefficient `α` of 3000 (130 dB/cm). The limits are somewhat arbitrary and chosen empirically
-from previous bugs. See https://github.com/LupoLab/Luna/pull/142.
+from previous bugs. See https://github.com/LupoLab/Amalthea/pull/142.
 
 See also [`αlim!`](@ref).
 """

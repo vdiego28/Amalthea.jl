@@ -2,7 +2,7 @@ using TestItems
 
 @testitem "Native-Rust Phase 8 (default-flip + NativeIneligible fallback)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
-    using Luna
+    using Amalthea
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 

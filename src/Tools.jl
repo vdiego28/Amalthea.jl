@@ -1,6 +1,6 @@
 module Tools
-import Luna: Modes, PhysData, Capillary, RectModes, Maths
-import Luna.PhysData: wlfreq
+import Amalthea: Modes, PhysData, Capillary, RectModes, Maths
+import Amalthea.PhysData: wlfreq
 import Roots: find_zero
 import Base: show
 import Cubature: hquadrature

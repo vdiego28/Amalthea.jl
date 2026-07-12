@@ -7,9 +7,9 @@ import SpecialFunctions: besselj
 import HCubature: hquadrature
 import LinearAlgebra: norm
 import FFTW
-using Luna
-import Luna: Hankel
-import Luna.PhysData: wlfreq
+using Amalthea
+import Amalthea: Hankel
+import Amalthea.PhysData: wlfreq
 
 
 @testset "delegation" begin
@@ -350,12 +350,12 @@ dens0 = PhysData.density(gas, pressure)
 densityfun(z) = dens0
 responses = (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),)
 inputs = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=1e-6)
-Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs,
+Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs,
                             modes, :y; full=false)
 linop = LinearOps.make_const_linop(grid, modes, λ0)
 statsfun = Stats.default(grid, Eω, modes, linop, transform)
 output = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
-Luna.run(Eω, grid, linop, transform, FT, output, status_period=10)
+Amalthea.run(Eω, grid, linop, transform, FT, output, status_period=10)
 
 modesr = Processing.makemodes(output)
 

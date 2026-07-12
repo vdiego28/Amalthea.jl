@@ -2,13 +2,13 @@ using TestItems
 
 @testitem "Output" tags=[:io] begin
 import Test: @test, @testset, @test_throws
-import Luna: Output, Processing
+import Amalthea: Output, Processing
 using EllipsisNotation
 import LinearAlgebra: norm
 
 @testset "HDF5" begin
     import HDF5
-    import Luna: Utils
+    import Amalthea: Utils
     fpath = joinpath(tempname(), "test.h5")
     isfile(fpath) && rm(fpath)
     shape = (1024, 4, 2)
@@ -58,7 +58,7 @@ import LinearAlgebra: norm
 end
 
 @testset "Memory" begin
-    import Luna: Utils
+    import Amalthea: Utils
     shape = (1024, 4, 2)
     n = 11
     stat = randn()
@@ -103,7 +103,7 @@ dirpath = tempname()
 fpath = joinpath(dirpath, "test.h5")
 fpath_comp = joinpath(dirpath, "test_comp.h5")
 @testset "HDF5 vs Memory" begin
-    using Luna
+    using Amalthea
     import HDF5
 
     a = 13e-6
@@ -124,7 +124,7 @@ fpath_comp = joinpath(dirpath, "test_comp.h5")
     linop, βfun!, _, _ = LinearOps.make_const_linop(grid, m, λ0)
 
     inputs = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=1e-6)
-    Eω, transform, FT = Luna.setup(
+    Eω, transform, FT = Amalthea.setup(
         grid, densityfun, responses, inputs, βfun!, aeff)
     statsfun = Stats.collect_stats(grid, Eω,
                                    Stats.ω0(grid),
@@ -142,7 +142,7 @@ fpath_comp = joinpath(dirpath, "test_comp.h5")
         o(Dict("λ0" => λ0))
         o("τ", τ)
     end
-    Luna.run(Eω, grid, linop, transform, FT, outfun, status_period=10)
+    Amalthea.run(Eω, grid, linop, transform, FT, outfun, status_period=10)
     HDF5.h5open(hdf5.fpath, "r") do file
         @test read(file["λ0"]) == mem.data["λ0"]
         Eω = reinterpret(ComplexF64, read(file["Eω"]))
@@ -201,7 +201,7 @@ rm(splitdir(fpath)[1], force=true)
 ##
 fpath = joinpath(homedir(), ".luna", "output_test", "test.h5")
 @testset "Continuing" begin
-    using Luna
+    using Amalthea
     import HDF5
 
     a = 13e-6
@@ -220,7 +220,7 @@ fpath = joinpath(homedir(), ".luna", "output_test", "test.h5")
 
     # Run with arbitrary error at 3 cm
     inputs = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=1e-6)
-    Eω, transform, FT = Luna.setup(
+    Eω, transform, FT = Amalthea.setup(
         grid, densityfun, responses, inputs, βfun!, aeff)
     statsfun = Stats.collect_stats(grid, Eω,
                                    Stats.ω0(grid),
@@ -234,29 +234,29 @@ fpath = joinpath(homedir(), ".luna", "output_test", "test.h5")
     end
     stepfun(args...; kwargs...) = output(args...; kwargs...)
     try
-        Luna.run(Eω, grid, linop, transform, FT, stepfun, status_period=10, z0=0.0)
+        Amalthea.run(Eω, grid, linop, transform, FT, stepfun, status_period=10, z0=0.0)
     catch
     end
 
     # Run again, starting from 3 cm
     inputs = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=1e-6)
-    Eω, transform, FT = Luna.setup(
+    Eω, transform, FT = Amalthea.setup(
         grid, densityfun, responses, inputs, βfun!, aeff)
     statsfun = Stats.collect_stats(grid, Eω,
                                    Stats.ω0(grid),
                                    Stats.energy(grid, energyfunω))
     output = Output.HDF5Output(fpath, 0, grid.zmax, 51, statsfun)
-    Luna.run(Eω, grid, linop, transform, FT, output, status_period=5)
+    Amalthea.run(Eω, grid, linop, transform, FT, output, status_period=5)
 
     # Run from scratch with MemoryOutput
     inputs = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=1e-6)
-    Eω, transform, FT = Luna.setup(
+    Eω, transform, FT = Amalthea.setup(
         grid, densityfun, responses, inputs, βfun!, aeff)
     statsfun = Stats.collect_stats(grid, Eω,
                                    Stats.ω0(grid),
                                    Stats.energy(grid, energyfunω))
     mem = Output.MemoryOutput(0, grid.zmax, 51, statsfun)
-    Luna.run(Eω, grid, linop, transform, FT, mem, status_period=5)
+    Amalthea.run(Eω, grid, linop, transform, FT, mem, status_period=5)
 
     idx1 = findfirst(grid.ωwin .!= 1)
     idx2 = findlast(grid.ωwin .== 1)

@@ -2,8 +2,8 @@ using TestItems
 
 @testitem "Radial" tags=[:sim_propagation] begin
 import Test: @test, @testset
-import Luna
-import Luna: Grid, Maths, PhysData, Nonlinear, Ionisation, NonlinearRHS, Output, LinearOps, Fields
+import Amalthea
+import Amalthea: Grid, Maths, PhysData, Nonlinear, Ionisation, NonlinearRHS, Output, LinearOps, Fields
 import Hankel
 import LinearAlgebra: norm
 
@@ -32,9 +32,9 @@ normfun = NonlinearRHS.const_norm_radial(grid, q, PhysData.ref_index_fun(gas, pr
 
 inputs = Fields.GaussGaussField(λ0=λ0, τfwhm=τ, energy=energy, w0=w0, propz=-0.3)
 
-Eω, transform, FT = Luna.setup(grid, q, densityfun, normfun, responses, inputs)
+Eω, transform, FT = Amalthea.setup(grid, q, densityfun, normfun, responses, inputs)
 output = Output.MemoryOutput(0, grid.zmax, 201)
-Luna.run(Eω, grid, linop, transform, FT, output)
+Amalthea.run(Eω, grid, linop, transform, FT, output)
 
 Erout = (q \ output.data["Eω"])
 Iωr = abs2.(Erout)

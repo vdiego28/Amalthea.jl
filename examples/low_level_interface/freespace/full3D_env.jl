@@ -1,5 +1,5 @@
-using Luna
-Luna.set_fftw_mode(:estimate)
+using Amalthea
+Amalthea.set_fftw_mode(:estimate)
 import FFTW
 import NumericalIntegration: integrate, SimpsonEven
 
@@ -34,12 +34,12 @@ normfun = NonlinearRHS.const_norm_free(grid, xygrid, PhysData.ref_index_fun(gas,
 
 inputs = Fields.GaussGaussField(λ0=λ0, τfwhm=τ, energy=energy, w0=w0)
 
-Eω, transform, FT = Luna.setup(grid, xygrid, densityfun, normfun, responses, inputs)
+Eω, transform, FT = Amalthea.setup(grid, xygrid, densityfun, normfun, responses, inputs)
 
 # statsfun = Stats.collect_stats(grid, Eω, Stats.ω0(grid))
 output = Output.MemoryOutput(0, grid.zmax, 21)
 
-Luna.run(Eω, grid, linop, transform, FT, output, max_dz=Inf, init_dz=1e-1)
+Amalthea.run(Eω, grid, linop, transform, FT, output, max_dz=Inf, init_dz=1e-1)
 
 ω = FFTW.fftshift(grid.ω)
 t = grid.t

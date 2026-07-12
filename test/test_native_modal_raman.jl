@@ -2,9 +2,9 @@ using TestItems
 
 @testitem "Native-Rust Phase D.4 (Raman, modal)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
-    using Luna
-    import Luna: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear, Capillary, Modes, Raman
-    using Luna.RK45: PreconStepper, RustNativeStepper, step!, solve
+    using Amalthea
+    import Amalthea: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear, Capillary, Modes, Raman
+    using Amalthea.RK45: PreconStepper, RustNativeStepper, step!, solve
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 
@@ -34,10 +34,10 @@ using TestItems
         input = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=energy)
 
         Eω, transform, FT = with_logger(NullLogger()) do
-            Luna.setup(grid, densityfun, responses, input, modes, :y)
+            Amalthea.setup(grid, densityfun, responses, input, modes, :y)
         end
 
-        @assert transform isa Luna.NonlinearRHS.TransModal "Expected TransModal"
+        @assert transform isa Amalthea.NonlinearRHS.TransModal "Expected TransModal"
         @assert !transform.full "Expected full=false (radial modal integral)"
 
         t0 = 0.0
@@ -84,7 +84,7 @@ using TestItems
         @testset "Non-vacuousness: Raman actually changes the result vs Raman-off" begin
             no_raman_responses = (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),)
             Eω_nr, transform_nr, _ = with_logger(NullLogger()) do
-                Luna.setup(grid, densityfun, no_raman_responses, input, modes, :y)
+                Amalthea.setup(grid, densityfun, no_raman_responses, input, modes, :y)
             end
             s_jl_raman = PreconStepper(transform, linop, copy(Eω), t0, dt,
                                         rtol=1e-6, atol=1e-10, max_dt=dt, min_dt=dt)

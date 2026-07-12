@@ -2,8 +2,8 @@ using TestItems
 
 @testitem "Native-Rust Phase I item 3 (ADK ionisation, RealGrid)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
-    using Luna
-    using Luna.RK45: PreconStepper, RustNativeStepper, step!, solve
+    using Amalthea
+    using Amalthea.RK45: PreconStepper, RustNativeStepper, step!, solve
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 
@@ -49,7 +49,7 @@ using TestItems
             Interface.prop_capillary_args(args...; kw_noplasma...)
         end
 
-        @assert grid isa Luna.Grid.RealGrid "plasma test uses RealGrid"
+        @assert grid isa Amalthea.Grid.RealGrid "plasma test uses RealGrid"
 
         t0 = 0.0
         dt = 0.005

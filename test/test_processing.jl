@@ -3,9 +3,9 @@ using TestItems
 @testitem "Processing" tags=[:fields] begin
 import Test: @test, @testset
 import FFTW
-using Luna
-import Luna: settings
-import Luna.PhysData: wlfreq
+using Amalthea
+import Amalthea: settings
+import Amalthea.PhysData: wlfreq
 import NumericalIntegration: integrate
 
 @testset "normalisation" begin

@@ -1,10 +1,10 @@
 using TestItems
 
 @testitem "Linops" tags=[:physics] begin
-import Luna: PhysData, Grid, LinearOps, Modes, Capillary
+import Amalthea: PhysData, Grid, LinearOps, Modes, Capillary
 import Test: @testset, @test
-import Luna.PhysData: wlfreq
-import Luna: Hankel
+import Amalthea.PhysData: wlfreq
+import Amalthea: Hankel
 
 R = 5e-3
 Nr = 256

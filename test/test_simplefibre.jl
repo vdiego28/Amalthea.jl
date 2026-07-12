@@ -2,9 +2,9 @@ using TestItems
 
 @testitem "SimpleFibre" tags=[:physics] begin
 import Test: @test, @testset
-using Luna
-using Luna: SimpleFibre, Modes
-import Luna.PhysData: c
+using Amalthea
+using Amalthea: SimpleFibre, Modes
+import Amalthea.PhysData: c
 
 @testset "Constructors" begin
     # 0th to 2nd order Taylor coeffs

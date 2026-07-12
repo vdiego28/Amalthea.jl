@@ -2,9 +2,9 @@ using TestItems
 
 @testitem "Native-Rust Phase E.4 (modal, npol=2)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset, @test_throws
-    using Luna
-    import Luna: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear, Capillary, Modes, Raman
-    using Luna.RK45: PreconStepper, RustNativeStepper, NativeIneligible, step!, solve
+    using Amalthea
+    import Amalthea: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear, Capillary, Modes, Raman
+    using Amalthea.RK45: PreconStepper, RustNativeStepper, NativeIneligible, step!, solve
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 
@@ -43,9 +43,9 @@ using TestItems
 
                 extra = full ? (mfcn=2000,) : NamedTuple()
                 Eω, transform, FT = with_logger(NullLogger()) do
-                    Luna.setup(grid, densityfun, responses, input, modes, :xy; full, extra...)
+                    Amalthea.setup(grid, densityfun, responses, input, modes, :xy; full, extra...)
                 end
-                @assert transform isa Luna.NonlinearRHS.TransModal "Expected TransModal"
+                @assert transform isa Amalthea.NonlinearRHS.TransModal "Expected TransModal"
                 @assert transform.ts.npol == 2 "Expected npol=2"
 
                 s_jl = PreconStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
@@ -76,7 +76,7 @@ using TestItems
             input = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=energy)
 
             Eω, transform, FT = with_logger(NullLogger()) do
-                Luna.setup(grid, densityfun, responses, input, modes, :xy; full=false)
+                Amalthea.setup(grid, densityfun, responses, input, modes, :xy; full=false)
             end
 
             @test_throws NativeIneligible RustNativeStepper(transform, linop, copy(Eω), t0, dt,

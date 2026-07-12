@@ -2,9 +2,9 @@ using TestItems
 
 @testitem "Native-Rust Kerr thg-variant guard (Kerr_field_nothg/Kerr_env_thg rejected)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
-    using Luna
-    import Luna: Grid, Fields, LinearOps, PhysData, Nonlinear, Capillary
-    using Luna.RK45: PreconStepper, RustNativeStepper, NativeIneligible, step!, solve
+    using Amalthea
+    import Amalthea: Grid, Fields, LinearOps, PhysData, Nonlinear, Capillary
+    using Amalthea.RK45: PreconStepper, RustNativeStepper, NativeIneligible, step!, solve
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 
@@ -39,7 +39,7 @@ using TestItems
             linop = LinearOps.make_const_linop(grid, modes, grid.referenceλ)
             responses = (Nonlinear.Kerr_field_nothg(γ3, length(grid.to)),)
             Eω, transform, FT = with_logger(NullLogger()) do
-                Luna.setup(grid, densityfun, responses, input, modes, :y)
+                Amalthea.setup(grid, densityfun, responses, input, modes, :y)
             end
             @test_throws NativeIneligible RustNativeStepper(transform, linop, copy(Eω), t0, dt,
                                       rtol=1e-6, atol=1e-10, max_dt=dt, min_dt=dt)
@@ -51,7 +51,7 @@ using TestItems
             ω0 = 2π * PhysData.c / λ0
             responses = (Nonlinear.Kerr_env_thg(γ3, ω0, grid.to),)
             Eω, transform, FT = with_logger(NullLogger()) do
-                Luna.setup(grid, densityfun, responses, input, modes, :y)
+                Amalthea.setup(grid, densityfun, responses, input, modes, :y)
             end
             @test_throws NativeIneligible RustNativeStepper(transform, linop, copy(Eω), t0, dt,
                                       rtol=1e-6, atol=1e-10, max_dt=dt, min_dt=dt)
@@ -62,7 +62,7 @@ using TestItems
             linop = LinearOps.make_const_linop(grid, modes, grid.referenceλ)
             responses = (Nonlinear.Kerr_field(γ3),)
             Eω, transform, FT = with_logger(NullLogger()) do
-                Luna.setup(grid, densityfun, responses, input, modes, :y)
+                Amalthea.setup(grid, densityfun, responses, input, modes, :y)
             end
             s_jl = PreconStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
                                   max_dt=dt, min_dt=dt)
@@ -79,7 +79,7 @@ using TestItems
             linop = LinearOps.make_const_linop(grid, modes, grid.referenceλ)
             responses = (Nonlinear.Kerr_env(γ3),)
             Eω, transform, FT = with_logger(NullLogger()) do
-                Luna.setup(grid, densityfun, responses, input, modes, :y)
+                Amalthea.setup(grid, densityfun, responses, input, modes, :y)
             end
             s_jl = PreconStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
                                   max_dt=dt, min_dt=dt)

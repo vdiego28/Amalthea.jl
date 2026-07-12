@@ -2,8 +2,8 @@ using TestItems
 
 @testitem "Native density z-independence guard" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
-    using Luna
-    using Luna.RK45: RustNativeStepper, NativeIneligible
+    using Amalthea
+    using Amalthea.RK45: RustNativeStepper, NativeIneligible
     import Logging: with_logger, NullLogger
 
     libpath = RK45._LIBLUNA_RUST_RK45

@@ -2,11 +2,11 @@ using TestItems
 
 @testitem "BackendConfig / backend_report()" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
-    using Luna
+    using Amalthea
     import Logging: with_logger, NullLogger
 
     # docs/dev/BACKLOG.md S4 item 1 (suggestion 6) — Config.BackendConfig/backend_config()
-    # and Luna.backend_report() were implemented but never gated by a test,
+    # and Amalthea.backend_report() were implemented but never gated by a test,
     # the one piece of S4's own stated gate ("a backend_report() test asserting
     # RustNativeStepper for default prop_capillary and Julia stepper under
     # native=:off") left undone. Fills that gap.
@@ -17,7 +17,7 @@ using TestItems
                 "LUNA_USE_RUST_DISPERSION" => nothing, "LUNA_USE_RUST_QDHT" => nothing,
                 "LUNA_QDHT_BLAS" => nothing, "LUNA_USE_RUST_CUDA_NATIVE" => nothing,
                 "LUNA_NATIVE_FFTW_WISDOM" => nothing) do
-            cfg = Luna.Config.backend_config()
+            cfg = Amalthea.Config.backend_config()
             @test cfg.native == true   # only toggle defaulting on (Phase 8)
             @test cfg.stepper == false
             @test cfg.ionisation == false
@@ -32,7 +32,7 @@ using TestItems
         # re-reads ENV every call (not a cached singleton) — flipping a
         # toggle mid-session must be visible immediately.
         withenv("LUNA_USE_RUST_NATIVE" => "0") do
-            @test Luna.Config.backend_config().native == false
+            @test Amalthea.Config.backend_config().native == false
         end
     end
 
@@ -54,7 +54,7 @@ using TestItems
                     prop_capillary(radius, flength, gas, pressure;
                                     λ0, λlims, trange, energy=1e-7, τfwhm=30e-15, saveN=2)
                 end
-                report = Luna.backend_report()
+                report = Amalthea.backend_report()
                 @test report.config.native == true
                 @test report.last_stepper_type <: RK45.RustNativeStepper
             end
@@ -66,7 +66,7 @@ using TestItems
                     prop_capillary(radius, flength, gas, pressure;
                                     λ0, λlims, trange, energy=1e-7, τfwhm=30e-15, saveN=2)
                 end
-                report = Luna.backend_report()
+                report = Amalthea.backend_report()
                 @test report.config.native == false
                 @test report.last_stepper_type <: RK45.PreconStepper
             end

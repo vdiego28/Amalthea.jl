@@ -1,6 +1,6 @@
 # supercontinuum in strand of silica in air
 
-using Luna
+using Amalthea
 
 # single mode fibre at 1030 nm
 a = 1.25e-6
@@ -24,11 +24,11 @@ responses = (Nonlinear.Kerr_env((1 - fr)*PhysData.χ3(:SiO2)),
              Nonlinear.RamanPolarEnv(grid.to, Raman.raman_response(grid.to, :SiO2, fr*PhysData.ε_0*PhysData.χ3(:SiO2))))
 
 inputs = (Fields.SechField(λ0=λ0, τfwhm=τfwhm, energy=energy), Fields.ShotNoise())
-Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs, βfun!, aeff)
+Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs, βfun!, aeff)
 
 
 output = Output.MemoryOutput(0, grid.zmax, 201)
-Luna.run(Eω, grid, linop, transform, FT, output)
+Amalthea.run(Eω, grid, linop, transform, FT, output)
 
 ##
 Plotting.pygui(true)

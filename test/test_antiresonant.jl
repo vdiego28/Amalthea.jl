@@ -2,8 +2,8 @@ using TestItems
 
 @testitem "Antiresonant" tags=[:physics] begin
 import Test: @test, @testset, @test_throws
-import Luna: Antiresonant, Capillary, Modes
-import Luna.PhysData: wlfreq
+import Amalthea: Antiresonant, Capillary, Modes
+import Amalthea.PhysData: wlfreq
 
 @testset "Zeisberger Model" begin
     a = 20e-6
@@ -63,7 +63,7 @@ end
 
     @test Modes.dimlimits(m) == Modes.dimlimits(m.m)
 
-    # make sure loss values are real - see https://github.com/LupoLab/Luna-Rust.jl/issues/288
+    # make sure loss values are real - see https://github.com/LupoLab/Amalthea-Rust.jl/issues/288
     t = 148e-9
     N = 6
     r_ext = 1.5e-6

@@ -1,8 +1,8 @@
 module Plotting
-import Luna: Grid, Maths, PhysData, Processing
-import Luna.PhysData: wlfreq, c, ε_0
-import Luna.Output: AbstractOutput
-import Luna.Processing: makegrid, getIω, getEω, getEt, nearest_z
+import Amalthea: Grid, Maths, PhysData, Processing
+import Amalthea.PhysData: wlfreq, c, ε_0
+import Amalthea.Output: AbstractOutput
+import Amalthea.Processing: makegrid, getIω, getEω, getEt, nearest_z
 import PyPlot: ColorMap, plt, pygui, Figure
 import FFTW
 import Printf: @sprintf

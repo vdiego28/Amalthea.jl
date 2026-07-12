@@ -1,6 +1,6 @@
 # Backlog
 
-Deferred work and known issues for Luna-Rust.jl. Severity: 🔴 correctness · 🟡 robustness/CI · ⚪ informational.
+Deferred work and known issues for Amalthea.jl. Severity: 🔴 correctness · 🟡 robustness/CI · ⚪ informational.
 
 ## Improvement plan (2026-07-02 review)
 
@@ -1700,7 +1700,7 @@ been since the entry was written**: `.github/workflows/run_tests.yml`'s `rust`
 group has included `windows-2025-vs2026` in its OS matrix since long before this
 BACKLOG entry existed (`cargo test` runs there on every push/PR). Verified
 directly against a real run
-(`gh api repos/vdiego28/Luna-Rust.jl/actions/jobs/85999378123/logs`, run
+(`gh api repos/vdiego28/Amalthea.jl/actions/jobs/85999378123/logs`, run
 28980961881, 2026-07-08):
 ```
 test scans::tests::test_flock_lock_new_error ... ok

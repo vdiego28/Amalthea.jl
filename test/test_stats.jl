@@ -1,7 +1,7 @@
 using TestItems
 
 @testitem "Stats" tags=[:io] begin
-using Luna
+using Amalthea
 import Test: @test, @testset
 import HCubature: hquadrature
 import SpecialFunctions: besselj
@@ -31,12 +31,12 @@ import FunctionZeros: besselj_zero
     responses = (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),)
     linop, βfun!, _, _ = LinearOps.make_const_linop(grid, m, λ0)
     inputs = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=energy)
-    Eω, transform, FT = Luna.setup(
+    Eω, transform, FT = Amalthea.setup(
         grid, densityfun, responses, inputs, βfun!, aeff)
 
     statsfun = Stats.default(grid, Eω, m, linop, transform; gas=gas, onaxis=true)
     output = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
-    Luna.run(Eω, grid, linop, transform, FT, output, status_period=5)
+    Amalthea.run(Eω, grid, linop, transform, FT, output, status_period=5)
 
     @test all(output["stats"]["peakintensity"] .≈ output["stats"]["peakpower"]/norm)
 end

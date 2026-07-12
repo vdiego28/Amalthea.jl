@@ -1,5 +1,5 @@
-using Luna
-import Luna.PhysData: wlfreq
+using Amalthea
+import Amalthea.PhysData: wlfreq
 import FFTW
 import Hankel
 import NumericalIntegration: integrate, SimpsonEven
@@ -39,12 +39,12 @@ normfun = NonlinearRHS.const_norm_radial(grid, q, PhysData.ref_index_fun(gas, pr
 
 inputs = Fields.GaussGaussField(λ0=λ0, τfwhm=τ, energy=energy, w0=w0)
 
-Eω, transform, FT = Luna.setup(grid, q, densityfun, normfun, responses, inputs)
+Eω, transform, FT = Amalthea.setup(grid, q, densityfun, normfun, responses, inputs)
 
 # statsfun = Stats.collect_stats(grid, Eω, Stats.ω0(grid))
 #output = Output.MemoryOutput(0, grid.zmax, 201, (length(grid.ω), length(q.r)))
 output = Output.MemoryOutput(0, grid.zmax, 201)
-Luna.run(Eω, grid, linop, transform, FT, output)
+Amalthea.run(Eω, grid, linop, transform, FT, output)
 
 ω = grid.ω
 t = grid.t

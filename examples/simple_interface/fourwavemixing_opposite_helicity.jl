@@ -1,4 +1,4 @@
-using Luna
+using Amalthea
 import PyPlot: plt
 
 #= In this example we simulate degenerate four-wave mixing between a circularly polarised
@@ -29,7 +29,7 @@ pump = Pulses.GaussPulse(;λ0=λp, energy=ep, τfwhm, polarisation=:circular)
 seed_equal = Pulses.GaussPulse(;λ0=λs, energy=es, τfwhm, polarisation=1.0)
 seed_opposite = Pulses.GaussPulse(;λ0=λs, energy=es, τfwhm, polarisation=-1.0)
 
-# Here we are not specifiying a mode, so Luna will automatically choose to propagate in 
+# Here we are not specifiying a mode, so Amalthea will automatically choose to propagate in 
 # the fundamental mode only--but because the pulses are circularly polarised, two modes
 # with perpendicular linear polarisation are used.
 equal = prop_capillary(radius, flength, gas, pressure; λ0=λp, pulses=[pump, seed_equal],

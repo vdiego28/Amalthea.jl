@@ -2,9 +2,9 @@ using TestItems
 
 @testitem "Native-Rust Phase F.1 (Raman thg=false, mode-avg/radial/modal)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
-    using Luna
-    import Luna: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear, Capillary, Modes, Raman
-    using Luna.RK45: PreconStepper, RustNativeStepper, step!, solve
+    using Amalthea
+    import Amalthea: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear, Capillary, Modes, Raman
+    using Amalthea.RK45: PreconStepper, RustNativeStepper, step!, solve
     import Hankel
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
@@ -39,7 +39,7 @@ using TestItems
             aeff = z -> Modes.Aeff(mode, z=z)
 
             Eω, transform, FT = with_logger(NullLogger()) do
-                Luna.setup(grid, densityfun, responses, input, βfun!, aeff)
+                Amalthea.setup(grid, densityfun, responses, input, βfun!, aeff)
             end
             @assert transform isa NonlinearRHS.TransModeAvg "Expected TransModeAvg"
 
@@ -81,7 +81,7 @@ using TestItems
             inputs = Fields.GaussGaussField(λ0=λ0, τfwhm=τr, energy=energy, w0=w0, propz=-0.1)
 
             Eω, transform, FT = with_logger(NullLogger()) do
-                Luna.setup(grid, q, densityfun, normfun, responses, inputs)
+                Amalthea.setup(grid, q, densityfun, normfun, responses, inputs)
             end
             @assert transform isa NonlinearRHS.TransRadial "Expected TransRadial"
 
@@ -120,7 +120,7 @@ using TestItems
             input = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=energy)
 
             Eω, transform, FT = with_logger(NullLogger()) do
-                Luna.setup(grid, densityfun, responses, input, modes, :y)
+                Amalthea.setup(grid, densityfun, responses, input, modes, :y)
             end
             @assert transform isa NonlinearRHS.TransModal "Expected TransModal"
 
@@ -138,7 +138,7 @@ using TestItems
 
             responses_thg = (Nonlinear.Kerr_field(γ3), Nonlinear.RamanPolarField(grid.to, rr))
             Eω_thg, transform_thg, _ = with_logger(NullLogger()) do
-                Luna.setup(grid, densityfun, responses_thg, input, modes, :y)
+                Amalthea.setup(grid, densityfun, responses_thg, input, modes, :y)
             end
             s_jl_thg = PreconStepper(transform_thg, linop, copy(Eω_thg), t0, dt,
                                       rtol=1e-6, atol=1e-10, max_dt=dt, min_dt=dt)

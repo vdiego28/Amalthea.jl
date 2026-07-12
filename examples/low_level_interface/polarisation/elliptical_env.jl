@@ -1,4 +1,4 @@
-using Luna
+using Amalthea
 import StaticArrays: SMatrix, SVector
 import LinearAlgebra: mul!, ldiv!
 
@@ -49,7 +49,7 @@ responses = (Nonlinear.Kerr_env(PhysData.γ3_gas(gas)),)
 # dummy, we don't use these
 inputs = Fields.GaussField(λ0=λ0, τfwhm=τfwhm, energy=energy)
 
-Eω, transform, FT = Luna.setup(grid, densityfun, normfun, responses, inputs,
+Eω, transform, FT = Amalthea.setup(grid, densityfun, normfun, responses, inputs,
                               modes, :xy; full=false)
 
 Eω .= Ew
@@ -58,7 +58,7 @@ statsfun = Stats.collect_stats(grid, Eω, Stats.ω0(grid))
 output = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
 linop = LinearOps.make_const_linop(grid, modes, λ0)
 
-Luna.run(Eω, grid, linop, transform, FT, output)
+Amalthea.run(Eω, grid, linop, transform, FT, output)
 
 import FFTW
 import PyPlot:pygui, plt

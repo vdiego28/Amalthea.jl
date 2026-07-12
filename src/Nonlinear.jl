@@ -1,7 +1,7 @@
 module Nonlinear
-import Luna
-import Luna.PhysData: ε_0, e_ratio
-import Luna: Maths, Utils, Config
+import Amalthea
+import Amalthea.PhysData: ε_0, e_ratio
+import Amalthea: Maths, Utils, Config
 import FFTW
 import LinearAlgebra: mul!, ldiv!
 
@@ -335,7 +335,7 @@ function RamanPolarField(t, r; thg=true, rust_handle=nothing)
     h = zeros(length(t)*2) # note double grid size, see explanation below
     ht = view(h, 1:length(t))
     Utils.loadFFTwisdom()
-    FT = FFTW.plan_rfft(h, 1, flags=Luna.settings["fftw_flag"])
+    FT = FFTW.plan_rfft(h, 1, flags=Amalthea.settings["fftw_flag"])
     inv(FT)
     Utils.saveFFTwisdom()
     hω = FT * h
@@ -360,7 +360,7 @@ function RamanPolarEnv(t, r)
     h = zeros(length(t)*2) # note double grid size, see explanation below
     ht = view(h, 1:length(t))
     Utils.loadFFTwisdom()
-    FT = FFTW.plan_fft(h, 1, flags=Luna.settings["fftw_flag"])
+    FT = FFTW.plan_fft(h, 1, flags=Amalthea.settings["fftw_flag"])
     inv(FT)
     Utils.saveFFTwisdom()
     hω = FT * h

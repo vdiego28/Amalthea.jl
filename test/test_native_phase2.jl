@@ -2,8 +2,8 @@ using TestItems
 
 @testitem "Native-Rust Phase 2a (mode-avg Kerr, EnvGrid)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
-    using Luna
-    using Luna.RK45: PreconStepper, RustNativeStepper, step!, solve
+    using Amalthea
+    using Amalthea.RK45: PreconStepper, RustNativeStepper, step!, solve
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 
@@ -29,7 +29,7 @@ using TestItems
             Interface.prop_capillary_args(args...; kw...)
         end
 
-        @assert grid isa Luna.Grid.EnvGrid "Expected EnvGrid for envelope=true"
+        @assert grid isa Amalthea.Grid.EnvGrid "Expected EnvGrid for envelope=true"
 
         t0 = 0.0
         dt = 0.01
@@ -70,8 +70,8 @@ end
 
 @testitem "Native-Rust Phase 2b (plasma, RealGrid)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
-    using Luna
-    using Luna.RK45: PreconStepper, RustNativeStepper, step!, solve
+    using Amalthea
+    using Amalthea.RK45: PreconStepper, RustNativeStepper, step!, solve
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 
@@ -106,7 +106,7 @@ end
         end
 
         let
-            @assert grid isa Luna.Grid.RealGrid "plasma test uses RealGrid"
+            @assert grid isa Amalthea.Grid.RealGrid "plasma test uses RealGrid"
 
             t0 = 0.0
             dt = 0.01

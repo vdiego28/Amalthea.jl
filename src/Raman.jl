@@ -1,8 +1,8 @@
 module Raman
-import Luna.PhysData: c, ε_0, ħ, k_B, roomtemp, amg
-import Luna.PhysData: raman_parameters
+import Amalthea.PhysData: c, ε_0, ħ, k_B, roomtemp, amg
+import Amalthea.PhysData: raman_parameters
 import Cubature: hquadrature
-import Luna.Maths: planck_taper
+import Amalthea.Maths: planck_taper
 
 abstract type AbstractRamanResponse end
 

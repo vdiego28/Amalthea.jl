@@ -1,6 +1,6 @@
 # Gemini Suggestions and Findings (2026-07-05)
 
-This document outlines the findings from the review of `Luna-Rust.jl` (comparing the Rust native backend port against the original `Luna.jl` reference).
+This document outlines the findings from the review of `Amalthea.jl` (comparing the Rust native backend port against the original `Luna.jl` reference).
 
 ## 1. 🔴 Code/Physics Error Found & Fixed: GPU Ionization Clamping
 

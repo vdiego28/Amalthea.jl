@@ -2,7 +2,7 @@ using TestItems
 
 @testitem "Grid" tags=[:physics] begin
 import Test: @test, @testset, @test_throws
-import Luna: Grid, PhysData
+import Amalthea: Grid, PhysData
 
 @testset "RealGrid" begin
     # Test RealGrid creation

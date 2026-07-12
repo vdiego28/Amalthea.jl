@@ -1,8 +1,8 @@
 using TestItems
 
 @testitem "Gradient" tags=[:fields] begin
-import Luna
-import Luna: Grid, Capillary, PhysData, Nonlinear, Output, Stats, LinearOps, Modes, Fields
+import Amalthea
+import Amalthea: Grid, Capillary, PhysData, Nonlinear, Output, Stats, LinearOps, Modes, Fields
 import Test: @test, @testset
 import LinearAlgebra: norm
 
@@ -42,13 +42,13 @@ m = Capillary.MarcatiliMode(a, gas, pres, loss=false)
 aeff(z) = Modes.Aeff(m, z=z)
 _, energyfunω = Fields.energyfuncs(grid)
 linop, βfun!, _, _ = LinearOps.make_const_linop(grid, m, λ0)
-Eω, transform, FT = Luna.setup(
+Eω, transform, FT = Amalthea.setup(
     grid, dens, responses, inputs, βfun!, aeff)
 statsfun = Stats.collect_stats(grid, Eω,
                                Stats.ω0(grid),
                                Stats.energy(grid, energyfunω))
 output_const = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
-Luna.run(Eω, grid, linop, transform, FT, output_const, status_period=10)
+Amalthea.run(Eω, grid, linop, transform, FT, output_const, status_period=10)
 
 # Gradient
 coren, densityfun = Capillary.gradient(gas, L, pres, pres)
@@ -56,13 +56,13 @@ m = Capillary.MarcatiliMode(a, coren, loss=false)
 aeff(z) = Modes.Aeff(m, z=z)
 _, energyfunω = Fields.energyfuncs(grid)
 linop, βfun! = LinearOps.make_linop(grid, m, λ0)
-Eω, transform, FT = Luna.setup(
+Eω, transform, FT = Amalthea.setup(
     grid, densityfun, responses, inputs, βfun!, aeff)
 statsfun = Stats.collect_stats(grid, Eω,
                                Stats.ω0(grid),
                                Stats.energy(grid, energyfunω))
 output_grad = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
-Luna.run(Eω, grid, linop, transform, FT, output_grad, status_period=10)
+Amalthea.run(Eω, grid, linop, transform, FT, output_grad, status_period=10)
 
 # Gradient array
 coren, densityfun = Capillary.gradient(gas, [0,L], [pres, pres]);
@@ -70,13 +70,13 @@ m = Capillary.MarcatiliMode(a, coren, loss=false)
 aeff(z) = Modes.Aeff(m, z=z)
 _, energyfunω = Fields.energyfuncs(grid)
 linop, βfun! = LinearOps.make_linop(grid, m, λ0)
-Eω, transform, FT = Luna.setup(
+Eω, transform, FT = Amalthea.setup(
     grid, densityfun, responses, inputs, βfun!, aeff)
 statsfun = Stats.collect_stats(grid, Eω,
                                Stats.ω0(grid),
                                Stats.energy(grid, energyfunω))
 output_grad_array = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
-Luna.run(Eω, grid, linop, transform, FT, output_grad_array, status_period=10)
+Amalthea.run(Eω, grid, linop, transform, FT, output_grad_array, status_period=10)
 
 # A two-point `Capillary.gradient` with p0==p1 (density constant in z)
 # builds a `ZDepLinopMarcatili` (Phase 7's analytic β1(z) closed form,
@@ -124,12 +124,12 @@ m = Capillary.MarcatiliMode(a, gas, pres, loss=false)
 aeff(z) = Modes.Aeff(m, z=z)
 _, energyfunω = Fields.energyfuncs(grid);
 linop, βfun!, _, _ = LinearOps.make_const_linop(grid, m, λ0);
-Eω, transform, FT = Luna.setup(grid, dens, responses, inputs, βfun!, aeff)
+Eω, transform, FT = Amalthea.setup(grid, dens, responses, inputs, βfun!, aeff)
 statsfun = Stats.collect_stats(grid, Eω,
                                Stats.ω0(grid),
                                Stats.energy(grid, energyfunω))
 output_const = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
-Luna.run(Eω, grid, linop, transform, FT, output_const, status_period=10)
+Amalthea.run(Eω, grid, linop, transform, FT, output_const, status_period=10)
 
 # Gradient
 coren, densityfun = Capillary.gradient(gas, L, pres, pres)
@@ -137,13 +137,13 @@ m = Capillary.MarcatiliMode(a, coren, loss=false)
 aeff(z) = Modes.Aeff(m, z=z)
 _, energyfunω = Fields.energyfuncs(grid)
 linop, βfun! = LinearOps.make_linop(grid, m, λ0)
-Eω, transform, FT = Luna.setup(
+Eω, transform, FT = Amalthea.setup(
     grid, densityfun, responses, inputs, βfun!, aeff)
 statsfun = Stats.collect_stats(grid, Eω,
                                Stats.ω0(grid),
                                Stats.energy(grid, energyfunω))
 output_grad = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
-Luna.run(Eω, grid, linop, transform, FT, output_grad, status_period=10)
+Amalthea.run(Eω, grid, linop, transform, FT, output_grad, status_period=10)
 
 # Gradient array
 coren, densityfun = Capillary.gradient(gas, [0,L], [pres, pres]);
@@ -151,13 +151,13 @@ m = Capillary.MarcatiliMode(a, coren, loss=false)
 aeff(z) = Modes.Aeff(m, z=z)
 _, energyfunω = Fields.energyfuncs(grid)
 linop, βfun! = LinearOps.make_linop(grid, m, λ0)
-Eω, transform, FT = Luna.setup(
+Eω, transform, FT = Amalthea.setup(
     grid, densityfun, responses, inputs, βfun!, aeff)
 statsfun = Stats.collect_stats(grid, Eω,
                                Stats.ω0(grid),
                                Stats.energy(grid, energyfunω))
 output_grad_array = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
-Luna.run(Eω, grid, linop, transform, FT, output_grad_array, status_period=10)
+Amalthea.run(Eω, grid, linop, transform, FT, output_grad_array, status_period=10)
 
 # See the "field" testset's comment above (Phase 7 β1 deliberate divergence,
 # now correctly at its documented ~1e-4-and-below tier after fixing the

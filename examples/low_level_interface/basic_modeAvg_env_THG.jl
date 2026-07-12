@@ -1,4 +1,4 @@
-using Luna
+using Amalthea
 
 a = 13e-6
 gas = :Ar
@@ -27,7 +27,7 @@ responses = (Nonlinear.Kerr_env_thg(PhysData.γ3_gas(gas), 2π*PhysData.c/λ0, g
 
     inputs = Fields.GaussField(λ0=λ0, τfwhm=τfwhm, energy=energy)
 
-Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs, βfun!, aeff)
+Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs, βfun!, aeff)
 
 statsfun = Stats.collect_stats(grid, Eω,
                                Stats.ω0(grid),
@@ -38,7 +38,7 @@ statsfun = Stats.collect_stats(grid, Eω,
                                Stats.density(densityfun))
 output = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
 
-Luna.run(Eω, grid, linop, transform, FT, output)
+Amalthea.run(Eω, grid, linop, transform, FT, output)
 
 import FFTW
 import PyPlot: pygui, plt

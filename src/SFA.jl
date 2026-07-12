@@ -2,8 +2,8 @@ module SFA
 import NumericalIntegration: integrate, SimpsonEven
 import FFTW
 import DataStructures: CircularBuffer
-import Luna: Maths, PhysData, Ionisation
-import Luna.PhysData: wlfreq, c
+import Amalthea: Maths, PhysData, Ionisation
+import Amalthea.PhysData: wlfreq, c
 import PyPlot: plt
 
 

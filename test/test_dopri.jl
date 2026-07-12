@@ -1,7 +1,7 @@
 using TestItems
 
 @testitem "dopri" tags=[:physics] begin
-    import Luna: RK45
+    import Amalthea: RK45
     import Test: @test
 
     # Consistency properties of coefficients

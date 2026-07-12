@@ -2,11 +2,11 @@ using TestItems
 
 @testitem "Fields" tags=[:fields] begin
 import Test: @test, @testset
-using Luna
+using Amalthea
 import FFTW
 import Statistics: mean, std
 import Random: MersenneTwister
-import Luna: Hankel
+import Amalthea: Hankel
 
 # note that most of the Fields.jl code is tested in many other modules
 

@@ -2,7 +2,7 @@ using TestItems
 
 @testitem "Tools" tags=[:fields] begin
 import Test: @test, @testset
-import Luna: Capillary, Tools
+import Amalthea: Capillary, Tools
 
 @testset "Params" begin
 m = Capillary.MarcatiliMode(125e-6, :HeB, 0.4, model=:reduced)

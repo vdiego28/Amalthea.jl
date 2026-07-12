@@ -8,9 +8,9 @@ using TestItems
 # test_raman_rust.jl.
 @testitem "Rust Zeisberger dispersion equivalence" tags=[:rust] begin
     import Test: @test, @testset
-    using Luna
-    import Luna: Antiresonant, Capillary, Grid, LinearOps
-    import Luna.PhysData: wlfreq, c
+    using Amalthea
+    import Amalthea: Antiresonant, Capillary, Grid, LinearOps
+    import Amalthea.PhysData: wlfreq, c
     import Logging: with_logger, NullLogger
 
     # ── locate the shared library ──────────────────────────────────────────────
@@ -24,7 +24,7 @@ using TestItems
     libpath = joinpath(@__DIR__, "..", "luna-rust", "target", "release", libname)
     if !isfile(libpath)
         @warn "Skipping Rust dispersion equivalence test: shared library not found at $libpath. " *
-              "Build it with `cargo build --release` in luna-rust/ (or run `]build Luna`)."
+              "Build it with `cargo build --release` in luna-rust/ (or run `]build Amalthea`)."
         return
     end
 
@@ -191,9 +191,9 @@ end
 # ─── MarcatiliMode dispersion equivalence ─────────────────────────────────────
 @testitem "Rust MarcatiliMode dispersion equivalence" tags=[:rust] begin
     import Test: @test, @testset
-    using Luna
-    import Luna: Capillary, Grid, LinearOps
-    import Luna.PhysData: c
+    using Amalthea
+    import Amalthea: Capillary, Grid, LinearOps
+    import Amalthea.PhysData: c
     import Logging: with_logger, NullLogger
 
     # ── locate the shared library ──────────────────────────────────────────────
@@ -207,7 +207,7 @@ end
     libpath = joinpath(@__DIR__, "..", "luna-rust", "target", "release", libname)
     if !isfile(libpath)
         @warn "Skipping Rust MarcatiliMode dispersion test: shared library not found at $libpath. " *
-              "Build it with `cargo build --release` in luna-rust/ (or run `]build Luna`)."
+              "Build it with `cargo build --release` in luna-rust/ (or run `]build Amalthea`)."
         return
     end
 

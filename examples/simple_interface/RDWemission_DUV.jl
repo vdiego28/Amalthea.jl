@@ -1,4 +1,4 @@
-using Luna
+using Amalthea
 
 radius = 125e-6 # HCF core radius
 flength = 3 # HCF length

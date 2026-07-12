@@ -3,7 +3,7 @@ using TestItemRunner
 
 testdir = dirname(@__FILE__)
 
-import Luna: set_fftw_mode, set_fftw_threads
+import Amalthea: set_fftw_mode, set_fftw_threads
 set_fftw_mode(:estimate)
 
 # On Windows, FFTW's internal thread pool is unstable when Julia uses many threads

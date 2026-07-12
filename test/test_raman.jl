@@ -2,10 +2,10 @@ using TestItems
 
 @testitem "Raman" tags=[:sim_propagation] begin
 import Test: @test, @testset
-import Luna: Raman, Maths, Nonlinear, PhysData, Grid
+import Amalthea: Raman, Maths, Nonlinear, PhysData, Grid
 import QuadGK: quadgk
 
-import Luna: set_fftw_mode
+import Amalthea: set_fftw_mode
 set_fftw_mode(:estimate)
 
 grid = Grid.RealGrid(1.0, 800e-9, (200e-9, 2000e-9), 40e-12)

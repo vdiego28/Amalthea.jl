@@ -1,4 +1,4 @@
-# Luna-Rust.jl vs upstream Luna.jl — review report (2026-07-02)
+# Amalthea.jl (formerly Luna-Rust.jl) vs upstream Luna.jl — review report (2026-07-02)
 
 Scope: full comparison of this fork against the freshly-downloaded upstream
 `Luna.jl` (`../Luna.jl`, master @ `0a52ffb`, 2026-06-24), plus a correctness

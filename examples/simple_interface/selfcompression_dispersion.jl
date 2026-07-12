@@ -1,4 +1,4 @@
-using Luna
+using Amalthea
 import PyPlot: plt
 
 #= In this example we simulate the effect of pump pulse dispersion on soliton self-compression

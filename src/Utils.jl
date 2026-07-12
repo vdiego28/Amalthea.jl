@@ -5,10 +5,10 @@ import Logging
 import LibGit2
 import FileWatching.Pidfile: mkpidlock
 import HDF5
-import Luna: settings
+import Amalthea: settings
 import Printf: @sprintf
 import Scratch: get_scratch!, clear_scratchspaces!
-import Luna
+import Amalthea
 
 subzero = '\u2080'
 subscript(digit::Char) = string(Char(codepoint(subzero)+parse(Int, digit)))
@@ -25,7 +25,7 @@ function git_commit()
         LibGit2.isdirty(repo) && (commit *= " (dirty)")
         return commit
     catch
-        "unavailable (Luna is not checkout out for development)"
+        "unavailable (Amalthea is not checkout out for development)"
     end
 end
 
@@ -36,7 +36,7 @@ function git_branch()
         branch = split(n, "/")[end]
         return branch
     catch
-        "unavailable (Luna is not checkout out for development)"
+        "unavailable (Amalthea is not checkout out for development)"
     end
 end
 
@@ -46,9 +46,9 @@ lunadir() = dirname(srcdir())
 
 datadir() = joinpath(srcdir(), "data")
 
-cachedir() = get_scratch!(Luna, "lunacache")
+cachedir() = get_scratch!(Amalthea, "lunacache")
 
-clear_cache() = clear_scratchspaces!(Luna)
+clear_cache() = clear_scratchspaces!(Amalthea)
 
 function sourcecode()
     src = dirname(@__FILE__)

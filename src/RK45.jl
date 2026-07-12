@@ -2,10 +2,10 @@ module RK45
 import Dates
 import Logging
 import Printf: @sprintf
-import Luna.Utils: format_elapsed, lunadir
+import Amalthea.Utils: format_elapsed, lunadir
 import FFTW
 import Cubature
-import ..Luna
+import ..Amalthea
 
 
 #Get Butcher tableau etc from separate file (for convenience of changing if wanted)
@@ -51,12 +51,12 @@ with whatever the on-disk file happens to contain from a prior run. Set
 workloads where the accumulated wisdom is worth the tradeoff. See
 `docs/dev/native-port/PLAN_FFTW_WISDOM_FIX.md` for the full analysis.
 """
-_native_wisdom_enabled() = Luna.Config.backend_config().native_wisdom
+_native_wisdom_enabled() = Amalthea.Config.backend_config().native_wisdom
 
 function solve_precon(f!, linop, y0, t, dt, tmax;
                     rtol=1e-6, atol=1e-10, safety=0.9, max_dt=Inf, min_dt=0, locextrap=true, norm=weaknorm,
                     kwargs...)
-    cfg = Luna.Config.backend_config()
+    cfg = Amalthea.Config.backend_config()
     use_rust = cfg.stepper
     # Phase 8: native is the default (LUNA_USE_RUST_NATIVE=0 opts back out).
     use_native = cfg.native
@@ -66,9 +66,9 @@ function solve_precon(f!, linop, y0, t, dt, tmax;
     # radial/free-space/modal `nfun(ω;z)`) is NOT recognized here, so it falls
     # through to the non-native paths below exactly as before Phase 7 — no
     # behavior change for configurations outside the new narrow scope.
-    native_ok = linop isa Array{ComplexF64} || linop isa Luna.Capillary.ZDepLinopMarcatili ||
-                linop isa Luna.LinearOps.ZDepLinopFree ||
-                linop isa Luna.Capillary.ZDepLinopModalTaper
+    native_ok = linop isa Array{ComplexF64} || linop isa Amalthea.Capillary.ZDepLinopMarcatili ||
+                linop isa Amalthea.LinearOps.ZDepLinopFree ||
+                linop isa Amalthea.Capillary.ZDepLinopModalTaper
     stepper = nothing
     if use_native && isfile(_LIBLUNA_RUST_RK45) && eltype(y0) == ComplexF64 && native_ok
         # Any scope restriction accumulated across Phases 1-7 (EnvGrid
@@ -118,10 +118,10 @@ next step for free. For `RustNativeStepper`, `s.yn` is just a Julia-side
 buffer that `native_step` *overwrites* at the top of every call from Rust's
 own resident `field` (see `native.rs::native_step` — it does not read back
 whatever Julia last wrote into the passed pointer). Left unsynced, every
-`Luna.run`-driven simulation silently drops the windowing for the native
+`Amalthea.run`-driven simulation silently drops the windowing for the native
 path entirely — invisible in every native-specific phase test (they all call
 `solve()`/`step!()` directly, bypassing `stepfun`), but present in every real
-simulation via `Interface.jl`/`Luna.run`. Fixed by pushing the
+simulation via `Interface.jl`/`Amalthea.run`. Fixed by pushing the
 just-windowed `s.yn` back into Rust's resident field after every accepted
 step, via `native_resync_field` — a lighter sibling of the construction-time
 `set_field` FFI that updates only the resident `field` buffer and, crucially,
@@ -864,8 +864,8 @@ mutable struct RustNativeSimHandle
     end
     # Phase 7: z-dependent linop — `linop` is a `Capillary.ZDepLinopMarcatili`
     # wrapper, not an `Array{ComplexF64}`, so there is no fixed array to seed
-    # with. Untyped (not `Luna.Capillary.ZDepLinopMarcatili`) because RK45.jl
-    # is `include`d before Capillary.jl in Luna.jl — the caller
+    # with. Untyped (not `Amalthea.Capillary.ZDepLinopMarcatili`) because RK45.jl
+    # is `include`d before Capillary.jl in Amalthea.jl — the caller
     # (`RustNativeStepper`) already gates this constructor on a runtime
     # `isa` check, so no eager type resolution is needed here; dispatch on
     # 2-arg vs 1-arg is unambiguous regardless. `init_native_sim` only uses
@@ -953,18 +953,18 @@ attempting GPU init for an ineligible config where it would return a
 confusing null pointer instead of the real reason.
 """
 function _gpu_native_eligible(f!, linop)
-    Luna.Config.backend_config().cuda_native || return false
-    f! isa Luna.NonlinearRHS.TransModeAvg || return false
+    Amalthea.Config.backend_config().cuda_native || return false
+    f! isa Amalthea.NonlinearRHS.TransModeAvg || return false
     linop isa Array{ComplexF64} || return false
-    f!.grid isa Luna.Grid.RealGrid || return false
+    f!.grid isa Amalthea.Grid.RealGrid || return false
     f!.densityfun(0.0) isa Real || return false
     isnothing(f!.Et_noise) || return false
     kerr_resps = filter(_is_plain_kerr_resp, f!.resp)
-    plasma_resps = filter(r -> r isa Luna.Nonlinear.PlasmaCumtrapz, f!.resp)
+    plasma_resps = filter(r -> r isa Amalthea.Nonlinear.PlasmaCumtrapz, f!.resp)
     length(kerr_resps) == 1 || return false
     length(plasma_resps) + length(kerr_resps) == length(f!.resp) || return false
     length(plasma_resps) <= 1 || return false
-    isempty(plasma_resps) || plasma_resps[1].ratefunc isa Luna.Ionisation.IonRatePPTAccel || return false
+    isempty(plasma_resps) || plasma_resps[1].ratefunc isa Amalthea.Ionisation.IonRatePPTAccel || return false
     true
 end
 
@@ -973,9 +973,9 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                             locextrap=true, norm=weaknorm, flength=Inf,
                             native_threads::Integer=Threads.nthreads())
     n = length(y0)
-    is_zdep_mode_avg = linop isa Luna.Capillary.ZDepLinopMarcatili
-    is_zdep_free_linop = linop isa Luna.LinearOps.ZDepLinopFree
-    is_zdep_modal_taper = linop isa Luna.Capillary.ZDepLinopModalTaper
+    is_zdep_mode_avg = linop isa Amalthea.Capillary.ZDepLinopMarcatili
+    is_zdep_free_linop = linop isa Amalthea.LinearOps.ZDepLinopFree
+    is_zdep_modal_taper = linop isa Amalthea.Capillary.ZDepLinopModalTaper
     if is_zdep_mode_avg || is_zdep_free_linop || is_zdep_modal_taper
         isfinite(flength) || throw(NativeIneligible("z-dependent linop requires a " *
                   "finite `flength` (propagation length) to build the resident z-LUTs " *
@@ -993,10 +993,10 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     # `native_step` calls), so Julia's GC can't finalize them mid-solve.
     gc_roots = Any[]
 
-    is_mode_avg = f! isa Luna.NonlinearRHS.TransModeAvg
-    is_radial = f! isa Luna.NonlinearRHS.TransRadial
-    is_modal = f! isa Luna.NonlinearRHS.TransModal
-    is_free = f! isa Luna.NonlinearRHS.TransFree
+    is_mode_avg = f! isa Amalthea.NonlinearRHS.TransModeAvg
+    is_radial = f! isa Amalthea.NonlinearRHS.TransRadial
+    is_modal = f! isa Amalthea.NonlinearRHS.TransModal
+    is_free = f! isa Amalthea.NonlinearRHS.TransFree
 
     # `f! === nothing` is the deliberate bare-stepper case (Phase 0's own
     # tests construct it directly via the single-arg convenience method
@@ -1010,7 +1010,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     isnothing(f!) || is_mode_avg || is_radial || is_modal || is_free ||
         throw(NativeIneligible("f! is not one of TransModeAvg/TransRadial/" *
               "TransModal/TransFree — the native resident stepper only supports " *
-              "Luna's own NonlinearRHS pipeline types."))
+              "Amalthea's own NonlinearRHS pipeline types."))
 
     if is_mode_avg || is_radial || is_modal || is_free
         # Gas mixtures (`MarcatiliMode(a, (gas1,gas2,...), (p1,p2,...))`) give
@@ -1038,7 +1038,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         end
 
         grid = f!.grid
-        is_real_grid = grid isa Luna.Grid.RealGrid   # EnvGrid uses c2c FFTs
+        is_real_grid = grid isa Amalthea.Grid.RealGrid   # EnvGrid uses c2c FFTs
         n_time = length(grid.t)
         n_time_over = length(grid.to)
     else
@@ -1067,7 +1067,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     # docstring above); when off, pass "" so Rust does not import anything.
     native_wisdom_path::String = if _native_wisdom_enabled()
         try
-            joinpath(Luna.Utils.cachedir(), "native_fftw_wisdom_$(Luna.Utils.FFTWthreads())threads")
+            joinpath(Amalthea.Utils.cachedir(), "native_fftw_wisdom_$(Amalthea.Utils.FFTWthreads())threads")
         catch
             ""
         end
@@ -1113,14 +1113,14 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     # machines/CPU targets — the crate is built with `target-cpu=native`,
     # so a different build host takes a different SIMD/libm path.
     rc = ccall((:native_set_deterministic, _LIBLUNA_RUST_RK45), Cint,
-          (Ptr{Cvoid}, Cint), handle.ptr, Luna.Config.backend_config().deterministic ? 1 : 0)
+          (Ptr{Cvoid}, Cint), handle.ptr, Amalthea.Config.backend_config().deterministic ? 1 : 0)
     check_ffi(rc, "native_set_deterministic")
 
     # Set parameters if mode-averaged
     if is_mode_avg
         norm_func = f!.norm!
-        pre = Luna.NonlinearRHS.norm_pre(norm_func)
-        bfun! = Luna.NonlinearRHS.norm_βfun(norm_func)
+        pre = Amalthea.NonlinearRHS.norm_pre(norm_func)
+        bfun! = Amalthea.NonlinearRHS.norm_βfun(norm_func)
 
         if !isnothing(bfun!)
             beta = zeros(Float64, length(pre))
@@ -1140,7 +1140,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         if is_mixture
             # Gas mixtures (Phase F item 4): `densityfun(z)` returns one
             # density per species and `f!.resp` is a tuple of per-species
-            # response tuples (Luna's own low-level mixture convention —
+            # response tuples (Amalthea's own low-level mixture convention —
             # see test_mixtures.jl). Kerr is the only nonlinearity handled
             # here: `NonlinearRHS.Et_to_Pt!`'s `AbstractVector`-density
             # branch calls each species' response tuple with that species'
@@ -1162,15 +1162,15 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                           "single plain Kerr response — only Kerr is wired for the native " *
                           "mixture path (Phase F item 4); plasma/Raman mixtures are out of " *
                           "scope."))
-                γ3i = Luna.Nonlinear.kerr_γ3((respi[1],))
-                kerr_fac += ρi * Luna.PhysData.ε_0 * γ3i
+                γ3i = Amalthea.Nonlinear.kerr_γ3((respi[1],))
+                kerr_fac += ρi * Amalthea.PhysData.ε_0 * γ3i
             end
         else
-            γ3 = Luna.Nonlinear.kerr_γ3(f!.resp)
-            kerr_fac = density * Luna.PhysData.ε_0 * γ3
+            γ3 = Amalthea.Nonlinear.kerr_γ3(f!.resp)
+            kerr_fac = density * Amalthea.PhysData.ε_0 * γ3
         end
 
-        nlscale = Luna.NonlinearRHS.nlscale
+        nlscale = Amalthea.NonlinearRHS.nlscale
         sqrt_aeff = sqrt(f!.aeff(0.0))
 
         rc = ccall((:native_set_mode_avg_params, _LIBLUNA_RUST_RK45), Cint,
@@ -1220,18 +1220,18 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # opt-in. Mixtures are Kerr-only by construction (validated above),
         # so none of this applies to them.
         for r in (is_mixture ? () : f!.resp)
-            if r isa Luna.Nonlinear.PlasmaCumtrapz
+            if r isa Amalthea.Nonlinear.PlasmaCumtrapz
                 irf = r.ratefunc
-                if irf isa Luna.Ionisation.IonRatePPTAccel &&
+                if irf isa Amalthea.Ionisation.IonRatePPTAccel &&
                         !isnothing(irf.rust_handle) &&
                         irf.rust_handle.ptr != C_NULL
                     rc = ccall((:native_set_plasma_params, _LIBLUNA_RUST_RK45), Cint,
                         (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64, Float64),
                         handle.ptr, irf.rust_handle.ptr,
-                        r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt, density)
+                        r.ionpot, Amalthea.PhysData.e_ratio, r.preionfrac, r.δt, density)
                     check_ffi(rc, "native_set_plasma_params"; ineligible=true)
                     push!(gc_roots, irf.rust_handle)
-                elseif irf isa Luna.Ionisation.IonRateADK &&
+                elseif irf isa Amalthea.Ionisation.IonRateADK &&
                         !isnothing(irf.rust_handle) &&
                         irf.rust_handle.ptr != C_NULL
                     # Phase I item 3: ADK is closed-form, no LUT — same
@@ -1239,7 +1239,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                     rc = ccall((:native_set_plasma_params_adk, _LIBLUNA_RUST_RK45), Cint,
                         (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64, Float64),
                         handle.ptr, irf.rust_handle.ptr,
-                        r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt, density)
+                        r.ionpot, Amalthea.PhysData.e_ratio, r.preionfrac, r.δt, density)
                     check_ffi(rc, "native_set_plasma_params_adk"; ineligible=true)
                     push!(gc_roots, irf.rust_handle)
                 else
@@ -1280,9 +1280,9 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # construction (NativeIneligible), not silently continue without it.
         # Mixtures are Kerr-only by construction (validated above).
         for r in (is_mixture ? () : f!.resp)
-            if r isa Luna.Nonlinear.RamanPolarField || r isa Luna.Nonlinear.RamanPolarEnv
+            if r isa Amalthea.Nonlinear.RamanPolarField || r isa Amalthea.Nonlinear.RamanPolarEnv
                 rr = r.r
-                if r isa Luna.Nonlinear.RamanPolarEnv && rr isa Luna.Raman.RamanRespIntermediateBroadening
+                if r isa Amalthea.Nonlinear.RamanPolarEnv && rr isa Amalthea.Raman.RamanRespIntermediateBroadening
                     # Phase I item 2: `ramanmodel=:SiO2` (only reachable via
                     # `prop_gnlse`, mode-averaged EnvGrid, RamanPolarEnv) —
                     # a Gaussian-damped multi-line response with no finite-SDO
@@ -1297,8 +1297,8 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                     check_ffi(rc, "native_set_raman_fft_params"; ineligible=true)
                     break  # only one Raman response expected
                 end
-                Rs = rr isa Luna.Raman.CombinedRamanResponse ?
-                    Luna.Raman.flatten_sdo_oscillators(rr) : nothing
+                Rs = rr isa Amalthea.Raman.CombinedRamanResponse ?
+                    Amalthea.Raman.flatten_sdo_oscillators(rr) : nothing
                 isnothing(Rs) && throw(NativeIneligible("Raman response present but not " *
                       "eligible for the native path (needs a CombinedRamanResponse whose " *
                       "components are all RamanRespSingleDampedOscillator and/or " *
@@ -1308,7 +1308,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                 omegas    = Float64[ri.Ω for ri in Rs]
                 gammas    = Float64[1.0 / ri.τ2ρ(raman_density) for ri in Rs]
                 couplings = Float64[ri.K for ri in Rs]
-                thg_flag = r isa Luna.Nonlinear.RamanPolarField ? Cint(r.thg) : Cint(1)
+                thg_flag = r isa Amalthea.Nonlinear.RamanPolarField ? Cint(r.thg) : Cint(1)
                 rc = ccall((:native_set_raman_params, _LIBLUNA_RUST_RK45), Cint,
                     (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Csize_t, Float64, Float64, Cint),
                     handle.ptr, omegas, gammas, couplings, Csize_t(length(omegas)),
@@ -1332,8 +1332,8 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # this catch-all only applies to the single-species case.
         is_kerr_resp(r) = _is_plain_kerr_resp(r)
         for r in (is_mixture ? () : f!.resp)
-            is_kerr_resp(r) || r isa Luna.Nonlinear.PlasmaCumtrapz ||
-                r isa Luna.Nonlinear.RamanPolarField || r isa Luna.Nonlinear.RamanPolarEnv ||
+            is_kerr_resp(r) || r isa Amalthea.Nonlinear.PlasmaCumtrapz ||
+                r isa Amalthea.Nonlinear.RamanPolarField || r isa Amalthea.Nonlinear.RamanPolarEnv ||
                 throw(NativeIneligible("response type $(typeof(r)) is not wired for " *
                       "the native mode-averaged path (this rejects Kerr_field_nothg/" *
                       "Kerr_env_thg too — see `_is_plain_kerr_resp`)."))
@@ -1365,7 +1365,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # z-dependent density every RK stage (TransModeAvg calls
         # `densityfun(z)` fresh, unlike the constant-medium phases which
         # bake `density(0)` into `kerr_fac` once) — see `ensure_linop_at`.
-        eps0_gamma3 = Luna.PhysData.ε_0 * γ3
+        eps0_gamma3 = Amalthea.PhysData.ε_0 * γ3
 
         rc = ccall((:native_set_zdep_mode_avg_params, _LIBLUNA_RUST_RK45), Cint,
             (Ptr{Cvoid}, Csize_t, Ptr{Float64}, Ptr{Float64},
@@ -1424,11 +1424,11 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                           "not a single plain Kerr response — only Kerr is wired for the " *
                           "native radial mixture path (Phase I item 4); plasma/Raman " *
                           "mixtures are out of scope."))
-                γ3i = Luna.Nonlinear.kerr_γ3((respi[1],))
-                kerr_fac += ρi * Luna.PhysData.ε_0 * γ3i
+                γ3i = Amalthea.Nonlinear.kerr_γ3((respi[1],))
+                kerr_fac += ρi * Amalthea.PhysData.ε_0 * γ3i
             end
         else
-            γ3 = Luna.Nonlinear.kerr_γ3(f!.resp)
+            γ3 = Amalthea.Nonlinear.kerr_γ3(f!.resp)
             # Phase D.2 allows Kerr + a plasma response; Phase D.4 (docs/dev/BACKLOG.md)
             # adds Raman (`RamanPolarField`, RealGrid, either `thg` value since
             # Phase F.1 — same eligibility criteria as the mode-averaged Raman
@@ -1437,8 +1437,8 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             # `RamanPolarEnv`, EnvGrid's envelope Raman) remains out of scope.
             is_kerr_resp_radial(r) = _is_plain_kerr_resp(r)
             for r in f!.resp
-                is_kerr_resp_radial(r) || r isa Luna.Nonlinear.PlasmaCumtrapz ||
-                    r isa Luna.Nonlinear.RamanPolarField ||
+                is_kerr_resp_radial(r) || r isa Amalthea.Nonlinear.PlasmaCumtrapz ||
+                    r isa Amalthea.Nonlinear.RamanPolarField ||
                     throw(NativeIneligible("radial: only Kerr, plasma, and/or Raman " *
                           "(RealGrid) responses are supported by the native path " *
                           "(Phase D.4 gate) — this also rejects Kerr_field_nothg/" *
@@ -1448,7 +1448,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                 throw(NativeIneligible("radial: no Kerr response found (γ3=0) — the native " *
                       "radial path requires a Kerr response."))
 
-            kerr_fac = density * Luna.PhysData.ε_0 * γ3
+            kerr_fac = density * Amalthea.PhysData.ε_0 * γ3
         end
 
         # Precompute M[iω,ir] = ωwin[iω]·(-i·ω[iω]) / (2·normfun(0.0)[iω,ir]).
@@ -1494,18 +1494,18 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # whole construction (NativeIneligible), not silently continue
         # without plasma, for the same silent-wrong-physics reason.
         for r in f!.resp
-            if r isa Luna.Nonlinear.PlasmaCumtrapz
+            if r isa Amalthea.Nonlinear.PlasmaCumtrapz
                 irf = r.ratefunc
-                if irf isa Luna.Ionisation.IonRatePPTAccel &&
+                if irf isa Amalthea.Ionisation.IonRatePPTAccel &&
                         !isnothing(irf.rust_handle) &&
                         irf.rust_handle.ptr != C_NULL
                     rc = ccall((:native_set_plasma_params, _LIBLUNA_RUST_RK45), Cint,
                         (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64, Float64),
                         handle.ptr, irf.rust_handle.ptr,
-                        r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt, density)
+                        r.ionpot, Amalthea.PhysData.e_ratio, r.preionfrac, r.δt, density)
                     check_ffi(rc, "native_set_plasma_params"; ineligible=true)
                     push!(gc_roots, irf.rust_handle)
-                elseif irf isa Luna.Ionisation.IonRateADK &&
+                elseif irf isa Amalthea.Ionisation.IonRateADK &&
                         !isnothing(irf.rust_handle) &&
                         irf.rust_handle.ptr != C_NULL
                     # Phase I item 3: ADK is closed-form, no LUT — same
@@ -1513,7 +1513,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                     rc = ccall((:native_set_plasma_params_adk, _LIBLUNA_RUST_RK45), Cint,
                         (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64, Float64),
                         handle.ptr, irf.rust_handle.ptr,
-                        r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt, density)
+                        r.ionpot, Amalthea.PhysData.e_ratio, r.preionfrac, r.δt, density)
                     check_ffi(rc, "native_set_plasma_params_adk"; ineligible=true)
                     push!(gc_roots, irf.rust_handle)
                 else
@@ -1536,10 +1536,10 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # (already set by `native_set_radial_params`, called earlier in this
         # block).
         for r in f!.resp
-            if r isa Luna.Nonlinear.RamanPolarField
+            if r isa Amalthea.Nonlinear.RamanPolarField
                 rr = r.r
-                Rs = rr isa Luna.Raman.CombinedRamanResponse ?
-                    Luna.Raman.flatten_sdo_oscillators(rr) : nothing
+                Rs = rr isa Amalthea.Raman.CombinedRamanResponse ?
+                    Amalthea.Raman.flatten_sdo_oscillators(rr) : nothing
                 isnothing(Rs) && throw(NativeIneligible("Raman response present but not " *
                       "eligible for the native path (needs a CombinedRamanResponse whose " *
                       "components are all RamanRespSingleDampedOscillator and/or " *
@@ -1582,7 +1582,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         npol in (1, 2) || throw(NativeIneligible("native modal path only supports " *
                   "npol ∈ (1,2) (Modes.ToSpace.npol)."))
 
-        all(m -> m isa Luna.Capillary.MarcatiliMode, modes) ||
+        all(m -> m isa Amalthea.Capillary.MarcatiliMode, modes) ||
             throw(NativeIneligible("native modal path only supports MarcatiliMode " *
                   "(Phase 5 gate)"))
         all(m -> m.kind in (:HE, :TE, :TM), modes) ||
@@ -1592,7 +1592,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # wrapper (`Capillary.make_linop`'s specialized method) — any other
         # Function-valued `a` (not wrapped, e.g. per-mode differing tapers)
         # remains out of scope.
-        is_zdep_modal_taper = linop isa Luna.Capillary.ZDepLinopModalTaper
+        is_zdep_modal_taper = linop isa Amalthea.Capillary.ZDepLinopModalTaper
         all(m -> m.a isa Number, modes) || is_zdep_modal_taper ||
             throw(NativeIneligible("native modal path only supports constant-radius " *
                   "modes, or a shared tapered radius via Capillary.make_linop's " *
@@ -1610,7 +1610,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         end
 
         unm = Float64[m.unm for m in modes]
-        invsqrtn = Float64[1.0 / sqrt(Luna.Modes.N(m, z=0.0)) for m in modes]
+        invsqrtn = Float64[1.0 / sqrt(Amalthea.Modes.N(m, z=0.0)) for m in modes]
         # `field(m, (r,θ))` (Capillary.jl) factored as `J_order(x)·(ax,ay)`,
         # with `(ax,ay)` a per-kind function of `θ` (`mode_angle_xy` in
         # native.rs) — Phase E.1 generalized the Phase 5 `HE,n=1`-only `J0`
@@ -1624,14 +1624,14 @@ function RustNativeStepper(f!, linop, y0, t, dt;
 
         towin = f!.grid.towin
 
-        γ3 = Luna.Nonlinear.kerr_γ3(f!.resp)
+        γ3 = Amalthea.Nonlinear.kerr_γ3(f!.resp)
         # Phase 5 gate is Kerr-only; Phase D.4 (docs/dev/BACKLOG.md) adds Raman
         # (RealGrid, npol=1, either `thg` value since Phase F.1 — same
         # per-node scalar-field scope as Kerr here) alongside it. Any other
         # response type remains ineligible.
         is_kerr_resp_modal(r) = _is_plain_kerr_resp(r)
         for r in f!.resp
-            is_kerr_resp_modal(r) || r isa Luna.Nonlinear.RamanPolarField ||
+            is_kerr_resp_modal(r) || r isa Amalthea.Nonlinear.RamanPolarField ||
                 throw(NativeIneligible("modal: only Kerr and/or Raman (RealGrid) " *
                       "responses are supported by the native path " *
                       "(Phase D.4 gate) — this also rejects Kerr_field_nothg/" *
@@ -1640,7 +1640,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             # polarisation column 0 (`rhs_modal_pointcalc`'s "npol=1 scalar
             # field only" Raman block) — with npol=2 it would silently drop
             # the second (y) column's Raman contribution instead of raising.
-            r isa Luna.Nonlinear.RamanPolarField && npol != 1 &&
+            r isa Amalthea.Nonlinear.RamanPolarField && npol != 1 &&
                 throw(NativeIneligible("modal: Raman (RamanPolarField) is only " *
                       "supported natively for npol=1 — native.rs's inline " *
                       "solver does not yet handle a second polarisation column."))
@@ -1648,7 +1648,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             # buffers only (`modal_er`/`modal_pr`) — EnvGrid modal (Phase E.4
             # item 5) uses complex buffers (`modal_er_c`/`modal_pr_c`) with no
             # Raman wiring at all.
-            r isa Luna.Nonlinear.RamanPolarField && !is_real_grid &&
+            r isa Amalthea.Nonlinear.RamanPolarField && !is_real_grid &&
                 throw(NativeIneligible("modal: Raman (RamanPolarField) is only " *
                       "supported natively for RealGrid — native.rs has no EnvGrid " *
                       "Raman path for modal."))
@@ -1659,7 +1659,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
 
         _check_density_zindependent(f!.densityfun, flength)
         density = f!.densityfun(0.0)
-        kerr_fac = density * Luna.PhysData.ε_0 * γ3
+        kerr_fac = density * Amalthea.PhysData.ε_0 * γ3
 
         # Extract exactly what `ωwin .* norm!` computes by numerically probing
         # the closure (robust to norm_modal's shock/no-shock branch — avoids
@@ -1714,10 +1714,10 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # `apply_raman_radial` doc for why the same solver instance is safe
         # to reuse this way).
         for r in f!.resp
-            if r isa Luna.Nonlinear.RamanPolarField
+            if r isa Amalthea.Nonlinear.RamanPolarField
                 rr = r.r
-                Rs = rr isa Luna.Raman.CombinedRamanResponse ?
-                    Luna.Raman.flatten_sdo_oscillators(rr) : nothing
+                Rs = rr isa Amalthea.Raman.CombinedRamanResponse ?
+                    Amalthea.Raman.flatten_sdo_oscillators(rr) : nothing
                 isnothing(Rs) && throw(NativeIneligible("Raman response present but not " *
                       "eligible for the native path (needs a CombinedRamanResponse whose " *
                       "components are all RamanRespSingleDampedOscillator and/or " *
@@ -1768,12 +1768,12 @@ function RustNativeStepper(f!, linop, y0, t, dt;
 
         towin = f!.grid.towin
 
-        γ3 = Luna.Nonlinear.kerr_γ3(f!.resp)
+        γ3 = Amalthea.Nonlinear.kerr_γ3(f!.resp)
 
         if is_real_grid
             for r in f!.resp
-                _is_plain_kerr_resp(r) || r isa Luna.Nonlinear.PlasmaCumtrapz ||
-                    r isa Luna.Nonlinear.RamanPolarField ||
+                _is_plain_kerr_resp(r) || r isa Amalthea.Nonlinear.PlasmaCumtrapz ||
+                    r isa Amalthea.Nonlinear.RamanPolarField ||
                     throw(NativeIneligible("free-space: only Kerr, plasma, and/or Raman " *
                           "(RealGrid, RamanPolarField) responses are supported by the " *
                           "native path (Phase I item 6 gate) — this also rejects " *
@@ -1790,12 +1790,12 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             throw(NativeIneligible("free-space: no Kerr response found (γ3=0) — the " *
                   "native free-space path requires a Kerr response."))
 
-        has_plasma_free = is_real_grid && any(r -> r isa Luna.Nonlinear.PlasmaCumtrapz, f!.resp)
-        has_raman_free  = is_real_grid && any(r -> r isa Luna.Nonlinear.RamanPolarField, f!.resp)
+        has_plasma_free = is_real_grid && any(r -> r isa Amalthea.Nonlinear.PlasmaCumtrapz, f!.resp)
+        has_raman_free  = is_real_grid && any(r -> r isa Amalthea.Nonlinear.RamanPolarField, f!.resp)
 
-        is_zdep_free = f!.normfun isa Luna.NonlinearRHS.ZDepNormFree
+        is_zdep_free = f!.normfun isa Amalthea.NonlinearRHS.ZDepNormFree
         if is_zdep_free
-            linop isa Luna.LinearOps.ZDepLinopFree ||
+            linop isa Amalthea.LinearOps.ZDepLinopFree ||
                 throw(NativeIneligible("free-space: a z-dependent normfun (ZDepNormFree) " *
                       "requires a matching z-dependent linop (ZDepLinopFree) — got " *
                       "$(typeof(linop))."))
@@ -1807,7 +1807,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             _check_density_zindependent(f!.densityfun, flength)
         end
         density = f!.densityfun(0.0)
-        kerr_fac = density * Luna.PhysData.ε_0 * γ3
+        kerr_fac = density * Amalthea.PhysData.ε_0 * γ3
 
         # Precompute M[iω,iky,ikx] = ωwin[iω]·(-i·ω[iω]) / (2·normfun(0.0)[iω,iky,ikx]).
         # Folds norm_free + ωwin into one array. For the z-dependent case this
@@ -1831,7 +1831,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
 
         if is_zdep_free
             w = linop
-            eps0_gamma3 = Luna.PhysData.ε_0 * γ3
+            eps0_gamma3 = Amalthea.PhysData.ε_0 * γ3
             rc = ccall((:native_set_free_zdep_params, _LIBLUNA_RUST_RK45), Cint,
                 (Ptr{Cvoid}, Float64, Float64, Float64,
                  Csize_t, Ptr{Float64}, Ptr{Float64}, Ptr{Float64},
@@ -1851,24 +1851,24 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # `native_set_free_params`, called earlier in this block).
         if has_plasma_free
             for r in f!.resp
-                if r isa Luna.Nonlinear.PlasmaCumtrapz
+                if r isa Amalthea.Nonlinear.PlasmaCumtrapz
                     irf = r.ratefunc
-                    if irf isa Luna.Ionisation.IonRatePPTAccel &&
+                    if irf isa Amalthea.Ionisation.IonRatePPTAccel &&
                             !isnothing(irf.rust_handle) &&
                             irf.rust_handle.ptr != C_NULL
                         rc = ccall((:native_set_plasma_params, _LIBLUNA_RUST_RK45), Cint,
                             (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64, Float64),
                             handle.ptr, irf.rust_handle.ptr,
-                            r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt, density)
+                            r.ionpot, Amalthea.PhysData.e_ratio, r.preionfrac, r.δt, density)
                         check_ffi(rc, "native_set_plasma_params"; ineligible=true)
                         push!(gc_roots, irf.rust_handle)
-                    elseif irf isa Luna.Ionisation.IonRateADK &&
+                    elseif irf isa Amalthea.Ionisation.IonRateADK &&
                             !isnothing(irf.rust_handle) &&
                             irf.rust_handle.ptr != C_NULL
                         rc = ccall((:native_set_plasma_params_adk, _LIBLUNA_RUST_RK45), Cint,
                             (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64, Float64),
                             handle.ptr, irf.rust_handle.ptr,
-                            r.ionpot, Luna.PhysData.e_ratio, r.preionfrac, r.δt, density)
+                            r.ionpot, Amalthea.PhysData.e_ratio, r.preionfrac, r.δt, density)
                         check_ffi(rc, "native_set_plasma_params_adk"; ineligible=true)
                         push!(gc_roots, irf.rust_handle)
                     else
@@ -1890,10 +1890,10 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # `n_time_over*n_y*n_x` when `s.is_free`.
         if has_raman_free
             for r in f!.resp
-                if r isa Luna.Nonlinear.RamanPolarField
+                if r isa Amalthea.Nonlinear.RamanPolarField
                     rr = r.r
-                    Rs = rr isa Luna.Raman.CombinedRamanResponse ?
-                        Luna.Raman.flatten_sdo_oscillators(rr) : nothing
+                    Rs = rr isa Amalthea.Raman.CombinedRamanResponse ?
+                        Amalthea.Raman.flatten_sdo_oscillators(rr) : nothing
                     isnothing(Rs) && throw(NativeIneligible("Raman response present but not " *
                           "eligible for the native path (needs a CombinedRamanResponse whose " *
                           "components are all RamanRespSingleDampedOscillator and/or " *

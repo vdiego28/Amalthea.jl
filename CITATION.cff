@@ -15,6 +15,6 @@ authors:
 cff-version: "1.1.0"
 license: MIT
 message: "If you use this Rust-accelerated software or its Python wrapper, please cite it using these metadata."
-title: "Luna-Rust.jl"
+title: "Amalthea.jl"
 doi: "10.5281/zenodo.20359893"
 ...

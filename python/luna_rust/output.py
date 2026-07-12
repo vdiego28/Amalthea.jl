@@ -1,5 +1,5 @@
 class LunaOutput:
-    """Python-side, dict-like view over a Julia `Luna.Output` object.
+    """Python-side, dict-like view over a Julia `Amalthea.Output` object.
 
     Wraps whatever `prop_capillary`/`prop_gnlse` returned (a `MemoryOutput`,
     `HDF5Output`, or a nested `Dict`/HDF5 `Group`/`File` reached by indexing
@@ -35,9 +35,9 @@ class LunaOutput:
         _jl, _ = get_julia()
         # If it is a Dict, Group, File or MemoryOutput/HDF5Output
         if (_jl.isa(val, _jl.Dict) or
-            _jl.isa(val, _jl.Luna.Output.HDF5.Group) or
-            _jl.isa(val, _jl.Luna.Output.HDF5.File) or
-            _jl.isa(val, _jl.Luna.Output.AbstractOutput)):
+            _jl.isa(val, _jl.Amalthea.Output.HDF5.Group) or
+            _jl.isa(val, _jl.Amalthea.Output.HDF5.File) or
+            _jl.isa(val, _jl.Amalthea.Output.AbstractOutput)):
             return LunaOutput(val)
 
         # If it's a Julia Array, convert to numpy
@@ -52,9 +52,9 @@ class LunaOutput:
         _jl, _ = get_julia()
         if _jl.isa(self._jl_output, _jl.Dict):
             return _jl.haskey(self._jl_output, key)
-        elif _jl.isa(self._jl_output, _jl.Luna.Output.AbstractOutput):
+        elif _jl.isa(self._jl_output, _jl.Amalthea.Output.AbstractOutput):
             return _jl.haskey(self._jl_output, key)
-        elif _jl.isa(self._jl_output, _jl.Luna.Output.HDF5.Group) or _jl.isa(self._jl_output, _jl.Luna.Output.HDF5.File):
+        elif _jl.isa(self._jl_output, _jl.Amalthea.Output.HDF5.Group) or _jl.isa(self._jl_output, _jl.Amalthea.Output.HDF5.File):
             return _jl.haskey(self._jl_output, key)
         return False
 
@@ -70,14 +70,14 @@ class LunaOutput:
         _jl, _ = get_julia()
         if _jl.isa(self._jl_output, _jl.Dict):
             return list(self._jl_output.keys())
-        elif _jl.isa(self._jl_output, _jl.Luna.Output.MemoryOutput):
+        elif _jl.isa(self._jl_output, _jl.Amalthea.Output.MemoryOutput):
             return list(self._jl_output.data.keys())
-        elif _jl.isa(self._jl_output, _jl.Luna.Output.HDF5Output):
+        elif _jl.isa(self._jl_output, _jl.Amalthea.Output.HDF5Output):
             fpath = self._jl_output.fpath
-            return list(_jl.Luna.Output.HDF5.h5open(fpath, "r").keys())
-        elif _jl.isa(self._jl_output, _jl.Luna.Output.HDF5.Group) or _jl.isa(self._jl_output, _jl.Luna.Output.HDF5.File):
+            return list(_jl.Amalthea.Output.HDF5.h5open(fpath, "r").keys())
+        elif _jl.isa(self._jl_output, _jl.Amalthea.Output.HDF5.Group) or _jl.isa(self._jl_output, _jl.Amalthea.Output.HDF5.File):
             return list(self._jl_output.keys())
-        elif _jl.isa(self._jl_output, _jl.Luna.Output.AbstractOutput):
+        elif _jl.isa(self._jl_output, _jl.Amalthea.Output.AbstractOutput):
             if hasattr(self._jl_output, "data"):
                 return list(self._jl_output.data.keys())
         return []

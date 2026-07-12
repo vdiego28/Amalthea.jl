@@ -1,5 +1,5 @@
-using Luna
-using Luna.PhysData: Polynomials
+using Amalthea
+using Amalthea.PhysData: Polynomials
 import PyPlot: plt
 
 a = 1.25e-6
@@ -20,9 +20,9 @@ linop, βfun!, β1, αfun = LinearOps.make_const_linop(grid, m, λ0)
 responses = (Nonlinear.Kerr_env((1 - fr)*PhysData.χ3(:SiO2)),
              Nonlinear.RamanPolarEnv(grid.to, Raman.raman_response(grid.to, :SiO2, fr*PhysData.ε_0*PhysData.χ3(:SiO2))))
 inputs = (Fields.SechField(λ0=λ0, τfwhm=τfwhm, energy=energy), Fields.ShotNoise())
-Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs, βfun!, aeff)
+Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs, βfun!, aeff)
 outputm = Output.MemoryOutput(0, grid.zmax, 201)
-Luna.run(Eω, grid, linop, transform, FT, outputm)
+Amalthea.run(Eω, grid, linop, transform, FT, outputm)
 
 Plotting.prop_2D(outputm, :λ, dBmin=-40.0,  λrange=(400e-9, 1300e-9), trange=(-1e-12, 5e-12))
 
@@ -62,9 +62,9 @@ n0 = real(PhysData.ref_index(:SiO2, λ0))
 responses = (Nonlinear.Kerr_env((1 - fr)*χ3),
              Nonlinear.RamanPolarEnv(grid.to, Raman.raman_response(grid.to, :SiO2, fr*χ3*PhysData.ε_0)))
 norm! = NonlinearRHS.norm_mode_average_gnlse(grid, aeff)
-Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs, βfun!, aeff, norm! = norm!)
+Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs, βfun!, aeff, norm! = norm!)
 outputs = Output.MemoryOutput(0, grid.zmax, 201)
-Luna.run(Eω, grid, linop, transform, FT, outputs)
+Amalthea.run(Eω, grid, linop, transform, FT, outputs)
 
 Plotting.prop_2D(outputs, :λ, dBmin=-40.0,  λrange=(400e-9, 1300e-9), trange=(-1e-12, 5e-12))
 

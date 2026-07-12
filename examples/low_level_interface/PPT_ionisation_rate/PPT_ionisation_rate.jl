@@ -1,10 +1,10 @@
-using Luna
+using Amalthea
 import DelimitedFiles: readdlm
 import PyPlot: plt, pygui
 import Printf: @sprintf
 import GSL: hypergeom
 import SpecialFunctions: dawson, gamma
-import Luna.Modes: hquadrature
+import Amalthea.Modes: hquadrature
 
 this_folder = dirname(@__FILE__)
 ## Ilkov et al

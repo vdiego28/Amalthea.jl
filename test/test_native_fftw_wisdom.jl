@@ -2,8 +2,8 @@ using TestItems
 
 @testitem "Native FFTW wisdom persistence toggle (LUNA_NATIVE_FFTW_WISDOM)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
-    using Luna
-    using Luna.RK45: RustNativeStepper
+    using Amalthea
+    using Amalthea.RK45: RustNativeStepper
     import Logging: with_logger, NullLogger
 
     libpath = RK45._LIBLUNA_RUST_RK45
@@ -29,8 +29,8 @@ using TestItems
         t0 = 0.0
         dt = 0.01
 
-        wisdom_path = joinpath(Luna.Utils.cachedir(),
-                               "native_fftw_wisdom_$(Luna.Utils.FFTWthreads())threads")
+        wisdom_path = joinpath(Amalthea.Utils.cachedir(),
+                               "native_fftw_wisdom_$(Amalthea.Utils.FFTWthreads())threads")
 
         # docs/dev/BACKLOG.md S1 item 1 / docs/dev/native-port/PLAN_FFTW_WISDOM_FIX.md.
         # T1: default (env var unset) must not touch the on-disk wisdom file

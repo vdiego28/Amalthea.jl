@@ -3,8 +3,8 @@ import Roots: find_zero, Order2
 import HCubature: hcubature, hquadrature
 import LinearAlgebra: dot, norm
 import NumericalIntegration: integrate, Trapezoidal
-import Luna: Maths, Grid
-import Luna.PhysData: c, ε_0, μ_0
+import Amalthea: Maths, Grid
+import Amalthea.PhysData: c, ε_0, μ_0
 import Memoize: @memoize
 import LinearAlgebra: mul!
 import DSP: unwrap
@@ -586,7 +586,7 @@ end
 
 Create an arbitrary mode, which takes its methods from given functions. 
 
-The functions given should have the same signature as defined `Luna.Modes`, **except** that
+The functions given should have the same signature as defined `Amalthea.Modes`, **except** that
 the first argument (the `AbstractMode`) is omitted, e.g. for `neff` the function should be
 of the form `n(ω; z) = ...`
 

@@ -2,9 +2,9 @@ using TestItems
 
 @testitem "Native-Rust Phase I item 6 (Raman, free-space)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
-    using Luna
-    import Luna: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear, Raman
-    using Luna.RK45: PreconStepper, RustNativeStepper, step!, solve
+    using Amalthea
+    import Amalthea: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear, Raman
+    using Amalthea.RK45: PreconStepper, RustNativeStepper, step!, solve
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 
@@ -34,10 +34,10 @@ using TestItems
         inputs  = Fields.GaussGaussField(λ0=λ0, τfwhm=τ, energy=energy, w0=w0, propz=-0.1)
 
         Eω, transform, FT = with_logger(NullLogger()) do
-            Luna.setup(grid, xygrid, densityfun, normfun, responses, inputs)
+            Amalthea.setup(grid, xygrid, densityfun, normfun, responses, inputs)
         end
 
-        @assert transform isa Luna.NonlinearRHS.TransFree "Expected TransFree"
+        @assert transform isa Amalthea.NonlinearRHS.TransFree "Expected TransFree"
 
         t0 = 0.0
         dt = 0.0005

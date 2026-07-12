@@ -1,7 +1,7 @@
 # GPU-Resident Propagation (Track S3) Design Document
 
 ## 1. Goal
-The primary objective of Track S3 is to eliminate the severe PCIe bottleneck that currently throttles GPU acceleration in Luna-Rust. Currently, kernels (like Ionization or Raman) are individually accelerated, but the main simulation state (the spectral field `y`, the RK45 intermediate stages `k1..k7`, the step-error estimators `yerr`, and the scratch space `ystage`) lives on the CPU host. This requires copying arrays back and forth every RK45 sub-step.
+The primary objective of Track S3 is to eliminate the severe PCIe bottleneck that currently throttles GPU acceleration in Amalthea. Currently, kernels (like Ionization or Raman) are individually accelerated, but the main simulation state (the spectral field `y`, the RK45 intermediate stages `k1..k7`, the step-error estimators `yerr`, and the scratch space `ystage`) lives on the CPU host. This requires copying arrays back and forth every RK45 sub-step.
 
 We will introduce a `CudaNativeSim` that mirrors the CPU `NativeSim`. In this architecture, the **entire state vector and all RK45 scratch buffers** reside in VRAM for the full duration of a `solve`. 
 

@@ -2,9 +2,9 @@ using TestItems
 
 @testitem "Native-Rust Phase E.3 (modal, full=true 2-D integral)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
-    using Luna
-    import Luna: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear, Capillary, Modes
-    using Luna.RK45: PreconStepper, RustNativeStepper, step!, solve
+    using Amalthea
+    import Amalthea: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear, Capillary, Modes
+    using Amalthea.RK45: PreconStepper, RustNativeStepper, step!, solve
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 
@@ -42,7 +42,7 @@ using TestItems
                 input = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=energy)
 
                 Eω, transform, FT = with_logger(NullLogger()) do
-                    Luna.setup(grid, densityfun, responses, input, modes, :y; full=true, mfcn=2000)
+                    Amalthea.setup(grid, densityfun, responses, input, modes, :y; full=true, mfcn=2000)
                 end
                 @assert transform.full "Expected full=true"
 
@@ -76,10 +76,10 @@ using TestItems
             input = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=energy)
 
             Eω1, transform_full, _ = with_logger(NullLogger()) do
-                Luna.setup(grid, densityfun, responses, input, modes, :y; full=true, mfcn=2000)
+                Amalthea.setup(grid, densityfun, responses, input, modes, :y; full=true, mfcn=2000)
             end
             Eω2, transform_radial, _ = with_logger(NullLogger()) do
-                Luna.setup(grid, densityfun, responses, input, modes, :y; full=false)
+                Amalthea.setup(grid, densityfun, responses, input, modes, :y; full=false)
             end
 
             s_full = RustNativeStepper(transform_full, linop, copy(Eω1), t0, dt, rtol=1e-6, atol=1e-10,

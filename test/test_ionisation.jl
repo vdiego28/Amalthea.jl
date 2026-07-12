@@ -2,7 +2,7 @@ using TestItems
 
 @testitem "Ionisation" tags=[:physics] begin
 import Test: @test, @testset, @test_throws
-using Luna
+using Amalthea
 import NumericalIntegration: integrate, SimpsonEven
 import Logging: with_logger, NullLogger
 

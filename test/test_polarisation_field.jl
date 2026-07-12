@@ -2,13 +2,13 @@ using TestItems
 
 @testitem "Polarisation_field" tags=[:sim_multimode] begin
 import Test: @test, @testset
-import Luna: Output
+import Amalthea: Output
 
 @testset "Linear" begin
     # compare radial single pol, to radial linear pol at 45 degrees,
     # in capillary (non birefringent) these should be identical
 
-    using Luna
+    using Amalthea
     import LinearAlgebra: norm
     a = 13e-6
     gas = :Ar
@@ -26,7 +26,7 @@ import Luna: Output
          Capillary.MarcatiliMode(a, gas, pres, n=1, m=1, kind=:HE, ϕ=0.0, loss=false),
     )
     inputs = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=energy)
-    Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs,
+    Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs,
                                 modes, :y; full=true)
     statsfun = Stats.collect_stats(grid, Eω,
                                 Stats.ω0(grid),
@@ -35,7 +35,7 @@ import Luna: Output
                                 Stats.energy(grid, energyfunω))
     output = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
     linop = LinearOps.make_const_linop(grid, modes, λ0)
-    Luna.run(Eω, grid, linop, transform, FT, output, status_period=10)
+    Amalthea.run(Eω, grid, linop, transform, FT, output, status_period=10)
 
     modes = (
         Capillary.MarcatiliMode(a, gas, pres, n=1, m=1, kind=:HE, ϕ=0.0, loss=false),
@@ -44,7 +44,7 @@ import Luna: Output
     inf = (Fields.GaussField(λ0=λ0, τfwhm=τ, energy=energy/2.0),)
     # same field in each mode
     inputs = ((mode=1, fields=inf), (mode=2, fields=inf))
-    Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs,
+    Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs,
                                 modes, :xy; full=true)
     statsfun = Stats.collect_stats(grid, Eω,
                                 Stats.ω0(grid),
@@ -53,7 +53,7 @@ import Luna: Output
                                 Stats.energy(grid, energyfunω))
     outputp = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
     linop = LinearOps.make_const_linop(grid, modes, λ0)
-    Luna.run(Eω, grid, linop, transform, FT, outputp, status_period=10)
+    Amalthea.run(Eω, grid, linop, transform, FT, outputp, status_period=10)
 
     Iω = dropdims(abs2.(output.data["Eω"]), dims=2)
     Iωp = dropdims(sum(abs2.(outputp.data["Eω"]), dims=2), dims=2)
@@ -66,7 +66,7 @@ end
 
 ##
 @testset "Linear, LP11" begin
-    using Luna
+    using Amalthea
     import LinearAlgebra: norm
     a = 125e-6
     gas = :Ar
@@ -89,7 +89,7 @@ end
     inf = (Fields.GaussField(λ0=λ0, τfwhm=τ, energy=energy/2.0),)
     # same field in each mode
     inputs = ((mode=1, fields=inf), (mode=2, fields=inf))
-    Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs,
+    Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs,
                                 modes, :xy; full=true)
     statsfun = Stats.collect_stats(grid, Eω,
                                 Stats.ω0(grid),
@@ -98,7 +98,7 @@ end
                                 Stats.energy(grid, energyfunω))
     output = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
     linop = LinearOps.make_const_linop(grid, modes, λ0)
-    Luna.run(Eω, grid, linop, transform, FT, output, status_period=10)
+    Amalthea.run(Eω, grid, linop, transform, FT, output, status_period=10)
 
     modes = (
         Capillary.MarcatiliMode(a, gas, pres, n=0, m=1, kind=:TM, ϕ=0.0, loss=false),
@@ -107,7 +107,7 @@ end
     inf = (Fields.GaussField(λ0=λ0, τfwhm=τ, energy=energy/2.0),)
     # same field in each mode
     inputs = ((mode=1, fields=inf), (mode=2, fields=inf))
-    Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs,
+    Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs,
                                 modes, :xy; full=true)
     statsfun = Stats.collect_stats(grid, Eω,
                                 Stats.ω0(grid),
@@ -116,7 +116,7 @@ end
                                 Stats.energy(grid, energyfunω))
     outputp = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
     linop = LinearOps.make_const_linop(grid, modes, λ0)
-    Luna.run(Eω, grid, linop, transform, FT, outputp, status_period=10)
+    Amalthea.run(Eω, grid, linop, transform, FT, outputp, status_period=10)
 
     Iω = dropdims(sum(abs2.(output.data["Eω"]), dims=2), dims=2)
     Iωp = dropdims(sum(abs2.(outputp.data["Eω"]), dims=2), dims=2)

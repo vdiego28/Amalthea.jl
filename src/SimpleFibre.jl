@@ -1,10 +1,10 @@
 module SimpleFibre
 using Reexport
-@reexport using Luna.Modes
-import Luna.Modes: AbstractMode, Aeff, neff, β, α, dispersion, dispersion_func
+@reexport using Amalthea.Modes
+import Amalthea.Modes: AbstractMode, Aeff, neff, β, α, dispersion, dispersion_func
 export SimpleMode
 import Polynomials
-import Luna.PhysData: c
+import Amalthea.PhysData: c
 
 struct SimpleMode{TP} <: AbstractMode
     ωref::Float64

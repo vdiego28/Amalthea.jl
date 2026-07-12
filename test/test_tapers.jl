@@ -2,8 +2,8 @@ using TestItems
 
 @testitem "Tapers" tags=[:physics] begin
 import Test: @test, @testset
-import Luna
-import Luna: Grid, Capillary, PhysData, Nonlinear, Output, Stats, LinearOps, Modes
+import Amalthea
+import Amalthea: Grid, Capillary, PhysData, Nonlinear, Output, Stats, LinearOps, Modes
 
 import LinearAlgebra: norm
 @testset "mode-average vs modal" begin
@@ -32,10 +32,10 @@ m = Capillary.MarcatiliMode(afun, gas, pres, loss=false, model=:full);
 aeff(z) = Modes.Aeff(m, z=z)
 linop, βfun! = LinearOps.make_linop(grid, m, λ0)
 inputs = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=600e-9)
-Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs, βfun!, aeff)
+Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs, βfun!, aeff)
 statsfun = Stats.collect_stats(grid, Eω, Stats.ω0(grid))
 output = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
-Luna.run(Eω, grid, linop, transform, FT, output, status_period=10)
+Amalthea.run(Eω, grid, linop, transform, FT, output, status_period=10)
 abs2.(output["Eω"])
 end
 
@@ -46,11 +46,11 @@ modes = (
 )
 linop = LinearOps.make_linop(grid, modes, λ0)
 inputs = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=600e-9)
-Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs,
+Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs,
                                modes, :y, full=false)
 statsfun = Stats.collect_stats(grid, Eω, Stats.ω0(grid))
 output = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
-Luna.run(Eω, grid, linop, transform, FT, output, status_period=10)
+Amalthea.run(Eω, grid, linop, transform, FT, output, status_period=10)
 abs2.(dropdims(output["Eω"], dims=2))
 end
 
@@ -81,10 +81,10 @@ m = Capillary.MarcatiliMode(afun, gas, pres, loss=false, model=:full);
 aeff(z) = Modes.Aeff(m, z=z)
 linop, βfun! = LinearOps.make_linop(grid, m, λ0)
 inputs = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=1e-6)
-Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs, βfun!, aeff)
+Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs, βfun!, aeff)
 statsfun = Stats.collect_stats(grid, Eω, Stats.ω0(grid))
 output = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
-Luna.run(Eω, grid, linop, transform, FT, output, status_period=10)
+Amalthea.run(Eω, grid, linop, transform, FT, output, status_period=10)
 abs2.(output["Eω"])
 end
 
@@ -94,10 +94,10 @@ m = Capillary.MarcatiliMode(a, gas, pres, loss=false, model=:full);
 aeff(z) = Modes.Aeff(m, z=z)
 inputs = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=1e-6)
 linop, βfun!, _, _ = LinearOps.make_const_linop(grid, m, λ0)
-Eω, transform, FT = Luna.setup(grid, densityfun, responses, inputs, βfun!, aeff)
+Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs, βfun!, aeff)
 statsfun = Stats.collect_stats(grid, Eω, Stats.ω0(grid))
 output = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
-Luna.run(Eω, grid, linop, transform, FT, output, status_period=10)
+Amalthea.run(Eω, grid, linop, transform, FT, output, status_period=10)
 abs2.(output["Eω"])
 end
 

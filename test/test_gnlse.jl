@@ -1,7 +1,7 @@
 using TestItems
 
 @testitem "Gnlse" tags=[:sim_propagation] begin
-using Luna
+using Amalthea
 import Test: @test, @testset
 import Logging
 

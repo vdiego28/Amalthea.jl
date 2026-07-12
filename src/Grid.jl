@@ -2,7 +2,7 @@ module Grid
 import Logging
 import FFTW
 import Printf: @sprintf
-import Luna: PhysData, Maths
+import Amalthea: PhysData, Maths
 
 abstract type AbstractGrid end
 

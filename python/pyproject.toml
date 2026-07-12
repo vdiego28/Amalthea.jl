@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "luna-rust"
 version = "1.0.0"
-description = "Python interface to the Luna-Rust.jl ultrafast fibre simulation backend"
+description = "Python interface to the Amalthea.jl ultrafast fibre simulation backend"
 requires-python = ">= 3.9"
 dependencies = [
     "juliacall >= 0.9.20",

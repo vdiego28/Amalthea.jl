@@ -1,9 +1,9 @@
 module Stats
-import Luna: Maths, Grid, Modes, Utils, settings, PhysData, Fields, Processing
-import Luna.PhysData: wlfreq, c, ε_0
-import Luna.NonlinearRHS: TransModal, TransModeAvg, Erω_to_Prω!
-import Luna.Nonlinear: PlasmaCumtrapz
-import Luna.Capillary: MarcatiliMode
+import Amalthea: Maths, Grid, Modes, Utils, settings, PhysData, Fields, Processing
+import Amalthea.PhysData: wlfreq, c, ε_0
+import Amalthea.NonlinearRHS: TransModal, TransModeAvg, Erω_to_Prω!
+import Amalthea.Nonlinear: PlasmaCumtrapz
+import Amalthea.Capillary: MarcatiliMode
 import FFTW
 import LinearAlgebra: mul!
 import Printf: @sprintf

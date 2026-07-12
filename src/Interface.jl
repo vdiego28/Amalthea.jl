@@ -1,13 +1,13 @@
 module Interface
-using Luna
-import Luna.PhysData: wlfreq, roomtemp
-import Luna: Grid, Modes, Output, Fields
+using Amalthea
+import Amalthea.PhysData: wlfreq, roomtemp
+import Amalthea: Grid, Modes, Output, Fields
 import Random: AbstractRNG, GLOBAL_RNG
 import Logging: @info, @debug
 
 module Pulses
 
-import Luna: Fields, Output, Processing, Capillary
+import Amalthea: Fields, Output, Processing, Capillary
 
 export AbstractPulse, CustomPulse, GaussPulse, SechPulse, DataPulse, LunaPulse
 
@@ -183,13 +183,13 @@ end
 """
     LunaPulse(output; energy, λ0=NaN, mode=:lowest, polarisation=:linear, propagator=nothing)
 
-A pulse defined to be used with `prop_capillary` which comes from a previous `Luna`
+A pulse defined to be used with `prop_capillary` which comes from a previous `Amalthea`
 propagation simulation.
 
 For multi-mode simulations, only the lowest-order modes is transferred.
 
 # Arguments
-- `output::AbstractOutput`: output from a previous `Luna` simulation.
+- `output::AbstractOutput`: output from a previous `Amalthea` simulation.
 
 # Keyword arguments
 - `energy::Number`: the pulse energy. When transferring multi-mode simulations this defines the **total** energy.
@@ -319,7 +319,7 @@ In this case, all keyword arguments except for `λ0` are ignored.
     twice in the output, once for `x` and once for `y` polarisation.
 - `model::Symbol`: Can be `:full`, which includes the full complex refractive index of the cladding
     in the effective index of the mode, or `:reduced`, which uses the simpler model more
-    commonly seen in the literature. See `Luna.Capillary` for more details.
+    commonly seen in the literature. See `Amalthea.Capillary` for more details.
     Defaults to `:full`.
 - `loss::Bool`: Whether to include propagation loss. Defaults to `true`.
 - `temperature::Number`: Temperature of the gas in Kelvin. Defaults to room temperature.
@@ -364,7 +364,7 @@ If `raman` is `true`, then the following options apply:
 function prop_capillary(args...; status_period=5, kwargs...)
     kw = Fields.resolve_greek_aliases(kwargs)
     Eω, grid, linop, transform, FT, output = prop_capillary_args(args...; kw...)
-    Luna.run(Eω, grid, linop, transform, FT, output; status_period)
+    Amalthea.run(Eω, grid, linop, transform, FT, output; status_period)
     output
 end
 
@@ -378,7 +378,7 @@ end
 
 Prepare to simulate pulse propagation in a hollow fibre using the capillary model. This
 function takes the same arguments as `prop_capillary` but instead or running the
-simulation and returning the output, it returns the required arguments for `Luna.run`,
+simulation and returning the output, it returns the required arguments for `Amalthea.run`,
 which is useful for repeated simulations in an indentical fibre with different initial
 conditions.
 """
@@ -890,7 +890,7 @@ function setup(grid, mode::Modes.AbstractMode, density, responses, inputs, pol, 
     @info("Using mode-averaged propagation.")
     linop, βfun!, _, _ = LinearOps.make_const_linop(grid, mode, grid.referenceλ)
 
-    Eω, transform, FT = Luna.setup(grid, density, responses, inputs,
+    Eω, transform, FT = Amalthea.setup(grid, density, responses, inputs,
                                    βfun!, z -> Modes.Aeff(mode, z=z); noise_field)
     linop, Eω, transform, FT
 end
@@ -900,7 +900,7 @@ function setup(grid, mode::Modes.AbstractMode, density, responses, inputs, pol, 
     @info("Using mode-averaged propagation.")
     linop, βfun! = LinearOps.make_linop(grid, mode, grid.referenceλ)
 
-    Eω, transform, FT = Luna.setup(grid, density, responses, inputs,
+    Eω, transform, FT = Amalthea.setup(grid, density, responses, inputs,
                                    βfun!, z -> Modes.Aeff(mode, z=z); noise_field)
     linop, Eω, transform, FT
 end
@@ -914,7 +914,7 @@ function setup(grid, modes, density, responses, inputs, pol, rtol, c::Val{true};
     nf = needfull(modes)
     @info(nf ? "Using full 2-D modal integral." : "Using radial modal integral.")
     linop = LinearOps.make_const_linop(grid, modes, grid.referenceλ)
-    Eω, transform, FT = Luna.setup(grid, density, responses, inputs, modes,
+    Eω, transform, FT = Amalthea.setup(grid, density, responses, inputs, modes,
                                    pol ? :xy : :y; full=nf, rtol, noise_field)
     linop, Eω, transform, FT
 end
@@ -924,7 +924,7 @@ function setup(grid, modes, density, responses, inputs, pol, rtol, c::Val{false}
     nf = needfull(modes)
     @info(nf ? "Using full 2-D modal integral." : "Using radial modal integral.")
     linop = LinearOps.make_linop(grid, modes, grid.referenceλ)
-    Eω, transform, FT = Luna.setup(grid, density, responses, inputs, modes,
+    Eω, transform, FT = Amalthea.setup(grid, density, responses, inputs, modes,
                                    pol ? :xy : :y; full=nf, rtol, noise_field)
     linop, Eω, transform, FT
 end
@@ -1027,7 +1027,7 @@ Note that the current GNLSE model is single mode only.
 function prop_gnlse(args...; status_period=5, kwargs...)
     kw = Fields.resolve_greek_aliases(kwargs)
     Eω, grid, linop, transform, FT, output = prop_gnlse_args(args...; kw...)
-    Luna.run(Eω, grid, linop, transform, FT, output; status_period)
+    Amalthea.run(Eω, grid, linop, transform, FT, output; status_period)
     output
 end
 
@@ -1041,7 +1041,7 @@ end
 
 Prepare to simulate pulse propagation using the GNLSE. This
 function takes the same arguments as `prop_gnlse` but instead or running the
-simulation and returning the output, it returns the required arguments for `Luna.run`,
+simulation and returning the output, it returns the required arguments for `Amalthea.run`,
 which is useful for repeated simulations in an indentical fibre with different initial
 conditions.
 """
@@ -1095,7 +1095,7 @@ function _prop_gnlse_args(γ, flength, βs; λ0, λlims, trange,
     inputs, noise_field = makenoise(grid, mode_s, inputs, shotnoise, rng)
 
     norm! = NonlinearRHS.norm_mode_average_gnlse(grid, aeff; shock)
-    Eω, transform, FT = Luna.setup(grid, density, resp, inputs, βfun!, aeff;
+    Eω, transform, FT = Amalthea.setup(grid, density, resp, inputs, βfun!, aeff;
                                    norm!, noise_field)
     stats = Stats.default(grid, Eω, mode_s, linop, transform)
     output = makeoutput(grid, saveN, stats, filepath, scan, scanidx, filename)

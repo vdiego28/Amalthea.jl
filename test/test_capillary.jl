@@ -2,11 +2,11 @@ using TestItems
 
 @testitem "Capillary" tags=[:physics] begin
 import Test: @test, @testset
-import Luna.Modes: hcubature
+import Amalthea.Modes: hcubature
 import LinearAlgebra: dot
-import Luna: Modes, Capillary
-import Luna.PhysData: ref_index_fun, ε_0, μ_0
-import Luna.PhysData: wlfreq
+import Amalthea: Modes, Capillary
+import Amalthea.PhysData: ref_index_fun, ε_0, μ_0
+import Amalthea.PhysData: wlfreq
 
 @testset "loss" begin
     λ = 800e-9

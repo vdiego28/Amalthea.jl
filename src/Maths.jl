@@ -5,9 +5,9 @@ import SpecialFunctions: erf, erfc, gamma
 import StaticArrays: SVector
 import Random: AbstractRNG, randn, GLOBAL_RNG
 import FFTW
-import Luna
-import Luna.Utils: saveFFTwisdom, loadFFTwisdom
-import Luna: settings
+import Amalthea
+import Amalthea.Utils: saveFFTwisdom, loadFFTwisdom
+import Amalthea: settings
 import Roots: fzero
 import Dierckx
 import Peaks
@@ -577,7 +577,7 @@ Returns a closure `hilbert!(out, x)` which places the Hilbert transform of `x` i
 """
 function plan_hilbert!(x; dim=1)
     loadFFTwisdom()
-    FT = FFTW.plan_fft(copy(x), dim, flags=Luna.settings["fftw_flag"])
+    FT = FFTW.plan_fft(copy(x), dim, flags=Amalthea.settings["fftw_flag"])
     saveFFTwisdom()
     xf = Array{ComplexF64}(undef, size(FT))
     idxlo = CartesianIndices(size(xf)[1:dim - 1])

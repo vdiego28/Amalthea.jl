@@ -1,9 +1,9 @@
 # Parameter scans
-Luna comes with a flexible interface to run, save and process scans over any parameter or combination of parameters you can think of. A simple example can be found in `examples/simple_interface/scan.jl`, and we will go through it here. There are only a few necessary steps to run a parameter scan.
+Amalthea comes with a flexible interface to run, save and process scans over any parameter or combination of parameters you can think of. A simple example can be found in `examples/simple_interface/scan.jl`, and we will go through it here. There are only a few necessary steps to run a parameter scan.
 
 **First**, define the fixed parameters (those which are not being scanned over):
 ```julia
-using Luna
+using Amalthea
 import PyPlot: plt
 
 a = 125e-6
@@ -68,7 +68,7 @@ Scans can be executed in several ways, which are defined via the various subtype
 - [`BatchExec`](@ref Scans.BatchExec): divide the scan into batches and run a specific batch (can be used to balance load between processes)
 - [`QueueExec`](@ref Scans.QueueExec): create a "queue file" which is used to balance load between several processes. This can be executed from multiple processes simultaneously. Alternatively, `QueueExec` can be made to spawn several subprocesses on the local machine which then use the queueing system to balance load between them.
 - [`CondorExec`](@ref Scans.CondorExec): create a submission file (aka job file) for an HTCondor batch system running on the current machine and submit it, claiming a specified number of nodes, to execute the scan using a `QueueExec`.
-- [`SSHExec`](@ref Scans.SSHExec): use one of the other `AbstractExec` types but first transfer the file to a remote host via SSH and then execute it. (**Note**: the remote machine must have Julia and Luna available with the same versions of both, and Julia must be available in a shell via the `julia` command.) For more details on how to set up execution over SSH, see [below](#execution-over-ssh).
+- [`SSHExec`](@ref Scans.SSHExec): use one of the other `AbstractExec` types but first transfer the file to a remote host via SSH and then execute it. (**Note**: the remote machine must have Julia and Amalthea available with the same versions of both, and Julia must be available in a shell via the `julia` command.) For more details on how to set up execution over SSH, see [below](#execution-over-ssh).
 
 ### Command-line arguments
 Most of the above execution modes can also be triggered by running the script (the `.jl` file) from the command line with additional arguments. To show the options, run `julia [script] --help` where `script` is your `.jl` file. As one example, running our `scan.jl` example in queue-file mode could be accomplished by `julia scan.jl --queue`, and starting 4 subprocesses to share the queue could be done by `julia scan.jl --queue -p 4`. Importantly, **command-line arguments passed to the script overwrite any explicitly created execution mode within the script.**

@@ -4,13 +4,13 @@ import SpecialFunctions: besselj
 import StaticArrays: SVector
 import Cubature: hquadrature
 using Reexport
-@reexport using Luna.Modes
-import Luna: Maths, Grid, Config
-import Luna.PhysData: c, ε_0, μ_0, ref_index_fun, roomtemp, densityspline, sellmeier_gas
-import Luna.Modes: AbstractMode, dimlimits, neff, field, Aeff, N, modeinfo
-import Luna.LinearOps: make_linop, conj_clamp, neff_grid, neff_β_grid
-import Luna.PhysData: wlfreq, roomtemp
-import Luna.Utils: subscript, lunadir
+@reexport using Amalthea.Modes
+import Amalthea: Maths, Grid, Config
+import Amalthea.PhysData: c, ε_0, μ_0, ref_index_fun, roomtemp, densityspline, sellmeier_gas
+import Amalthea.Modes: AbstractMode, dimlimits, neff, field, Aeff, N, modeinfo
+import Amalthea.LinearOps: make_linop, conj_clamp, neff_grid, neff_β_grid
+import Amalthea.PhysData: wlfreq, roomtemp
+import Amalthea.Utils: subscript, lunadir
 import Logging: @warn
 import Base: show
 

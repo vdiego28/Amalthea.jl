@@ -1,5 +1,5 @@
-using Luna
-Luna.set_fftw_mode(:estimate)
+using Amalthea
+Amalthea.set_fftw_mode(:estimate)
 import Logging: @warn, disable_logging, Info
 import PyPlot: plt
 

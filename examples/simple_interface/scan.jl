@@ -1,4 +1,4 @@
-using Luna
+using Amalthea
 import PyPlot: plt
 
 # Fixed parameters:

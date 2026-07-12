@@ -1,9 +1,9 @@
 using TestItems
 
 @testitem "Interface" tags=[:sim_interface] begin
-using Luna
-import Luna.Capillary: besselj, get_unm
-import Luna.Modes: hquadrature
+using Amalthea
+import Amalthea.Capillary: besselj, get_unm
+import Amalthea.Modes: hquadrature
 import Test: @test, @testset, @test_throws
 import Logging
 
@@ -215,7 +215,7 @@ end
     gpc = Pulses.GaussPulse(;polarisation=:circular, p...)
     pulse = Pulses.GaussBeamPulse(0.64*a, gpl)
     Eω, grid, linop, transform, FT, o = Interface.prop_capillary_args(args...; pulses=pulse, modes=Nmodes, kwargs...)
-    Luna.run(Eω, grid, linop, transform, FT, o)
+    Amalthea.run(Eω, grid, linop, transform, FT, o)
     @testset for m in 1:Nmodes
         @test Processing.energy(o)[m, 1] ≈ p.energy * gauss_overlaps[m]
     end

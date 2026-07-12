@@ -12,7 +12,7 @@ using TestItems
     # Verify the compiled library exists (skip gracefully if not built yet)
     if !isfile(LIB_PATH)
         @warn "Skipping Rust FFI test: shared library not found at $LIB_PATH. " *
-              "Build it with `cargo build --release` in luna-rust/ (or run `]build Luna`)."
+              "Build it with `cargo build --release` in luna-rust/ (or run `]build Amalthea`)."
         return
     end
     

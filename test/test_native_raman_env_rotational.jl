@@ -2,9 +2,9 @@ using TestItems
 
 @testitem "Native-Rust Phase F.2 (envelope Raman + rotational multi-oscillator)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
-    using Luna
-    import Luna: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear, Capillary, Modes, Raman
-    using Luna.RK45: PreconStepper, RustNativeStepper, step!, solve
+    using Amalthea
+    import Amalthea: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear, Capillary, Modes, Raman
+    using Amalthea.RK45: PreconStepper, RustNativeStepper, step!, solve
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 
@@ -34,7 +34,7 @@ using TestItems
             input = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=energy)
 
             Eω, transform, FT = with_logger(NullLogger()) do
-                Luna.setup(grid, densityfun, responses, input, βfun!, aeff)
+                Amalthea.setup(grid, densityfun, responses, input, βfun!, aeff)
             end
             @assert transform isa NonlinearRHS.TransModeAvg "Expected TransModeAvg"
 
@@ -85,7 +85,7 @@ using TestItems
             input = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=energy)
 
             Eω, transform, FT = with_logger(NullLogger()) do
-                Luna.setup(grid, densityfun, responses, input, βfun!, aeff)
+                Amalthea.setup(grid, densityfun, responses, input, βfun!, aeff)
             end
             @assert transform isa NonlinearRHS.TransModeAvg "Expected TransModeAvg"
 
@@ -131,7 +131,7 @@ using TestItems
             input = Fields.GaussField(λ0=λ0, τfwhm=τ, energy=energy)
 
             Eω, transform, FT = with_logger(NullLogger()) do
-                Luna.setup(grid, densityfunH, responses, input, βfun!, aeff)
+                Amalthea.setup(grid, densityfunH, responses, input, βfun!, aeff)
             end
 
             t0 = 0.0
