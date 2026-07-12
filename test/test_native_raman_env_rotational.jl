@@ -18,7 +18,7 @@ using TestItems
         densityfun(z) = dens0
 
         @testset "Envelope Raman (RamanPolarEnv, mode-averaged EnvGrid)" begin
-            # BACKLOG.md Phase F item 2: RamanPolarEnv was never natively
+            # docs/dev/BACKLOG.md Phase F item 2: RamanPolarEnv was never natively
             # wired at all (neither the old LUNA_USE_RUST_RAMAN per-kernel
             # path nor the native port) — its intensity formula
             # (sqr!(R::RamanPolarEnv,E) = 1/2*|E|^2, Nonlinear.jl:351-354)
@@ -68,7 +68,7 @@ using TestItems
         end
 
         @testset "Rotational multi-oscillator (RamanPolarField, mode-averaged RealGrid)" begin
-            # BACKLOG.md Phase F item 2: RamanRespRotationalNonRigid wraps a
+            # docs/dev/BACKLOG.md Phase F item 2: RamanRespRotationalNonRigid wraps a
             # per-J Vector{RamanRespSingleDampedOscillator} internally
             # (Raman.jl:232-234) sharing one τ2ρ — Raman.flatten_sdo_oscillators
             # expands it so a rotational (here rotation-only) response

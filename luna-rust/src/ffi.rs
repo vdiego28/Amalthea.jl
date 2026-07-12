@@ -1,8 +1,8 @@
-use num_complex::Complex;
-use libc::{c_double, c_int, c_uint, size_t, c_void};
-use crate::ionization::{PptIonizationRate, AdkIonizationRate};
+use crate::dispersion::{MarcatiliNeff, ZeisbergerNeff};
+use crate::ionization::{AdkIonizationRate, PptIonizationRate};
 use crate::raman::{RamanOscillator, TimeDomainRamanSolver};
-use crate::dispersion::{ZeisbergerNeff, MarcatiliNeff};
+use libc::{c_double, c_int, c_uint, c_void, size_t};
+use num_complex::Complex;
 
 // ─── QDHT batch transform FFI ─────────────────────────────────────────────────
 
@@ -16,13 +16,13 @@ use crate::dispersion::{ZeisbergerNeff, MarcatiliNeff};
 /// We store `T` transposed to row-major so that per-row dot products are cache-friendly,
 /// and pre-allocate scratch space to avoid per-call heap allocation.
 pub struct QdhtFfiHandle {
-    t_row_major: Vec<f64>,  // T[r, s] stored row-major: index = r*n_r + s
+    t_row_major: Vec<f64>, // T[r, s] stored row-major: index = r*n_r + s
     n_r: usize,
-    scale_fwd: f64,         // scaleRK for mul!  (forward, r→k)
-    scale_inv: f64,         // 1/scaleRK for ldiv! (inverse, k→r)
-    scratch: Vec<f64>,      // 4 × n_r × capacity working space (a_re, a_im, b_re, b_im)
-    capacity: usize,        // scratch capacity in n_time units
-    /// BACKLOG.md S5.2: when `true`, skip the BLAS-3 `dgemm` path even if
+    scale_fwd: f64,    // scaleRK for mul!  (forward, r→k)
+    scale_inv: f64,    // 1/scaleRK for ldiv! (inverse, k→r)
+    scratch: Vec<f64>, // 4 × n_r × capacity working space (a_re, a_im, b_re, b_im)
+    capacity: usize,   // scratch capacity in n_time units
+    /// docs/dev/BACKLOG.md S5.2: when `true`, skip the BLAS-3 `dgemm` path even if
     /// `crate::blas::get_blas_api()` succeeds, forcing the row-parallel
     /// Rayon fallback instead — see `native::NativeBackend::set_deterministic`'s
     /// doc for why.
@@ -31,8 +31,13 @@ pub struct QdhtFfiHandle {
 
 impl QdhtFfiHandle {
     /// Construct from Julia's column-major T matrix and scale factors.
-    pub fn new(t_col_major: &[f64], n_r: usize, scale_fwd: f64, scale_inv: f64,
-               n_time_hint: usize) -> Self {
+    pub fn new(
+        t_col_major: &[f64],
+        n_r: usize,
+        scale_fwd: f64,
+        scale_inv: f64,
+        n_time_hint: usize,
+    ) -> Self {
         assert_eq!(t_col_major.len(), n_r * n_r);
         let mut t_row_major = vec![0.0f64; n_r * n_r];
         for r in 0..n_r {
@@ -43,7 +48,15 @@ impl QdhtFfiHandle {
         }
         let capacity = n_time_hint.max(1);
         let scratch = vec![0.0f64; 4 * n_r * capacity];
-        QdhtFfiHandle { t_row_major, n_r, scale_fwd, scale_inv, scratch, capacity, deterministic: false }
+        QdhtFfiHandle {
+            t_row_major,
+            n_r,
+            scale_fwd,
+            scale_inv,
+            scratch,
+            capacity,
+            deterministic: false,
+        }
     }
 
     pub fn set_deterministic(&mut self, on: bool) {
@@ -67,17 +80,25 @@ impl QdhtFfiHandle {
         let block = n_r * n_time;
         self.ensure_capacity(n_time);
 
-        if !self.deterministic && let Ok(api) = crate::blas::get_blas_api() {
+        if !self.deterministic
+            && let Ok(api) = crate::blas::get_blas_api()
+        {
             // Use BLAS-3 dgemm directly on the col-major array
             self.scratch[..block].copy_from_slice(&data[..block]);
             api.dgemm(
-                b'N', b'N',
-                n_time as i64, n_r as i64, n_r as i64,
+                b'N',
+                b'N',
+                n_time as i64,
+                n_r as i64,
+                n_r as i64,
                 scale,
-                &self.scratch, n_time as i64,
-                &self.t_row_major, n_r as i64,
+                &self.scratch,
+                n_time as i64,
+                &self.t_row_major,
+                n_r as i64,
                 0.0,
-                data, n_time as i64,
+                data,
+                n_time as i64,
             );
         } else {
             // Fallback to Rayon
@@ -91,16 +112,18 @@ impl QdhtFfiHandle {
                 let t_rm = self.t_row_major.as_slice();
                 let (a_rm, b_rm) = self.scratch[..2 * block].split_at_mut(block);
                 use rayon::prelude::*;
-                b_rm.par_chunks_mut(n_r).zip(a_rm.par_chunks(n_r)).for_each(|(b_row, a_row)| {
-                    for r in 0..n_r {
-                        let t_row = &t_rm[r * n_r .. (r + 1) * n_r];
-                        let mut sum = 0.0f64;
-                        for s in 0..n_r {
-                            sum += t_row[s] * a_row[s];
+                b_rm.par_chunks_mut(n_r)
+                    .zip(a_rm.par_chunks(n_r))
+                    .for_each(|(b_row, a_row)| {
+                        for r in 0..n_r {
+                            let t_row = &t_rm[r * n_r..(r + 1) * n_r];
+                            let mut sum = 0.0f64;
+                            for s in 0..n_r {
+                                sum += t_row[s] * a_row[s];
+                            }
+                            b_row[r] = scale * sum;
                         }
-                        b_row[r] = scale * sum;
-                    }
-                });
+                    });
             }
             for r in 0..n_r {
                 let col_start = n_time * r;
@@ -122,18 +145,26 @@ impl QdhtFfiHandle {
         let block2 = 2 * n_r * n_time; // total f64 elements
         self.ensure_capacity(n_time);
 
-        if !self.deterministic && let Ok(api) = crate::blas::get_blas_api() {
+        if !self.deterministic
+            && let Ok(api) = crate::blas::get_blas_api()
+        {
             // Use BLAS-3 dgemm directly on the col-major complex array
             // Interleaved complex arrays act exactly as a 2*n_time x n_r real array.
             self.scratch[..block2].copy_from_slice(&data[..block2]);
             api.dgemm(
-                b'N', b'N',
-                (2 * n_time) as i64, n_r as i64, n_r as i64,
+                b'N',
+                b'N',
+                (2 * n_time) as i64,
+                n_r as i64,
+                n_r as i64,
                 scale,
-                &self.scratch, (2 * n_time) as i64,
-                &self.t_row_major, n_r as i64,
+                &self.scratch,
+                (2 * n_time) as i64,
+                &self.t_row_major,
+                n_r as i64,
                 0.0,
-                data, (2 * n_time) as i64,
+                data,
+                (2 * n_time) as i64,
             );
         } else {
             // Fallback to Rayon
@@ -141,7 +172,7 @@ impl QdhtFfiHandle {
             for s in 0..n_r {
                 let col_f = 2 * n_time * s;
                 for t in 0..n_time {
-                    self.scratch[t * n_r + s]         = data[2 * t     + col_f];
+                    self.scratch[t * n_r + s] = data[2 * t + col_f];
                     self.scratch[block + t * n_r + s] = data[2 * t + 1 + col_f];
                 }
             }
@@ -151,29 +182,30 @@ impl QdhtFfiHandle {
                 let (a_rm_re, a_rm_im) = a_rm.split_at_mut(block);
                 let (b_rm_re, b_rm_im) = temp.split_at_mut(block);
                 use rayon::prelude::*;
-                b_rm_re.par_chunks_mut(n_r)
+                b_rm_re
+                    .par_chunks_mut(n_r)
                     .zip(b_rm_im.par_chunks_mut(n_r))
                     .zip(a_rm_re.par_chunks(n_r))
                     .zip(a_rm_im.par_chunks(n_r))
                     .for_each(|(((b_row_re, b_row_im), a_row_re), a_row_im)| {
-                    for r in 0..n_r {
-                        let t_row = &t_rm[r * n_r .. (r + 1) * n_r];
-                        let mut sum_re = 0.0f64;
-                        let mut sum_im = 0.0f64;
-                        for s in 0..n_r {
-                            let ts = t_row[s];
-                            sum_re += ts * a_row_re[s];
-                            sum_im += ts * a_row_im[s];
+                        for r in 0..n_r {
+                            let t_row = &t_rm[r * n_r..(r + 1) * n_r];
+                            let mut sum_re = 0.0f64;
+                            let mut sum_im = 0.0f64;
+                            for s in 0..n_r {
+                                let ts = t_row[s];
+                                sum_re += ts * a_row_re[s];
+                                sum_im += ts * a_row_im[s];
+                            }
+                            b_row_re[r] = scale * sum_re;
+                            b_row_im[r] = scale * sum_im;
                         }
-                        b_row_re[r] = scale * sum_re;
-                        b_row_im[r] = scale * sum_im;
-                    }
-                });
+                    });
             }
             for r in 0..n_r {
                 let col_f = 2 * n_time * r;
                 for t in 0..n_time {
-                    data[2 * t     + col_f] = self.scratch[2 * block + t * n_r + r];
+                    data[2 * t + col_f] = self.scratch[2 * block + t * n_r + r];
                     data[2 * t + 1 + col_f] = self.scratch[3 * block + t * n_r + r];
                 }
             }
@@ -197,10 +229,10 @@ impl QdhtFfiHandle {
 /// `t_matrix` must be non-null and valid for `n_r * n_r` reads for the duration of this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn init_qdht_ffi(
-    t_matrix:    *const c_double,
-    n_r:         size_t,
-    scale_fwd:   c_double,
-    scale_inv:   c_double,
+    t_matrix: *const c_double,
+    n_r: size_t,
+    scale_fwd: c_double,
+    scale_inv: c_double,
     n_time_hint: size_t,
 ) -> *mut QdhtFfiHandle {
     if t_matrix.is_null() || n_r == 0 {
@@ -226,11 +258,13 @@ pub unsafe extern "C" fn init_qdht_ffi(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn free_qdht_ffi(ptr: *mut QdhtFfiHandle) {
     if !ptr.is_null() {
-        unsafe { drop(Box::from_raw(ptr)); }
+        unsafe {
+            drop(Box::from_raw(ptr));
+        }
     }
 }
 
-/// BACKLOG.md S5.2: sets/clears deterministic mode on the per-kernel
+/// docs/dev/BACKLOG.md S5.2: sets/clears deterministic mode on the per-kernel
 /// (`LUNA_USE_RUST_QDHT`) QDHT handle — `on != 0` skips the BLAS-3 `dgemm`
 /// path (`crate::blas::get_blas_api()`) even when `LUNA_QDHT_BLAS` is
 /// enabled, forcing the row-parallel Rayon fallback instead. Mirrors
@@ -244,7 +278,9 @@ pub unsafe extern "C" fn free_qdht_ffi(ptr: *mut QdhtFfiHandle) {
 /// `ptr` must be a valid, non-null pointer from [`init_qdht_ffi`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn qdht_ffi_set_deterministic(ptr: *mut QdhtFfiHandle, on: c_int) -> i32 {
-    if ptr.is_null() { return -1; }
+    if ptr.is_null() {
+        return -1;
+    }
     let h = unsafe { &mut *ptr };
     h.set_deterministic(on != 0);
     0
@@ -264,14 +300,18 @@ pub unsafe extern "C" fn qdht_ffi_set_deterministic(ptr: *mut QdhtFfiHandle, on:
 /// `data` must point to a live, aligned `f64[n_time * n_r]` array.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn qdht_ffi_mul_real(
-    ptr:    *mut QdhtFfiHandle,
-    data:   *mut c_double,
+    ptr: *mut QdhtFfiHandle,
+    data: *mut c_double,
     n_time: size_t,
-    n_r:    size_t,
+    n_r: size_t,
 ) -> c_int {
-    if ptr.is_null() || data.is_null() { return -1; }
+    if ptr.is_null() || data.is_null() {
+        return -1;
+    }
     let handle = unsafe { &mut *ptr };
-    if n_r != handle.n_r { return -1; }
+    if n_r != handle.n_r {
+        return -1;
+    }
     let data_sl = unsafe { std::slice::from_raw_parts_mut(data, n_time * n_r) };
     let scale = handle.scale_fwd;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -279,7 +319,10 @@ pub unsafe extern "C" fn qdht_ffi_mul_real(
     }));
     match result {
         Ok(()) => 0,
-        Err(e) => { eprintln!("qdht_ffi_mul_real: panic: {:?}", e); -2 }
+        Err(e) => {
+            eprintln!("qdht_ffi_mul_real: panic: {:?}", e);
+            -2
+        }
     }
 }
 
@@ -291,14 +334,18 @@ pub unsafe extern "C" fn qdht_ffi_mul_real(
 /// Same as [`qdht_ffi_mul_real`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn qdht_ffi_ldiv_real(
-    ptr:    *mut QdhtFfiHandle,
-    data:   *mut c_double,
+    ptr: *mut QdhtFfiHandle,
+    data: *mut c_double,
     n_time: size_t,
-    n_r:    size_t,
+    n_r: size_t,
 ) -> c_int {
-    if ptr.is_null() || data.is_null() { return -1; }
+    if ptr.is_null() || data.is_null() {
+        return -1;
+    }
     let handle = unsafe { &mut *ptr };
-    if n_r != handle.n_r { return -1; }
+    if n_r != handle.n_r {
+        return -1;
+    }
     let data_sl = unsafe { std::slice::from_raw_parts_mut(data, n_time * n_r) };
     let scale = handle.scale_inv;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -306,7 +353,10 @@ pub unsafe extern "C" fn qdht_ffi_ldiv_real(
     }));
     match result {
         Ok(()) => 0,
-        Err(e) => { eprintln!("qdht_ffi_ldiv_real: panic: {:?}", e); -2 }
+        Err(e) => {
+            eprintln!("qdht_ffi_ldiv_real: panic: {:?}", e);
+            -2
+        }
     }
 }
 
@@ -323,14 +373,18 @@ pub unsafe extern "C" fn qdht_ffi_ldiv_real(
 /// `data` must point to a live `f64[2 * n_time * n_r]` buffer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn qdht_ffi_mul_cplx(
-    ptr:    *mut QdhtFfiHandle,
-    data:   *mut c_double,
+    ptr: *mut QdhtFfiHandle,
+    data: *mut c_double,
     n_time: size_t,
-    n_r:    size_t,
+    n_r: size_t,
 ) -> c_int {
-    if ptr.is_null() || data.is_null() { return -1; }
+    if ptr.is_null() || data.is_null() {
+        return -1;
+    }
     let handle = unsafe { &mut *ptr };
-    if n_r != handle.n_r { return -1; }
+    if n_r != handle.n_r {
+        return -1;
+    }
     let data_sl = unsafe { std::slice::from_raw_parts_mut(data, 2 * n_time * n_r) };
     let scale = handle.scale_fwd;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -338,7 +392,10 @@ pub unsafe extern "C" fn qdht_ffi_mul_cplx(
     }));
     match result {
         Ok(()) => 0,
-        Err(e) => { eprintln!("qdht_ffi_mul_cplx: panic: {:?}", e); -2 }
+        Err(e) => {
+            eprintln!("qdht_ffi_mul_cplx: panic: {:?}", e);
+            -2
+        }
     }
 }
 
@@ -348,14 +405,18 @@ pub unsafe extern "C" fn qdht_ffi_mul_cplx(
 /// Same as [`qdht_ffi_mul_cplx`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn qdht_ffi_ldiv_cplx(
-    ptr:    *mut QdhtFfiHandle,
-    data:   *mut c_double,
+    ptr: *mut QdhtFfiHandle,
+    data: *mut c_double,
     n_time: size_t,
-    n_r:    size_t,
+    n_r: size_t,
 ) -> c_int {
-    if ptr.is_null() || data.is_null() { return -1; }
+    if ptr.is_null() || data.is_null() {
+        return -1;
+    }
     let handle = unsafe { &mut *ptr };
-    if n_r != handle.n_r { return -1; }
+    if n_r != handle.n_r {
+        return -1;
+    }
     let data_sl = unsafe { std::slice::from_raw_parts_mut(data, 2 * n_time * n_r) };
     let scale = handle.scale_inv;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -363,7 +424,10 @@ pub unsafe extern "C" fn qdht_ffi_ldiv_cplx(
     }));
     match result {
         Ok(()) => 0,
-        Err(e) => { eprintln!("qdht_ffi_ldiv_cplx: panic: {:?}", e); -2 }
+        Err(e) => {
+            eprintln!("qdht_ffi_ldiv_cplx: panic: {:?}", e);
+            -2
+        }
     }
 }
 
@@ -375,21 +439,15 @@ pub unsafe extern "C" fn qdht_ffi_ldiv_cplx(
 /// `len` complex numbers (each layout-compatible with `Complex<f64>`, i.e., two contiguous `f64` values),
 /// and that it is not null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn process_field_inplace(
-    data: *mut c_double,
-    len: size_t,
-    factor: c_double,
-) {
+pub unsafe extern "C" fn process_field_inplace(data: *mut c_double, len: size_t, factor: c_double) {
     if data.is_null() {
         return;
     }
-    
+
     // Safety: Complex<f64> is represented as two f64 values (re, im),
     // which matches the binary layout of [f64; 2]. Therefore, we can cast
     // a *mut f64 to *mut Complex<f64> directly.
-    let slice = unsafe {
-        std::slice::from_raw_parts_mut(data as *mut Complex<f64>, len)
-    };
+    let slice = unsafe { std::slice::from_raw_parts_mut(data as *mut Complex<f64>, len) };
     for val in slice.iter_mut() {
         val.re *= factor;
         val.im *= factor;
@@ -427,7 +485,7 @@ pub unsafe extern "C" fn init_ppt_ionization_lut(
     if sample_e.is_null() || sample_rate.is_null() || n_points < 3 {
         return std::ptr::null_mut();
     }
-    let e_slice    = unsafe { std::slice::from_raw_parts(sample_e,    n_points) };
+    let e_slice = unsafe { std::slice::from_raw_parts(sample_e, n_points) };
     let rate_slice = unsafe { std::slice::from_raw_parts(sample_rate, n_points) };
 
     // Catch panics (e.g. non-monotone grid) so we never unwind across the FFI boundary.
@@ -451,11 +509,13 @@ pub unsafe extern "C" fn init_ppt_ionization_lut(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn free_ppt_ionization_lut(ptr: *mut PptIonizationRate) {
     if !ptr.is_null() {
-        unsafe { drop(Box::from_raw(ptr)); }
+        unsafe {
+            drop(Box::from_raw(ptr));
+        }
     }
 }
 
-/// Create an `AdkIonizationRate` (BACKLOG.md Phase I item 3) from Julia's
+/// Create an `AdkIonizationRate` (docs/dev/BACKLOG.md Phase I item 3) from Julia's
 /// own precomputed `IonRateADK` constants (`src/Ionisation.jl:131-174`) —
 /// closed-form, no LUT/spline fitting at all.
 ///
@@ -475,7 +535,13 @@ pub unsafe extern "C" fn init_adk_ionization(
     avfac: c_double,
 ) -> *mut AdkIonizationRate {
     Box::into_raw(Box::new(AdkIonizationRate {
-        occupancy, omega_p, cn_sq, nstar, omega_t_prefac, thr, avfac,
+        occupancy,
+        omega_p,
+        cn_sq,
+        nstar,
+        omega_t_prefac,
+        thr,
+        avfac,
     }))
 }
 
@@ -487,7 +553,9 @@ pub unsafe extern "C" fn init_adk_ionization(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn free_adk_ionization(ptr: *mut AdkIonizationRate) {
     if !ptr.is_null() {
-        unsafe { drop(Box::from_raw(ptr)); }
+        unsafe {
+            drop(Box::from_raw(ptr));
+        }
     }
 }
 
@@ -520,15 +588,15 @@ pub unsafe extern "C" fn init_raman_solver(
     if omega.is_null() || gamma.is_null() || coupling.is_null() || n_osc == 0 {
         return std::ptr::null_mut();
     }
-    let omega_sl    = unsafe { std::slice::from_raw_parts(omega,    n_osc) };
-    let gamma_sl    = unsafe { std::slice::from_raw_parts(gamma,    n_osc) };
+    let omega_sl = unsafe { std::slice::from_raw_parts(omega, n_osc) };
+    let gamma_sl = unsafe { std::slice::from_raw_parts(gamma, n_osc) };
     let coupling_sl = unsafe { std::slice::from_raw_parts(coupling, n_osc) };
 
     let result = std::panic::catch_unwind(|| {
         let oscillators: Vec<RamanOscillator> = (0..n_osc)
             .map(|i| RamanOscillator {
-                omega:    omega_sl[i],
-                gamma:    gamma_sl[i],
+                omega: omega_sl[i],
+                gamma: gamma_sl[i],
                 coupling: coupling_sl[i],
             })
             .collect();
@@ -551,7 +619,9 @@ pub unsafe extern "C" fn init_raman_solver(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn free_raman_solver(ptr: *mut TimeDomainRamanSolver) {
     if !ptr.is_null() {
-        unsafe { drop(Box::from_raw(ptr)); }
+        unsafe {
+            drop(Box::from_raw(ptr));
+        }
     }
 }
 
@@ -586,9 +656,9 @@ pub unsafe extern "C" fn raman_solve(
     if ptr.is_null() || intensity.is_null() || polarization.is_null() {
         return -1;
     }
-    let solver       = unsafe { &mut *ptr };
-    let intensity_sl = unsafe { std::slice::from_raw_parts(intensity,       n_t) };
-    let polar_sl     = unsafe { std::slice::from_raw_parts_mut(polarization, n_t) };
+    let solver = unsafe { &mut *ptr };
+    let intensity_sl = unsafe { std::slice::from_raw_parts(intensity, n_t) };
+    let polar_sl = unsafe { std::slice::from_raw_parts_mut(polarization, n_t) };
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         solver.solve(intensity_sl, polar_sl);
@@ -625,12 +695,12 @@ pub unsafe extern "C" fn raman_solve(
 /// All arguments are plain scalars; this function is always safe to call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn init_zeisberger_neff(
-    unm:           c_double,
-    m_az:          c_double,
-    kind:          c_uint,
+    unm: c_double,
+    m_az: c_double,
+    kind: c_uint,
     wallthickness: c_double,
-    loss_on:       c_uint,
-    loss_scale:    c_double,
+    loss_on: c_uint,
+    loss_scale: c_double,
 ) -> *mut ZeisbergerNeff {
     let result = std::panic::catch_unwind(|| {
         ZeisbergerNeff::new(
@@ -661,7 +731,9 @@ pub unsafe extern "C" fn init_zeisberger_neff(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn free_zeisberger_neff(ptr: *mut ZeisbergerNeff) {
     if !ptr.is_null() {
-        unsafe { drop(Box::from_raw(ptr)); }
+        unsafe {
+            drop(Box::from_raw(ptr));
+        }
     }
 }
 
@@ -694,35 +766,40 @@ pub unsafe extern "C" fn free_zeisberger_neff(ptr: *mut ZeisbergerNeff) {
 /// for the duration of this call.  `neff_re_out` and `neff_im_out` are written.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zeisberger_neff_vector(
-    ptr:         *const ZeisbergerNeff,
-    omegas:      *const c_double,
-    nco_re:      *const c_double,
-    nco_im:      *const c_double,
-    ncl_re:      *const c_double,
-    ncl_im:      *const c_double,
-    radius:      c_double,
+    ptr: *const ZeisbergerNeff,
+    omegas: *const c_double,
+    nco_re: *const c_double,
+    nco_im: *const c_double,
+    ncl_re: *const c_double,
+    ncl_im: *const c_double,
+    radius: c_double,
     neff_re_out: *mut c_double,
     neff_im_out: *mut c_double,
-    n:           size_t,
+    n: size_t,
 ) -> c_int {
-    if ptr.is_null() || omegas.is_null() || nco_re.is_null() || nco_im.is_null()
-        || ncl_re.is_null() || ncl_im.is_null() || neff_re_out.is_null() || neff_im_out.is_null()
+    if ptr.is_null()
+        || omegas.is_null()
+        || nco_re.is_null()
+        || nco_im.is_null()
+        || ncl_re.is_null()
+        || ncl_im.is_null()
+        || neff_re_out.is_null()
+        || neff_im_out.is_null()
     {
         return -1;
     }
-    let handle      = unsafe { &*ptr };
-    let omegas_sl   = unsafe { std::slice::from_raw_parts(omegas,      n) };
-    let nco_re_sl   = unsafe { std::slice::from_raw_parts(nco_re,      n) };
-    let nco_im_sl   = unsafe { std::slice::from_raw_parts(nco_im,      n) };
-    let ncl_re_sl   = unsafe { std::slice::from_raw_parts(ncl_re,      n) };
-    let ncl_im_sl   = unsafe { std::slice::from_raw_parts(ncl_im,      n) };
-    let neff_re_sl  = unsafe { std::slice::from_raw_parts_mut(neff_re_out, n) };
-    let neff_im_sl  = unsafe { std::slice::from_raw_parts_mut(neff_im_out, n) };
+    let handle = unsafe { &*ptr };
+    let omegas_sl = unsafe { std::slice::from_raw_parts(omegas, n) };
+    let nco_re_sl = unsafe { std::slice::from_raw_parts(nco_re, n) };
+    let nco_im_sl = unsafe { std::slice::from_raw_parts(nco_im, n) };
+    let ncl_re_sl = unsafe { std::slice::from_raw_parts(ncl_re, n) };
+    let ncl_im_sl = unsafe { std::slice::from_raw_parts(ncl_im, n) };
+    let neff_re_sl = unsafe { std::slice::from_raw_parts_mut(neff_re_out, n) };
+    let neff_im_sl = unsafe { std::slice::from_raw_parts_mut(neff_im_out, n) };
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         handle.neff_vector(
-            omegas_sl, nco_re_sl, nco_im_sl, ncl_re_sl, ncl_im_sl,
-            radius, neff_re_sl, neff_im_sl,
+            omegas_sl, nco_re_sl, nco_im_sl, ncl_re_sl, ncl_im_sl, radius, neff_re_sl, neff_im_sl,
         );
     }));
     match result {
@@ -753,12 +830,17 @@ pub unsafe extern "C" fn zeisberger_neff_vector(
 /// # Returns
 /// Heap-allocated `*mut MarcatiliNeff`, or `null` on error (null inputs, `n == 0`, panic).
 /// Free with [`free_marcatili_neff`].
+///
+/// # Safety
+/// `nwg_re`/`nwg_im` must be non-null and valid for `n` `f64` reads for the
+/// duration of this call (the data is copied in; the arrays need not
+/// outlive it).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn init_marcatili_neff(
-    nwg_re:  *const c_double,
-    nwg_im:  *const c_double,
-    n:       size_t,
-    model:   c_uint,
+    nwg_re: *const c_double,
+    nwg_im: *const c_double,
+    n: size_t,
+    model: c_uint,
     loss_on: c_uint,
 ) -> *mut MarcatiliNeff {
     if nwg_re.is_null() || nwg_im.is_null() || n == 0 {
@@ -779,10 +861,16 @@ pub unsafe extern "C" fn init_marcatili_neff(
 }
 
 /// Free a [`MarcatiliNeff`] handle.  A null pointer is a safe no-op.
+///
+/// # Safety
+/// `ptr` must be null or a pointer previously returned by
+/// [`init_marcatili_neff`] that has not already been freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn free_marcatili_neff(ptr: *mut MarcatiliNeff) {
     if !ptr.is_null() {
-        unsafe { drop(Box::from_raw(ptr)); }
+        unsafe {
+            drop(Box::from_raw(ptr));
+        }
     }
 }
 
@@ -805,23 +893,26 @@ pub unsafe extern "C" fn free_marcatili_neff(ptr: *mut MarcatiliNeff) {
 /// All pointers must be non-null, aligned, and valid for `n` `f64` elements.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn marcatili_neff_vector(
-    ptr:         *const MarcatiliNeff,
-    nco_re:      *const c_double,
-    nco_im:      *const c_double,
+    ptr: *const MarcatiliNeff,
+    nco_re: *const c_double,
+    nco_im: *const c_double,
     neff_re_out: *mut c_double,
     neff_im_out: *mut c_double,
-    n:           size_t,
+    n: size_t,
 ) -> c_int {
-    if ptr.is_null() || nco_re.is_null() || nco_im.is_null()
-       || neff_re_out.is_null() || neff_im_out.is_null()
+    if ptr.is_null()
+        || nco_re.is_null()
+        || nco_im.is_null()
+        || neff_re_out.is_null()
+        || neff_im_out.is_null()
     {
         return -1;
     }
-    let handle       = unsafe { &*ptr };
-    let nco_re_sl    = unsafe { std::slice::from_raw_parts(nco_re, n) };
-    let nco_im_sl    = unsafe { std::slice::from_raw_parts(nco_im, n) };
-    let neff_re_sl   = unsafe { std::slice::from_raw_parts_mut(neff_re_out, n) };
-    let neff_im_sl   = unsafe { std::slice::from_raw_parts_mut(neff_im_out, n) };
+    let handle = unsafe { &*ptr };
+    let nco_re_sl = unsafe { std::slice::from_raw_parts(nco_re, n) };
+    let nco_im_sl = unsafe { std::slice::from_raw_parts(nco_im, n) };
+    let neff_re_sl = unsafe { std::slice::from_raw_parts_mut(neff_re_out, n) };
+    let neff_im_sl = unsafe { std::slice::from_raw_parts_mut(neff_im_out, n) };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         handle.neff_vector(nco_re_sl, nco_im_sl, neff_re_sl, neff_im_sl);
     }));
@@ -860,9 +951,9 @@ pub unsafe extern "C" fn ppt_ionization_rate_vector(
     if ptr.is_null() || fields.is_null() || rates.is_null() {
         return -1;
     }
-    let lut       = unsafe { &*ptr };
-    let field_sl  = unsafe { std::slice::from_raw_parts(fields, len) };
-    let rates_sl  = unsafe { std::slice::from_raw_parts_mut(rates, len) };
+    let lut = unsafe { &*ptr };
+    let field_sl = unsafe { std::slice::from_raw_parts(fields, len) };
+    let rates_sl = unsafe { std::slice::from_raw_parts_mut(rates, len) };
 
     match lut.rate_vector(field_sl, rates_sl) {
         Ok(()) => 0,
@@ -884,67 +975,107 @@ pub unsafe extern "C" fn ppt_ionization_rate_vector(
 
 /// Interaction-picture RHS: `k_out ← fbar!(y_in, t1, t2)`.
 type FbarFn = unsafe extern "C" fn(
-    t1:       f64,
-    t2:       f64,
-    y_in:     *const Complex<f64>,
-    k_out:    *mut Complex<f64>,
-    n:        usize,
+    t1: f64,
+    t2: f64,
+    y_in: *const Complex<f64>,
+    k_out: *mut Complex<f64>,
+    n: usize,
     userdata: *mut c_void,
 );
 
 /// Forward propagator (in-place): `y_inout ← exp(L*(t2-t1)) * y_inout`.
 type PropFn = unsafe extern "C" fn(
-    t1:       f64,
-    t2:       f64,
-    y_inout:  *mut Complex<f64>,
-    n:        usize,
+    t1: f64,
+    t2: f64,
+    y_inout: *mut Complex<f64>,
+    n: usize,
     userdata: *mut c_void,
 );
 
 /// Result struct returned by [`precon_step_ffi`].  Must match Julia's `PreconStepResult`.
 #[repr(C)]
 pub struct PreconStepResult {
-    pub ok:      i32,
-    pub dt:      f64,
-    pub t:       f64,
-    pub tn:      f64,
-    pub dtn:     f64,
-    pub err:     f64,
+    pub ok: i32,
+    pub dt: f64,
+    pub t: f64,
+    pub tn: f64,
+    pub dtn: f64,
+    pub err: f64,
     pub errlast: f64,
 }
 
 /// Internal scratch buffers for the interaction-picture Dormand-Prince step.
 pub struct PreconStepFfiHandle {
     y_stage: Vec<Complex<f64>>,
-    y_err:   Vec<Complex<f64>>,
-    _n:       usize,
+    y_err: Vec<Complex<f64>>,
+    _n: usize,
 }
 
 // ── Dormand-Prince 5(4) Butcher tableau (matches Julia src/dopri.jl) ──────────
 
 const DP_B: [[f64; 6]; 6] = [
-    [1.0/5.0,          0.0,              0.0,              0.0,             0.0,              0.0],
-    [3.0/40.0,         9.0/40.0,         0.0,              0.0,             0.0,              0.0],
-    [44.0/45.0,       -56.0/15.0,        32.0/9.0,         0.0,             0.0,              0.0],
-    [19372.0/6561.0,  -25360.0/2187.0,   64448.0/6561.0,  -212.0/729.0,    0.0,              0.0],
-    [9017.0/3168.0,   -355.0/33.0,       46732.0/5247.0,   49.0/176.0,    -5103.0/18656.0,   0.0],
-    [35.0/384.0,       0.0,              500.0/1113.0,     125.0/192.0,   -2187.0/6784.0,    11.0/84.0],
+    [1.0 / 5.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    [3.0 / 40.0, 9.0 / 40.0, 0.0, 0.0, 0.0, 0.0],
+    [44.0 / 45.0, -56.0 / 15.0, 32.0 / 9.0, 0.0, 0.0, 0.0],
+    [
+        19372.0 / 6561.0,
+        -25360.0 / 2187.0,
+        64448.0 / 6561.0,
+        -212.0 / 729.0,
+        0.0,
+        0.0,
+    ],
+    [
+        9017.0 / 3168.0,
+        -355.0 / 33.0,
+        46732.0 / 5247.0,
+        49.0 / 176.0,
+        -5103.0 / 18656.0,
+        0.0,
+    ],
+    [
+        35.0 / 384.0,
+        0.0,
+        500.0 / 1113.0,
+        125.0 / 192.0,
+        -2187.0 / 6784.0,
+        11.0 / 84.0,
+    ],
 ];
-const DP_NODES: [f64; 6]  = [1.0/5.0, 3.0/10.0, 4.0/5.0, 8.0/9.0, 1.0, 1.0];
-const DP_B5: [f64; 7]     = [5179.0/57600.0, 0.0, 7571.0/16695.0, 393.0/640.0,
-                              -92097.0/339200.0, 187.0/2100.0, 1.0/40.0];
+const DP_NODES: [f64; 6] = [1.0 / 5.0, 3.0 / 10.0, 4.0 / 5.0, 8.0 / 9.0, 1.0, 1.0];
+const DP_B5: [f64; 7] = [
+    5179.0 / 57600.0,
+    0.0,
+    7571.0 / 16695.0,
+    393.0 / 640.0,
+    -92097.0 / 339200.0,
+    187.0 / 2100.0,
+    1.0 / 40.0,
+];
 // errest = b5 - b4
-const DP_ERREST: [f64; 7] = [-71.0/57600.0, 0.0, 71.0/16695.0, -71.0/1920.0,
-                               17253.0/339200.0, -22.0/525.0, 1.0/40.0];
+const DP_ERREST: [f64; 7] = [
+    -71.0 / 57600.0,
+    0.0,
+    71.0 / 16695.0,
+    -71.0 / 1920.0,
+    17253.0 / 339200.0,
+    -22.0 / 525.0,
+    1.0 / 40.0,
+];
 
 // ── Helper: Julia-compatible weaknorm ─────────────────────────────────────────
 
-fn weaknorm_c64(y_err: &[Complex<f64>], y: &[Complex<f64>], yn: &[Complex<f64>],
-                rtol: f64, atol: f64) -> f64 {
+fn weaknorm_c64(
+    y_err: &[Complex<f64>],
+    y: &[Complex<f64>],
+    yn: &[Complex<f64>],
+    rtol: f64,
+    atol: f64,
+) -> f64 {
     let (mut sy, mut syn, mut syerr) = (0.0f64, 0.0f64, 0.0f64);
     for i in 0..y_err.len() {
-        sy    += y[i].norm_sqr();
-        syn   += yn[i].norm_sqr();
+        sy += y[i].norm_sqr();
+        syn += yn[i].norm_sqr();
         syerr += y_err[i].norm_sqr();
     }
     let errwt = f64::max(f64::max(sy.sqrt(), syn.sqrt()), atol);
@@ -953,13 +1084,18 @@ fn weaknorm_c64(y_err: &[Complex<f64>], y: &[Complex<f64>], yn: &[Complex<f64>],
 
 // ── Helper: Lund PI step controller (Julia's stepcontrolPI! + steplims!) ──────
 
-fn stepcontrol_pi(ok: bool, err: f64, errlast: f64, dt: f64,
-                  safety: f64, max_dt: f64, min_dt: f64)
-    -> (f64, f64, bool)
-{
+fn stepcontrol_pi(
+    ok: bool,
+    err: f64,
+    errlast: f64,
+    dt: f64,
+    safety: f64,
+    max_dt: f64,
+    min_dt: f64,
+) -> (f64, f64, bool) {
     const BETA1: f64 = 3.0 / 5.0 / 5.0;
     const BETA2: f64 = -1.0 / 5.0 / 5.0;
-    const EPS:   f64 = 0.8;
+    const EPS: f64 = 0.8;
     let (mut dtn, errlast_new);
     if ok {
         let el = if errlast == 0.0 { err } else { errlast };
@@ -998,10 +1134,12 @@ fn stepcontrol_pi(ok: bool, err: f64, errlast: f64, dt: f64,
 /// Always safe to call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn init_precon_step_ffi(n: usize) -> *mut PreconStepFfiHandle {
-    if n == 0 { return std::ptr::null_mut(); }
+    if n == 0 {
+        return std::ptr::null_mut();
+    }
     Box::into_raw(Box::new(PreconStepFfiHandle {
         y_stage: vec![Complex::new(0.0, 0.0); n],
-        y_err:   vec![Complex::new(0.0, 0.0); n],
+        y_err: vec![Complex::new(0.0, 0.0); n],
         _n: n,
     }))
 }
@@ -1013,7 +1151,9 @@ pub unsafe extern "C" fn init_precon_step_ffi(n: usize) -> *mut PreconStepFfiHan
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn free_precon_step_ffi(ptr: *mut PreconStepFfiHandle) {
     if !ptr.is_null() {
-        unsafe { drop(Box::from_raw(ptr)); }
+        unsafe {
+            drop(Box::from_raw(ptr));
+        }
     }
 }
 
@@ -1044,69 +1184,78 @@ pub unsafe extern "C" fn free_precon_step_ffi(ptr: *mut PreconStepFfiHandle) {
 /// point to a live `Complex<f64>[n]` buffer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn precon_step_ffi(
-    ptr:         *mut PreconStepFfiHandle,
-    y:           *mut Complex<f64>,
-    yn:          *mut Complex<f64>,
-    k_ptrs:      *const *mut Complex<f64>,
-    n:           usize,
-    t_old:       f64,
-    t_new:       f64,
-    dtn:         f64,
-    rtol:        f64,
-    atol:        f64,
-    safety:      f64,
-    max_dt:      f64,
-    min_dt:      f64,
-    errlast_in:  f64,
-    locextrap:   i32,
-    fbar_fn:     FbarFn,
-    prop_fn:     PropFn,
-    userdata:    *mut c_void,
-    result:      *mut PreconStepResult,
+    ptr: *mut PreconStepFfiHandle,
+    y: *mut Complex<f64>,
+    yn: *mut Complex<f64>,
+    k_ptrs: *const *mut Complex<f64>,
+    n: usize,
+    t_old: f64,
+    t_new: f64,
+    dtn: f64,
+    rtol: f64,
+    atol: f64,
+    safety: f64,
+    max_dt: f64,
+    min_dt: f64,
+    errlast_in: f64,
+    locextrap: i32,
+    fbar_fn: FbarFn,
+    prop_fn: PropFn,
+    userdata: *mut c_void,
+    result: *mut PreconStepResult,
 ) -> i32 {
     if ptr.is_null() || y.is_null() || yn.is_null() || k_ptrs.is_null() || result.is_null() {
         return -1;
     }
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-        precon_step_inner(ptr, y, yn, k_ptrs, n, t_old, t_new, dtn,
-                          rtol, atol, safety, max_dt, min_dt, errlast_in,
-                          locextrap, fbar_fn, prop_fn, userdata, result)
+        precon_step_inner(
+            ptr, y, yn, k_ptrs, n, t_old, t_new, dtn, rtol, atol, safety, max_dt, min_dt,
+            errlast_in, locextrap, fbar_fn, prop_fn, userdata, result,
+        )
     }));
     match res {
         Ok(rc) => rc,
-        Err(e) => { eprintln!("precon_step_ffi: panic: {:?}", e); -2 }
+        Err(e) => {
+            eprintln!("precon_step_ffi: panic: {:?}", e);
+            -2
+        }
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 unsafe fn precon_step_inner(
-    ptr:         *mut PreconStepFfiHandle,
-    y:           *mut Complex<f64>,
-    yn:          *mut Complex<f64>,
-    k_ptrs:      *const *mut Complex<f64>,
-    n:           usize,
-    t_old:       f64,
-    t_new:       f64,
-    dtn:         f64,
-    rtol:        f64,
-    atol:        f64,
-    safety:      f64,
-    max_dt:      f64,
-    min_dt:      f64,
-    errlast_in:  f64,
-    locextrap:   i32,
-    fbar_fn:     FbarFn,
-    prop_fn:     PropFn,
-    userdata:    *mut c_void,
-    result:      *mut PreconStepResult,
+    ptr: *mut PreconStepFfiHandle,
+    y: *mut Complex<f64>,
+    yn: *mut Complex<f64>,
+    k_ptrs: *const *mut Complex<f64>,
+    n: usize,
+    t_old: f64,
+    t_new: f64,
+    dtn: f64,
+    rtol: f64,
+    atol: f64,
+    safety: f64,
+    max_dt: f64,
+    min_dt: f64,
+    errlast_in: f64,
+    locextrap: i32,
+    fbar_fn: FbarFn,
+    prop_fn: PropFn,
+    userdata: *mut c_void,
+    result: *mut PreconStepResult,
 ) -> i32 {
     unsafe {
         let h = &mut *ptr;
 
         // Collect the 7 k pointers
         let ks: [*mut Complex<f64>; 7] = [
-            *k_ptrs.add(0), *k_ptrs.add(1), *k_ptrs.add(2), *k_ptrs.add(3),
-            *k_ptrs.add(4), *k_ptrs.add(5), *k_ptrs.add(6),
+            *k_ptrs.add(0),
+            *k_ptrs.add(1),
+            *k_ptrs.add(2),
+            *k_ptrs.add(3),
+            *k_ptrs.add(4),
+            *k_ptrs.add(5),
+            *k_ptrs.add(6),
         ];
 
         // ── evaluate! ─────────────────────────────────────────────────────────────
@@ -1117,7 +1266,7 @@ unsafe fn precon_step_inner(
         prop_fn(t_old, t_new, ks[0], n, userdata);
 
         let dt = dtn;
-        let t  = t_new;     // s.t = s.tn after evaluate!
+        let t = t_new; // s.t = s.tn after evaluate!
 
         for ii in 0..6usize {
             // s.yn .= s.y  (use y_stage as scratch)
@@ -1139,7 +1288,14 @@ unsafe fn precon_step_inner(
             }
 
             // s.fbar!(s.ks[ii+1], s.yn, s.t, s.t + nodes[ii]*dt)
-            fbar_fn(t, t + DP_NODES[ii] * dt, h.y_stage.as_ptr(), ks[ii + 1], n, userdata);
+            fbar_fn(
+                t,
+                t + DP_NODES[ii] * dt,
+                h.y_stage.as_ptr(),
+                ks[ii + 1],
+                n,
+                userdata,
+            );
         }
 
         // ── 5th-order yn (locextrap) ──────────────────────────────────────────────
@@ -1159,7 +1315,9 @@ unsafe fn precon_step_inner(
         }
 
         // ── error estimate ────────────────────────────────────────────────────────
-        for i in 0..n { h.y_err[i] = Complex::new(0.0, 0.0); }
+        for i in 0..n {
+            h.y_err[i] = Complex::new(0.0, 0.0);
+        }
         for ii in 0..7usize {
             let e = DP_ERREST[ii];
             if e != 0.0 {
@@ -1172,10 +1330,10 @@ unsafe fn precon_step_inner(
             }
         }
 
-        let y_sl  = std::slice::from_raw_parts(y,  n);
+        let y_sl = std::slice::from_raw_parts(y, n);
         let yn_sl = std::slice::from_raw_parts(yn, n);
-        let err   = weaknorm_c64(&h.y_err, y_sl, yn_sl, rtol, atol);
-        let ok    = err <= 1.0;
+        let err = weaknorm_c64(&h.y_err, y_sl, yn_sl, rtol, atol);
+        let ok = err <= 1.0;
 
         // ── Lund PI step control ──────────────────────────────────────────────────
         let (dtn_new, errlast_new, ok_final) =
@@ -1185,21 +1343,35 @@ unsafe fn precon_step_inner(
         let tn_new;
         if ok_final {
             tn_new = t + dt;
-            std::ptr::copy_nonoverlapping(ks[6], ks[0], n);    // k1 ← k7 (FSAL)
-            prop_fn(t, tn_new, yn, n, userdata);                // propagate yn forward
+            std::ptr::copy_nonoverlapping(ks[6], ks[0], n); // k1 ← k7 (FSAL)
+            prop_fn(t, tn_new, yn, n, userdata); // propagate yn forward
         } else {
-            std::ptr::copy_nonoverlapping(y, yn, n);            // restore yn = y
+            std::ptr::copy_nonoverlapping(y, yn, n); // restore yn = y
             tn_new = t_new;
-            prop_fn(t, tn_new, yn, n, userdata);                // no-op (t == tn_new)
+            prop_fn(t, tn_new, yn, n, userdata); // no-op (t == tn_new)
         }
 
         *result = PreconStepResult {
-            ok: ok_final as i32, dt, t, tn: tn_new, dtn: dtn_new, err, errlast: errlast_new,
+            ok: ok_final as i32,
+            dt,
+            t,
+            tn: tn_new,
+            dtn: dtn_new,
+            err,
+            errlast: errlast_new,
         };
         0
     }
 }
 
+/// Load a BLAS shared library from `path_ptr` and install it as the
+/// process-global BLAS API (populates the `OnceLock` used by the optional
+/// QDHT BLAS-3 fast path). Returns 0 on success, `-1` on null/invalid
+/// path or load failure.
+///
+/// # Safety
+/// `path_ptr` must be non-null and point to a valid, NUL-terminated C
+/// string for the duration of this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn init_blas_path(path_ptr: *const libc::c_char) -> c_int {
     if path_ptr.is_null() {

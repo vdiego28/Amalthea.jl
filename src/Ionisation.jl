@@ -14,7 +14,7 @@ import Printf: @sprintf
 #
 # The PPT ionization rate can be evaluated by the Rust backend (using the same
 # cubic B-spline LUT as the Julia path) when LUNA_USE_RUST_IONISATION=1, or
-# (since Phase C, BACKLOG.md) whenever the resident native stepper is enabled
+# (since Phase C, docs/dev/BACKLOG.md) whenever the resident native stepper is enabled
 # (LUNA_USE_RUST_NATIVE, default "1" since Phase 8) — the native plasma wiring
 # requires this handle to exist for the default field-resolved workload to
 # actually run natively. The opaque-handle pattern established here is the
@@ -75,7 +75,7 @@ The native stepper's plasma wiring (`RustNativeStepper`'s `native_set_plasma_par
 `prop_capillary` call (`plasma = !envelope` is the default) throws
 `NativeIneligible` and silently falls back to the Julia stepper — the native
 port's headline speedup would then never apply to the fork's own bread-and-butter
-use case (REVIEW.md §3.2 / BACKLOG.md Phase C.1). Decoupling this from the
+use case (REVIEW.md §3.2 / docs/dev/BACKLOG.md Phase C.1). Decoupling this from the
 `LUNA_USE_RUST_IONISATION` opt-in toggle is safe only because the Rust and
 Julia paths now agree above `Emax` too (Phase B.2's clamp parity) — before
 that fix, silently switching the default ionisation backend would have
@@ -117,7 +117,7 @@ end
 
 """
 Mutable wrapper around a heap-allocated `AdkIonizationRate` in the Rust shared
-library (BACKLOG.md Phase I item 3). A GC finalizer calls `free_adk_ionization`
+library (docs/dev/BACKLOG.md Phase I item 3). A GC finalizer calls `free_adk_ionization`
 when the handle is no longer reachable.
 """
 mutable struct RustAdkHandle
@@ -211,7 +211,7 @@ function IonRateADK(ionpot::Number; occupancy=2, threshold=true, cycle_average=f
         avfac = 1.0
     end
 
-    # BACKLOG.md Phase I item 3: ADK is closed-form (no LUT), so the Rust
+    # docs/dev/BACKLOG.md Phase I item 3: ADK is closed-form (no LUT), so the Rust
     # handle just carries these already-computed constants — see
     # `_make_rust_adk_handle`/`AdkIonizationRate` (luna-rust/src/ionization.rs).
     rust_handle = _make_rust_adk_handle(occupancy, ω_p, cn_sq, nstar, ω_t_prefac, thr, avfac)

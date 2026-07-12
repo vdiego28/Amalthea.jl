@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use luna_rust::raman::{RamanOscillator, TimeDomainRamanSolver};
 
 fn bench_raman(c: &mut Criterion) {
@@ -9,21 +9,17 @@ fn bench_raman(c: &mut Criterion) {
         coupling: 0.1,
     };
     let dt = 1e-14;
-    
+
     for &nt in &[1000, 4000, 16000] {
         let mut solver = TimeDomainRamanSolver::new(vec![osc], dt);
         let intensity = vec![1e15; nt];
         let mut raman_pol = vec![0.0; nt];
-        
-        group.bench_with_input(
-            BenchmarkId::from_parameter(nt),
-            &nt,
-            |b, _| {
-                b.iter(|| {
-                    solver.solve(&intensity, &mut raman_pol);
-                });
-            },
-        );
+
+        group.bench_with_input(BenchmarkId::from_parameter(nt), &nt, |b, _| {
+            b.iter(|| {
+                solver.solve(&intensity, &mut raman_pol);
+            });
+        });
     }
     group.finish();
 }

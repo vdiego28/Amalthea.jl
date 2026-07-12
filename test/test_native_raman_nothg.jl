@@ -15,7 +15,7 @@ using TestItems
     else
         # `thg=false` Raman (`sqr!`'s `1/2·|hilbert(E)|²` branch,
         # Nonlinear.jl:342-349) needs its own resident c2c FFT plan since
-        # RealGrid otherwise has none — BACKLOG.md Phase F item 1. Wired into
+        # RealGrid otherwise has none — docs/dev/BACKLOG.md Phase F item 1. Wired into
         # all three geometries that already carry `thg=true` Raman
         # (mode-averaged, radial, modal — Phase D.4). `Interface.makeresponse`
         # couples Kerr's and Raman's `thg` to the same flag, so a

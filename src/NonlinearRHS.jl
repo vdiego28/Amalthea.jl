@@ -37,7 +37,7 @@ mutable struct RustQdhtHandle
 end
 
 function _init_rust_qdht_blas()
-    # Default OFF (opt-in, not opt-out): fixed 2026-07-09 (BACKLOG.md S1 item
+    # Default OFF (opt-in, not opt-out): fixed 2026-07-09 (docs/dev/BACKLOG.md S1 item
     # 5) — `blas.rs` now binds the ILP64 Fortran `dgemm_64_` entry point
     # directly (the same symbol/calling-convention Julia's own
     # `LinearAlgebra.BLAS.gemm!` resolves to), replacing the broken
@@ -72,7 +72,7 @@ function _make_rust_qdht_handle(HT, n_time::Int)
     end
     ptr == C_NULL && (@warn "init_qdht_ffi returned null; QDHT stays on Julia"; return nothing)
     h = RustQdhtHandle(ptr)
-    # BACKLOG.md S5.2: this is the only call site that ever populates the
+    # docs/dev/BACKLOG.md S5.2: this is the only call site that ever populates the
     # process-global `BLAS_API` (via `_init_rust_qdht_blas` above), so it's
     # also where `deterministic` must be applied to actually take effect.
     ccall((:qdht_ffi_set_deterministic, _LIBLUNA_RUST_RHS), Cint,
@@ -584,7 +584,7 @@ end
 Extract the `pre` array captured by a mode-averaged `norm!` closure
 (`norm_mode_average`/`norm_mode_average_gnlse` below). Centralizes what was
 an inline `getfield(norm!, :pre)` reflective probe in `RK45.jl`'s native
-stepper construction (BACKLOG.md S4 item 3).
+stepper construction (docs/dev/BACKLOG.md S4 item 3).
 """
 norm_pre(norm!) = getfield(norm!, :pre)
 
@@ -595,7 +595,7 @@ Extract the `βfun!` closure captured by a `norm_mode_average` `norm!`
 closure, or `nothing` if this `norm!` doesn't capture one (e.g.
 `norm_mode_average_gnlse`, which has no shock/dispersion correction term).
 Centralizes an inline `hasfield`/`getfield` reflective probe in `RK45.jl`
-(BACKLOG.md S4 item 3).
+(docs/dev/BACKLOG.md S4 item 3).
 """
 norm_βfun(norm!) = hasfield(typeof(norm!), :βfun!) ? getfield(norm!, :βfun!) : nothing
 
@@ -940,7 +940,7 @@ function norm_free(grid, xygrid, nfun)
     end
 end
 
-# `ZDepNormFree` mirrors `LinearOps.ZDepLinopFree` (BACKLOG.md Phase D.5) —
+# `ZDepNormFree` mirrors `LinearOps.ZDepLinopFree` (docs/dev/BACKLOG.md Phase D.5) —
 # see that struct's doc for the shared design rationale. `norm!` behaves
 # identically everywhere an ordinary z-dependent normfun is used (only
 # `RustNativeStepper` inspects the wrapper type); `gamma` is the metadata
@@ -958,7 +958,7 @@ end
     norm_free_gradient(grid, xygrid, gas, densf)
 
 Convenience constructor (mirrors [`norm_free`](@ref)) for a free-space
-two-point pressure-gradient gas cell — BACKLOG.md Phase D.5. `densf(z)`
+two-point pressure-gradient gas cell — docs/dev/BACKLOG.md Phase D.5. `densf(z)`
 should be the *same* density function
 [`LinearOps.make_linop_free_gradient`](@ref) returns, so the linop and
 nonlinear-norm paths share an identical density profile.

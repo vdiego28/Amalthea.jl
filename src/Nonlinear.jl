@@ -107,7 +107,7 @@ Returns `0.0` if no response has a `γ3`-named field at all (e.g. `resp`
 contains only Raman/plasma responses).
 
 Centralizes what was 4 duplicated inline reflective loops across
-`RK45.jl`'s native-stepper construction paths (BACKLOG.md S4 item 3;
+`RK45.jl`'s native-stepper construction paths (docs/dev/BACKLOG.md S4 item 3;
 suggestion 8's "explicit accessor seams"). Note this does *not* distinguish
 `Kerr_field`/`Kerr_env` (a single-field closure) from
 `Kerr_field_nothg`/`Kerr_env_thg` (which also capture a `γ3` field, plus one

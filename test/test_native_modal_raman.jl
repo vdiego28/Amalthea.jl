@@ -13,7 +13,7 @@ using TestItems
         @test_skip "Rust library not found"
     else
         # RealGrid, constant-radius Marcatili HE11 mode (npol=1), Kerr + Raman
-        # (N2 vibrational SDO, thg=true) — BACKLOG.md Phase D.4's modal-Raman
+        # (N2 vibrational SDO, thg=true) — docs/dev/BACKLOG.md Phase D.4's modal-Raman
         # follow-up to test_native_modal.jl's Phase 5 Kerr-only gate. Single
         # mode (not two, unlike test_native_modal.jl) keeps the Raman-specific
         # per-node ADE-solve addition isolated from the to_space!

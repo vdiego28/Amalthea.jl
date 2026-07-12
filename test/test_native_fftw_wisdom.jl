@@ -32,7 +32,7 @@ using TestItems
         wisdom_path = joinpath(Luna.Utils.cachedir(),
                                "native_fftw_wisdom_$(Luna.Utils.FFTWthreads())threads")
 
-        # BACKLOG.md S1 item 1 / docs/native-port/PLAN_FFTW_WISDOM_FIX.md.
+        # docs/dev/BACKLOG.md S1 item 1 / docs/dev/native-port/PLAN_FFTW_WISDOM_FIX.md.
         # T1: default (env var unset) must not touch the on-disk wisdom file
         # at all — this is the whole point of making persistence opt-in.
         @testset "T1: default is off, no disk writes" begin

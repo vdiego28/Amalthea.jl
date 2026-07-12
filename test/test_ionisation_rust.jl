@@ -30,7 +30,7 @@ using TestItems
     # We build the LUT manually so the test is hermetic (no disk caching needed)
     # and reproduces what IonRatePPTAccel(material, λ0) would do internally.
     #
-    # Since Phase C (BACKLOG.md), the Rust ionisation LUT is built whenever
+    # Since Phase C (docs/dev/BACKLOG.md), the Rust ionisation LUT is built whenever
     # EITHER `LUNA_USE_RUST_IONISATION=1` OR the native stepper is enabled
     # (`LUNA_USE_RUST_NATIVE` defaults to `"1"` since Phase 8) — the native
     # plasma wiring needs this handle to exist for the fork's default
@@ -123,7 +123,7 @@ using TestItems
     # ── above-cutoff: Rust's own PptIonizationRate::rate clamps to rate(Emax),
     # matching Julia's IonRatePPTAccel, instead of erroring and silently
     # falling back to the Julia path (the fallback-and-warn-spam bug fixed in
-    # BACKLOG.md Phase B.2). Assert both the value and that no fallback
+    # docs/dev/BACKLOG.md Phase B.2). Assert both the value and that no fallback
     # warning fires (Logging.with_logger + a custom logger that records
     # whether any @warn was emitted).
     @testset "Above-cutoff clamps (no error, no fallback)" begin

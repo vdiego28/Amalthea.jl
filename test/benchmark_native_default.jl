@@ -1,4 +1,4 @@
-# BACKLOG.md Phase G.3 — "CI benchmark job: track the Phase C benchmark
+# docs/dev/BACKLOG.md Phase G.3 — "CI benchmark job: track the Phase C benchmark
 # over time so native-path regressions (like §3.2) show up as perf cliffs,
 # not silence."
 #

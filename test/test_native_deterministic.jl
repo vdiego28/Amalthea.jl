@@ -13,7 +13,7 @@ using TestItems
         @test_skip "Rust library not found"
     else
         # Radial geometry (resident QDHT) — the only backend surface
-        # `LUNA_NATIVE_DETERMINISTIC` currently affects (BACKLOG.md S5.2):
+        # `LUNA_NATIVE_DETERMINISTIC` currently affects (docs/dev/BACKLOG.md S5.2):
         # it forces the native path's QDHT to skip the opt-in BLAS-3
         # `dgemm` path and always use the row-parallel Rayon fallback.
         #
@@ -78,7 +78,7 @@ using TestItems
         # the per-kernel path — the only call site that ever does. Once
         # set, it stays set for the rest of this process, which is exactly
         # the scenario `deterministic` must guard against for the native
-        # path (BACKLOG.md S1.6/S1 item 1's "process-global state
+        # path (docs/dev/BACKLOG.md S1.6/S1 item 1's "process-global state
         # contaminates later constructions" class of bug).
         h = withenv("LUNA_USE_RUST_QDHT" => "1", "LUNA_QDHT_BLAS" => "1") do
             with_logger(NullLogger()) do

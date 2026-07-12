@@ -12,7 +12,7 @@ using TestItems
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
-        # BACKLOG.md Phase E.4: npol=2 (`components=:xy`) — `Modes.ToSpace`
+        # docs/dev/BACKLOG.md Phase E.4: npol=2 (`components=:xy`) — `Modes.ToSpace`
         # resolves each mode into both its x and y real-space components
         # (`Ems[m,:] = Exy(mode,xs)[1:2]`), and Kerr couples them
         # (`KerrVector!`, src/Nonlinear.jl:85-94: `out[:,1] += fac*(Ex²+Ey²)*Ex`,

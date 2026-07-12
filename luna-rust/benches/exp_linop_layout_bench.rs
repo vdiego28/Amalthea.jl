@@ -1,4 +1,4 @@
-// BACKLOG.md S1 item 6 (SUGGESTIONS.md item 3b) — timeboxed spike only.
+// docs/dev/BACKLOG.md S1 item 6 (SUGGESTIONS.md item 3b) — timeboxed spike only.
 // Compares AoS (interleaved Complex<f64>, today's native.rs layout) against
 // SoA (separate re/im Vec<f64>) for the two exp-linop hot-loop shapes:
 // apply_prop_cached's `y[i] *= factors[i]` and weaknorm_c64's norm_sqr
@@ -6,7 +6,7 @@
 // plan rewrite (which would make SoA the resident layout end-to-end) if SoA
 // beats AoS by >1.3x on both shapes; otherwise record the negative result
 // and close.
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use num_complex::Complex;
 use std::hint::black_box;
 
@@ -63,7 +63,12 @@ fn bench_apply_prop(c: &mut Criterion) {
             let mut yr: Vec<f64> = y0.iter().map(|c| c.re).collect();
             let mut yi: Vec<f64> = y0.iter().map(|c| c.im).collect();
             b.iter(|| {
-                apply_prop_soa(black_box(&mut yr), black_box(&mut yi), black_box(&fr), black_box(&fi));
+                apply_prop_soa(
+                    black_box(&mut yr),
+                    black_box(&mut yi),
+                    black_box(&fr),
+                    black_box(&fi),
+                );
                 black_box((&yr, &yi));
             });
         });

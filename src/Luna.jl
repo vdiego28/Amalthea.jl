@@ -91,7 +91,7 @@ addvariable! = Scans.addvariable!
 Small `NamedTuple` report of the currently-resolved [`Config.BackendConfig`](@ref)
 plus the concrete stepper type used by the most recent `RK45.solve_precon`
 call in this session (`nothing` if none has run yet). Public replacement
-for the `RK45._LAST_STEPPER_TYPE` test-only hook (BACKLOG.md S4 item 1);
+for the `RK45._LAST_STEPPER_TYPE` test-only hook (docs/dev/BACKLOG.md S4 item 1);
 `_LAST_STEPPER_TYPE` itself is unchanged/still updated internally — this
 just gives external callers (and interactive sessions) a documented way to
 ask "what backend is actually active, and what did it just use" without

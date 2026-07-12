@@ -5,7 +5,7 @@ using TestItems
     using Luna
     import Logging: with_logger, NullLogger
 
-    # BACKLOG.md S4 item 1 (suggestion 6) — Config.BackendConfig/backend_config()
+    # docs/dev/BACKLOG.md S4 item 1 (suggestion 6) — Config.BackendConfig/backend_config()
     # and Luna.backend_report() were implemented but never gated by a test,
     # the one piece of S4's own stated gate ("a backend_report() test asserting
     # RustNativeStepper for default prop_capillary and Julia stepper under

@@ -14,7 +14,7 @@ using TestItems
         @test_skip "Rust library not found"
     else
         # RealGrid + Hankel QDHT, Kerr + Raman (N2 vibrational SDO, thg=true,
-        # no plasma) — BACKLOG.md Phase D.4's radial-Raman follow-up. Same
+        # no plasma) — docs/dev/BACKLOG.md Phase D.4's radial-Raman follow-up. Same
         # geometry as test_native_radial_plasma.jl; :N2 vibration=true,
         # rotation=false gives a single-SDO CombinedRamanResponse eligible
         # for the native path (same criterion as test_native_raman.jl's

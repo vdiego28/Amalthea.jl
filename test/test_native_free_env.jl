@@ -12,7 +12,7 @@ using TestItems
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
-        # EnvGrid + joint 3-D c2c FFT, Kerr_env only — BACKLOG.md Phase D.3 /
+        # EnvGrid + joint 3-D c2c FFT, Kerr_env only — docs/dev/BACKLOG.md Phase D.3 /
         # MATH.md §3.4's deferred EnvGrid-free-space follow-up. Same geometry
         # as test_native_free.jl (Phase 6, RealGrid), but EnvGrid + Kerr_env
         # instead of RealGrid + Kerr_field. Nx != Ny deliberately, same

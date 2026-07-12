@@ -12,7 +12,7 @@ using TestItems
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
-        # BACKLOG.md Phase E.1: general Marcatili mode orders. Phase 5/D.4
+        # docs/dev/BACKLOG.md Phase E.1: general Marcatili mode orders. Phase 5/D.4
         # only supported `kind=:HE, n=1` (the `J0` special case); this test
         # exercises `:HE,n=2` (needs `J1`), `:TE` and `:TM` (both `J1`, but
         # with the *other* angular projection — `(0,1)`/`(1,0)` vs `:HE`'s

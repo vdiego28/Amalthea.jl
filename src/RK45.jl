@@ -34,12 +34,12 @@ hook only — `_NATIVE_FALLBACK_WARNED` alone can't answer "did *this* call use
 the native path", since it's a one-time-per-session flag that stays `true`
 forever after the first fallback anywhere in a test run (e.g. a deliberate
 NativeIneligible test earlier in the same session). See
-`test/test_native_default_workload.jl` (BACKLOG.md Phase C.2).
+`test/test_native_default_workload.jl` (docs/dev/BACKLOG.md Phase C.2).
 """
 const _LAST_STEPPER_TYPE = Ref{Any}(nothing)
 
 """
-BACKLOG.md S1 item 1: on-disk FFTW planner-wisdom persistence for the native
+docs/dev/BACKLOG.md S1 item 1: on-disk FFTW planner-wisdom persistence for the native
 resident stepper is opt-in, default OFF. Default-off avoids two problems: (a)
 paying disk I/O + FFTW's planner-lock on every `RustNativeStepper`
 construction (relevant for parameter scans that build many short-lived
@@ -49,7 +49,7 @@ near-cancellation sensitivity (see the Phase 2 gotcha in CLAUDE.md) — vary
 with whatever the on-disk file happens to contain from a prior run. Set
 `LUNA_NATIVE_FFTW_WISDOM=1` to restore persistence (import + export) for
 workloads where the accumulated wisdom is worth the tradeoff. See
-`docs/native-port/PLAN_FFTW_WISDOM_FIX.md` for the full analysis.
+`docs/dev/native-port/PLAN_FFTW_WISDOM_FIX.md` for the full analysis.
 """
 _native_wisdom_enabled() = Luna.Config.backend_config().native_wisdom
 
@@ -750,7 +750,7 @@ end
 
 Thrown by `RustNativeStepper`'s constructor when the requested geometry/
 config is outside the native port's current scope (any of the per-phase
-narrowing restrictions documented in `docs/native-port/MATH.md` — EnvGrid
+narrowing restrictions documented in `docs/dev/native-port/MATH.md` — EnvGrid
 variants, `full=true` modal, `thg=false` Raman, an unsupported/ineligible
 extra response such as plasma or Raman on a Kerr-only geometry, ...).
 
@@ -787,7 +787,7 @@ pointer, a length mismatch, a stale handle — and must not be silently
 swallowed as ineligibility, see `NativeIneligible`'s own docstring).
 
 Centralizes what was 27 duplicated `rc == 0 || error(...)`/
-`rc == 0 || throw(NativeIneligible(...))` call sites (BACKLOG.md S4 item 2;
+`rc == 0 || throw(NativeIneligible(...))` call sites (docs/dev/BACKLOG.md S4 item 2;
 suggestion 7's "FFI error enum"). The Rust side's return codes are still a
 plain `0 = success` convention today — the ineligible-vs-bug classification
 is inherently a call-site policy decision (the same numeric nonzero code
@@ -919,7 +919,7 @@ mutable struct RustNativeStepper{T<:AbstractArray}
     # stored `f!`/`irf`), so Julia's GC — which runs concurrently with a
     # blocking `ccall`, having no visibility into native Rust threads still
     # holding the raw pointer — could finalize (free) the handle mid-`solve`,
-    # causing a use-after-free. Confirmed as the root cause of BACKLOG.md S2
+    # causing a use-after-free. Confirmed as the root cause of docs/dev/BACKLOG.md S2
     # Phase 3's reverted heap-corruption bug: reproduced the crash (a rayon
     # worker segfaulting inside `PptIonizationRate::rate`'s `Vec` access),
     # confirmed `evaluate()`'s binary search/`get_unchecked` is correct and
@@ -944,7 +944,7 @@ True iff the experimental GPU-resident stepper (`CudaNativeSim`,
 (non-mixture) density, no shot noise, exactly one plain Kerr response, and
 at most one plasma response using PPT ionisation (`IonRatePPTAccel` —
 `CudaNativeSim::set_plasma_params_adk` still returns -1, ADK is not
-implemented on the GPU path yet; BACKLOG.md S3 item 2). No other response
+implemented on the GPU path yet; docs/dev/BACKLOG.md S3 item 2). No other response
 kind (e.g. Raman) is implemented on `CudaNativeSim` — every `set_*_params`
 beyond `set_mode_avg_params`/`set_plasma_params` returns -1. Also requires
 the `LUNA_USE_RUST_CUDA_NATIVE=1` opt-in; Rust's `init_cuda_native_sim`
@@ -1016,7 +1016,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # Gas mixtures (`MarcatiliMode(a, (gas1,gas2,...), (p1,p2,...))`) give
         # `densityfun(z)` a per-species Vector return type and a nested
         # tuple-of-tuples `resp` (one response tuple per component). Since
-        # Phase F item 4 (BACKLOG.md) the mode-averaged path handles this
+        # Phase F item 4 (docs/dev/BACKLOG.md) the mode-averaged path handles this
         # (Kerr-only — see the `is_mode_avg` block below); radial/modal/free
         # still expect a scalar density and a flat response tuple, and
         # nothing upstream rejects a mixture for them, so a Vector density
@@ -1033,7 +1033,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         else
             dens0 isa Real || throw(NativeIneligible("densityfun(z) returned " *
                   "a non-scalar value — gas mixtures are only supported by the native " *
-                  "mode-averaged/radial paths (BACKLOG.md Phase F item 4 / Phase I item 4); " *
+                  "mode-averaged/radial paths (docs/dev/BACKLOG.md Phase F item 4 / Phase I item 4); " *
                   "modal/free-space mixtures are not yet supported."))
         end
 
@@ -1051,7 +1051,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     # FFTW_ESTIMATE = 1 << 6 = 64
     lib_path = FFTW.FFTW_jll.libfftw3
 
-    # BACKLOG.md S1 item 1: best-effort planner wisdom, dedicated to the
+    # docs/dev/BACKLOG.md S1 item 1: best-effort planner wisdom, dedicated to the
     # native path (a separate file from Utils.loadFFTwisdom's own
     # `FFTWcache_*threads`, not shared — avoids any concurrent-access
     # interaction with Julia's own `mkpidlock`-guarded load/save). A missing
@@ -1081,7 +1081,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
           native_wisdom_path)
     check_ffi(rc, "native_set_fftw_plans")
 
-    # BACKLOG.md S2 item 1: rayon thread count for later-phase parallel RHS
+    # docs/dev/BACKLOG.md S2 item 1: rayon thread count for later-phase parallel RHS
     # seams. Defaults to `Threads.nthreads()` (Julia's own thread count) —
     # automatic, not something users set separately — but can be overridden
     # via `native_threads` (a Rust-side-only rayon thread count, independent
@@ -1092,7 +1092,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
           (Ptr{Cvoid}, Csize_t), handle.ptr, native_threads)
     check_ffi(rc, "native_set_threads")
 
-    # BACKLOG.md S5.2: deterministic mode. `LUNA_NATIVE_DETERMINISTIC=1`
+    # docs/dev/BACKLOG.md S5.2: deterministic mode. `LUNA_NATIVE_DETERMINISTIC=1`
     # forces the radial-geometry QDHT to skip the BLAS-3 `dgemm` path
     # (`LUNA_QDHT_BLAS`) even if it's enabled, using the row-parallel Rayon
     # fallback instead. The native path is already run-to-run deterministic
@@ -1204,7 +1204,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         end
 
         # Wire plasma if present and a Rust ionization handle is available.
-        # Since Phase C (BACKLOG.md), `IonRatePPTAccel` builds this handle
+        # Since Phase C (docs/dev/BACKLOG.md), `IonRatePPTAccel` builds this handle
         # whenever the Rust library is present and EITHER
         # `LUNA_USE_RUST_IONISATION=1` OR the native stepper itself is
         # enabled (`LUNA_USE_RUST_NATIVE` defaults to `"1"` since Phase 8) —
@@ -1269,7 +1269,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # whole propagation) or, for a zdep config, is no better/worse than
         # this same latent frozen-at-z=0 approximation already existed for
         # any Raman response before Phase F.2 (z-dependent Raman is not
-        # wired at all — out of scope, see BACKLOG.md Phase F item 3).
+        # wired at all — out of scope, see docs/dev/BACKLOG.md Phase F item 3).
         # `RamanPolarEnv` (mode-averaged EnvGrid — `rhs_mode_avg_env`'s new
         # Raman step) is accepted alongside `RamanPolarField`; envelope
         # Raman's intensity (`sqr!(R::RamanPolarEnv,E) = 1/2·|E|²`,
@@ -1286,7 +1286,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                     # Phase I item 2: `ramanmodel=:SiO2` (only reachable via
                     # `prop_gnlse`, mode-averaged EnvGrid, RamanPolarEnv) —
                     # a Gaussian-damped multi-line response with no finite-SDO
-                    # decomposition (see BACKLOG.md), so it needs the resident
+                    # decomposition (see docs/dev/BACKLOG.md), so it needs the resident
                     # FFT-convolution kernel instead of the ADE solver below.
                     raman_density = f!.densityfun(0.0)
                     rc = ccall((:native_set_raman_fft_params, _LIBLUNA_RUST_RK45), Cint,
@@ -1342,7 +1342,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
 
     # Set parameters for the z-dependent linop (Phase 7) — mode-averaged,
     # graded-core constant-radius MarcatiliMode only. See MATH.md §3.5 and
-    # docs/native-port/BETA1_ANALYTIC.md. dens(pressure) is TRANSFERRED
+    # docs/dev/native-port/BETA1_ANALYTIC.md. dens(pressure) is TRANSFERRED
     # exactly (PhysData.densityspline's own (x,y,D)), not re-fit — re-fitting
     # a fresh spline through sampled dens values doesn't converge (real-gas
     # density via CoolProp, composed with dspl already being a spline
@@ -1382,11 +1382,11 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     end
 
     # Set parameters if radial (TransRadial) — Phase 3 gate: scalar Kerr only,
-    # RealGrid or EnvGrid (EnvGrid added Phase D.1, BACKLOG.md — `rhs_radial_env`
+    # RealGrid or EnvGrid (EnvGrid added Phase D.1, docs/dev/BACKLOG.md — `rhs_radial_env`
     # in native.rs, dispatched on `sim.is_real` exactly like mode-averaged's
-    # real/env split). Phase D.2 (BACKLOG.md) adds plasma alongside Kerr
+    # real/env split). Phase D.2 (docs/dev/BACKLOG.md) adds plasma alongside Kerr
     # (`apply_plasma_radial` in native.rs, RealGrid only — Julia has no
-    # EnvGrid plasma either). See docs/native-port/MATH.md §3.2 for the
+    # EnvGrid plasma either). See docs/dev/native-port/MATH.md §3.2 for the
     # design (precomputed normalization array M, resident QdhtFfiHandle reused
     # directly); `M`'s length (`n_spec`) and the FFI's internal buffer sizing
     # both already generalize to either grid type without further changes here.
@@ -1407,7 +1407,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         is_mixture = density isa AbstractVector
 
         if is_mixture
-            # BACKLOG.md Phase I item 4: same reasoning as the mode-averaged
+            # docs/dev/BACKLOG.md Phase I item 4: same reasoning as the mode-averaged
             # mixture branch above — Kerr is linear in density·γ3, so it
             # collapses to one scalar kerr_fac regardless of geometry;
             # plasma/Raman mixtures are not a simple sum, so they're
@@ -1429,7 +1429,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             end
         else
             γ3 = Luna.Nonlinear.kerr_γ3(f!.resp)
-            # Phase D.2 allows Kerr + a plasma response; Phase D.4 (BACKLOG.md)
+            # Phase D.2 allows Kerr + a plasma response; Phase D.4 (docs/dev/BACKLOG.md)
             # adds Raman (`RamanPolarField`, RealGrid, either `thg` value since
             # Phase F.1 — same eligibility criteria as the mode-averaged Raman
             # wiring below: an all-SDO `CombinedRamanResponse` with
@@ -1490,7 +1490,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
 
         # Wire plasma if present and a Rust ionisation handle is available —
         # same decoupled-from-LUNA_USE_RUST_IONISATION eligibility as the
-        # mode-averaged wiring above (Phase C, BACKLOG.md). Must fail the
+        # mode-averaged wiring above (Phase C, docs/dev/BACKLOG.md). Must fail the
         # whole construction (NativeIneligible), not silently continue
         # without plasma, for the same silent-wrong-physics reason.
         for r in f!.resp
@@ -1527,7 +1527,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             end
         end
 
-        # Wire Raman if present and eligible — Phase D.4 (BACKLOG.md), both
+        # Wire Raman if present and eligible — Phase D.4 (docs/dev/BACKLOG.md), both
         # `thg` values since Phase F.1, rotational multi-oscillator and
         # density-dependent τ2 since Phase F.2 (see the mode-averaged
         # wiring above for the full rationale — identical here). Same FFI
@@ -1625,7 +1625,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         towin = f!.grid.towin
 
         γ3 = Luna.Nonlinear.kerr_γ3(f!.resp)
-        # Phase 5 gate is Kerr-only; Phase D.4 (BACKLOG.md) adds Raman
+        # Phase 5 gate is Kerr-only; Phase D.4 (docs/dev/BACKLOG.md) adds Raman
         # (RealGrid, npol=1, either `thg` value since Phase F.1 — same
         # per-node scalar-field scope as Kerr here) alongside it. Any other
         # response type remains ineligible.
@@ -1702,7 +1702,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             check_ffi(rc, "native_set_modal_zdep_params"; ineligible=true)
         end
 
-        # Wire Raman if present and eligible — Phase D.4 (BACKLOG.md), both
+        # Wire Raman if present and eligible — Phase D.4 (docs/dev/BACKLOG.md), both
         # `thg` values since Phase F.1, rotational multi-oscillator and
         # density-dependent τ2 since Phase F.2 (see the mode-averaged wiring
         # above for the full rationale — identical here). Same FFI call as
@@ -1737,17 +1737,17 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     end
 
     # Set parameters if free-space (TransFree) — Phase 6 gate: RealGrid,
-    # const_norm_free (z-invariant), scalar Kerr only. Phase D.3 (BACKLOG.md)
+    # const_norm_free (z-invariant), scalar Kerr only. Phase D.3 (docs/dev/BACKLOG.md)
     # adds EnvGrid (c2c 3-D FFTW plan, `ComplexFft3d`) — `native_set_free_params`
     # branches on `sim.is_real` (set by `native_set_fftw_plans`, called earlier)
     # exactly like the radial Phase D.1 EnvGrid extension. Reuses the FFTW
     # library handle native_set_fftw_plans already loaded (no new dlopen) —
-    # only a new 3-D plan is created. Phase D.5 (BACKLOG.md) drops the
+    # only a new 3-D plan is created. Phase D.5 (docs/dev/BACKLOG.md) drops the
     # z-invariant restriction for a two-point pressure-gradient gas cell —
     # `normfun isa NonlinearRHS.ZDepNormFree` (and `linop isa
     # LinearOps.ZDepLinopFree`, checked by `native_ok` above) — wiring an
     # additional `native_set_free_zdep_params` call. See MATH.md §3.4.
-    # Phase I item 6 (BACKLOG.md) adds plasma and/or Raman (`RamanPolarField`)
+    # Phase I item 6 (docs/dev/BACKLOG.md) adds plasma and/or Raman (`RamanPolarField`)
     # alongside Kerr, RealGrid only — `TransFree`'s `Et_to_Pt!` dispatches each
     # response over `t.idcs` (`CartesianIndices((Ny,Nx))`), so both see a
     # scalar field per `(y,x)` column exactly like `TransRadial`'s Phase
@@ -1918,7 +1918,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
           (Ptr{Cvoid}, Ptr{ComplexF64}, Csize_t),
           handle.ptr, pointer(y0), Csize_t(n))
 
-    # BACKLOG.md S1 item 1: save accumulated planner wisdom (every plan this
+    # docs/dev/BACKLOG.md S1 item 1: save accumulated planner wisdom (every plan this
     # construction created, across all the `native_set_*_params` calls
     # above) for next time — mirrors Julia's own load-before/save-after
     # `Utils.loadFFTwisdom`/`saveFFTwisdom` pattern. Best-effort: `mkpath`

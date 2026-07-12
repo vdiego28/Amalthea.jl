@@ -13,7 +13,7 @@ using TestItems
         @test_skip "Rust library not found"
     else
         # EnvGrid counterpart of test_native_modal_general_order.jl/
-        # test_native_modal_npol2.jl (RealGrid) — BACKLOG.md Phase E.4 item 5,
+        # test_native_modal_npol2.jl (RealGrid) — docs/dev/BACKLOG.md Phase E.4 item 5,
         # the last unstarted native-port scope item. `rhs_modal_pointcalc`
         # (native.rs) now branches on `sim.is_real` (already set generically
         # by `native_set_fftw_plans`) between the RealGrid r2c path and a new

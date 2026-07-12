@@ -3,7 +3,7 @@
 //! once at construction. Self-contained (no external crate) — used to
 //! reproduce a Julia scalar function of one variable to near its own
 //! precision, given fine-enough sampling. See
-//! `docs/native-port/MATH.md` §3.5 for the required-`N` discussion and the
+//! `docs/dev/native-port/MATH.md` §3.5 for the required-`N` discussion and the
 //! self-validation discipline (the caller, not this module, decides `N` and
 //! checks the achieved accuracy against held-out Julia values).
 
@@ -26,8 +26,8 @@ impl CubicSpline {
             let sig = (x[i] - x[i - 1]) / (x[i + 1] - x[i - 1]);
             let p = sig * y2[i - 1] + 2.0;
             y2[i] = (sig - 1.0) / p;
-            let mut uu = (y[i + 1] - y[i]) / (x[i + 1] - x[i])
-                - (y[i] - y[i - 1]) / (x[i] - x[i - 1]);
+            let mut uu =
+                (y[i + 1] - y[i]) / (x[i + 1] - x[i]) - (y[i] - y[i - 1]) / (x[i] - x[i - 1]);
             uu = (6.0 * uu / (x[i + 1] - x[i - 1]) - sig * u[i - 1]) / p;
             u[i] = uu;
         }
@@ -48,17 +48,26 @@ impl CubicSpline {
         let mut khi = n - 1;
         while khi - klo > 1 {
             let k = (khi + klo) / 2;
-            if self.x[k] > xq { khi = k; } else { klo = k; }
+            if self.x[k] > xq {
+                khi = k;
+            } else {
+                klo = k;
+            }
         }
         let h = self.x[khi] - self.x[klo];
         let a = (self.x[khi] - xq) / h;
         let b = (xq - self.x[klo]) / h;
-        a * self.y[klo] + b * self.y[khi]
+        a * self.y[klo]
+            + b * self.y[khi]
             + ((a * a * a - a) * self.y2[klo] + (b * b * b - b) * self.y2[khi]) * (h * h) / 6.0
     }
 
-    pub fn x_min(&self) -> f64 { self.x[0] }
-    pub fn x_max(&self) -> f64 { *self.x.last().unwrap() }
+    pub fn x_min(&self) -> f64 {
+        self.x[0]
+    }
+    pub fn x_max(&self) -> f64 {
+        *self.x.last().unwrap()
+    }
 }
 
 /// Exact evaluator for a Julia `Maths.CSpline` — a piecewise-cubic Hermite
@@ -111,12 +120,20 @@ impl HermiteSpline {
             let mut khi = n - 1;
             while khi - klo > 1 {
                 let k = (khi + klo) / 2;
-                if self.x[k] > x0 { khi = k; } else { klo = k; }
+                if self.x[k] > x0 {
+                    khi = k;
+                } else {
+                    klo = k;
+                }
             }
             (klo, khi)
         };
-        if x0 == self.x[hi] { return self.y[hi]; }
-        if x0 == self.x[lo] { return self.y[lo]; }
+        if x0 == self.x[hi] {
+            return self.y[hi];
+        }
+        if x0 == self.x[lo] {
+            return self.y[lo];
+        }
         let t = (x0 - self.x[lo]) / (self.x[hi] - self.x[lo]);
         self.y[lo]
             + self.d[lo] * t
@@ -182,7 +199,10 @@ mod tests {
         for (xq, expected) in cases {
             let got = spl.eval(xq);
             let rel = (got - expected).abs() / expected.abs();
-            assert!(rel < 1e-13, "xq={xq}: got={got}, expected={expected}, rel={rel}");
+            assert!(
+                rel < 1e-13,
+                "xq={xq}: got={got}, expected={expected}, rel={rel}"
+            );
         }
     }
 }

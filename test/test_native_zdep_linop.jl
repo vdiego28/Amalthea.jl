@@ -43,7 +43,7 @@ using TestItems
         dt = 0.01 # 10 mm step size to get error far above machine precision floor
 
         @testset "β1(z) analytic closed form vs BigFloat ground truth" begin
-            # Two-tier check (see docs/native-port/BETA1_ANALYTIC.md): this
+            # Two-tier check (see docs/dev/native-port/BETA1_ANALYTIC.md): this
             # tier proves Rust's resident β1(z) is exact, independent of
             # Julia's own `dispersion` (an adaptive finite difference with a
             # real, repeatable ~1e-12 relative error against the true
@@ -91,7 +91,7 @@ using TestItems
         @testset "Full-solve equivalence (fixed step size)" begin
             # Fixed step size (max_dt=min_dt=dt) isolates genuine multi-step
             # state-accumulation error from adaptive-path divergence -- see
-            # docs/native-port/TESTING.md §3 (established Phase 1/2, applied
+            # docs/dev/native-port/TESTING.md §3 (established Phase 1/2, applied
             # to every phase since).
             s_jl = PreconStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
                                   max_dt=dt, min_dt=dt)
@@ -127,7 +127,7 @@ using TestItems
             # difference around ~1e-4 -- confirmed (via a kerr=false control
             # run showing the identical magnitude) to be entirely this β1
             # method difference, not a bug in the RHS or linop assembly. See
-            # docs/native-port/BETA1_ANALYTIC.md for the full derivation and
+            # docs/dev/native-port/BETA1_ANALYTIC.md for the full derivation and
             # verification. Do not tighten this by reverting β1 to a
             # Julia-value-reproducing LUT.
             rel_solve = norm(s_ru.yn - s_jl.yn) / norm(s_jl.yn)

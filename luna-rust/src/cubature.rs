@@ -1,7 +1,7 @@
 //! Runtime binding for the C `libcubature` library (`Cubature_jll`) — the
 //! *same* adaptive cubature routines Julia's `Cubature.jl` wraps via `ccall`
 //! (confirmed: `Cubature.jl` is a thin wrapper, not a pure-Julia
-//! reimplementation — see `docs/native-port/MATH.md` §3.3). Loaded exactly
+//! reimplementation — see `docs/dev/native-port/MATH.md` §3.3). Loaded exactly
 //! like `fftw.rs` loads libfftw3: `dlopen`ed at runtime from a path passed in
 //! by Julia (`Cubature.Cubature_jll.libcubature`), no link-time dependency.
 //!
@@ -13,30 +13,45 @@
 //! `max_dt=min_dt` escape hatch to pin node placement).
 //!
 //! Phase 5 scope bound only `pcubature_v` (1-D p-adaptive, vectorized) — the
-//! radial-only (`full=false`) modal integral. Phase E.3 (BACKLOG.md) adds
+//! radial-only (`full=false`) modal integral. Phase E.3 (docs/dev/BACKLOG.md) adds
 //! `hcubature_v` (h-adaptive, arbitrary `ndim`) for `full=true`'s genuine
 //! 2-D `(r,θ)` integral — the same routine Julia's `Cubature.hcubature_v`
 //! calls, sharing `pcubature_v`'s C prototype (`cubature.h` gives every
 //! `{h,p}cubature{,_v}` variant an identical signature, differing only in
 //! subdivision strategy), so no new FFI type is needed.
 
-use std::ffi::CString;
+use libc::{c_double, c_int, c_uint, c_void, size_t};
 #[cfg(unix)]
 use std::ffi::CStr;
+use std::ffi::CString;
 use std::path::Path;
-use libc::{c_double, c_int, c_uint, c_void, size_t};
 
 pub const ERROR_NORM_L2: c_int = 2;
 
 /// C `integrand_v` callback signature (`cubature.h`):
 /// `int (*)(unsigned ndim, size_t npt, const double *x, void *fdata, unsigned fdim, double *fval)`.
-pub type IntegrandV = unsafe extern "C" fn(c_uint, size_t, *const c_double, *mut c_void, c_uint, *mut c_double) -> c_int;
+pub type IntegrandV = unsafe extern "C" fn(
+    c_uint,
+    size_t,
+    *const c_double,
+    *mut c_void,
+    c_uint,
+    *mut c_double,
+) -> c_int;
 
 type PcubatureVFn = unsafe extern "C" fn(
-    c_uint, IntegrandV, *mut c_void,
-    c_uint, *const c_double, *const c_double,
-    size_t, c_double, c_double, c_int,
-    *mut c_double, *mut c_double,
+    c_uint,
+    IntegrandV,
+    *mut c_void,
+    c_uint,
+    *const c_double,
+    *const c_double,
+    size_t,
+    c_double,
+    c_double,
+    c_int,
+    *mut c_double,
+    *mut c_double,
 ) -> c_int;
 
 // ── minimal runtime loader (mirrors fftw.rs::Library / io.rs::Library) ──────
@@ -50,7 +65,8 @@ impl Library {
         {
             let path_str = path.to_string_lossy();
             let c_path = CString::new(path_str.as_ref()).map_err(|e| e.to_string())?;
-            let handle = unsafe { libc::dlopen(c_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL) };
+            let handle =
+                unsafe { libc::dlopen(c_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL) };
             if handle.is_null() {
                 let err = unsafe { libc::dlerror() };
                 let msg = if err.is_null() {
@@ -101,10 +117,14 @@ impl Drop for Library {
     fn drop(&mut self) {
         unsafe {
             #[cfg(unix)]
-            { libc::dlclose(self.handle); }
+            {
+                libc::dlclose(self.handle);
+            }
             #[cfg(windows)]
             {
-                unsafe extern "system" { fn FreeLibrary(h: *mut c_void) -> c_int; }
+                unsafe extern "system" {
+                    fn FreeLibrary(h: *mut c_void) -> c_int;
+                }
                 FreeLibrary(self.handle);
             }
         }
@@ -168,16 +188,24 @@ impl CubatureApi {
         let xmax_arr = [xmax];
         unsafe {
             (self.pcubature_v)(
-                fdim as c_uint, f, fdata,
-                1, xmin_arr.as_ptr(), xmax_arr.as_ptr(),
-                max_eval as size_t, req_abs_error, req_rel_error, ERROR_NORM_L2,
-                val.as_mut_ptr(), err.as_mut_ptr(),
+                fdim as c_uint,
+                f,
+                fdata,
+                1,
+                xmin_arr.as_ptr(),
+                xmax_arr.as_ptr(),
+                max_eval as size_t,
+                req_abs_error,
+                req_rel_error,
+                ERROR_NORM_L2,
+                val.as_mut_ptr(),
+                err.as_mut_ptr(),
             )
         }
     }
 
     /// 2-D h-adaptive vectorized cubature over `[xmin[0],xmax[0]] ×
-    /// [xmin[1],xmax[1]]` — Phase E.3 (BACKLOG.md), the `full=true` modal
+    /// [xmin[1],xmax[1]]` — Phase E.3 (docs/dev/BACKLOG.md), the `full=true` modal
     /// integral. Same contract as `pcubature_v` otherwise.
     ///
     /// # Safety
@@ -202,10 +230,18 @@ impl CubatureApi {
         debug_assert_eq!(err.len(), fdim);
         unsafe {
             (self.hcubature_v)(
-                fdim as c_uint, f, fdata,
-                2, xmin.as_ptr(), xmax.as_ptr(),
-                max_eval as size_t, req_abs_error, req_rel_error, ERROR_NORM_L2,
-                val.as_mut_ptr(), err.as_mut_ptr(),
+                fdim as c_uint,
+                f,
+                fdata,
+                2,
+                xmin.as_ptr(),
+                xmax.as_ptr(),
+                max_eval as size_t,
+                req_abs_error,
+                req_rel_error,
+                ERROR_NORM_L2,
+                val.as_mut_ptr(),
+                err.as_mut_ptr(),
             )
         }
     }

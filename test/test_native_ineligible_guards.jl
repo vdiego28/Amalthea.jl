@@ -10,7 +10,7 @@ using TestItems
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
-        # BACKLOG.md Phase I item 7: these three `NativeIneligible` sites are
+        # docs/dev/BACKLOG.md Phase I item 7: these three `NativeIneligible` sites are
         # documented as "correct-by-design edge-case guards, not gaps to
         # close" — but until now none had a dedicated regression test, so a
         # future refactor that silently broke one of them (e.g. by loosening
@@ -21,7 +21,7 @@ using TestItems
         # actually fire". Lock in all three explicitly.
 
         @testset "Unrecognized bare f! closure is rejected, not silently zero-nonlinearity" begin
-            # Phase 8's own postmortem (BACKLOG.md / CLAUDE.md): before this
+            # Phase 8's own postmortem (docs/dev/BACKLOG.md / CLAUDE.md): before this
             # guard existed, a raw ad-hoc closure (as RK45.jl's own low-level
             # unit tests use to exercise the Julia solver plumbing directly)
             # silently ran with zero nonlinearity under the native path,

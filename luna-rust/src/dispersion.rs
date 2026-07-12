@@ -33,7 +33,7 @@ impl SellmeierGas {
         let den = self.c1 - ω * ω;
         let d_n2 = (2.0 * self.b1 * self.c1 * ω) / (den * den);
         let d2_n2 = (2.0 * self.b1 * self.c1 * (self.c1 + 3.0 * ω * ω)) / (den * den * den);
-        
+
         (d2_n2 * n - d_n2 * dn) / (2.0 * n * n)
     }
 }
@@ -49,7 +49,12 @@ pub struct ZeisbergerDispersion {
 
 impl ZeisbergerDispersion {
     pub fn new(gas: SellmeierGas, core_radius: f64, glass_index: f64, mode_root: f64) -> Self {
-        Self { gas, core_radius, glass_index, mode_root }
+        Self {
+            gas,
+            core_radius,
+            glass_index,
+            mode_root,
+        }
     }
 
     /// Analytical propagation constant beta(ω)
@@ -57,13 +62,13 @@ impl ZeisbergerDispersion {
         let c = 299792458.0;
         let n_co = self.gas.refractive_index(ω);
         let σ = c / (ω * n_co * self.core_radius);
-        
+
         // Coefficients
         let a_coeff = 0.5 * self.mode_root * self.mode_root;
         let epsilon = (self.glass_index * self.glass_index) / (n_co * n_co);
         let theta = (epsilon + 1.0) / (epsilon - 1.0).sqrt();
         let b_coeff = 0.5 * self.mode_root * self.mode_root * theta;
-        
+
         let n_eff = n_co * (1.0 - a_coeff * σ * σ - b_coeff * σ * σ * σ);
         (ω / c) * n_eff
     }
@@ -86,7 +91,7 @@ impl ChebyshevDispersion {
     {
         let mut coefficients = vec![0.0; degree];
         let n = degree as f64;
-        
+
         // Compute discrete cosine transform coefficients
         for i in 0..degree {
             let mut sum = 0.0;
@@ -95,13 +100,19 @@ impl ChebyshevDispersion {
                 let node = ((2.0 * k_f - 1.0) / (2.0 * n) * std::f64::consts::PI).cos();
                 // Map node s in [-1, 1] back to frequency space
                 let ω = 0.5 * (node * (ω_max - ω_min) + (ω_max + ω_min));
-                sum += f(ω) * (((i as f64) * (2.0 * k_f - 1.0) / (2.0 * n) * std::f64::consts::PI).cos());
+                sum += f(ω)
+                    * (((i as f64) * (2.0 * k_f - 1.0) / (2.0 * n) * std::f64::consts::PI).cos());
             }
             let factor = if i == 0 { 1.0 / n } else { 2.0 / n };
             coefficients[i] = factor * sum;
         }
-        
-        Self { coefficients, ω_min, ω_max, degree }
+
+        Self {
+            coefficients,
+            ω_min,
+            ω_max,
+            degree,
+        }
     }
 
     /// Evaluates the Chebyshev series at a mapped coordinate s in [-1, 1]
@@ -112,7 +123,7 @@ impl ChebyshevDispersion {
         if coeffs.len() == 1 {
             return coeffs[0];
         }
-        
+
         // Clenshaw's recurrence algorithm
         let mut d1 = 0.0;
         let mut d2 = 0.0;
@@ -131,41 +142,41 @@ impl ChebyshevDispersion {
         if n < 2 {
             return deriv_coeffs;
         }
-        
+
         deriv_coeffs[n - 1] = 0.0;
         if n > 2 {
             deriv_coeffs[n - 2] = 2.0 * ((n - 1) as f64) * coeffs[n - 1];
         }
-        
+
         for i in (1..=n - 3).rev() {
             deriv_coeffs[i] = deriv_coeffs[i + 2] + 2.0 * ((i + 1) as f64) * coeffs[i + 1];
         }
         // Special case for c_0
         deriv_coeffs[0] = 0.5 * (deriv_coeffs[2] + 2.0 * coeffs[1]);
-        
+
         deriv_coeffs
     }
 
     /// Returns the exact value and first/second derivatives with respect to ω
     pub fn evaluate_derivatives(&self, ω: f64) -> (f64, f64, f64) {
         let s = (2.0 * ω - (self.ω_max + self.ω_min)) / (self.ω_max - self.ω_min);
-        
+
         // Value
         let val = self.evaluate_series(s, &self.coefficients);
-        
+
         // Mapped derivative ds/dω
         let ds_dω = 2.0 / (self.ω_max - self.ω_min);
-        
+
         // First derivative coefficients
         let c_prime = self.differentiate_coefficients(&self.coefficients);
         let dy_ds = self.evaluate_series(s, &c_prime);
         let dy_dω = dy_ds * ds_dω;
-        
+
         // Second derivative coefficients
         let c_double_prime = self.differentiate_coefficients(&c_prime);
         let d2y_ds2 = self.evaluate_series(s, &c_double_prime);
         let d2y_dω2 = d2y_ds2 * ds_dω * ds_dω;
-        
+
         (val, dy_dω, d2y_dω2)
     }
 }
@@ -210,9 +221,22 @@ pub struct ZeisbergerNeff {
 
 impl ZeisbergerNeff {
     /// Construct a new handle.
-    pub fn new(unm: f64, m_az: f64, kind: u8, wallthickness: f64,
-               loss_on: bool, loss_scale: f64) -> Self {
-        Self { unm, m_az, kind, wallthickness, loss_on, loss_scale }
+    pub fn new(
+        unm: f64,
+        m_az: f64,
+        kind: u8,
+        wallthickness: f64,
+        loss_on: bool,
+        loss_scale: f64,
+    ) -> Self {
+        Self {
+            unm,
+            m_az,
+            kind,
+            wallthickness,
+            loss_on,
+            loss_scale,
+        }
     }
 
     /// Compute the complex effective index at a single frequency `omega` (rad/s).
@@ -227,19 +251,19 @@ impl ZeisbergerNeff {
         let one = C64::new(1.0, 0.0);
 
         // Intermediate quantities — eqs as in Julia _neff
-        let eps     = ncl * ncl / (nco * nco);                             // ϵ = ncl²/nco²
-        let k0      = omega / CLIGHT;                                       // k₀ = ω/c
-        let ka      = C64::new(k0, 0.0) * nco;                             // kₐ = k₀·nco
-        let phi     = C64::new(k0 * self.wallthickness, 0.0)               // ϕ = k₀·t·√(ncl²-nco²)
+        let eps = ncl * ncl / (nco * nco); // ϵ = ncl²/nco²
+        let k0 = omega / CLIGHT; // k₀ = ω/c
+        let ka = C64::new(k0, 0.0) * nco; // kₐ = k₀·nco
+        let phi = C64::new(k0 * self.wallthickness, 0.0)               // ϕ = k₀·t·√(ncl²-nco²)
                       * (ncl * ncl - nco * nco).sqrt();
-        let sigma   = one / (ka * radius);                                  // σ = 1/(kₐ·a)
+        let sigma = one / (ka * radius); // σ = 1/(kₐ·a)
         let tan_phi = phi.tan();
-        let eps_m1  = eps - one;                                            // ϵ-1
-        let sqrt_em1 = eps_m1.sqrt();                                       // √(ϵ-1)
-        let unm     = self.unm;
-        let m       = self.m_az;
-        let tan2    = tan_phi * tan_phi;
-        let cot2    = one / tan2;                                            // 1/tan²(ϕ)
+        let eps_m1 = eps - one; // ϵ-1
+        let sqrt_em1 = eps_m1.sqrt(); // √(ϵ-1)
+        let unm = self.unm;
+        let m = self.m_az;
+        let tan2 = tan_phi * tan_phi;
+        let cot2 = one / tan2; // 1/tan²(ϕ)
 
         // Compute A, B, C, D for the chosen mode kind
         let (a, b, c_coeff, d): (C64, C64, C64, C64) = match self.kind {
@@ -252,10 +276,10 @@ impl ZeisbergerNeff {
                 let a = C64::new(unm * unm / 2.0, 0.0);
                 let b = a / (sqrt_em1 * tan_phi);
                 let c = C64::new(unm.powi(4) / 8.0, 0.0)
-                      + C64::new(2.0 * unm * unm, 0.0) / (eps_m1 * tan2);
+                    + C64::new(2.0 * unm * unm, 0.0) / (eps_m1 * tan2);
                 let d = C64::new(unm.powi(3), 0.0) * (one + cot2) / eps_m1;
                 (a, b, c, d)
-            },
+            }
             3 => {
                 // ─── TM ───────────────────────────────────────────────────────
                 // A = u²/2
@@ -265,10 +289,10 @@ impl ZeisbergerNeff {
                 let a = C64::new(unm * unm / 2.0, 0.0);
                 let b = a * eps / (sqrt_em1 * tan_phi);
                 let c = C64::new(unm.powi(4) / 8.0, 0.0)
-                      + C64::new(2.0 * unm * unm, 0.0) * eps * eps / (eps_m1 * tan2);
+                    + C64::new(2.0 * unm * unm, 0.0) * eps * eps / (eps_m1 * tan2);
                 let d = C64::new(unm.powi(3), 0.0) * eps * eps * (one + cot2) / eps_m1;
                 (a, b, c, d)
-            },
+            }
             kind => {
                 // ─── HE (kind=0, s=-1) or EH (kind=1, s=+1) ─────────────────
                 // s: EH=+1, HE=-1
@@ -283,14 +307,13 @@ impl ZeisbergerNeff {
                 let b = C64::new(unm * unm, 0.0) * eps_p1 / (sqrt_em1 * tan_phi);
                 // The (/tan²) part in C
                 let c_cot = C64::new(unm * unm / 4.0 * (2.0 + m * s), 0.0) * eps_p1 * eps_p1
-                              / eps_m1
-                          - C64::new(unm.powi(4) / (8.0 * m), 0.0) * eps_m1;
-                let c = C64::new(unm.powi(4) / 8.0 + unm * unm * m * s / 2.0, 0.0)
-                      + c_cot * cot2;
-                let d = C64::new(unm.powi(3) / 2.0, 0.0) * (eps * eps + one) / eps_m1
-                      * (one + cot2);
+                    / eps_m1
+                    - C64::new(unm.powi(4) / (8.0 * m), 0.0) * eps_m1;
+                let c = C64::new(unm.powi(4) / 8.0 + unm * unm * m * s / 2.0, 0.0) + c_cot * cot2;
+                let d =
+                    C64::new(unm.powi(3) / 2.0, 0.0) * (eps * eps + one) / eps_m1 * (one + cot2);
                 (a, b, c, d)
-            },
+            }
         };
 
         // Assemble: neff = nco·(1 - A·σ² - B·σ³ - C·σ⁴ [+ i·loss_scale·D·σ⁴])
@@ -315,19 +338,19 @@ impl ZeisbergerNeff {
     /// indices.  All slices must have length `omegas.len()`.
     pub fn neff_vector(
         &self,
-        omegas:     &[f64],
-        nco_re:     &[f64],
-        nco_im:     &[f64],
-        ncl_re:     &[f64],
-        ncl_im:     &[f64],
-        radius:     f64,
+        omegas: &[f64],
+        nco_re: &[f64],
+        nco_im: &[f64],
+        ncl_re: &[f64],
+        ncl_im: &[f64],
+        radius: f64,
         neff_re_out: &mut [f64],
         neff_im_out: &mut [f64],
     ) {
         for i in 0..omegas.len() {
             let nco = C64::new(nco_re[i], nco_im[i]);
             let ncl = C64::new(ncl_re[i], ncl_im[i]);
-            let ne  = self.neff_one(omegas[i], nco, ncl, radius);
+            let ne = self.neff_one(omegas[i], nco, ncl, radius);
             neff_re_out[i] = ne.re;
             neff_im_out[i] = ne.im;
         }
@@ -368,8 +391,17 @@ pub struct MarcatiliNeff {
 impl MarcatiliNeff {
     /// Construct a new handle, taking ownership of the packed `nwg` vectors.
     pub fn new(nwg_re: Vec<f64>, nwg_im: Vec<f64>, model: u8, loss_on: bool) -> Self {
-        debug_assert_eq!(nwg_re.len(), nwg_im.len(), "nwg_re and nwg_im must have the same length");
-        Self { nwg_re, nwg_im, model, loss_on }
+        debug_assert_eq!(
+            nwg_re.len(),
+            nwg_im.len(),
+            "nwg_re and nwg_im must have the same length"
+        );
+        Self {
+            nwg_re,
+            nwg_im,
+            model,
+            loss_on,
+        }
     }
 
     /// In-place batch evaluation.  `nco_re[i]` / `nco_im[i]` are the gas refractive
@@ -377,16 +409,16 @@ impl MarcatiliNeff {
     /// All four slices must have length `self.nwg_re.len()`.
     pub fn neff_vector(
         &self,
-        nco_re:      &[f64],
-        nco_im:      &[f64],
+        nco_re: &[f64],
+        nco_im: &[f64],
         neff_re_out: &mut [f64],
         neff_im_out: &mut [f64],
     ) {
         let n = self.nwg_re.len();
         for i in 0..n {
-            let nco  = C64::new(nco_re[i], nco_im[i]);
-            let nwg  = C64::new(self.nwg_re[i], self.nwg_im[i]);
-            let eps  = nco * nco;   // εco = nco²
+            let nco = C64::new(nco_re[i], nco_im[i]);
+            let nwg = C64::new(self.nwg_re[i], self.nwg_im[i]);
+            let eps = nco * nco; // εco = nco²
 
             // No clamping here — mirrors Julia's neff(m, εco, nwg) two-argument overload
             // (Capillary.jl:216-234) which returns the bare sqrt/linear expression.
@@ -395,14 +427,22 @@ impl MarcatiliNeff {
                 0 => {
                     // :full — neff = sqrt(complex(εco − nwg))
                     let raw = (eps - nwg).sqrt();
-                    if self.loss_on { raw } else { C64::new(raw.re, 0.0) }
-                },
+                    if self.loss_on {
+                        raw
+                    } else {
+                        C64::new(raw.re, 0.0)
+                    }
+                }
                 _ => {
                     // :reduced — neff = 1 + (εco−1)/2 − nwg
                     let one = C64::new(1.0, 0.0);
                     let raw = one + (eps - one) / 2.0 - nwg;
-                    if self.loss_on { raw } else { C64::new(raw.re, 0.0) }
-                },
+                    if self.loss_on {
+                        raw
+                    } else {
+                        C64::new(raw.re, 0.0)
+                    }
+                }
             };
 
             neff_re_out[i] = ne.re;
@@ -417,7 +457,10 @@ mod tests {
 
     #[test]
     fn test_sellmeier_gas_d2n_dw2() {
-        let gas = SellmeierGas { b1: 1.2, c1: 3.4e15 };
+        let gas = SellmeierGas {
+            b1: 1.2,
+            c1: 3.4e15,
+        };
         let w = 1.0e7;
         let h = 1.0e1;
 
@@ -429,10 +472,7 @@ mod tests {
 
     #[test]
     fn test_sellmeier_gas_dispersion() {
-        let gas = SellmeierGas {
-            b1: 0.5,
-            c1: 4.0,
-        };
+        let gas = SellmeierGas { b1: 0.5, c1: 4.0 };
         let w = 1.0;
 
         // den = c1 - w*w = 4.0 - 1.0 = 3.0

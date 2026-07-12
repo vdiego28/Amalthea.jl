@@ -11,7 +11,7 @@ using TestItems
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
-        # BACKLOG.md Phase I item 2: `ramanmodel=:SiO2` builds a bare
+        # docs/dev/BACKLOG.md Phase I item 2: `ramanmodel=:SiO2` builds a bare
         # `RamanRespIntermediateBroadening` (Hollenbeck & Cantrell
         # Gaussian-damped multi-line model, Raman.jl:78-113) — no finite sum
         # of single-damped-oscillators reproduces its `exp(-Γᵢ²t²/4)` envelope,
@@ -37,7 +37,7 @@ using TestItems
         trange = 4e-12
 
         # shock/shotnoise deliberately left at `prop_gnlse`'s defaults
-        # (both `true`) — Phase I item 1's postmortem (BACKLOG.md) is that
+        # (both `true`) — Phase I item 1's postmortem (docs/dev/BACKLOG.md) is that
         # the EnvGrid noise gap stayed invisible until the *default* gnlse
         # workload was tested, not a hand-picked easy config. This is the
         # config a real `prop_gnlse(...; ramanmodel=:SiO2)` call actually

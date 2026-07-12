@@ -6,7 +6,7 @@ ENV["PYTHON"] = joinpath(Conda.ROOTENV, "bin", "python")
 Pkg.build("PyCall")
 @info "built PyCall!"
 
-# luna-rust: try a prebuilt binary first (BACKLOG.md S6 item 13), fall back
+# luna-rust: try a prebuilt binary first (docs/dev/BACKLOG.md S6 item 13), fall back
 # to `cargo build --release` from source — the from-source path is kept as
 # the canonical dev path and as the fallback for platforms/versions with no
 # published release asset.

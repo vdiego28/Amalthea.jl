@@ -12,7 +12,7 @@ using TestItems
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
-        # BACKLOG.md Phase E.2: tapered core radius, `a(z)` a shared Julia
+        # docs/dev/BACKLOG.md Phase E.2: tapered core radius, `a(z)` a shared Julia
         # `Function` across all modes of one physical fibre. Unlike Phase 7
         # (constant radius, varying density) this is the mirror case: density
         # is constant but the Marcatili waveguide term `nwg(ω;z)` varies

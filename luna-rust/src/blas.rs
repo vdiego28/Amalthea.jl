@@ -1,11 +1,11 @@
-use std::ffi::CString;
+use libc::{c_double, c_void};
 #[cfg(unix)]
 use std::ffi::CStr;
+use std::ffi::CString;
 use std::path::Path;
 use std::sync::OnceLock;
-use libc::{c_double, c_void};
 
-/// BACKLOG.md S1 item 5: `libblastrampoline`'s CBLAS-name entry point
+/// docs/dev/BACKLOG.md S1 item 5: `libblastrampoline`'s CBLAS-name entry point
 /// (`cblas_dgemm`) is a dispatch stub that requires Julia's own ILP64
 /// Fortran-symbol registration to route anywhere — calling it directly
 /// errors ("no BLAS/LAPACK library loaded for cblas_dgemm()") instead of
@@ -54,7 +54,8 @@ impl Library {
         {
             let path_str = path.to_string_lossy();
             let c_path = CString::new(path_str.as_ref()).map_err(|e| e.to_string())?;
-            let handle = unsafe { libc::dlopen(c_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL) };
+            let handle =
+                unsafe { libc::dlopen(c_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL) };
             if handle.is_null() {
                 let err = unsafe { libc::dlerror() };
                 let msg = if err.is_null() {
@@ -76,7 +77,9 @@ impl Library {
             if handle.is_null() {
                 return Err(format!("LoadLibraryW failed to load {:?}", path));
             }
-            Ok(Self { handle: handle as *mut c_void })
+            Ok(Self {
+                handle: handle as *mut c_void,
+            })
         }
     }
 
@@ -132,14 +135,21 @@ impl BlasApi {
     ) {
         unsafe {
             (self.dgemm_64)(
-                &trans_a, &trans_b,
-                &m, &n, &k,
+                &trans_a,
+                &trans_b,
+                &m,
+                &n,
+                &k,
                 &alpha,
-                a.as_ptr(), &lda,
-                b.as_ptr(), &ldb,
+                a.as_ptr(),
+                &lda,
+                b.as_ptr(),
+                &ldb,
                 &beta,
-                c.as_mut_ptr(), &ldc,
-                1, 1,
+                c.as_mut_ptr(),
+                &ldc,
+                1,
+                1,
             );
         }
     }
@@ -162,13 +172,17 @@ pub fn init_blas_api(path: &Path) -> Result<(), String> {
         dgemm_64: unsafe { std::mem::transmute(dgemm_64_ptr) },
     };
 
-    BLAS_API.set(api).map_err(|_| "BLAS API already initialized".to_string())?;
+    BLAS_API
+        .set(api)
+        .map_err(|_| "BLAS API already initialized".to_string())?;
     Ok(())
 }
 
 /// Get a reference to the global BLAS API if initialized.
 pub fn get_blas_api() -> Result<&'static BlasApi, String> {
-    BLAS_API.get().ok_or_else(|| "BLAS API not initialized".to_string())
+    BLAS_API
+        .get()
+        .ok_or_else(|| "BLAS API not initialized".to_string())
 }
 
 // Deliberately no standalone `#[cfg(test)]` unit test in this file: a bare
@@ -186,4 +200,4 @@ pub fn get_blas_api() -> Result<&'static BlasApi, String> {
 // *already-loaded* `libblastrampoline` via `Libdl.dlpath(Libdl.dlopen(...))`
 // from within Julia, reusing its live, configured instance). The real gate
 // is `test/test_qdht_rust.jl` run with `LUNA_USE_RUST_QDHT=1
-// LUNA_QDHT_BLAS=1` (see BACKLOG.md S1 item 5).
+// LUNA_QDHT_BLAS=1` (see docs/dev/BACKLOG.md S1 item 5).

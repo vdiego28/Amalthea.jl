@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use luna_rust::diffraction::Qdht;
 use num_complex::Complex;
 
@@ -9,16 +9,12 @@ fn bench_qdht(c: &mut Criterion) {
         let n_grid = qdht.n_r;
         let input = vec![Complex::new(1.0, 0.5); n_grid];
         let mut output = vec![Complex::new(0.0, 0.0); n_grid];
-        
-        group.bench_with_input(
-            BenchmarkId::from_parameter(n_zeros),
-            &n_zeros,
-            |b, _| {
-                b.iter(|| {
-                    qdht.transform(&input, &mut output);
-                });
-            },
-        );
+
+        group.bench_with_input(BenchmarkId::from_parameter(n_zeros), &n_zeros, |b, _| {
+            b.iter(|| {
+                qdht.transform(&input, &mut output);
+            });
+        });
     }
     group.finish();
 }

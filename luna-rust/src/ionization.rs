@@ -25,40 +25,40 @@ impl CubicSplineLUT {
     {
         assert!(n_points >= 3);
         let h = (x_max - x_min) / ((n_points - 1) as f64);
-        
+
         let mut x = vec![0.0; n_points];
         let mut a = vec![0.0; n_points];
         for i in 0..n_points {
             x[i] = x_min + (i as f64) * h;
             a[i] = f(x[i]);
         }
-        
+
         // Solve the tridiagonal system for the second derivatives c_i
         let mut alpha = vec![0.0; n_points - 1];
         for i in 1..(n_points - 1) {
             alpha[i] = (3.0 / h) * (a[i + 1] - a[i]) - (3.0 / h) * (a[i] - a[i - 1]);
         }
-        
+
         let mut l = vec![1.0; n_points];
         let mut mu = vec![0.0; n_points];
         let mut z = vec![0.0; n_points];
-        
+
         for i in 1..(n_points - 1) {
             l[i] = 4.0 * h - h * mu[i - 1];
             mu[i] = h / l[i];
             z[i] = (alpha[i] - h * z[i - 1]) / l[i];
         }
-        
+
         let mut c = vec![0.0; n_points];
         let mut b = vec![0.0; n_points];
         let mut d = vec![0.0; n_points];
-        
+
         for j in (0..(n_points - 1)).rev() {
             c[j] = z[j] - mu[j] * c[j + 1];
             b[j] = (a[j + 1] - a[j]) / h - h * (c[j + 1] + 2.0 * c[j]) / 3.0;
             d[j] = (c[j + 1] - c[j]) / (3.0 * h);
         }
-        
+
         let mut segments = Vec::with_capacity(n_points - 1);
         for i in 0..(n_points - 1) {
             segments.push(SplineSegment {
@@ -69,8 +69,12 @@ impl CubicSplineLUT {
                 d: d[i],
             });
         }
-        
-        Self { segments, x_min, x_max }
+
+        Self {
+            segments,
+            x_min,
+            x_max,
+        }
     }
 
     /// Build a natural cubic spline from pre-sampled (x, y) pairs.
@@ -98,18 +102,17 @@ impl CubicSplineLUT {
         // Forward sweep of the Thomas algorithm for natural cubic spline
         let mut alpha = vec![0.0f64; n];
         for i in 1..(n - 1) {
-            alpha[i] = (3.0 / h[i]) * (a[i + 1] - a[i])
-                - (3.0 / h[i - 1]) * (a[i] - a[i - 1]);
+            alpha[i] = (3.0 / h[i]) * (a[i + 1] - a[i]) - (3.0 / h[i - 1]) * (a[i] - a[i - 1]);
         }
 
-        let mut l  = vec![1.0f64; n];
+        let mut l = vec![1.0f64; n];
         let mut mu = vec![0.0f64; n];
-        let mut z  = vec![0.0f64; n];
+        let mut z = vec![0.0f64; n];
 
         for i in 1..(n - 1) {
-            l[i]  = 2.0 * (h[i - 1] + h[i]) - h[i - 1] * mu[i - 1];
+            l[i] = 2.0 * (h[i - 1] + h[i]) - h[i - 1] * mu[i - 1];
             mu[i] = h[i] / l[i];
-            z[i]  = (alpha[i] - h[i - 1] * z[i - 1]) / l[i];
+            z[i] = (alpha[i] - h[i - 1] * z[i - 1]) / l[i];
         }
         // l[n-1] = 1, z[n-1] = 0 (natural BC: c[n-1] = 0)
 
@@ -120,8 +123,7 @@ impl CubicSplineLUT {
 
         for j in (0..(n - 1)).rev() {
             c[j] = z[j] - mu[j] * c[j + 1];
-            b[j] = (a[j + 1] - a[j]) / h[j]
-                - h[j] * (c[j + 1] + 2.0 * c[j]) / 3.0;
+            b[j] = (a[j + 1] - a[j]) / h[j] - h[j] * (c[j + 1] + 2.0 * c[j]) / 3.0;
             d[j] = (c[j + 1] - c[j]) / (3.0 * h[j]);
         }
 
@@ -151,19 +153,19 @@ impl CubicSplineLUT {
         if !x.is_finite() || x < self.x_min || x > self.x_max {
             return None;
         }
-        
+
         // Binary search to find segment
         let mut low = 0;
         let mut high = self.segments.len() - 1;
         while low < high {
-            let mid = (low + high + 1) / 2;
+            let mid = (low + high).div_ceil(2);
             if self.segments[mid].x <= x {
                 low = mid;
             } else {
                 high = mid - 1;
             }
         }
-        
+
         let seg = unsafe { self.segments.get_unchecked(low) };
         let dx = x - seg.x;
         Some(seg.a + dx * (seg.b + dx * (seg.c + dx * seg.d)))
@@ -198,7 +200,12 @@ impl PptIonizationRate {
             if rate > 0.0 { rate.ln() } else { -100.0 } // clamp minimum log-rate
         });
 
-        Self { spline_lut, e_min, e_max, strict: false }
+        Self {
+            spline_lut,
+            e_min,
+            e_max,
+            strict: false,
+        }
     }
 
     /// Opt into the old strict behaviour: `rate()` errors above `e_max`
@@ -219,11 +226,17 @@ impl PptIonizationRate {
     /// same pre-computed knot data that its own `CSpline` uses, ensuring both
     /// paths interpolate the *same* underlying rate table.
     pub fn from_samples(e_min: f64, e_max: f64, e_values: &[f64], rate_values: &[f64]) -> Self {
-        let ln_rates: Vec<f64> = rate_values.iter().map(|&r| {
-            if r > 0.0 { r.ln() } else { -100.0 }
-        }).collect();
+        let ln_rates: Vec<f64> = rate_values
+            .iter()
+            .map(|&r| if r > 0.0 { r.ln() } else { -100.0 })
+            .collect();
         let spline_lut = CubicSplineLUT::from_samples(e_values, &ln_rates);
-        Self { spline_lut, e_min, e_max, strict: false }
+        Self {
+            spline_lut,
+            e_min,
+            e_max,
+            strict: false,
+        }
     }
 
     /// Calculates the ionization rate. Fields below `e_min` return 0 (Keldysh
@@ -234,7 +247,7 @@ impl PptIonizationRate {
     pub fn rate(&self, field_strength: f64) -> Result<f64, String> {
         let abs_e = field_strength.abs();
 
-        // BACKLOG.md S1 item 2: a NaN/±inf field (e.g. from an overshooting
+        // docs/dev/BACKLOG.md S1 item 2: a NaN/±inf field (e.g. from an overshooting
         // fixed-dt integration far beyond flength) fails both the `< e_min`
         // and `> e_max` comparisons below (IEEE 754: any comparison with NaN
         // is false). Caught here explicitly rather than relying solely on
@@ -279,34 +292,40 @@ impl PptIonizationRate {
     pub fn rate_vector(&self, fields: &[f64], rates: &mut [f64]) -> Result<(), String> {
         let n_t = fields.len();
         assert_eq!(rates.len(), n_t);
-        
-        if let Some(ctx) = crate::cuda::get_gpu_context() {
-            if self.rate_vector_gpu(ctx, fields, rates).is_ok() {
-                return Ok(());
-            }
+
+        if let Some(ctx) = crate::cuda::get_gpu_context()
+            && self.rate_vector_gpu(ctx, fields, rates).is_ok()
+        {
+            return Ok(());
         }
-        
+
         for i in 0..n_t {
             rates[i] = self.rate(fields[i])?;
         }
         Ok(())
     }
 
-    fn rate_vector_gpu(&self, ctx: &crate::cuda::GpuContext, fields: &[f64], rates: &mut [f64]) -> Result<(), String> {
+    fn rate_vector_gpu(
+        &self,
+        ctx: &crate::cuda::GpuContext,
+        fields: &[f64],
+        rates: &mut [f64],
+    ) -> Result<(), String> {
         let n_t = fields.len();
         let num_segments = self.spline_lut.segments.len();
-        
-        let d_fields = crate::cuda::GpuBuffer::alloc(n_t * std::mem::size_of::<f64>())?;
-        let d_rates = crate::cuda::GpuBuffer::alloc(n_t * std::mem::size_of::<f64>())?;
-        let d_segments = crate::cuda::GpuBuffer::alloc(num_segments * std::mem::size_of::<SplineSegment>())?;
+
+        let d_fields = crate::cuda::GpuBuffer::alloc(std::mem::size_of_val(fields))?;
+        let d_rates = crate::cuda::GpuBuffer::alloc(std::mem::size_of_val(fields))?;
+        let d_segments =
+            crate::cuda::GpuBuffer::alloc(num_segments * std::mem::size_of::<SplineSegment>())?;
         let d_err = crate::cuda::GpuBuffer::alloc(std::mem::size_of::<libc::c_int>())?;
-        
+
         d_fields.copy_to_device(fields)?;
         d_segments.copy_to_device(&self.spline_lut.segments)?;
-        
+
         let err_initial = [0 as libc::c_int];
         d_err.copy_to_device(&err_initial)?;
-        
+
         let mut d_fields_ptr = d_fields.dptr;
         let mut d_rates_ptr = d_rates.dptr;
         let mut d_segments_ptr = d_segments.dptr;
@@ -315,8 +334,12 @@ impl PptIonizationRate {
         let mut num_segments_val = num_segments as libc::c_int;
         let mut n_t_val = n_t as libc::c_int;
         let mut d_err_ptr = d_err.dptr;
-        
-        let mut strict_val = if self.strict { 1 as libc::c_int } else { 0 as libc::c_int };
+
+        let mut strict_val = if self.strict {
+            1 as libc::c_int
+        } else {
+            0 as libc::c_int
+        };
         let mut args: [*mut libc::c_void; 9] = [
             &mut d_fields_ptr as *mut _ as *mut libc::c_void,
             &mut d_rates_ptr as *mut _ as *mut libc::c_void,
@@ -328,42 +351,52 @@ impl PptIonizationRate {
             &mut d_err_ptr as *mut _ as *mut libc::c_void,
             &mut strict_val as *mut _ as *mut libc::c_void,
         ];
-        
+
         let block_size = 256;
-        let grid_size = (n_t + block_size - 1) / block_size;
-        
+        let grid_size = n_t.div_ceil(block_size);
+
         crate::cuda::activate_context()?;
         let driver = crate::cuda::get_driver_api()?;
-        
+
         unsafe {
             let res = (driver.cuLaunchKernel)(
                 ctx.ppt_fn,
-                grid_size as libc::c_uint, 1, 1,
-                block_size as libc::c_uint, 1, 1,
+                grid_size as libc::c_uint,
+                1,
+                1,
+                block_size as libc::c_uint,
+                1,
+                1,
                 0,
                 std::ptr::null_mut(),
                 args.as_mut_ptr(),
                 std::ptr::null_mut(),
             );
-            
+
             if res != 0 {
-                return Err(format!("cuLaunchKernel for ppt_ionization_kernel failed: {}", res));
+                return Err(format!(
+                    "cuLaunchKernel for ppt_ionization_kernel failed: {}",
+                    res
+                ));
             }
         }
-        
+
         let mut err_res = [0 as libc::c_int];
         d_err.copy_to_host(&mut err_res)?;
         if err_res[0] != 0 {
-            return Err("Electric field amplitude exceeded upper bound of ionization rate lookup table".to_string());
+            return Err(
+                "Electric field amplitude exceeded upper bound of ionization rate lookup table"
+                    .to_string(),
+            );
         }
-        
+
         d_rates.copy_to_host(rates)?;
         Ok(())
     }
 }
 
 /// ADK (Ammosov-Delone-Krainov) ionization rate — a closed-form analytic
-/// formula, unlike PPT's cubic-spline LUT (BACKLOG.md Phase I item 3:
+/// formula, unlike PPT's cubic-spline LUT (docs/dev/BACKLOG.md Phase I item 3:
 /// `ionisation=:ADK` in `Interface.jl` builds `Ionisation.IonRateADK`, a
 /// direct evaluation, not `IonRatePPTAccel`). Precomputed constants are
 /// passed in from Julia's own `IonRateADK` (`src/Ionisation.jl:131-174`,
@@ -392,7 +425,7 @@ impl AdkIonizationRate {
     /// optional cycle-averaging correction.
     pub fn rate(&self, field_strength: f64) -> Result<f64, String> {
         let a_e = field_strength.abs();
-        // Same defensive non-finite guard as PptIonizationRate::rate (BACKLOG.md
+        // Same defensive non-finite guard as PptIonizationRate::rate (docs/dev/BACKLOG.md
         // S1 item 2): `a_e < self.thr` is false for NaN, so without this it
         // would fall through into `x.powf(...)`/`.exp()` and return `Ok(NaN)`
         // silently rather than the documented "never errors, always 0 below
@@ -401,7 +434,9 @@ impl AdkIonizationRate {
             return Ok(0.0);
         }
         let x = 4.0 * self.omega_p / (self.omega_t_prefac * a_e);
-        let mut r = self.occupancy * self.omega_p * self.cn_sq
+        let mut r = self.occupancy
+            * self.omega_p
+            * self.cn_sq
             * x.powf(2.0 * self.nstar - 1.0)
             * (-4.0 / 3.0 * self.omega_p / (self.omega_t_prefac * a_e)).exp();
         if self.avfac != 1.0 {
@@ -415,7 +450,7 @@ impl AdkIonizationRate {
 mod tests {
     use super::*;
 
-    // BACKLOG.md S1 item 2: "a rate query must never be able to segfault
+    // docs/dev/BACKLOG.md S1 item 2: "a rate query must never be able to segfault
     // regardless of input" — hammer PptIonizationRate::rate/CubicSplineLUT
     // across many orders of magnitude beyond the fitted [e_min, e_max]
     // range, plus non-finite inputs, and assert every call returns cleanly
@@ -487,7 +522,7 @@ mod tests {
 
     #[test]
     fn ppt_extreme_sweep_never_panics() {
-        // BACKLOG.md's own reproduction recipe: hammer across ±1e10x the
+        // docs/dev/BACKLOG.md's own reproduction recipe: hammer across ±1e10x the
         // fitted range on a log-spaced sweep, both signs, non-strict.
         let ppt = make_ppt(1e-3, 1e6);
         let mut e = 1e-13; // 1e10x below e_min

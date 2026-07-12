@@ -13,7 +13,7 @@ using TestItems
         @test_skip "Rust library not found"
     else
         # RealGrid free-space, two-point pressure-gradient gas cell —
-        # BACKLOG.md Phase D.5. `LinearOps.make_linop_free_gradient` +
+        # docs/dev/BACKLOG.md Phase D.5. `LinearOps.make_linop_free_gradient` +
         # `NonlinearRHS.norm_free_gradient` (mirroring `Capillary.gradient`
         # for TransFree) give `n(ω;z) = sqrt(1+γ(λ(ω))·ρ(z))`, exact (not
         # approximate — confirmed against `PhysData.ref_index_fun`'s own

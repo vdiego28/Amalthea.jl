@@ -11,7 +11,8 @@ fn main() {
 
     // Try to locate nvcc
     let nvcc_path = "/usr/local/cuda/bin/nvcc";
-    let has_nvcc = std::path::Path::new(nvcc_path).exists() || Command::new("nvcc").arg("--version").status().is_ok();
+    let has_nvcc = std::path::Path::new(nvcc_path).exists()
+        || Command::new("nvcc").arg("--version").status().is_ok();
 
     if has_nvcc {
         let nvcc = if std::path::Path::new(nvcc_path).exists() {
@@ -19,9 +20,9 @@ fn main() {
         } else {
             "nvcc"
         };
-        
+
         let status = Command::new(nvcc)
-            .args(&["--ptx", "src/kernels.cu", "-o"])
+            .args(["--ptx", "src/kernels.cu", "-o"])
             .arg(&dest_path)
             .status();
 
@@ -31,7 +32,10 @@ fn main() {
                 return;
             }
             other => {
-                println!("cargo:warning=nvcc compilation failed or returned error: {:?}", other);
+                println!(
+                    "cargo:warning=nvcc compilation failed or returned error: {:?}",
+                    other
+                );
             }
         }
     } else {

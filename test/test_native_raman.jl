@@ -67,7 +67,7 @@ using TestItems
         end
 
         @testset "Full-solve equivalence (RealGrid + Raman, fixed dt)" begin
-            # Fixed step size (max_dt=min_dt=dt): see docs/native-port/TESTING.md
+            # Fixed step size (max_dt=min_dt=dt): see docs/dev/native-port/TESTING.md
             # §3 and PORT_LOG 2026-07-01 — the adaptive PI controller's
             # near-cancellation error estimate makes raw adaptive-dt agreement
             # an unreliable equivalence signal. Applied from the outset here.

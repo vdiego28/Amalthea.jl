@@ -14,7 +14,7 @@ using TestItems
         @test_skip "Rust library not found"
     else
         # EnvGrid counterpart of test_native_radial.jl (Phase 3, RealGrid) —
-        # BACKLOG.md Phase D.1 / MATH.md §3.2's deferred EnvGrid-radial
+        # docs/dev/BACKLOG.md Phase D.1 / MATH.md §3.2's deferred EnvGrid-radial
         # follow-up. Same geometry/materials, only the grid type and Kerr
         # response change (Kerr_env's 3/4 SVEA factor, c2c FFT convention).
         gas = :Ar; pres = 1.2; τ = 20e-15; λ0 = 800e-9

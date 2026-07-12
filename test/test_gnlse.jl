@@ -51,7 +51,7 @@ end
     Eωout = output["Eω"][:,end]
     ω = output["grid"]["ω"]
     # these numbers checked with two independent GNLSE codes. rtol loosened
-    # from 1e-14 (BACKLOG.md Phase F.2): RamanPolarEnv is now natively
+    # from 1e-14 (docs/dev/BACKLOG.md Phase F.2): RamanPolarEnv is now natively
     # eligible (previously always NativeIneligible — this test's default
     # `prop_gnlse` call now runs RustNativeStepper, not PreconStepper), and
     # the resident ADE solver vs Julia's FFT-convolution Raman path is a

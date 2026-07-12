@@ -107,7 +107,7 @@ impl Dopri5Stepper {
         R: FnMut(f64, &[Complex<f64>], &mut [Complex<f64>]),
     {
         let size = y.len();
-        
+
         // Stage 1 (FSAL: First Same As Last)
         if !*fsal_active {
             rhs(z, y, &mut self.k1);
@@ -138,7 +138,8 @@ impl Dopri5Stepper {
         lin_op(z, z + 0.8 * h, y, &mut self.y_prop);
 
         for i in 0..size {
-            self.y_stage[i] = self.y_prop[i] + h * (A41 * self.k1_prop[i] + A42 * self.k2_prop[i] + A43 * self.k3_prop[i]);
+            self.y_stage[i] = self.y_prop[i]
+                + h * (A41 * self.k1_prop[i] + A42 * self.k2_prop[i] + A43 * self.k3_prop[i]);
         }
         rhs(z + 0.8 * h, &self.y_stage, &mut self.k4);
 
@@ -151,7 +152,11 @@ impl Dopri5Stepper {
         lin_op(z, a5_z, y, &mut self.y_prop);
 
         for i in 0..size {
-            self.y_stage[i] = self.y_prop[i] + h * (A51 * self.k1_prop[i] + A52 * self.k2_prop[i] + A53 * self.k3_prop[i] + A54 * self.k4_prop[i]);
+            self.y_stage[i] = self.y_prop[i]
+                + h * (A51 * self.k1_prop[i]
+                    + A52 * self.k2_prop[i]
+                    + A53 * self.k3_prop[i]
+                    + A54 * self.k4_prop[i]);
         }
         rhs(a5_z, &self.y_stage, &mut self.k5);
 
@@ -164,7 +169,12 @@ impl Dopri5Stepper {
         lin_op(z, z + h, y, &mut self.y_prop);
 
         for i in 0..size {
-            self.y_stage[i] = self.y_prop[i] + h * (A61 * self.k1_prop[i] + A62 * self.k2_prop[i] + A63 * self.k3_prop[i] + A64 * self.k4_prop[i] + A65 * self.k5_prop[i]);
+            self.y_stage[i] = self.y_prop[i]
+                + h * (A61 * self.k1_prop[i]
+                    + A62 * self.k2_prop[i]
+                    + A63 * self.k3_prop[i]
+                    + A64 * self.k4_prop[i]
+                    + A65 * self.k5_prop[i]);
         }
         rhs(z + h, &self.y_stage, &mut self.k6);
 
@@ -177,7 +187,12 @@ impl Dopri5Stepper {
 
         for i in 0..size {
             let k6_p = self.k6[i];
-            self.y_stage[i] = self.y_prop[i] + h * (A71 * self.k1_prop[i] + A73 * self.k3_prop[i] + A74 * self.k4_prop[i] + A75 * self.k5_prop[i] + A76 * k6_p);
+            self.y_stage[i] = self.y_prop[i]
+                + h * (A71 * self.k1_prop[i]
+                    + A73 * self.k3_prop[i]
+                    + A74 * self.k4_prop[i]
+                    + A75 * self.k5_prop[i]
+                    + A76 * k6_p);
         }
         rhs(z + h, &self.y_stage, &mut self.k7);
 
@@ -192,15 +207,25 @@ impl Dopri5Stepper {
             let k6_p = self.k6[i];
             let k7_p = self.k7[i];
 
-            let err = h * (E1 * self.k1_prop[i] + E3 * self.k3_prop[i] + E4 * self.k4_prop[i] + E5 * self.k5_prop[i] + E6 * k6_p + E7 * k7_p);
+            let err = h
+                * (E1 * self.k1_prop[i]
+                    + E3 * self.k3_prop[i]
+                    + E4 * self.k4_prop[i]
+                    + E5 * self.k5_prop[i]
+                    + E6 * k6_p
+                    + E7 * k7_p);
             self.y_err[i] = err;
-            
+
             // Standard scale factor for error evaluation: tol = atol + max(|y|, |y_stage|) * rtol
             let norm_y = y[i].norm();
             let norm_stage = self.y_stage[i].norm();
-            let max_val = if norm_y > norm_stage { norm_y } else { norm_stage };
+            let max_val = if norm_y > norm_stage {
+                norm_y
+            } else {
+                norm_stage
+            };
             let tol = self.atol + max_val * self.rtol;
-            
+
             let term = err.norm() / tol;
             err_sum += term * term;
         }
@@ -210,12 +235,18 @@ impl Dopri5Stepper {
 
         // Check step acceptability
         let accepted = error <= 1.0;
-        
+
         // Calculate next step size using the Lund PI step size controller
         let factor = if error > 0.0 {
-            let mut fac = self.safety * (1.0 / error).powf(self.beta1) * (self.last_error / error).powf(self.beta2);
-            if fac < 0.2 { fac = 0.2; }
-            if fac > 5.0 { fac = 5.0; }
+            let mut fac = self.safety
+                * (1.0 / error).powf(self.beta1)
+                * (self.last_error / error).powf(self.beta2);
+            if fac < 0.2 {
+                fac = 0.2;
+            }
+            if fac > 5.0 {
+                fac = 5.0;
+            }
             fac
         } else {
             5.0
@@ -226,9 +257,14 @@ impl Dopri5Stepper {
             // Apply Integrating Factor linear step to input field vector
             lin_op(z, z + h, y, &mut self.y_prop);
             for i in 0..size {
-                y[i] = self.y_prop[i] + h * (A71 * self.k1[i] + A73 * self.k3[i] + A74 * self.k4[i] + A75 * self.k5[i] + A76 * self.k6[i]);
+                y[i] = self.y_prop[i]
+                    + h * (A71 * self.k1[i]
+                        + A73 * self.k3[i]
+                        + A74 * self.k4[i]
+                        + A75 * self.k5[i]
+                        + A76 * self.k6[i]);
             }
-            
+
             // FSAL transition: k7 becomes the next step's k1
             self.k1.copy_from_slice(&self.k7);
             self.last_error = error.max(1.0e-4);

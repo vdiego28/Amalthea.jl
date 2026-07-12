@@ -98,7 +98,7 @@ impl ScanQueue {
     pub fn checkout_next_index(&self) -> Result<Option<usize>, String> {
         let lock = FlockLock::new(&self.lock_path)?;
         lock.lock()?;
-        
+
         let result = (|| -> Result<Option<usize>, String> {
             // First check if the file is accessible
             if !std::path::Path::new(&self.qfile).exists() {
@@ -115,25 +115,32 @@ impl ScanQueue {
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
 
-            let writer = writer_opt.ok_or_else(|| format!("Failed to open queue file: {}", self.qfile))?;
+            let writer =
+                writer_opt.ok_or_else(|| format!("Failed to open queue file: {}", self.qfile))?;
             let mut qdata = vec![0; self.total_points];
 
-            let found_idx = writer.with_existing_int_dataset_2d("qdata", &mut qdata, |writer, dset_id, qdata| {
-                writer.read_dataset_int(dset_id, qdata)?;
-                Ok(qdata.iter().position(|&x| x == 0))
-            })?;
+            let found_idx = writer.with_existing_int_dataset_2d(
+                "qdata",
+                &mut qdata,
+                |writer, dset_id, qdata| {
+                    writer.read_dataset_int(dset_id, qdata)?;
+                    Ok(qdata.iter().position(|&x| x == 0))
+                },
+            )?;
 
             if let Some(idx) = found_idx {
                 qdata[idx] = 1;
-                writer.with_existing_int_dataset_2d("qdata", &mut qdata, |writer, dset_id, qdata| {
-                    writer.write_dataset_int(dset_id, qdata)
-                })?;
+                writer.with_existing_int_dataset_2d(
+                    "qdata",
+                    &mut qdata,
+                    |writer, dset_id, qdata| writer.write_dataset_int(dset_id, qdata),
+                )?;
                 Ok(Some(idx))
             } else {
                 Ok(None)
             }
         })();
-        
+
         let _ = lock.unlock();
         result
     }
@@ -141,7 +148,7 @@ impl ScanQueue {
     pub fn mark_completed(&self, idx: usize, success: bool) -> Result<(), String> {
         let lock = FlockLock::new(&self.lock_path)?;
         lock.lock()?;
-        
+
         let result = (|| -> Result<(), String> {
             if !std::path::Path::new(&self.qfile).exists() {
                 return Ok(());
@@ -157,50 +164,74 @@ impl ScanQueue {
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
 
-            let writer = writer_opt.ok_or_else(|| format!("Failed to open queue file: {}", self.qfile))?;
+            let writer =
+                writer_opt.ok_or_else(|| format!("Failed to open queue file: {}", self.qfile))?;
             let mut qdata = vec![0; self.total_points];
 
-            writer.with_existing_int_dataset_2d("qdata", &mut qdata, |writer, dset_id, qdata| {
-                writer.read_dataset_int(dset_id, qdata)?;
+            writer.with_existing_int_dataset_2d(
+                "qdata",
+                &mut qdata,
+                |writer, dset_id, qdata| {
+                    writer.read_dataset_int(dset_id, qdata)?;
 
-                if idx < qdata.len() {
-                    qdata[idx] = if success { 2 } else { 3 };
-                    writer.write_dataset_int(dset_id, qdata)?;
-                }
+                    if idx < qdata.len() {
+                        qdata[idx] = if success { 2 } else { 3 };
+                        writer.write_dataset_int(dset_id, qdata)?;
+                    }
 
-                Ok(())
-            })?;
+                    Ok(())
+                },
+            )?;
 
             Ok(())
         })();
-        
+
         let _ = lock.unlock();
         result
     }
 }
 
+/// Allocate a `ScanQueue` backed by the HDF5 file at `qfile_ptr`, creating
+/// its `qdata` progress dataset (zero-filled, length `total_points`) if the
+/// file doesn't already have one.
+///
+/// # Safety
+/// `qfile_ptr` must be non-null and point to a valid, NUL-terminated C
+/// string for the duration of this call. Free the returned pointer with
+/// [`free_scan_queue`] exactly once; returns null if `qfile_ptr` is null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn init_scan_queue(qfile_ptr: *const libc::c_char, total_points: usize) -> *mut ScanQueue {
+pub unsafe extern "C" fn init_scan_queue(
+    qfile_ptr: *const libc::c_char,
+    total_points: usize,
+) -> *mut ScanQueue {
     if qfile_ptr.is_null() {
         return std::ptr::null_mut();
     }
     let qfile_cstr = unsafe { std::ffi::CStr::from_ptr(qfile_ptr) };
     let qfile = qfile_cstr.to_string_lossy().into_owned();
-    if let Ok(writer) = Hdf5Writer::open_or_create(&qfile) {
-        if let Ok(api) = get_hdf5_api() {
-            let dims = [total_points as u64];
-            let maxdims = [total_points as u64];
-            if let Ok(dset_id) = writer.create_dataset_2d(writer.file_id, "qdata", api.h5t_native_int, &dims, &maxdims) {
-                let qdata = vec![0; total_points];
-                let _ = writer.write_dataset_int(dset_id, &qdata);
-                writer.close_dataset(dset_id);
-            }
+    if let Ok(writer) = Hdf5Writer::open_or_create(&qfile)
+        && let Ok(api) = get_hdf5_api()
+    {
+        let dims = [total_points as u64];
+        let maxdims = [total_points as u64];
+        if let Ok(dset_id) =
+            writer.create_dataset_2d(writer.file_id, "qdata", api.h5t_native_int, &dims, &maxdims)
+        {
+            let qdata = vec![0; total_points];
+            let _ = writer.write_dataset_int(dset_id, &qdata);
+            writer.close_dataset(dset_id);
         }
     }
     let queue = Box::new(ScanQueue::new(&qfile, total_points));
     Box::into_raw(queue)
 }
 
+/// Free a `ScanQueue` allocated by [`init_scan_queue`].
+///
+/// # Safety
+/// `queue` must be null (a no-op) or a pointer previously returned by
+/// [`init_scan_queue`] that has not already been freed, and must not be in
+/// concurrent use by [`checkout_next_index`]/[`mark_completed`] on any thread.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn free_scan_queue(queue: *mut ScanQueue) {
     if !queue.is_null() {
@@ -210,6 +241,16 @@ pub unsafe extern "C" fn free_scan_queue(queue: *mut ScanQueue) {
     }
 }
 
+/// Atomically claim the next unclaimed scan point index (process-safe via
+/// `flock`/`LockFileEx`), or `-1` if none remain or `queue` is null, or `-2`
+/// on I/O error.
+///
+/// # Safety
+/// `queue` must be null or a valid pointer previously returned by
+/// [`init_scan_queue`] and not yet freed. Safe to call concurrently from
+/// multiple threads/processes sharing the same underlying file — the
+/// process-level file lock (not Rust-level synchronization) serializes
+/// access.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn checkout_next_index(queue: *mut ScanQueue) -> isize {
     if queue.is_null() {
@@ -226,6 +267,16 @@ pub unsafe extern "C" fn checkout_next_index(queue: *mut ScanQueue) -> isize {
     }
 }
 
+/// Record scan point `idx` as completed (`success != 0`) or failed in the
+/// queue's `qdata` dataset. Returns 0 on success, `-1` if `queue` is null,
+/// `-2` on I/O error.
+///
+/// # Safety
+/// `queue` must be null or a valid pointer previously returned by
+/// [`init_scan_queue`] and not yet freed. `idx` should be `< total_points`
+/// (out-of-range writes are rejected by the underlying HDF5 dataset bounds,
+/// not by this function). Safe to call concurrently — see
+/// [`checkout_next_index`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mark_completed(queue: *mut ScanQueue, idx: usize, success: i32) -> i32 {
     if queue.is_null() {
@@ -264,7 +315,10 @@ mod tests {
 
         // Test opening an existing lock file
         let lock2 = FlockLock::new(lock_path);
-        assert!(lock2.is_ok(), "FlockLock::new should succeed even if file already exists");
+        assert!(
+            lock2.is_ok(),
+            "FlockLock::new should succeed even if file already exists"
+        );
 
         // Clean up
         if temp_path.exists() {
@@ -280,9 +334,16 @@ mod tests {
         let lock_path = temp_path.to_str().unwrap();
 
         let lock = FlockLock::new(lock_path);
-        assert!(lock.is_err(), "FlockLock::new should fail when directory does not exist");
+        assert!(
+            lock.is_err(),
+            "FlockLock::new should fail when directory does not exist"
+        );
         if let Err(msg) = lock {
-            assert!(msg.starts_with("Failed to open lock file:"), "Unexpected error message: {}", msg);
+            assert!(
+                msg.starts_with("Failed to open lock file:"),
+                "Unexpected error message: {}",
+                msg
+            );
         }
     }
 }

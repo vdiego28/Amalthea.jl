@@ -18,7 +18,7 @@ using TestItems
         # A 3-segment piecewise pressure profile: `pressure = (Z, P)` with
         # length(Z) > 2 triggers Interface.jl's `makemode_s`/`makedensity`
         # general-tuple branch (`Capillary.gradient(gas, Z, P)`), which now
-        # (BACKLOG.md Phase F item 3) builds a `MultiPointGradient` instead of
+        # (docs/dev/BACKLOG.md Phase F item 3) builds a `MultiPointGradient` instead of
         # `nothing`, so `LinearOps.make_linop`'s Capillary specialization
         # wraps it in the same `ZDepLinopMarcatili` the two-point gradient
         # (Phase 7) uses -- `ensure_linop_at` (Rust) selects the segment

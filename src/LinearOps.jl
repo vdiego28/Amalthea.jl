@@ -77,7 +77,7 @@ end
 # `ZDepLinopFree` mirrors `Capillary.ZDepLinopMarcatili` (see that struct's
 # doc for the full rationale — density spline transfer, why β1 needs a
 # closed form rather than a LUT) for the free-space (`TransFree`) geometry —
-# BACKLOG.md Phase D.5. `linop!` behaves identically everywhere an ordinary
+# docs/dev/BACKLOG.md Phase D.5. `linop!` behaves identically everywhere an ordinary
 # z-dependent linop is used (only `RustNativeStepper` inspects the wrapper
 # type); the extra fields are the metadata the native resident path needs
 # to recompute `self.linop` AND the nonlinear norm array `self.free_m` from

@@ -16,7 +16,7 @@ using TestItems
         # Kerr-only — Phase 5's first gate. Two modes (HE11 + HE12) so the
         # to_space! sum-over-modes and back-projection matmuls are genuinely
         # exercised (not left implicitly untested by a single-mode
-        # shortcut) — see docs/native-port/MATH.md §3.3. `full=false` here
+        # shortcut) — see docs/dev/native-port/MATH.md §3.3. `full=false` here
         # is not an artificial restriction: `Interface.needfull` selects
         # exactly this (the radial modal integral) for any all-HE,n=1 mode
         # collection, i.e. this is the common case.

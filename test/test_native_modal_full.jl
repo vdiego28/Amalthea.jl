@@ -12,7 +12,7 @@ using TestItems
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
-        # BACKLOG.md Phase E.3: `full=true` — a genuine 2-D `(r,θ)` cubature
+        # docs/dev/BACKLOG.md Phase E.3: `full=true` — a genuine 2-D `(r,θ)` cubature
         # (`Cubature.hcubature_v`, the same h-adaptive routine Julia calls;
         # native.rs binds it directly, so node placement is bit-identical,
         # not just close) instead of the `full=false` radial-only integral

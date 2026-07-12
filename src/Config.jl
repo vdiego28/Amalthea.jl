@@ -4,7 +4,7 @@ module Config
     BackendConfig
 
 Snapshot of every `LUNA_USE_RUST_*`/`LUNA_*` Rust-backend toggle, resolved
-from `ENV` by [`backend_config`](@ref). BACKLOG.md S4 item 1 (suggestion 6):
+from `ENV` by [`backend_config`](@ref). docs/dev/BACKLOG.md S4 item 1 (suggestion 6):
 before this, each toggle was read by its own `get(ENV, "LUNA_USE_RUST_...",
 "default") == "1"` one-liner, duplicated at its call site with no single
 place to see the whole toggle surface — and, found while consolidating
@@ -24,11 +24,11 @@ Fields (each `Bool`, default `false` unless noted):
 - `dispersion`: `LUNA_USE_RUST_DISPERSION` — Zeisberger/Marcatili neff/β.
 - `qdht`: `LUNA_USE_RUST_QDHT` — batch QDHT transform kernel.
 - `qdht_blas`: `LUNA_QDHT_BLAS` — BLAS-3 dgemm path for QDHT (opt-in on top
-  of `qdht`; see BACKLOG.md S1 item 5).
+  of `qdht`; see docs/dev/BACKLOG.md S1 item 5).
 - `native_wisdom`: `LUNA_NATIVE_FFTW_WISDOM` — on-disk FFTW planner-wisdom
   persistence for the native path (default off; see
-  `docs/native-port/PLAN_FFTW_WISDOM_FIX.md`).
-- `deterministic`: `LUNA_NATIVE_DETERMINISTIC` — BACKLOG.md S5.2. Forces
+  `docs/dev/native-port/PLAN_FFTW_WISDOM_FIX.md`).
+- `deterministic`: `LUNA_NATIVE_DETERMINISTIC` — docs/dev/BACKLOG.md S5.2. Forces
   both Rust-side QDHT handles — the native-port radial-geometry one
   (`RK45.jl`'s `native_set_deterministic`) and the older per-kernel
   `LUNA_USE_RUST_QDHT` one (`NonlinearRHS._make_rust_qdht_handle`) — to

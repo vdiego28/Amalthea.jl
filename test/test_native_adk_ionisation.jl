@@ -11,7 +11,7 @@ using TestItems
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
-        # BACKLOG.md Phase I item 3: `ionisation=:ADK` builds `Ionisation.IonRateADK`
+        # docs/dev/BACKLOG.md Phase I item 3: `ionisation=:ADK` builds `Ionisation.IonRateADK`
         # (closed-form), not `IonRatePPTAccel` (spline LUT) — the native plasma
         # wiring previously required the latter, so :ADK always fell back.
         #
@@ -19,7 +19,7 @@ using TestItems
         # exp(-const/E) — at weak fields the rate is zero everywhere (below
         # `ADK_threshold`) and a plasma-vs-no-plasma comparison spuriously
         # passes with *no* ionization physics actually exercised. This energy
-        # was chosen (see BACKLOG.md's Phase I item 3 postmortem) to put a
+        # was chosen (see docs/dev/BACKLOG.md's Phase I item 3 postmortem) to put a
         # measurable (~0.5%) but not chaotic ionization effect on the
         # propagation, which is what actually caught a real bug: a missing
         # density factor in the native plasma polarization accumulation

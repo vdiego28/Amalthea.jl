@@ -12,7 +12,7 @@ using TestItems
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
-        # RealGrid + joint 3-D FFT, Kerr + plasma (PPT) — BACKLOG.md Phase I
+        # RealGrid + joint 3-D FFT, Kerr + plasma (PPT) — docs/dev/BACKLOG.md Phase I
         # item 6: free-space gains plasma the same way radial did in Phase
         # D.2 (`apply_plasma_free` in native.rs mirrors `apply_plasma_radial`
         # per (y,x) column instead of per r-column, since `TransFree`'s
@@ -104,7 +104,7 @@ using TestItems
             println("Free-space plasma-on vs plasma-off rel (Julia, non-vacuousness): ", rel_plasma_effect)
             @test rel_plasma_effect > 1e-6
 
-            # Triangulate (BACKLOG.md Phase I item 1/3 postmortem lesson):
+            # Triangulate (docs/dev/BACKLOG.md Phase I item 1/3 postmortem lesson):
             # native vs Julia AT the plasma-matters energy, and native vs
             # Julia's plasma-OFF result (must NOT match) — a weak-field-only
             # equivalence check would let a "native silently contributes

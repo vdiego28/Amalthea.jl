@@ -13,7 +13,7 @@ using TestItems
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
-        # BACKLOG.md Phase I item 4: gas mixtures outside mode-averaged
+        # docs/dev/BACKLOG.md Phase I item 4: gas mixtures outside mode-averaged
         # geometry. Kerr is linear in density·γ3, so it collapses to one
         # scalar kerr_fac regardless of geometry — same reasoning as Phase
         # F.4's mode-averaged mixture support, just applied to radial here.

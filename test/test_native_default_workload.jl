@@ -3,7 +3,7 @@ using TestItems
 @testitem "Native default workload actually runs natively" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
 
-    # BACKLOG.md Phase C.2 — the regression test that would have caught
+    # docs/dev/BACKLOG.md Phase C.2 — the regression test that would have caught
     # REVIEW.md §3.2: the fork's flagship default field-resolved workload
     # (`prop_capillary` with `plasma = !envelope`, i.e. plasma ON by default)
     # silently fell back to the Julia stepper because the native plasma
@@ -42,7 +42,7 @@ using TestItems
         end
 
         @testset "Default prop_gnlse (envelope, shotnoise on) uses RustNativeStepper" begin
-            # BACKLOG.md Phase I item 1 — until the EnvGrid mode-averaged
+            # docs/dev/BACKLOG.md Phase I item 1 — until the EnvGrid mode-averaged
             # Et_noise fix, this fell back silently (shotnoise=true is
             # Interface.jl's default for prop_gnlse too — Interface.jl:1053),
             # exactly mirroring the prop_capillary regression above.

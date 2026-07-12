@@ -2,7 +2,7 @@
 //!
 //! We bind the **same** double-precision FFTW3 C library that Julia's `FFTW.jl`
 //! uses (path passed in from `FFTW.FFTW_jll.libfftw3`), so the native transforms
-//! are bit-parity with the Julia oracle — see `docs/native-port/ARCHITECTURE.md`
+//! are bit-parity with the Julia oracle — see `docs/dev/native-port/ARCHITECTURE.md`
 //! §4.1 and `MATH.md` §4. The library is located + `dlopen`ed at runtime exactly
 //! like `io.rs` does for libhdf5 (no link-time dependency).
 //!
@@ -21,13 +21,13 @@
 //! this reason. `FFTW_UNALIGNED` is always set so the new-array execute variants
 //! are safe on arbitrary Rust `Vec` buffers.
 
-use std::ffi::CString;
-#[cfg(unix)]
-use std::ffi::CStr;
-use std::path::Path;
-use std::sync::Mutex;
 use libc::{c_int, c_uint, c_void};
 use num_complex::Complex;
+#[cfg(unix)]
+use std::ffi::CStr;
+use std::ffi::CString;
+use std::path::Path;
+use std::sync::Mutex;
 
 /// FFTW plan **creation** is not thread-safe (only `fftw_execute*` is); concurrent
 /// `fftw_plan_*` calls race and crash. We serialize all planning behind this lock,
@@ -51,7 +51,7 @@ type FftwPlan = *mut c_void;
 type FftwComplex = [f64; 2];
 
 /// `fftw_iodim` — one dimension's `{n, input_stride, output_stride}` for the
-/// guru split-array planning interface (BACKLOG.md S1 item 6, Phase 0). Only
+/// guru split-array planning interface (docs/dev/BACKLOG.md S1 item 6, Phase 0). Only
 /// rank-1, howmany_rank-0 transforms are used here (single-array 1-D
 /// transforms of contiguous re/im buffers) — `is`/`os` are both 1 in every
 /// caller below.
@@ -74,7 +74,8 @@ impl Library {
         {
             let path_str = path.to_string_lossy();
             let c_path = CString::new(path_str.as_ref()).map_err(|e| e.to_string())?;
-            let handle = unsafe { libc::dlopen(c_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL) };
+            let handle =
+                unsafe { libc::dlopen(c_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL) };
             if handle.is_null() {
                 let err = unsafe { libc::dlerror() };
                 let msg = if err.is_null() {
@@ -125,10 +126,14 @@ impl Drop for Library {
     fn drop(&mut self) {
         unsafe {
             #[cfg(unix)]
-            { libc::dlclose(self.handle); }
+            {
+                libc::dlclose(self.handle);
+            }
             #[cfg(windows)]
             {
-                unsafe extern "system" { fn FreeLibrary(h: *mut c_void) -> c_int; }
+                unsafe extern "system" {
+                    fn FreeLibrary(h: *mut c_void) -> c_int;
+                }
                 FreeLibrary(self.handle);
             }
         }
@@ -138,46 +143,76 @@ impl Drop for Library {
 /// Candidate library names to try when no explicit path is given.
 fn default_names() -> &'static [&'static str] {
     #[cfg(target_os = "macos")]
-    { &["libfftw3.dylib", "libfftw3.3.dylib"] }
+    {
+        &["libfftw3.dylib", "libfftw3.3.dylib"]
+    }
     #[cfg(target_os = "windows")]
-    { &["libfftw3-3.dll", "fftw3.dll"] }
+    {
+        &["libfftw3-3.dll", "fftw3.dll"]
+    }
     #[cfg(all(unix, not(target_os = "macos")))]
-    { &["libfftw3.so.3", "libfftw3.so"] }
+    {
+        &["libfftw3.so.3", "libfftw3.so"]
+    }
 }
 
 // ── bound entry points ──────────────────────────────────────────────────────
 type PlanDft1d =
     unsafe extern "C" fn(c_int, *mut FftwComplex, *mut FftwComplex, c_int, c_uint) -> FftwPlan;
-type PlanR2c1d =
-    unsafe extern "C" fn(c_int, *mut f64, *mut FftwComplex, c_uint) -> FftwPlan;
-type PlanC2r1d =
-    unsafe extern "C" fn(c_int, *mut FftwComplex, *mut f64, c_uint) -> FftwPlan;
+type PlanR2c1d = unsafe extern "C" fn(c_int, *mut f64, *mut FftwComplex, c_uint) -> FftwPlan;
+type PlanC2r1d = unsafe extern "C" fn(c_int, *mut FftwComplex, *mut f64, c_uint) -> FftwPlan;
 type PlanR2c3d =
     unsafe extern "C" fn(c_int, c_int, c_int, *mut f64, *mut FftwComplex, c_uint) -> FftwPlan;
 type PlanC2r3d =
     unsafe extern "C" fn(c_int, c_int, c_int, *mut FftwComplex, *mut f64, c_uint) -> FftwPlan;
-type PlanDft3d =
-    unsafe extern "C" fn(c_int, c_int, c_int, *mut FftwComplex, *mut FftwComplex, c_int, c_uint) -> FftwPlan;
+type PlanDft3d = unsafe extern "C" fn(
+    c_int,
+    c_int,
+    c_int,
+    *mut FftwComplex,
+    *mut FftwComplex,
+    c_int,
+    c_uint,
+) -> FftwPlan;
 type ExecDft = unsafe extern "C" fn(FftwPlan, *mut FftwComplex, *mut FftwComplex);
 type ExecR2c = unsafe extern "C" fn(FftwPlan, *mut f64, *mut FftwComplex);
 type ExecC2r = unsafe extern "C" fn(FftwPlan, *mut FftwComplex, *mut f64);
 type DestroyPlan = unsafe extern "C" fn(FftwPlan);
-// Guru split-array planning/execution (BACKLOG.md S1 item 6, Phase 0) — same
+// Guru split-array planning/execution (docs/dev/BACKLOG.md S1 item 6, Phase 0) — same
 // library, separate re/im `double*` pointers instead of interleaved
 // `fftw_complex`. Only the rank-1 signatures used by the 1-D SoA plan types
 // below are declared; add 3-D variants when a 3-D SoA caller (free-space
 // geometry) actually needs them.
 type PlanGuruSplitDft1d = unsafe extern "C" fn(
-    c_int, *const FftwIoDim, c_int, *const FftwIoDim,
-    *mut f64, *mut f64, *mut f64, *mut f64, c_uint,
+    c_int,
+    *const FftwIoDim,
+    c_int,
+    *const FftwIoDim,
+    *mut f64,
+    *mut f64,
+    *mut f64,
+    *mut f64,
+    c_uint,
 ) -> FftwPlan;
 type PlanGuruSplitDftR2c1d = unsafe extern "C" fn(
-    c_int, *const FftwIoDim, c_int, *const FftwIoDim,
-    *mut f64, *mut f64, *mut f64, c_uint,
+    c_int,
+    *const FftwIoDim,
+    c_int,
+    *const FftwIoDim,
+    *mut f64,
+    *mut f64,
+    *mut f64,
+    c_uint,
 ) -> FftwPlan;
 type PlanGuruSplitDftC2r1d = unsafe extern "C" fn(
-    c_int, *const FftwIoDim, c_int, *const FftwIoDim,
-    *mut f64, *mut f64, *mut f64, c_uint,
+    c_int,
+    *const FftwIoDim,
+    c_int,
+    *const FftwIoDim,
+    *mut f64,
+    *mut f64,
+    *mut f64,
+    c_uint,
 ) -> FftwPlan;
 type ExecSplitDft = unsafe extern "C" fn(FftwPlan, *mut f64, *mut f64, *mut f64, *mut f64);
 type ExecSplitDftR2c = unsafe extern "C" fn(FftwPlan, *mut f64, *mut f64, *mut f64);
@@ -197,7 +232,7 @@ type ExportWisdom = unsafe extern "C" fn(*const libc::c_char) -> c_int;
 // raised the process-global thread count, e.g. `JULIA_NUM_THREADS=auto` in
 // CI) internally dispatches to FFTW's own worker pool on every execute, and
 // concurrent execute calls on such a plan from multiple rayon workers
-// deadlock (see BACKLOG.md's native-radial-threading hang postmortem).
+// deadlock (see docs/dev/BACKLOG.md's native-radial-threading hang postmortem).
 type PlanWithNthreads = unsafe extern "C" fn(c_int);
 type PlannerNthreads = unsafe extern "C" fn() -> c_int;
 
@@ -238,7 +273,10 @@ impl FftwApi {
                 let mut found = None;
                 for name in default_names() {
                     match Library::load(Path::new(name)) {
-                        Ok(l) => { found = Some(l); break; }
+                        Ok(l) => {
+                            found = Some(l);
+                            break;
+                        }
                         Err(e) => last = e,
                     }
                 }
@@ -264,7 +302,7 @@ impl FftwApi {
         let exec_r2c = sym!("fftw_execute_dft_r2c", ExecR2c);
         let exec_c2r = sym!("fftw_execute_dft_c2r", ExecC2r);
         let destroy_plan = sym!("fftw_destroy_plan", DestroyPlan);
-        // Optional (S1 item 1, BACKLOG.md): every standard FFTW3 build
+        // Optional (S1 item 1, docs/dev/BACKLOG.md): every standard FFTW3 build
         // exports these, but lookup failure here should never block plan
         // creation (the whole feature is a planning-time speedup, not a
         // correctness dependency) — `None` just means `import`/`export`
@@ -284,8 +322,10 @@ impl FftwApi {
             .map(|p| unsafe { std::mem::transmute::<*mut c_void, PlannerNthreads>(p) });
 
         let plan_guru_split_dft_1d = sym!("fftw_plan_guru_split_dft", PlanGuruSplitDft1d);
-        let plan_guru_split_dft_r2c_1d = sym!("fftw_plan_guru_split_dft_r2c", PlanGuruSplitDftR2c1d);
-        let plan_guru_split_dft_c2r_1d = sym!("fftw_plan_guru_split_dft_c2r", PlanGuruSplitDftC2r1d);
+        let plan_guru_split_dft_r2c_1d =
+            sym!("fftw_plan_guru_split_dft_r2c", PlanGuruSplitDftR2c1d);
+        let plan_guru_split_dft_c2r_1d =
+            sym!("fftw_plan_guru_split_dft_c2r", PlanGuruSplitDftC2r1d);
         let exec_split_dft = sym!("fftw_execute_split_dft", ExecSplitDft);
         let exec_split_dft_r2c = sym!("fftw_execute_split_dft_r2c", ExecSplitDftR2c);
         let exec_split_dft_c2r = sym!("fftw_execute_split_dft_c2r", ExecSplitDftC2r);
@@ -333,7 +373,7 @@ impl FftwApi {
         result
     }
 
-    /// Load previously-saved planner wisdom from `path` — BACKLOG.md S1
+    /// Load previously-saved planner wisdom from `path` — docs/dev/BACKLOG.md S1
     /// item 1. Best-effort: a missing file, a symbol-lookup miss at `load`
     /// time, or a malformed wisdom file all just mean "no wisdom available
     /// yet" (returns `false`), never an error — planning still works from
@@ -345,20 +385,24 @@ impl FftwApi {
             Some(f) => f,
             None => return false,
         };
-        let Ok(c_path) = CString::new(path) else { return false };
+        let Ok(c_path) = CString::new(path) else {
+            return false;
+        };
         let _guard = PLANNER_LOCK.lock().unwrap();
         unsafe { f(c_path.as_ptr()) != 0 }
     }
 
     /// Save the process's current planner wisdom (accumulated across every
     /// plan created so far, not just this call's caller) to `path` —
-    /// BACKLOG.md S1 item 1. Best-effort, same as `import_wisdom_from_filename`.
+    /// docs/dev/BACKLOG.md S1 item 1. Best-effort, same as `import_wisdom_from_filename`.
     pub fn export_wisdom_to_filename(&self, path: &str) -> bool {
         let f = match self.export_wisdom {
             Some(f) => f,
             None => return false,
         };
-        let Ok(c_path) = CString::new(path) else { return false };
+        let Ok(c_path) = CString::new(path) else {
+            return false;
+        };
         let _guard = PLANNER_LOCK.lock().unwrap();
         unsafe { f(c_path.as_ptr()) != 0 }
     }
@@ -386,11 +430,19 @@ impl ComplexFft1d {
         let f = flags | FFTW_UNALIGNED;
         let _guard = PLANNER_LOCK.lock().unwrap();
         let (fwd, inv) = api.with_single_threaded_plan(|| unsafe {
-            let fwd = (api.plan_dft_1d)(n as c_int, a.as_mut_ptr(), b.as_mut_ptr(), FFTW_FORWARD, f);
-            let inv = (api.plan_dft_1d)(n as c_int, a.as_mut_ptr(), b.as_mut_ptr(), FFTW_BACKWARD, f);
+            let fwd =
+                (api.plan_dft_1d)(n as c_int, a.as_mut_ptr(), b.as_mut_ptr(), FFTW_FORWARD, f);
+            let inv =
+                (api.plan_dft_1d)(n as c_int, a.as_mut_ptr(), b.as_mut_ptr(), FFTW_BACKWARD, f);
             (fwd, inv)
         });
-        ComplexFft1d { n, fwd, inv, destroy_plan: api.destroy_plan, exec_dft: api.exec_dft }
+        ComplexFft1d {
+            n,
+            fwd,
+            inv,
+            destroy_plan: api.destroy_plan,
+            exec_dft: api.exec_dft,
+        }
     }
 
     /// Forward transform `out = fft(inp)` (unnormalized).
@@ -398,8 +450,11 @@ impl ComplexFft1d {
         assert_eq!(inp.len(), self.n);
         assert_eq!(out.len(), self.n);
         unsafe {
-            (self.exec_dft)(self.fwd, inp.as_mut_ptr() as *mut FftwComplex,
-                            out.as_mut_ptr() as *mut FftwComplex);
+            (self.exec_dft)(
+                self.fwd,
+                inp.as_mut_ptr() as *mut FftwComplex,
+                out.as_mut_ptr() as *mut FftwComplex,
+            );
         }
     }
 
@@ -408,8 +463,11 @@ impl ComplexFft1d {
         assert_eq!(inp.len(), self.n);
         assert_eq!(out.len(), self.n);
         unsafe {
-            (self.exec_dft)(self.inv, inp.as_mut_ptr() as *mut FftwComplex,
-                            out.as_mut_ptr() as *mut FftwComplex);
+            (self.exec_dft)(
+                self.inv,
+                inp.as_mut_ptr() as *mut FftwComplex,
+                out.as_mut_ptr() as *mut FftwComplex,
+            );
         }
     }
 }
@@ -417,7 +475,10 @@ impl ComplexFft1d {
 impl Drop for ComplexFft1d {
     fn drop(&mut self) {
         let _guard = PLANNER_LOCK.lock().unwrap();
-        unsafe { (self.destroy_plan)(self.fwd); (self.destroy_plan)(self.inv); }
+        unsafe {
+            (self.destroy_plan)(self.fwd);
+            (self.destroy_plan)(self.inv);
+        }
     }
 }
 
@@ -425,7 +486,7 @@ impl Drop for ComplexFft1d {
 /// file's own module doc states FFTW's contract that `fftw_execute*` (only
 /// `fftw_plan_*` is unsafe to call concurrently) is reentrant/thread-safe
 /// when invoked against one shared plan with **distinct** buffer
-/// arguments, which is exactly how BACKLOG.md S2 (threading the native
+/// arguments, which is exactly how docs/dev/BACKLOG.md S2 (threading the native
 /// RHS, `native.rs`'s `rhs_radial`) uses this from multiple rayon workers
 /// — each worker's `&mut [Complex<f64>]` chunk is a disjoint slice of the
 /// caller's own column-major buffer. This guarantee only holds for plans
@@ -460,23 +521,39 @@ impl RealFft1d {
         // intact (1-D c2r supports it). Matches the safe out-of-place pattern.
         let (r2c, c2r) = api.with_single_threaded_plan(|| unsafe {
             let r2c = (api.plan_r2c_1d)(n as c_int, tbuf.as_mut_ptr(), sbuf.as_mut_ptr(), f);
-            let c2r = (api.plan_c2r_1d)(n as c_int, sbuf.as_mut_ptr(), tbuf.as_mut_ptr(),
-                                         f | FFTW_PRESERVE_INPUT);
+            let c2r = (api.plan_c2r_1d)(
+                n as c_int,
+                sbuf.as_mut_ptr(),
+                tbuf.as_mut_ptr(),
+                f | FFTW_PRESERVE_INPUT,
+            );
             (r2c, c2r)
         });
-        RealFft1d { n, nspec, r2c, c2r, destroy_plan: api.destroy_plan,
-                    exec_r2c: api.exec_r2c, exec_c2r: api.exec_c2r }
+        RealFft1d {
+            n,
+            nspec,
+            r2c,
+            c2r,
+            destroy_plan: api.destroy_plan,
+            exec_r2c: api.exec_r2c,
+            exec_c2r: api.exec_c2r,
+        }
     }
 
-    pub fn nspec(&self) -> usize { self.nspec }
+    pub fn nspec(&self) -> usize {
+        self.nspec
+    }
 
     /// `spec = rfft(time)` (unnormalized), `spec.len() == n/2+1`.
     pub fn forward(&self, time: &mut [f64], spec: &mut [Complex<f64>]) {
         assert_eq!(time.len(), self.n);
         assert_eq!(spec.len(), self.nspec);
         unsafe {
-            (self.exec_r2c)(self.r2c, time.as_mut_ptr(),
-                            spec.as_mut_ptr() as *mut FftwComplex);
+            (self.exec_r2c)(
+                self.r2c,
+                time.as_mut_ptr(),
+                spec.as_mut_ptr() as *mut FftwComplex,
+            );
         }
     }
 
@@ -485,8 +562,11 @@ impl RealFft1d {
         assert_eq!(spec.len(), self.nspec);
         assert_eq!(time.len(), self.n);
         unsafe {
-            (self.exec_c2r)(self.c2r, spec.as_mut_ptr() as *mut FftwComplex,
-                            time.as_mut_ptr());
+            (self.exec_c2r)(
+                self.c2r,
+                spec.as_mut_ptr() as *mut FftwComplex,
+                time.as_mut_ptr(),
+            );
         }
     }
 }
@@ -494,7 +574,10 @@ impl RealFft1d {
 impl Drop for RealFft1d {
     fn drop(&mut self) {
         let _guard = PLANNER_LOCK.lock().unwrap();
-        unsafe { (self.destroy_plan)(self.r2c); (self.destroy_plan)(self.c2r); }
+        unsafe {
+            (self.destroy_plan)(self.r2c);
+            (self.destroy_plan)(self.c2r);
+        }
     }
 }
 
@@ -540,25 +623,52 @@ impl RealFft3d {
         let f = flags | FFTW_UNALIGNED;
         let _guard = PLANNER_LOCK.lock().unwrap();
         let r2c = unsafe {
-            (api.plan_r2c_3d)(n_x as c_int, n_y as c_int, n_t as c_int,
-                              tbuf.as_mut_ptr(), sbuf.as_mut_ptr(), f)
+            (api.plan_r2c_3d)(
+                n_x as c_int,
+                n_y as c_int,
+                n_t as c_int,
+                tbuf.as_mut_ptr(),
+                sbuf.as_mut_ptr(),
+                f,
+            )
         };
         let c2r = unsafe {
-            (api.plan_c2r_3d)(n_x as c_int, n_y as c_int, n_t as c_int,
-                              sbuf.as_mut_ptr(), tbuf.as_mut_ptr(), f)
+            (api.plan_c2r_3d)(
+                n_x as c_int,
+                n_y as c_int,
+                n_t as c_int,
+                sbuf.as_mut_ptr(),
+                tbuf.as_mut_ptr(),
+                f,
+            )
         };
-        RealFft3d { n_t, n_y, n_x, nspec, r2c, c2r,
-                    destroy_plan: api.destroy_plan, exec_r2c: api.exec_r2c, exec_c2r: api.exec_c2r }
+        RealFft3d {
+            n_t,
+            n_y,
+            n_x,
+            nspec,
+            r2c,
+            c2r,
+            destroy_plan: api.destroy_plan,
+            exec_r2c: api.exec_r2c,
+            exec_c2r: api.exec_c2r,
+        }
     }
 
-    pub fn nspec(&self) -> usize { self.nspec }
+    pub fn nspec(&self) -> usize {
+        self.nspec
+    }
 
     /// `spec = rfft(time, (1,2,3))` (unnormalized), column-major `(nspec, n_y, n_x)`.
     pub fn forward(&self, time: &mut [f64], spec: &mut [Complex<f64>]) {
         assert_eq!(time.len(), self.n_t * self.n_y * self.n_x);
         assert_eq!(spec.len(), self.nspec * self.n_y * self.n_x);
         unsafe {
-            (self.exec_r2c)(self.r2c, time.as_mut_ptr(), spec.as_mut_ptr() as *mut FftwComplex);
+            (self.exec_r2c)(
+                self.r2c,
+                time.as_mut_ptr(),
+                spec.as_mut_ptr() as *mut FftwComplex,
+            );
         }
     }
 
@@ -569,7 +679,11 @@ impl RealFft3d {
         assert_eq!(spec.len(), self.nspec * self.n_y * self.n_x);
         assert_eq!(time.len(), self.n_t * self.n_y * self.n_x);
         unsafe {
-            (self.exec_c2r)(self.c2r, spec.as_mut_ptr() as *mut FftwComplex, time.as_mut_ptr());
+            (self.exec_c2r)(
+                self.c2r,
+                spec.as_mut_ptr() as *mut FftwComplex,
+                time.as_mut_ptr(),
+            );
         }
     }
 }
@@ -577,7 +691,10 @@ impl RealFft3d {
 impl Drop for RealFft3d {
     fn drop(&mut self) {
         let _guard = PLANNER_LOCK.lock().unwrap();
-        unsafe { (self.destroy_plan)(self.r2c); (self.destroy_plan)(self.c2r); }
+        unsafe {
+            (self.destroy_plan)(self.r2c);
+            (self.destroy_plan)(self.c2r);
+        }
     }
 }
 
@@ -609,14 +726,36 @@ impl ComplexFft3d {
         let f = flags | FFTW_UNALIGNED;
         let _guard = PLANNER_LOCK.lock().unwrap();
         let fwd = unsafe {
-            (api.plan_dft_3d)(n_x as c_int, n_y as c_int, n_t as c_int,
-                              a.as_mut_ptr(), b.as_mut_ptr(), FFTW_FORWARD, f)
+            (api.plan_dft_3d)(
+                n_x as c_int,
+                n_y as c_int,
+                n_t as c_int,
+                a.as_mut_ptr(),
+                b.as_mut_ptr(),
+                FFTW_FORWARD,
+                f,
+            )
         };
         let inv = unsafe {
-            (api.plan_dft_3d)(n_x as c_int, n_y as c_int, n_t as c_int,
-                              a.as_mut_ptr(), b.as_mut_ptr(), FFTW_BACKWARD, f)
+            (api.plan_dft_3d)(
+                n_x as c_int,
+                n_y as c_int,
+                n_t as c_int,
+                a.as_mut_ptr(),
+                b.as_mut_ptr(),
+                FFTW_BACKWARD,
+                f,
+            )
         };
-        ComplexFft3d { n_t, n_y, n_x, fwd, inv, destroy_plan: api.destroy_plan, exec_dft: api.exec_dft }
+        ComplexFft3d {
+            n_t,
+            n_y,
+            n_x,
+            fwd,
+            inv,
+            destroy_plan: api.destroy_plan,
+            exec_dft: api.exec_dft,
+        }
     }
 
     /// `out = fft(inp, (1,2,3))` (unnormalized).
@@ -625,8 +764,11 @@ impl ComplexFft3d {
         assert_eq!(inp.len(), ntot);
         assert_eq!(out.len(), ntot);
         unsafe {
-            (self.exec_dft)(self.fwd, inp.as_mut_ptr() as *mut FftwComplex,
-                            out.as_mut_ptr() as *mut FftwComplex);
+            (self.exec_dft)(
+                self.fwd,
+                inp.as_mut_ptr() as *mut FftwComplex,
+                out.as_mut_ptr() as *mut FftwComplex,
+            );
         }
     }
 
@@ -636,8 +778,11 @@ impl ComplexFft3d {
         assert_eq!(inp.len(), ntot);
         assert_eq!(out.len(), ntot);
         unsafe {
-            (self.exec_dft)(self.inv, inp.as_mut_ptr() as *mut FftwComplex,
-                            out.as_mut_ptr() as *mut FftwComplex);
+            (self.exec_dft)(
+                self.inv,
+                inp.as_mut_ptr() as *mut FftwComplex,
+                out.as_mut_ptr() as *mut FftwComplex,
+            );
         }
     }
 }
@@ -645,13 +790,16 @@ impl ComplexFft3d {
 impl Drop for ComplexFft3d {
     fn drop(&mut self) {
         let _guard = PLANNER_LOCK.lock().unwrap();
-        unsafe { (self.destroy_plan)(self.fwd); (self.destroy_plan)(self.inv); }
+        unsafe {
+            (self.destroy_plan)(self.fwd);
+            (self.destroy_plan)(self.inv);
+        }
     }
 }
 
 /// A complex↔complex 1-D plan pair on **split (SoA) buffers** — separate
 /// contiguous `re`/`im` `f64` arrays instead of interleaved `Complex<f64>`.
-/// BACKLOG.md S1 item 6, Phase 0: enables the native-port resident field to
+/// docs/dev/BACKLOG.md S1 item 6, Phase 0: enables the native-port resident field to
 /// move to SoA layout without paying an interleave/deinterleave tax at every
 /// FFT round-trip. Same unnormalized-transform convention as
 /// [`ComplexFft1d`] — the caller applies the `1/n` factor, never the plan.
@@ -665,7 +813,11 @@ pub struct SplitComplexFft1d {
 
 impl SplitComplexFft1d {
     pub fn new(api: &FftwApi, n: usize, flags: c_uint) -> Self {
-        let dims = [FftwIoDim { n: n as c_int, is_: 1, os: 1 }];
+        let dims = [FftwIoDim {
+            n: n as c_int,
+            is_: 1,
+            os: 1,
+        }];
         let mut ar = vec![0.0f64; n];
         let mut ai = vec![0.0f64; n];
         let mut br = vec![0.0f64; n];
@@ -683,33 +835,70 @@ impl SplitComplexFft1d {
         // way (see `inverse`).
         let (fwd, inv) = api.with_single_threaded_plan(|| unsafe {
             let fwd = (api.plan_guru_split_dft_1d)(
-                1, dims.as_ptr(), 0, std::ptr::null(),
-                ar.as_mut_ptr(), ai.as_mut_ptr(), br.as_mut_ptr(), bi.as_mut_ptr(), f,
+                1,
+                dims.as_ptr(),
+                0,
+                std::ptr::null(),
+                ar.as_mut_ptr(),
+                ai.as_mut_ptr(),
+                br.as_mut_ptr(),
+                bi.as_mut_ptr(),
+                f,
             );
             let inv = (api.plan_guru_split_dft_1d)(
-                1, dims.as_ptr(), 0, std::ptr::null(),
-                ai.as_mut_ptr(), ar.as_mut_ptr(), bi.as_mut_ptr(), br.as_mut_ptr(), f,
+                1,
+                dims.as_ptr(),
+                0,
+                std::ptr::null(),
+                ai.as_mut_ptr(),
+                ar.as_mut_ptr(),
+                bi.as_mut_ptr(),
+                br.as_mut_ptr(),
+                f,
             );
             (fwd, inv)
         });
-        SplitComplexFft1d { n, fwd, inv, destroy_plan: api.destroy_plan, exec_split_dft: api.exec_split_dft }
+        SplitComplexFft1d {
+            n,
+            fwd,
+            inv,
+            destroy_plan: api.destroy_plan,
+            exec_split_dft: api.exec_split_dft,
+        }
     }
 
     /// Forward transform: `(out_re,out_im) = fft(in_re,in_im)` (unnormalized).
-    pub fn forward(&self, in_re: &mut [f64], in_im: &mut [f64], out_re: &mut [f64], out_im: &mut [f64]) {
+    pub fn forward(
+        &self,
+        in_re: &mut [f64],
+        in_im: &mut [f64],
+        out_re: &mut [f64],
+        out_im: &mut [f64],
+    ) {
         assert_eq!(in_re.len(), self.n);
         assert_eq!(in_im.len(), self.n);
         assert_eq!(out_re.len(), self.n);
         assert_eq!(out_im.len(), self.n);
         unsafe {
-            (self.exec_split_dft)(self.fwd, in_re.as_mut_ptr(), in_im.as_mut_ptr(),
-                                   out_re.as_mut_ptr(), out_im.as_mut_ptr());
+            (self.exec_split_dft)(
+                self.fwd,
+                in_re.as_mut_ptr(),
+                in_im.as_mut_ptr(),
+                out_re.as_mut_ptr(),
+                out_im.as_mut_ptr(),
+            );
         }
     }
 
     /// Inverse transform: `(out_re,out_im) = ifft_unnormalized(in_re,in_im)`
     /// (caller divides by `n`).
-    pub fn inverse(&self, in_re: &mut [f64], in_im: &mut [f64], out_re: &mut [f64], out_im: &mut [f64]) {
+    pub fn inverse(
+        &self,
+        in_re: &mut [f64],
+        in_im: &mut [f64],
+        out_re: &mut [f64],
+        out_im: &mut [f64],
+    ) {
         assert_eq!(in_re.len(), self.n);
         assert_eq!(in_im.len(), self.n);
         assert_eq!(out_re.len(), self.n);
@@ -718,8 +907,13 @@ impl SplitComplexFft1d {
         // the backward direction (see `new`) — execution must pass the same
         // full swap, not just the output.
         unsafe {
-            (self.exec_split_dft)(self.inv, in_im.as_mut_ptr(), in_re.as_mut_ptr(),
-                                   out_im.as_mut_ptr(), out_re.as_mut_ptr());
+            (self.exec_split_dft)(
+                self.inv,
+                in_im.as_mut_ptr(),
+                in_re.as_mut_ptr(),
+                out_im.as_mut_ptr(),
+                out_re.as_mut_ptr(),
+            );
         }
     }
 }
@@ -727,14 +921,17 @@ impl SplitComplexFft1d {
 impl Drop for SplitComplexFft1d {
     fn drop(&mut self) {
         let _guard = PLANNER_LOCK.lock().unwrap();
-        unsafe { (self.destroy_plan)(self.fwd); (self.destroy_plan)(self.inv); }
+        unsafe {
+            (self.destroy_plan)(self.fwd);
+            (self.destroy_plan)(self.inv);
+        }
     }
 }
 
 /// A real↔complex 1-D plan pair on split (SoA) spectral buffers — real time
 /// array unchanged (`f64`, already "SoA" trivially), spectral output/input
 /// as separate `re`/`im` arrays instead of interleaved `Complex<f64>`.
-/// BACKLOG.md S1 item 6, Phase 0.
+/// docs/dev/BACKLOG.md S1 item 6, Phase 0.
 pub struct SplitRealFft1d {
     n: usize,
     nspec: usize,
@@ -748,7 +945,11 @@ pub struct SplitRealFft1d {
 impl SplitRealFft1d {
     pub fn new(api: &FftwApi, n: usize, flags: c_uint) -> Self {
         let nspec = n / 2 + 1;
-        let dims = [FftwIoDim { n: n as c_int, is_: 1, os: 1 }];
+        let dims = [FftwIoDim {
+            n: n as c_int,
+            is_: 1,
+            os: 1,
+        }];
         let mut tbuf = vec![0.0f64; n];
         let mut sr = vec![0.0f64; nspec];
         let mut si = vec![0.0f64; nspec];
@@ -759,22 +960,41 @@ impl SplitRealFft1d {
         // caller that reuses the spectrum after inverse isn't broken.
         let (r2c, c2r) = api.with_single_threaded_plan(|| unsafe {
             let r2c = (api.plan_guru_split_dft_r2c_1d)(
-                1, dims.as_ptr(), 0, std::ptr::null(),
-                tbuf.as_mut_ptr(), sr.as_mut_ptr(), si.as_mut_ptr(), f,
+                1,
+                dims.as_ptr(),
+                0,
+                std::ptr::null(),
+                tbuf.as_mut_ptr(),
+                sr.as_mut_ptr(),
+                si.as_mut_ptr(),
+                f,
             );
             let c2r = (api.plan_guru_split_dft_c2r_1d)(
-                1, dims.as_ptr(), 0, std::ptr::null(),
-                sr.as_mut_ptr(), si.as_mut_ptr(), tbuf.as_mut_ptr(),
+                1,
+                dims.as_ptr(),
+                0,
+                std::ptr::null(),
+                sr.as_mut_ptr(),
+                si.as_mut_ptr(),
+                tbuf.as_mut_ptr(),
                 f | FFTW_PRESERVE_INPUT,
             );
             (r2c, c2r)
         });
-        SplitRealFft1d { n, nspec, r2c, c2r, destroy_plan: api.destroy_plan,
-                          exec_split_dft_r2c: api.exec_split_dft_r2c,
-                          exec_split_dft_c2r: api.exec_split_dft_c2r }
+        SplitRealFft1d {
+            n,
+            nspec,
+            r2c,
+            c2r,
+            destroy_plan: api.destroy_plan,
+            exec_split_dft_r2c: api.exec_split_dft_r2c,
+            exec_split_dft_c2r: api.exec_split_dft_c2r,
+        }
     }
 
-    pub fn nspec(&self) -> usize { self.nspec }
+    pub fn nspec(&self) -> usize {
+        self.nspec
+    }
 
     /// `(spec_re,spec_im) = rfft(time)` (unnormalized), each length `n/2+1`.
     pub fn forward(&self, time: &mut [f64], spec_re: &mut [f64], spec_im: &mut [f64]) {
@@ -782,8 +1002,12 @@ impl SplitRealFft1d {
         assert_eq!(spec_re.len(), self.nspec);
         assert_eq!(spec_im.len(), self.nspec);
         unsafe {
-            (self.exec_split_dft_r2c)(self.r2c, time.as_mut_ptr(),
-                                       spec_re.as_mut_ptr(), spec_im.as_mut_ptr());
+            (self.exec_split_dft_r2c)(
+                self.r2c,
+                time.as_mut_ptr(),
+                spec_re.as_mut_ptr(),
+                spec_im.as_mut_ptr(),
+            );
         }
     }
 
@@ -793,8 +1017,12 @@ impl SplitRealFft1d {
         assert_eq!(spec_im.len(), self.nspec);
         assert_eq!(time.len(), self.n);
         unsafe {
-            (self.exec_split_dft_c2r)(self.c2r, spec_re.as_mut_ptr(),
-                                       spec_im.as_mut_ptr(), time.as_mut_ptr());
+            (self.exec_split_dft_c2r)(
+                self.c2r,
+                spec_re.as_mut_ptr(),
+                spec_im.as_mut_ptr(),
+                time.as_mut_ptr(),
+            );
         }
     }
 }
@@ -802,7 +1030,10 @@ impl SplitRealFft1d {
 impl Drop for SplitRealFft1d {
     fn drop(&mut self) {
         let _guard = PLANNER_LOCK.lock().unwrap();
-        unsafe { (self.destroy_plan)(self.r2c); (self.destroy_plan)(self.c2r); }
+        unsafe {
+            (self.destroy_plan)(self.r2c);
+            (self.destroy_plan)(self.c2r);
+        }
     }
 }
 
@@ -822,12 +1053,16 @@ mod tests {
     fn c2c_roundtrip() {
         let api = match try_api() {
             Some(a) => a,
-            None => { eprintln!("skip c2c_roundtrip: no FFTW found"); return; }
+            None => {
+                eprintln!("skip c2c_roundtrip: no FFTW found");
+                return;
+            }
         };
         let n = 16;
         let plan = ComplexFft1d::new(&api, n, FFTW_ESTIMATE);
-        let mut x: Vec<Complex<f64>> =
-            (0..n).map(|i| Complex::new((i as f64).sin(), (0.3 * i as f64).cos())).collect();
+        let mut x: Vec<Complex<f64>> = (0..n)
+            .map(|i| Complex::new((i as f64).sin(), (0.3 * i as f64).cos()))
+            .collect();
         let orig = x.clone();
         let mut spec = vec![Complex::new(0.0, 0.0); n];
         let mut back = vec![Complex::new(0.0, 0.0); n];
@@ -836,7 +1071,10 @@ mod tests {
         // ifft(fft(x)) = n*x ; normalize and compare.
         for i in 0..n {
             let r = back[i] / n as f64;
-            assert!((r - orig[i]).norm() < 1e-12, "c2c roundtrip mismatch at {i}");
+            assert!(
+                (r - orig[i]).norm() < 1e-12,
+                "c2c roundtrip mismatch at {i}"
+            );
         }
     }
 
@@ -844,7 +1082,10 @@ mod tests {
     fn r2c_roundtrip() {
         let api = match try_api() {
             Some(a) => a,
-            None => { eprintln!("skip r2c_roundtrip: no FFTW found"); return; }
+            None => {
+                eprintln!("skip r2c_roundtrip: no FFTW found");
+                return;
+            }
         };
         let n = 32;
         let plan = RealFft1d::new(&api, n, FFTW_ESTIMATE);
@@ -855,8 +1096,10 @@ mod tests {
         plan.forward(&mut t, &mut spec);
         plan.inverse(&mut spec, &mut back);
         for i in 0..n {
-            assert!((back[i] / n as f64 - orig[i]).abs() < 1e-12,
-                    "r2c roundtrip mismatch at {i}");
+            assert!(
+                (back[i] / n as f64 - orig[i]).abs() < 1e-12,
+                "r2c roundtrip mismatch at {i}"
+            );
         }
     }
 
@@ -873,7 +1116,10 @@ mod tests {
     fn r2c_3d_matches_julia_reference() {
         let api = match try_api() {
             Some(a) => a,
-            None => { eprintln!("skip r2c_3d_matches_julia_reference: no FFTW found"); return; }
+            None => {
+                eprintln!("skip r2c_3d_matches_julia_reference: no FFTW found");
+                return;
+            }
         };
         let (n_t, n_y, n_x) = (4usize, 3usize, 2usize);
         let plan = RealFft3d::new(&api, n_t, n_y, n_x, FFTW_ESTIMATE);
@@ -896,18 +1142,27 @@ mod tests {
         for (i, j, k, re, im) in expected {
             let idx = i + nspec * (j + n_y * k);
             let got = spec[idx];
-            assert!((got.re - re).abs() < 1e-9 && (got.im - im).abs() < 1e-9,
-                "r2c_3d mismatch at ({i},{j},{k}): got {got}, expected {re}+{im}i");
+            assert!(
+                (got.re - re).abs() < 1e-9 && (got.im - im).abs() < 1e-9,
+                "r2c_3d mismatch at ({i},{j},{k}): got {got}, expected {re}+{im}i"
+            );
         }
         // Everything else in this particular input is exactly zero.
         for k in 0..n_x {
             for j in 0..n_y {
                 for i in 0..nspec {
-                    if expected.iter().any(|&(ei, ej, ek, ..)| ei == i && ej == j && ek == k) {
+                    if expected
+                        .iter()
+                        .any(|&(ei, ej, ek, ..)| ei == i && ej == j && ek == k)
+                    {
                         continue;
                     }
                     let idx = i + nspec * (j + n_y * k);
-                    assert!(spec[idx].norm() < 1e-9, "expected ~0 at ({i},{j},{k}), got {}", spec[idx]);
+                    assert!(
+                        spec[idx].norm() < 1e-9,
+                        "expected ~0 at ({i},{j},{k}), got {}",
+                        spec[idx]
+                    );
                 }
             }
         }
@@ -918,20 +1173,26 @@ mod tests {
         plan.inverse(&mut spec, &mut back);
         let norm = (n_t * n_y * n_x) as f64;
         for i in 0..back.len() {
-            assert!((back[i] / norm - x[i]).abs() < 1e-9, "r2c_3d roundtrip mismatch at {i}");
+            assert!(
+                (back[i] / norm - x[i]).abs() < 1e-9,
+                "r2c_3d roundtrip mismatch at {i}"
+            );
         }
     }
 
     /// Cross-validates `ComplexFft3d`'s dimension order against
     /// `FFTW.fft(reshape(ComplexF64.(1:24), 4,3,2), (1,2,3))` (Phase D.3,
-    /// BACKLOG.md) — the complex counterpart of `r2c_3d_matches_julia_reference`.
+    /// docs/dev/BACKLOG.md) — the complex counterpart of `r2c_3d_matches_julia_reference`.
     /// Full-length spectrum (no conjugate-symmetric halving), so all 24
     /// entries are checked against the Julia reference, not just 6.
     #[test]
     fn c2c_3d_matches_julia_reference() {
         let api = match try_api() {
             Some(a) => a,
-            None => { eprintln!("skip c2c_3d_matches_julia_reference: no FFTW found"); return; }
+            None => {
+                eprintln!("skip c2c_3d_matches_julia_reference: no FFTW found");
+                return;
+            }
         };
         let (n_t, n_y, n_x) = (4usize, 3usize, 2usize);
         let plan = ComplexFft3d::new(&api, n_t, n_y, n_x, FFTW_ESTIMATE);
@@ -954,19 +1215,24 @@ mod tests {
         for (i, j, k, re, im) in expected {
             let idx = i + n_t * (j + n_y * k);
             let got = spec[idx];
-            assert!((got.re - re).abs() < 1e-9 && (got.im - im).abs() < 1e-9,
-                "c2c_3d mismatch at ({i},{j},{k}): got {got}, expected {re}+{im}i");
+            assert!(
+                (got.re - re).abs() < 1e-9 && (got.im - im).abs() < 1e-9,
+                "c2c_3d mismatch at ({i},{j},{k}): got {got}, expected {re}+{im}i"
+            );
         }
 
         let mut back = vec![Complex::new(0.0, 0.0); ntot];
         plan.inverse(&mut spec, &mut back);
         let norm = ntot as f64;
         for i in 0..ntot {
-            assert!((back[i] / norm - orig[i]).norm() < 1e-9, "c2c_3d roundtrip mismatch at {i}");
+            assert!(
+                (back[i] / norm - orig[i]).norm() < 1e-9,
+                "c2c_3d roundtrip mismatch at {i}"
+            );
         }
     }
 
-    /// BACKLOG.md S1 item 6, Phase 0: the new split (SoA) c2c plan must match
+    /// docs/dev/BACKLOG.md S1 item 6, Phase 0: the new split (SoA) c2c plan must match
     /// the existing AoS `ComplexFft1d` plan bit-for-bit on the same input —
     /// both are the same underlying FFTW plan class/algorithm (`FFTW_ESTIMATE`,
     /// same `fftw_iodim` describing the same transform), just a different
@@ -975,11 +1241,15 @@ mod tests {
     fn split_c2c_matches_aos_c2c() {
         let api = match try_api() {
             Some(a) => a,
-            None => { eprintln!("skip split_c2c_matches_aos_c2c: no FFTW found"); return; }
+            None => {
+                eprintln!("skip split_c2c_matches_aos_c2c: no FFTW found");
+                return;
+            }
         };
         let n = 16;
-        let x: Vec<Complex<f64>> =
-            (0..n).map(|i| Complex::new((i as f64).sin(), (0.3 * i as f64).cos())).collect();
+        let x: Vec<Complex<f64>> = (0..n)
+            .map(|i| Complex::new((i as f64).sin(), (0.3 * i as f64).cos()))
+            .collect();
 
         let aos_plan = ComplexFft1d::new(&api, n, FFTW_ESTIMATE);
         let mut aos_in = x.clone();
@@ -995,8 +1265,14 @@ mod tests {
         let mut fwd_im = vec![0.0f64; n];
         split_plan.forward(&mut in_re, &mut in_im, &mut fwd_re, &mut fwd_im);
         for i in 0..n {
-            assert_eq!(fwd_re[i], aos_fwd[i].re, "split c2c forward re mismatch at {i}");
-            assert_eq!(fwd_im[i], aos_fwd[i].im, "split c2c forward im mismatch at {i}");
+            assert_eq!(
+                fwd_re[i], aos_fwd[i].re,
+                "split c2c forward re mismatch at {i}"
+            );
+            assert_eq!(
+                fwd_im[i], aos_fwd[i].im,
+                "split c2c forward im mismatch at {i}"
+            );
         }
 
         let (mut spec_re, mut spec_im) = (fwd_re.clone(), fwd_im.clone());
@@ -1004,18 +1280,27 @@ mod tests {
         let mut back_im = vec![0.0f64; n];
         split_plan.inverse(&mut spec_re, &mut spec_im, &mut back_re, &mut back_im);
         for i in 0..n {
-            assert_eq!(back_re[i], aos_back[i].re, "split c2c inverse re mismatch at {i}");
-            assert_eq!(back_im[i], aos_back[i].im, "split c2c inverse im mismatch at {i}");
+            assert_eq!(
+                back_re[i], aos_back[i].re,
+                "split c2c inverse re mismatch at {i}"
+            );
+            assert_eq!(
+                back_im[i], aos_back[i].im,
+                "split c2c inverse im mismatch at {i}"
+            );
         }
     }
 
-    /// BACKLOG.md S1 item 6, Phase 0: split r2c/c2r must match the existing
+    /// docs/dev/BACKLOG.md S1 item 6, Phase 0: split r2c/c2r must match the existing
     /// AoS `RealFft1d` plan bit-for-bit, same rationale as the c2c test above.
     #[test]
     fn split_r2c_matches_aos_r2c() {
         let api = match try_api() {
             Some(a) => a,
-            None => { eprintln!("skip split_r2c_matches_aos_r2c: no FFTW found"); return; }
+            None => {
+                eprintln!("skip split_r2c_matches_aos_r2c: no FFTW found");
+                return;
+            }
         };
         let n = 32;
         let t: Vec<f64> = (0..n).map(|i| (0.5 * i as f64).sin()).collect();
@@ -1034,8 +1319,14 @@ mod tests {
         let mut spec_im = vec![0.0f64; split_plan.nspec()];
         split_plan.forward(&mut split_t, &mut spec_re, &mut spec_im);
         for i in 0..split_plan.nspec() {
-            assert_eq!(spec_re[i], aos_spec[i].re, "split r2c forward re mismatch at {i}");
-            assert_eq!(spec_im[i], aos_spec[i].im, "split r2c forward im mismatch at {i}");
+            assert_eq!(
+                spec_re[i], aos_spec[i].re,
+                "split r2c forward re mismatch at {i}"
+            );
+            assert_eq!(
+                spec_im[i], aos_spec[i].im,
+                "split r2c forward im mismatch at {i}"
+            );
         }
 
         let (mut spec_re2, mut spec_im2) = (spec_re.clone(), spec_im.clone());

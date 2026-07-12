@@ -12,10 +12,10 @@ using TestItems
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
-        # BACKLOG.md Phase I item 1: the ComplexF64 (EnvGrid) counterpart of
+        # docs/dev/BACKLOG.md Phase I item 1: the ComplexF64 (EnvGrid) counterpart of
         # test_native_shotnoise.jl. This is also the config that determines
         # whether the DEFAULT prop_gnlse workload (envelope, mode-averaged,
-        # shotnoise=true) actually runs natively — see BACKLOG.md's note on
+        # shotnoise=true) actually runs natively — see docs/dev/BACKLOG.md's note on
         # this item.
         radius = 125e-6
         flength = 0.15

@@ -1,14 +1,14 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub enum HardwarePath {
-    Auto = 0,           // Auto-detect best hardware (default)
-    CpuX86AVX512 = 1,   // Force x86 AVX-512
-    CpuX86AVX2 = 2,     // Force x86 AVX2
-    CpuArmNeon = 3,     // Force ARM NEON
-    CpuArmAMX = 4,      // Force Apple AMX
-    GpuCuda = 5,        // Force NVIDIA CUDA
-    GpuVulkan = 6,      // Force Vulkan/wgpu
-    CpuPortable = 7,    // Fallback to standard scalar loops (no vectorization)
+    Auto = 0,         // Auto-detect best hardware (default)
+    CpuX86AVX512 = 1, // Force x86 AVX-512
+    CpuX86AVX2 = 2,   // Force x86 AVX2
+    CpuArmNeon = 3,   // Force ARM NEON
+    CpuArmAMX = 4,    // Force Apple AMX
+    GpuCuda = 5,      // Force NVIDIA CUDA
+    GpuVulkan = 6,    // Force Vulkan/wgpu
+    CpuPortable = 7,  // Fallback to standard scalar loops (no vectorization)
 }
 
 #[repr(C)]
@@ -67,7 +67,6 @@ fn is_apple_amx_available() -> bool {
     }
 }
 
-
 fn is_vulkan_available() -> bool {
     #[cfg(target_os = "linux")]
     {
@@ -87,7 +86,8 @@ fn is_vulkan_available() -> bool {
     {
         unsafe {
             let vulkan_dll = b"vulkan-1.dll\0";
-            let handle = windows_sys::Win32::System::LibraryLoader::LoadLibraryA(vulkan_dll.as_ptr());
+            let handle =
+                windows_sys::Win32::System::LibraryLoader::LoadLibraryA(vulkan_dll.as_ptr());
             if !handle.is_null() {
                 return true;
             }
@@ -176,12 +176,24 @@ impl SimulationEngine {
     pub fn init_path(path: HardwarePath) -> Self {
         match path {
             HardwarePath::Auto => Self::initialize(HardwarePath::Auto),
-            HardwarePath::GpuCuda => Self::try_init_cuda().unwrap_or_else(|_| Self::init_portable()),
-            HardwarePath::GpuVulkan => Self::try_init_vulkan().unwrap_or_else(|_| Self::init_portable()),
-            HardwarePath::CpuArmAMX => Self::try_init_apple_amx().unwrap_or_else(|_| Self::init_portable()),
-            HardwarePath::CpuX86AVX512 => Self::try_init_x86_avx512().unwrap_or_else(|_| Self::init_portable()),
-            HardwarePath::CpuX86AVX2 => Self::try_init_x86_avx2().unwrap_or_else(|_| Self::init_portable()),
-            HardwarePath::CpuArmNeon => Self::try_init_arm_neon().unwrap_or_else(|_| Self::init_portable()),
+            HardwarePath::GpuCuda => {
+                Self::try_init_cuda().unwrap_or_else(|_| Self::init_portable())
+            }
+            HardwarePath::GpuVulkan => {
+                Self::try_init_vulkan().unwrap_or_else(|_| Self::init_portable())
+            }
+            HardwarePath::CpuArmAMX => {
+                Self::try_init_apple_amx().unwrap_or_else(|_| Self::init_portable())
+            }
+            HardwarePath::CpuX86AVX512 => {
+                Self::try_init_x86_avx512().unwrap_or_else(|_| Self::init_portable())
+            }
+            HardwarePath::CpuX86AVX2 => {
+                Self::try_init_x86_avx2().unwrap_or_else(|_| Self::init_portable())
+            }
+            HardwarePath::CpuArmNeon => {
+                Self::try_init_arm_neon().unwrap_or_else(|_| Self::init_portable())
+            }
             HardwarePath::CpuPortable => Self::init_portable(),
         }
     }
@@ -209,54 +221,66 @@ impl SimulationEngine {
                 }
                 Self::init_portable()
             }
-            HardwarePath::GpuCuda => {
-                Self::try_init_cuda().unwrap_or_else(|err| {
-                    eprintln!("Warning: CUDA initialization failed ({:?}). Falling back to Vulkan...", err);
-                    Self::initialize(HardwarePath::GpuVulkan)
-                })
-            }
-            HardwarePath::GpuVulkan => {
-                Self::try_init_vulkan().unwrap_or_else(|err| {
-                    eprintln!("Warning: Vulkan initialization failed ({:?}). Falling back to CPU...", err);
-                    #[cfg(target_arch = "x86_64")]
-                    return Self::initialize(HardwarePath::CpuX86AVX512);
-                    #[cfg(target_arch = "aarch64")]
-                    return Self::initialize(HardwarePath::CpuArmAMX);
-                    #[allow(unreachable_code)]
-                    Self::initialize(HardwarePath::CpuPortable)
-                })
-            }
-            HardwarePath::CpuX86AVX512 => {
-                Self::try_init_x86_avx512().unwrap_or_else(|err| {
-                    eprintln!("Warning: AVX-512 init failed ({:?}). Falling back to AVX2...", err);
-                    Self::initialize(HardwarePath::CpuX86AVX2)
-                })
-            }
-            HardwarePath::CpuX86AVX2 => {
-                Self::try_init_x86_avx2().unwrap_or_else(|err| {
-                    eprintln!("Warning: AVX2 init failed ({:?}). Falling back to portable...", err);
-                    Self::initialize(HardwarePath::CpuPortable)
-                })
-            }
-            HardwarePath::CpuArmAMX => {
-                Self::try_init_apple_amx().unwrap_or_else(|err| {
-                    eprintln!("Warning: Apple AMX init failed ({:?}). Falling back to NEON...", err);
-                    Self::initialize(HardwarePath::CpuArmNeon)
-                })
-            }
-            HardwarePath::CpuArmNeon => {
-                Self::try_init_arm_neon().unwrap_or_else(|err| {
-                    eprintln!("Warning: ARM NEON init failed ({:?}). Falling back to portable...", err);
-                    Self::initialize(HardwarePath::CpuPortable)
-                })
-            }
-            path => {
-                Self::init_path(path)
-            }
+            HardwarePath::GpuCuda => Self::try_init_cuda().unwrap_or_else(|err| {
+                eprintln!(
+                    "Warning: CUDA initialization failed ({:?}). Falling back to Vulkan...",
+                    err
+                );
+                Self::initialize(HardwarePath::GpuVulkan)
+            }),
+            HardwarePath::GpuVulkan => Self::try_init_vulkan().unwrap_or_else(|err| {
+                eprintln!(
+                    "Warning: Vulkan initialization failed ({:?}). Falling back to CPU...",
+                    err
+                );
+                #[cfg(target_arch = "x86_64")]
+                return Self::initialize(HardwarePath::CpuX86AVX512);
+                #[cfg(target_arch = "aarch64")]
+                return Self::initialize(HardwarePath::CpuArmAMX);
+                #[allow(unreachable_code)]
+                Self::initialize(HardwarePath::CpuPortable)
+            }),
+            HardwarePath::CpuX86AVX512 => Self::try_init_x86_avx512().unwrap_or_else(|err| {
+                eprintln!(
+                    "Warning: AVX-512 init failed ({:?}). Falling back to AVX2...",
+                    err
+                );
+                Self::initialize(HardwarePath::CpuX86AVX2)
+            }),
+            HardwarePath::CpuX86AVX2 => Self::try_init_x86_avx2().unwrap_or_else(|err| {
+                eprintln!(
+                    "Warning: AVX2 init failed ({:?}). Falling back to portable...",
+                    err
+                );
+                Self::initialize(HardwarePath::CpuPortable)
+            }),
+            HardwarePath::CpuArmAMX => Self::try_init_apple_amx().unwrap_or_else(|err| {
+                eprintln!(
+                    "Warning: Apple AMX init failed ({:?}). Falling back to NEON...",
+                    err
+                );
+                Self::initialize(HardwarePath::CpuArmNeon)
+            }),
+            HardwarePath::CpuArmNeon => Self::try_init_arm_neon().unwrap_or_else(|err| {
+                eprintln!(
+                    "Warning: ARM NEON init failed ({:?}). Falling back to portable...",
+                    err
+                );
+                Self::initialize(HardwarePath::CpuPortable)
+            }),
+            path => Self::init_path(path),
         }
     }
 }
 
+/// Probe hardware and allocate a `SimulationEngine` recording the resolved
+/// dispatch path. `preferred_path_code` selects a starting preference (0 =
+/// auto-cascade GPU → SIMD → portable; other codes force a specific path,
+/// falling back per [`SimulationEngine::initialize`] if unavailable).
+///
+/// # Safety
+/// No pointer arguments; always returns a valid, non-null, heap-allocated
+/// pointer. Free with [`free_simulation_engine`] exactly once.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn init_simulation_engine(preferred_path_code: i32) -> *mut SimulationEngine {
     let preferred = match preferred_path_code {
@@ -273,6 +297,12 @@ pub unsafe extern "C" fn init_simulation_engine(preferred_path_code: i32) -> *mu
     Box::into_raw(engine)
 }
 
+/// Free a `SimulationEngine` allocated by [`init_simulation_engine`].
+///
+/// # Safety
+/// `engine` must be null (a no-op) or a pointer previously returned by
+/// [`init_simulation_engine`] that has not already been freed. Must not be
+/// called concurrently with any other use of `engine`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn free_simulation_engine(engine: *mut SimulationEngine) {
     if !engine.is_null() {
@@ -282,6 +312,12 @@ pub unsafe extern "C" fn free_simulation_engine(engine: *mut SimulationEngine) {
     }
 }
 
+/// Return the resolved [`HardwarePath`] code (see the match arms below) for
+/// `engine`, or `-1` if `engine` is null.
+///
+/// # Safety
+/// `engine` must be null or a valid pointer previously returned by
+/// [`init_simulation_engine`] and not yet freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn get_active_hardware_path(engine: *const SimulationEngine) -> i32 {
     if engine.is_null() {

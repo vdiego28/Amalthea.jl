@@ -13,7 +13,7 @@ using TestItems
         @test_skip "Rust library not found"
     else
         # RealGrid + joint 3-D FFT, scalar Kerr only (no shot-noise) —
-        # Phase 6's first gate. See docs/native-port/MATH.md §3.4. Small
+        # Phase 6's first gate. See docs/dev/native-port/MATH.md §3.4. Small
         # transverse grid keeps the equivalence test cheap; the
         # dimension-order/normalization correctness itself is verified at
         # the FFT-primitive level in fftw.rs, not here. Nx != Ny deliberately

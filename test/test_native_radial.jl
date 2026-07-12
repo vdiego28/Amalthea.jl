@@ -14,7 +14,7 @@ using TestItems
         @test_skip "Rust library not found"
     else
         # RealGrid + Hankel QDHT, scalar Kerr only (no plasma, no shot-noise) —
-        # Phase 3's first gate. See docs/native-port/MATH.md §3.2.
+        # Phase 3's first gate. See docs/dev/native-port/MATH.md §3.2.
         gas = :Ar; pres = 1.2; τ = 20e-15; λ0 = 800e-9
         w0 = 40e-6; energy = 1e-12; L = 0.05; R = 4e-3; N = 32
 
@@ -55,7 +55,7 @@ using TestItems
 
         @testset "Full-solve equivalence (radial, fixed dt)" begin
             # Fixed step size (max_dt=min_dt=dt): see test_native_phase1.jl /
-            # test_native_phase2.jl and docs/native-port/TESTING.md §3 — the
+            # test_native_phase2.jl and docs/dev/native-port/TESTING.md §3 — the
             # adaptive PI controller's near-cancellation error estimate makes
             # raw adaptive-dt agreement an unreliable equivalence signal.
             # Forcing an identical step-size sequence isolates genuine
@@ -73,7 +73,7 @@ using TestItems
             @test rel_solve < 1e-6
         end
 
-        @testset "n_threads=1 vs n_threads=4 bit-identical (BACKLOG.md S2)" begin
+        @testset "n_threads=1 vs n_threads=4 bit-identical (docs/dev/BACKLOG.md S2)" begin
             # The FFT-per-column loops (rhs_radial Steps 1/6) parallelized
             # under S2 write to disjoint column slices with no cross-column
             # reduction — so unlike typical parallel-code equivalence, this

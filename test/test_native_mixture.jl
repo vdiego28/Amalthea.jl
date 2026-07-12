@@ -16,7 +16,7 @@ using TestItems
         # the single-gas reference — physically equivalent to the single-gas
         # case (test_mixtures.jl's own "propagation" testset), but exercises
         # `densityfun(z)::Vector` + a nested tuple-of-tuples `resp`, the
-        # shape Phase F item 4 (BACKLOG.md) adds native support for.
+        # shape Phase F item 4 (docs/dev/BACKLOG.md) adds native support for.
         a = 125e-6
         gas = :Ar
         pres = 5.0

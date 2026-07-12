@@ -1,5 +1,5 @@
-use std::ffi::CString;
 use num_complex::Complex;
+use std::ffi::CString;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -36,7 +36,7 @@ pub struct Hdf5Api {
     pub H5Tinsert: unsafe extern "C" fn(i64, *const libc::c_char, libc::size_t, i64) -> libc::c_int,
     pub H5Dset_extent: unsafe extern "C" fn(i64, *const u64) -> libc::c_int,
     pub H5Lexists: unsafe extern "C" fn(i64, *const libc::c_char, i64) -> libc::c_int,
-    
+
     // Datatype cache
     pub h5t_native_double: i64,
     pub h5t_native_int: i64,
@@ -52,9 +52,10 @@ impl Library {
         #[cfg(unix)]
         {
             // Moved inside the unix block so Windows doesn't complain about it
-            let path_str = path.to_string_lossy(); 
+            let path_str = path.to_string_lossy();
             let c_path = CString::new(path_str.as_ref()).map_err(|e| e.to_string())?;
-            let handle = unsafe { libc::dlopen(c_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL) };
+            let handle =
+                unsafe { libc::dlopen(c_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL) };
             if handle.is_null() {
                 let err = unsafe { libc::dlerror() };
                 let err_msg = if err.is_null() {
@@ -91,23 +92,18 @@ impl Library {
         #[cfg(unix)]
         {
             let ptr = unsafe { libc::dlsym(self.handle, c_name.as_ptr()) };
-            if ptr.is_null() {
-                None
-            } else {
-                Some(ptr)
-            }
+            if ptr.is_null() { None } else { Some(ptr) }
         }
         #[cfg(windows)]
         {
             unsafe extern "system" {
-                fn GetProcAddress(hModule: *mut std::ffi::c_void, lpProcName: *const libc::c_char) -> *mut std::ffi::c_void;
+                fn GetProcAddress(
+                    hModule: *mut std::ffi::c_void,
+                    lpProcName: *const libc::c_char,
+                ) -> *mut std::ffi::c_void;
             }
             let ptr = unsafe { GetProcAddress(self.handle, c_name.as_ptr()) };
-            if ptr.is_null() {
-                None
-            } else {
-                Some(ptr)
-            }
+            if ptr.is_null() { None } else { Some(ptr) }
         }
     }
 }
@@ -140,29 +136,31 @@ fn find_hdf5_lib_path() -> Option<PathBuf> {
     }
 
     let (_ext, names) = if cfg!(target_os = "macos") {
-        ("dylib", vec![
-            "libhdf5.dylib",
-            "libhdf5.310.dylib",
-            "libhdf5.200.dylib",
-            "libhdf5.103.dylib",
-            "libhdf5.100.dylib",
-            "libhdf5.10.dylib",
-        ])
+        (
+            "dylib",
+            vec![
+                "libhdf5.dylib",
+                "libhdf5.310.dylib",
+                "libhdf5.200.dylib",
+                "libhdf5.103.dylib",
+                "libhdf5.100.dylib",
+                "libhdf5.10.dylib",
+            ],
+        )
     } else if cfg!(windows) {
-        ("dll", vec![
-            "hdf5.dll",
-            "libhdf5.dll",
-            "libhdf5-0.dll",
-        ])
+        ("dll", vec!["hdf5.dll", "libhdf5.dll", "libhdf5-0.dll"])
     } else {
-        ("so", vec![
-            "libhdf5.so",
-            "libhdf5.so.310",
-            "libhdf5.so.200",
-            "libhdf5.so.103",
-            "libhdf5.so.100",
-            "libhdf5.so.10",
-        ])
+        (
+            "so",
+            vec![
+                "libhdf5.so",
+                "libhdf5.so.310",
+                "libhdf5.so.200",
+                "libhdf5.so.103",
+                "libhdf5.so.100",
+                "libhdf5.so.10",
+            ],
+        )
     };
 
     // 2. Try loading standard names from default system linker search paths
@@ -201,15 +199,15 @@ fn find_hdf5_lib_path() -> Option<PathBuf> {
     let home_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     if let Some(home) = std::env::var_os(home_var) {
         let artifacts_path = Path::new(&home).join(".julia/artifacts");
-        if artifacts_path.exists() {
-            if let Ok(entries) = std::fs::read_dir(artifacts_path) {
-                for entry in entries.flatten() {
-                    let sub_path = if cfg!(windows) { "bin" } else { "lib" };
-                    for name in &names {
-                        let lib_path = entry.path().join(sub_path).join(name);
-                        if lib_path.exists() {
-                            return Some(lib_path);
-                        }
+        if artifacts_path.exists()
+            && let Ok(entries) = std::fs::read_dir(artifacts_path)
+        {
+            for entry in entries.flatten() {
+                let sub_path = if cfg!(windows) { "bin" } else { "lib" };
+                for name in &names {
+                    let lib_path = entry.path().join(sub_path).join(name);
+                    if lib_path.exists() {
+                        return Some(lib_path);
                     }
                 }
             }
@@ -222,9 +220,9 @@ static HDF5_API: OnceLock<Result<Hdf5Api, String>> = OnceLock::new();
 
 #[allow(non_snake_case)]
 pub fn get_hdf5_api() -> Result<&'static Hdf5Api, String> {
-    HDF5_API.get_or_init(|| {
-        let path = find_hdf5_lib_path()
-            .ok_or_else(|| {
+    HDF5_API
+        .get_or_init(|| {
+            let path = find_hdf5_lib_path().ok_or_else(|| {
                 let err_name = if cfg!(target_os = "macos") {
                     "libhdf5.dylib"
                 } else if cfg!(windows) {
@@ -232,87 +230,145 @@ pub fn get_hdf5_api() -> Result<&'static Hdf5Api, String> {
                 } else {
                     "libhdf5.so"
                 };
-                format!("Could not locate {} in standard search paths or Julia's artifact cache.", err_name)
+                format!(
+                    "Could not locate {} in standard search paths or Julia's artifact cache.",
+                    err_name
+                )
             })?;
-        
-        unsafe {
-            let lib = Library::load(&path)
-                .map_err(|err_msg| format!("Failed to load HDF5 library at {:?}: {}", path, err_msg))?;
-            
-            macro_rules! load_sym {
-                ($sym:expr, $ty:ty) => {{
-                    let ptr = lib.get_symbol($sym)
-                        .ok_or_else(|| format!("Failed to locate HDF5 symbol: {}", $sym))?;
-                    std::mem::transmute::<*mut std::ffi::c_void, $ty>(ptr)
-                }};
-            }
-            
-            let H5open = load_sym!("H5open", unsafe extern "C" fn() -> libc::c_int);
-            let H5close = load_sym!("H5close", unsafe extern "C" fn() -> libc::c_int);
-            let H5Fopen = load_sym!("H5Fopen", unsafe extern "C" fn(*const libc::c_char, libc::c_uint, i64) -> i64);
-            let H5Fcreate = load_sym!("H5Fcreate", unsafe extern "C" fn(*const libc::c_char, libc::c_uint, i64, i64) -> i64);
-            let H5Fclose = load_sym!("H5Fclose", unsafe extern "C" fn(i64) -> libc::c_int);
-            let H5Gcreate2 = load_sym!("H5Gcreate2", unsafe extern "C" fn(i64, *const libc::c_char, i64, i64, i64) -> i64);
-            let H5Gopen2 = load_sym!("H5Gopen2", unsafe extern "C" fn(i64, *const libc::c_char, i64) -> i64);
-            let H5Gclose = load_sym!("H5Gclose", unsafe extern "C" fn(i64) -> libc::c_int);
-            let H5Dcreate2 = load_sym!("H5Dcreate2", unsafe extern "C" fn(i64, *const libc::c_char, i64, i64, i64, i64, i64) -> i64);
-            let H5Dopen2 = load_sym!("H5Dopen2", unsafe extern "C" fn(i64, *const libc::c_char, i64) -> i64);
-            let H5Dwrite = load_sym!("H5Dwrite", unsafe extern "C" fn(i64, i64, i64, i64, i64, *const libc::c_void) -> libc::c_int);
-            let H5Dread = load_sym!("H5Dread", unsafe extern "C" fn(i64, i64, i64, i64, i64, *mut libc::c_void) -> libc::c_int);
-            let H5Dclose = load_sym!("H5Dclose", unsafe extern "C" fn(i64) -> libc::c_int);
-            let H5Screate_simple = load_sym!("H5Screate_simple", unsafe extern "C" fn(libc::c_int, *const u64, *const u64) -> i64);
-            let H5Sclose = load_sym!("H5Sclose", unsafe extern "C" fn(i64) -> libc::c_int);
-            let H5Tcopy = load_sym!("H5Tcopy", unsafe extern "C" fn(i64) -> i64);
-            let H5Tclose = load_sym!("H5Tclose", unsafe extern "C" fn(i64) -> libc::c_int);
-            let H5Tcreate = load_sym!("H5Tcreate", unsafe extern "C" fn(libc::c_int, libc::size_t) -> i64);
-            let H5Tinsert = load_sym!("H5Tinsert", unsafe extern "C" fn(i64, *const libc::c_char, libc::size_t, i64) -> libc::c_int);
-            let H5Dset_extent = load_sym!("H5Dset_extent", unsafe extern "C" fn(i64, *const u64) -> libc::c_int);
-            let H5Lexists = load_sym!("H5Lexists", unsafe extern "C" fn(i64, *const libc::c_char, i64) -> libc::c_int);
-            
-            let h5t_native_double_ptr = load_sym!("H5T_NATIVE_DOUBLE_g", *const i64);
-            let h5t_native_int_ptr = load_sym!("H5T_NATIVE_INT_g", *const i64);
-            
-            let h5t_native_double = *h5t_native_double_ptr;
-            let h5t_native_int = *h5t_native_int_ptr;
-            
-            let h5t_complex = H5Tcreate(H5T_COMPOUND, 16);
-            let r_name = CString::new("r").unwrap();
-            let i_name = CString::new("i").unwrap();
-            H5Tinsert(h5t_complex, r_name.as_ptr(), 0, h5t_native_double);
-            H5Tinsert(h5t_complex, i_name.as_ptr(), 8, h5t_native_double);
 
-            H5open();
-            
-            std::mem::forget(lib);
-            
-            Ok(Hdf5Api {
-                H5open,
-                H5close,
-                H5Fopen,
-                H5Fcreate,
-                H5Fclose,
-                H5Gcreate2,
-                H5Gopen2,
-                H5Gclose,
-                H5Dcreate2,
-                H5Dopen2,
-                H5Dwrite,
-                H5Dread,
-                H5Dclose,
-                H5Screate_simple,
-                H5Sclose,
-                H5Tcopy,
-                H5Tclose,
-                H5Tcreate,
-                H5Tinsert,
-                H5Dset_extent,
-                H5Lexists,
-                h5t_native_double,
-                h5t_native_int,
-                h5t_complex,
-            })
-        }
-    }).as_ref().map_err(|e| e.clone())
+            unsafe {
+                let lib = Library::load(&path).map_err(|err_msg| {
+                    format!("Failed to load HDF5 library at {:?}: {}", path, err_msg)
+                })?;
+
+                macro_rules! load_sym {
+                    ($sym:expr, $ty:ty) => {{
+                        let ptr = lib
+                            .get_symbol($sym)
+                            .ok_or_else(|| format!("Failed to locate HDF5 symbol: {}", $sym))?;
+                        std::mem::transmute::<*mut std::ffi::c_void, $ty>(ptr)
+                    }};
+                }
+
+                let H5open = load_sym!("H5open", unsafe extern "C" fn() -> libc::c_int);
+                let H5close = load_sym!("H5close", unsafe extern "C" fn() -> libc::c_int);
+                let H5Fopen = load_sym!(
+                    "H5Fopen",
+                    unsafe extern "C" fn(*const libc::c_char, libc::c_uint, i64) -> i64
+                );
+                let H5Fcreate = load_sym!(
+                    "H5Fcreate",
+                    unsafe extern "C" fn(*const libc::c_char, libc::c_uint, i64, i64) -> i64
+                );
+                let H5Fclose = load_sym!("H5Fclose", unsafe extern "C" fn(i64) -> libc::c_int);
+                let H5Gcreate2 = load_sym!(
+                    "H5Gcreate2",
+                    unsafe extern "C" fn(i64, *const libc::c_char, i64, i64, i64) -> i64
+                );
+                let H5Gopen2 = load_sym!(
+                    "H5Gopen2",
+                    unsafe extern "C" fn(i64, *const libc::c_char, i64) -> i64
+                );
+                let H5Gclose = load_sym!("H5Gclose", unsafe extern "C" fn(i64) -> libc::c_int);
+                let H5Dcreate2 = load_sym!(
+                    "H5Dcreate2",
+                    unsafe extern "C" fn(i64, *const libc::c_char, i64, i64, i64, i64, i64) -> i64
+                );
+                let H5Dopen2 = load_sym!(
+                    "H5Dopen2",
+                    unsafe extern "C" fn(i64, *const libc::c_char, i64) -> i64
+                );
+                let H5Dwrite = load_sym!(
+                    "H5Dwrite",
+                    unsafe extern "C" fn(
+                        i64,
+                        i64,
+                        i64,
+                        i64,
+                        i64,
+                        *const libc::c_void,
+                    ) -> libc::c_int
+                );
+                let H5Dread = load_sym!(
+                    "H5Dread",
+                    unsafe extern "C" fn(i64, i64, i64, i64, i64, *mut libc::c_void) -> libc::c_int
+                );
+                let H5Dclose = load_sym!("H5Dclose", unsafe extern "C" fn(i64) -> libc::c_int);
+                let H5Screate_simple = load_sym!(
+                    "H5Screate_simple",
+                    unsafe extern "C" fn(libc::c_int, *const u64, *const u64) -> i64
+                );
+                let H5Sclose = load_sym!("H5Sclose", unsafe extern "C" fn(i64) -> libc::c_int);
+                let H5Tcopy = load_sym!("H5Tcopy", unsafe extern "C" fn(i64) -> i64);
+                let H5Tclose = load_sym!("H5Tclose", unsafe extern "C" fn(i64) -> libc::c_int);
+                let H5Tcreate = load_sym!(
+                    "H5Tcreate",
+                    unsafe extern "C" fn(libc::c_int, libc::size_t) -> i64
+                );
+                let H5Tinsert = load_sym!(
+                    "H5Tinsert",
+                    unsafe extern "C" fn(
+                        i64,
+                        *const libc::c_char,
+                        libc::size_t,
+                        i64,
+                    ) -> libc::c_int
+                );
+                let H5Dset_extent = load_sym!(
+                    "H5Dset_extent",
+                    unsafe extern "C" fn(i64, *const u64) -> libc::c_int
+                );
+                let H5Lexists = load_sym!(
+                    "H5Lexists",
+                    unsafe extern "C" fn(i64, *const libc::c_char, i64) -> libc::c_int
+                );
+
+                let h5t_native_double_ptr = load_sym!("H5T_NATIVE_DOUBLE_g", *const i64);
+                let h5t_native_int_ptr = load_sym!("H5T_NATIVE_INT_g", *const i64);
+
+                let h5t_native_double = *h5t_native_double_ptr;
+                let h5t_native_int = *h5t_native_int_ptr;
+
+                let h5t_complex = H5Tcreate(H5T_COMPOUND, 16);
+                let r_name = CString::new("r").unwrap();
+                let i_name = CString::new("i").unwrap();
+                H5Tinsert(h5t_complex, r_name.as_ptr(), 0, h5t_native_double);
+                H5Tinsert(h5t_complex, i_name.as_ptr(), 8, h5t_native_double);
+
+                H5open();
+
+                std::mem::forget(lib);
+
+                Ok(Hdf5Api {
+                    H5open,
+                    H5close,
+                    H5Fopen,
+                    H5Fcreate,
+                    H5Fclose,
+                    H5Gcreate2,
+                    H5Gopen2,
+                    H5Gclose,
+                    H5Dcreate2,
+                    H5Dopen2,
+                    H5Dwrite,
+                    H5Dread,
+                    H5Dclose,
+                    H5Screate_simple,
+                    H5Sclose,
+                    H5Tcopy,
+                    H5Tclose,
+                    H5Tcreate,
+                    H5Tinsert,
+                    H5Dset_extent,
+                    H5Lexists,
+                    h5t_native_double,
+                    h5t_native_int,
+                    h5t_complex,
+                })
+            }
+        })
+        .as_ref()
+        .map_err(|e| e.clone())
 }
 
 pub struct Hdf5Writer {
@@ -327,7 +383,8 @@ impl Hdf5Writer {
         unsafe {
             let file_id = (api.H5Fopen)(c_fpath.as_ptr(), H5F_ACC_RDWR, H5P_DEFAULT);
             if file_id < 0 {
-                let file_id = (api.H5Fcreate)(c_fpath.as_ptr(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+                let file_id =
+                    (api.H5Fcreate)(c_fpath.as_ptr(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
                 if file_id < 0 {
                     return Err(format!("Failed to open or create HDF5 file: {}", fpath));
                 }
@@ -359,7 +416,13 @@ impl Hdf5Writer {
                     return Ok(group_id);
                 }
             }
-            let group_id = (self.api.H5Gcreate2)(self.file_id, c_name.as_ptr(), H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+            let group_id = (self.api.H5Gcreate2)(
+                self.file_id,
+                c_name.as_ptr(),
+                H5P_DEFAULT,
+                H5P_DEFAULT,
+                H5P_DEFAULT,
+            );
             if group_id < 0 {
                 return Err(format!("Failed to create group: {}", name));
             }
@@ -367,7 +430,14 @@ impl Hdf5Writer {
         }
     }
 
-    pub fn create_dataset_2d(&self, loc_id: i64, name: &str, dtype: i64, dims: &[u64], maxdims: &[u64]) -> Result<i64, String> {
+    pub fn create_dataset_2d(
+        &self,
+        loc_id: i64,
+        name: &str,
+        dtype: i64,
+        dims: &[u64],
+        maxdims: &[u64],
+    ) -> Result<i64, String> {
         let c_name = CString::new(name).map_err(|_| "Invalid dataset name".to_string())?;
         unsafe {
             let exists = (self.api.H5Lexists)(loc_id, c_name.as_ptr(), H5P_DEFAULT);
@@ -377,11 +447,23 @@ impl Hdf5Writer {
                     return Ok(dset_id);
                 }
             }
-            let space_id = (self.api.H5Screate_simple)(dims.len() as libc::c_int, dims.as_ptr(), maxdims.as_ptr());
+            let space_id = (self.api.H5Screate_simple)(
+                dims.len() as libc::c_int,
+                dims.as_ptr(),
+                maxdims.as_ptr(),
+            );
             if space_id < 0 {
                 return Err("Failed to create dataspace".to_string());
             }
-            let dset_id = (self.api.H5Dcreate2)(loc_id, c_name.as_ptr(), dtype, space_id, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+            let dset_id = (self.api.H5Dcreate2)(
+                loc_id,
+                c_name.as_ptr(),
+                dtype,
+                space_id,
+                H5P_DEFAULT,
+                H5P_DEFAULT,
+                H5P_DEFAULT,
+            );
             (self.api.H5Sclose)(space_id);
             if dset_id < 0 {
                 return Err(format!("Failed to create dataset: {}", name));
@@ -405,7 +487,12 @@ impl Hdf5Writer {
         }
     }
 
-    pub fn with_existing_int_dataset_2d<T, F>(&self, name: &str, data: &mut [i32], mut op: F) -> Result<T, String>
+    pub fn with_existing_int_dataset_2d<T, F>(
+        &self,
+        name: &str,
+        data: &mut [i32],
+        mut op: F,
+    ) -> Result<T, String>
     where
         F: FnMut(&Self, i64, &mut [i32]) -> Result<T, String>,
     {
@@ -417,7 +504,14 @@ impl Hdf5Writer {
 
     pub fn write_dataset_f64(&self, dset_id: i64, data: &[f64]) -> Result<(), String> {
         unsafe {
-            let res = (self.api.H5Dwrite)(dset_id, self.api.h5t_native_double, H5S_ALL, H5S_ALL, H5P_DEFAULT, data.as_ptr() as *const libc::c_void);
+            let res = (self.api.H5Dwrite)(
+                dset_id,
+                self.api.h5t_native_double,
+                H5S_ALL,
+                H5S_ALL,
+                H5P_DEFAULT,
+                data.as_ptr() as *const libc::c_void,
+            );
             if res < 0 {
                 return Err("Failed to write double dataset".to_string());
             }
@@ -427,7 +521,14 @@ impl Hdf5Writer {
 
     pub fn write_dataset_complex(&self, dset_id: i64, data: &[Complex<f64>]) -> Result<(), String> {
         unsafe {
-            let res = (self.api.H5Dwrite)(dset_id, self.api.h5t_complex, H5S_ALL, H5S_ALL, H5P_DEFAULT, data.as_ptr() as *const libc::c_void);
+            let res = (self.api.H5Dwrite)(
+                dset_id,
+                self.api.h5t_complex,
+                H5S_ALL,
+                H5S_ALL,
+                H5P_DEFAULT,
+                data.as_ptr() as *const libc::c_void,
+            );
             if res < 0 {
                 return Err("Failed to write complex dataset".to_string());
             }
@@ -437,7 +538,14 @@ impl Hdf5Writer {
 
     pub fn write_dataset_int(&self, dset_id: i64, data: &[i32]) -> Result<(), String> {
         unsafe {
-            let res = (self.api.H5Dwrite)(dset_id, self.api.h5t_native_int, H5S_ALL, H5S_ALL, H5P_DEFAULT, data.as_ptr() as *const libc::c_void);
+            let res = (self.api.H5Dwrite)(
+                dset_id,
+                self.api.h5t_native_int,
+                H5S_ALL,
+                H5S_ALL,
+                H5P_DEFAULT,
+                data.as_ptr() as *const libc::c_void,
+            );
             if res < 0 {
                 return Err("Failed to write int dataset".to_string());
             }
@@ -447,7 +555,14 @@ impl Hdf5Writer {
 
     pub fn read_dataset_int(&self, dset_id: i64, data: &mut [i32]) -> Result<(), String> {
         unsafe {
-            let res = (self.api.H5Dread)(dset_id, self.api.h5t_native_int, H5S_ALL, H5S_ALL, H5P_DEFAULT, data.as_mut_ptr() as *mut libc::c_void);
+            let res = (self.api.H5Dread)(
+                dset_id,
+                self.api.h5t_native_int,
+                H5S_ALL,
+                H5S_ALL,
+                H5P_DEFAULT,
+                data.as_mut_ptr() as *mut libc::c_void,
+            );
             if res < 0 {
                 return Err("Failed to read int dataset".to_string());
             }

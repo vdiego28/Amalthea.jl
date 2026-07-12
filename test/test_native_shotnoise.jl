@@ -12,7 +12,7 @@ using TestItems
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
-        # BACKLOG.md Phase I item 1: `native_set_mode_avg_params` never
+        # docs/dev/BACKLOG.md Phase I item 1: `native_set_mode_avg_params` never
         # received a noise buffer, so `shotnoise=true` (the default for
         # `prop_capillary`/`prop_gnlse`) silently ran the native path with
         # no noise term at all. This test drives a config where noise seeds

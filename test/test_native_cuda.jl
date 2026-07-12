@@ -78,7 +78,7 @@ using TestItems
                 println("GPU-resident stepper full-solve rel_solve: ", rel_solve)
                 # Looser than the CPU-resident native path's ~1e-6 (Phase 1;
                 # measured ~4.5e-4 here). Two known, documented GPU-path
-                # simplifications explain the gap (BACKLOG.md has the full
+                # simplifications explain the gap (docs/dev/BACKLOG.md has the full
                 # writeup) — neither is "wrong sign" or "missing physics",
                 # both are real but bounded fidelity gaps versus the CPU
                 # path:
@@ -116,7 +116,7 @@ end
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
-        # BACKLOG.md S3 item 2 (first slice, 2026-07-11): plasma support on
+        # docs/dev/BACKLOG.md S3 item 2 (first slice, 2026-07-11): plasma support on
         # `CudaNativeSim`, PPT ionisation only (ADK still returns -1 — see
         # `RK45._gpu_native_eligible`'s docstring). Same mode-averaged
         # RealGrid Kerr scope as the sibling Kerr-only testitem above, plus

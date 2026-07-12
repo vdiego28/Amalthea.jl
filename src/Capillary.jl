@@ -306,7 +306,7 @@ an anonymous closure) so the native-Rust resident path (Phase 7) can detect
 this *specific* closed-form z→pressure map and port it exactly (elementary
 `sqrt` arithmetic, no interpolation error), as opposed to the general
 multi-point `gradient(gas,Z,P)` profile (out of Phase 7 scope — falls back
-to the non-native path). See `docs/native-port/MATH.md` §3.5.
+to the non-native path). See `docs/dev/native-port/MATH.md` §3.5.
 """
 struct TwoPointGradient
     L::Float64
@@ -323,7 +323,7 @@ end
 Callable pressure profile `p(z)` for the general multi-point piecewise
 gradient fill built by [`gradient(gas,Z,P)`](@ref) — a distinct, concrete
 type (rather than an anonymous closure), mirroring [`TwoPointGradient`](@ref),
-so the native-Rust resident path (BACKLOG.md Phase F item 3) can detect this
+so the native-Rust resident path (docs/dev/BACKLOG.md Phase F item 3) can detect this
 closed-form z→pressure map and port it exactly (the same per-segment
 `sqrt`-interpolation formula, no extra interpolation error, `ensure_linop_at`
 selects the segment containing `z`). `Z` must be sorted ascending; `P[i]` is
@@ -363,7 +363,7 @@ scalar `densf(z)`, and build a cheap resident z-dependent linop instead of
 falling back to the (non-native) per-stage Julia callback path. `pfun` is the
 pressure profile `p(z)` — a [`TwoPointGradient`](@ref) for the simple
 two-point `gradient` method, or a [`MultiPointGradient`](@ref) for the
-general multi-point `gradient` (both natively eligible as of BACKLOG.md
+general multi-point `gradient` (both natively eligible as of docs/dev/BACKLOG.md
 Phase F item 3).
 `dspl` is `PhysData.densityspline`'s density-of-pressure spline (`densf(z) =
 dspl(pfun(z))`) exposed directly so the native path can **transfer** its
@@ -371,7 +371,7 @@ dspl(pfun(z))`) exposed directly so the native path can **transfer** its
 values — real-gas density (via CoolProp) is not perfectly smooth at the
 scale a from-scratch refit would need to resolve, so re-fitting doesn't
 converge; transferring the identical piecewise-cubic sidesteps this
-entirely (see `docs/native-port/MATH.md` §3.5). Purely additive: calling a
+entirely (see `docs/dev/native-port/MATH.md` §3.5). Purely additive: calling a
 `GradedCoreIndex` gives byte-identical results to the old anonymous-closure
 `coren`.
 """
@@ -411,7 +411,7 @@ function gradient(gas, Z, P; T=roomtemp)
     dspl = densityspline(gas, Pmin=ex[1]==ex[2] ? 0 : ex[1], Pmax=ex[2]; T)
     pfun = MultiPointGradient(collect(Float64, Z), collect(Float64, P))
     dens(z) = dspl(pfun(z))
-    # BACKLOG.md Phase F item 3: the multi-point piecewise ramp is now
+    # docs/dev/BACKLOG.md Phase F item 3: the multi-point piecewise ramp is now
     # natively eligible via `MultiPointGradient`, wired into the same
     # `ZDepLinopMarcatili` specialization of `make_linop` below as the
     # two-point case (see that method's docstring).
@@ -592,7 +592,7 @@ end
 
 # ─── Phase 7: z-dependent linop for graded-core, constant-radius MarcatiliMode ──
 #
-# See docs/native-port/MATH.md §3.5 and docs/native-port/BETA1_ANALYTIC.md.
+# See docs/dev/native-port/MATH.md §3.5 and docs/dev/native-port/BETA1_ANALYTIC.md.
 # `ZDepLinopMarcatili` wraps the ordinary z-dependent `linop!(out,z)` closure
 # (so it behaves identically everywhere a z-dependent linop is used —
 # `LinearOps.make_prop!`, `RustPreconStepper`, the plain Julia `PreconStepper`)
@@ -627,7 +627,7 @@ end
 # or user-registered materials), so a hand-derived chain rule would need to
 # special-case every material, whereas BigFloat promotion differentiates
 # *whatever* closure is passed in, generically and exactly. See
-# `docs/native-port/BETA1_ANALYTIC.md` for the derivation, the adaptive-FD
+# `docs/dev/native-port/BETA1_ANALYTIC.md` for the derivation, the adaptive-FD
 # noise floor this replaces, and verification against both Julia's own
 # `dispersion` and an independent BigFloat cross-check.
 struct ZDepLinopMarcatili{F, DF}
@@ -664,7 +664,7 @@ Specialized z-dependent linop for a constant-radius, graded-core
 would. For a recognized gradient profile (`mode.coren.pfun isa
 Union{TwoPointGradient, MultiPointGradient}`), additionally wraps `linop!` in
 [`ZDepLinopMarcatili`](@ref) carrying the extra metadata the native-Rust
-resident path needs (BACKLOG.md Phase F items 3 and the original Phase 7);
+resident path needs (docs/dev/BACKLOG.md Phase F items 3 and the original Phase 7);
 for any other `pfun` (e.g. a user-supplied custom profile), returns the
 plain `linop!`/`βfun!` unwrapped, so `RustNativeStepper`'s native path is
 simply not attempted. Behaviourally identical to the generic method for
@@ -714,7 +714,7 @@ function make_linop(grid::Grid.RealGrid,
         nwg_im[iω] = imag(nwg)
     end
 
-    # BACKLOG.md Phase F item 3: both TwoPointGradient and MultiPointGradient
+    # docs/dev/BACKLOG.md Phase F item 3: both TwoPointGradient and MultiPointGradient
     # reduce to a shared `(Z,P)` breakpoints representation for the native
     # side — a two-point gradient is just `Z=[0,L], P=[p0,p1]`. `ensure_linop_at`
     # (Rust) performs the same per-segment sqrt-interpolation `pfun(z)` uses
@@ -760,7 +760,7 @@ end
 
 # ─── Phase E.2: z-dependent modal linop for tapered/per-mode radius ─────────
 #
-# See BACKLOG.md Phase E.2. Mirrors `ZDepLinopMarcatili` (Phase 7) but is the
+# See docs/dev/BACKLOG.md Phase E.2. Mirrors `ZDepLinopMarcatili` (Phase 7) but is the
 # reverse case: density is constant (checked by the caller, `RK45.jl`'s
 # `_check_density_zindependent`) while the core radius `a(z)` — a shared
 # Julia `Function` across all modes of one physical (tapered) fibre —

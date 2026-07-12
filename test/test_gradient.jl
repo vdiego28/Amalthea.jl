@@ -84,7 +84,7 @@ Luna.run(Eω, grid, linop, transform, FT, output_grad_array, status_period=10)
 # mode (`make_const_linop`, Phase 1's precomputed-once-in-Julia β1). Both
 # native paths are individually correct, and Phase 7's β1 is deliberately
 # more accurate than Julia's own adaptive-FD `Modes.dispersion` (see
-# docs/native-port/BETA1_ANALYTIC.md) — a tiny, real, per-ω-bin difference
+# docs/dev/native-port/BETA1_ANALYTIC.md) — a tiny, real, per-ω-bin difference
 # that accumulates coherently over z and ω, at the ~1e-4 tier
 # BETA1_ANALYTIC.md documents. (An earlier version of this test used a
 # `< 0.15` tolerance here, based on a measurement that turned out to be

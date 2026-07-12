@@ -13,7 +13,7 @@ using TestItems
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
-        # RealGrid + Hankel QDHT, Kerr + plasma (PPT) — BACKLOG.md Phase D.2 /
+        # RealGrid + Hankel QDHT, Kerr + plasma (PPT) — docs/dev/BACKLOG.md Phase D.2 /
         # MATH.md §3.2's deferred plasma-radial follow-up. Same geometry as
         # test_native_radial.jl, plus a PlasmaCumtrapz response wired through
         # the Rust-backed IonRatePPTAccel LUT (test_native_phase2.jl's Phase 2b
@@ -123,7 +123,7 @@ using TestItems
             println("Radial plasma-on vs plasma-off rel (Julia, non-vacuousness): ", rel_plasma_effect)
             @test rel_plasma_effect > 1e-6
 
-            # BACKLOG.md Phase I item 3 postmortem (2026-07-08): the
+            # docs/dev/BACKLOG.md Phase I item 3 postmortem (2026-07-08): the
             # equivalence tests above run at a much weaker energy (6e-5 J)
             # than this non-vacuousness check (3e-4 J) — exactly the blind
             # spot that let a real bug (native's plasma polarization
@@ -150,7 +150,7 @@ using TestItems
             @test rel_native_vs_noplasma > 1e-6
         end
 
-        @testset "n_threads=1 vs n_threads=4 bit-identical (BACKLOG.md S2)" begin
+        @testset "n_threads=1 vs n_threads=4 bit-identical (docs/dev/BACKLOG.md S2)" begin
             # Both the FFT-per-column loops AND apply_plasma_radial's
             # per-column loop are parallelized under S2 — this is the case
             # that actually exercises the plasma seam (test_native_radial.jl's
