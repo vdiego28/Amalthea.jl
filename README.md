@@ -1,8 +1,8 @@
 # Luna-Rust.jl
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20359893.svg)](https://doi.org/10.5281/zenodo.20359893)
-[![Stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://lupo-lab.com/Luna-Rust.jl)
-[![CI](https://github.com/dvalenzuela-com/Luna-Rust.jl/actions/workflows/run_tests.yml/badge.svg)](https://github.com/dvalenzuela-com/Luna-Rust.jl/actions/workflows/run_tests.yml)
+[![Stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://vdiego28.github.io/Luna-Rust.jl)
+[![CI](https://github.com/vdiego28/Luna-Rust.jl/actions/workflows/run_tests.yml/badge.svg)](https://github.com/vdiego28/Luna-Rust.jl/actions/workflows/run_tests.yml)
 
 > [!IMPORTANT]
 > **Luna-Rust.jl** is a performance-focused fork of [Luna.jl](https://github.com/LupoLab/Luna.jl) that replaces performance-critical numerical kernels with a native Rust backend (`luna-rust`). The Julia high-level interface is fully preserved and backwards-compatible.
@@ -35,7 +35,7 @@ There are two ways of using Luna-Rust.jl:
 1. A very simple high-level interface for the most heavily optimised applications: propagation in gas-filled hollow capillary fibres and hollow-core photonic crystal fibres (consisting of the function [`prop_capillary`](#quickstart) and some helper functions to create input pulses); or propagation of simple GNLSE simulations (consisting of the function [`prop_gnlse`](#gnlse)).
 2. A low-level interface which allows for full control and customisation of the simulation parameters, the use of custom waveguide modes and gas fills (including gas mixtures), and free-space propagation simulations.
 
-For a short introduction on how to use the simple interface, see the [Quickstart](#quickstart) or [GNLSE](#gnlse) sections below. More information, including on the internals of Luna-Rust.jl, can be found in the [Documentation](http://lupo-lab.com/Luna-Rust.jl).
+For a short introduction on how to use the simple interface, see the [Quickstart](#quickstart) or [GNLSE](#gnlse) sections below. More information, including on the internals of Luna-Rust.jl, can be found in the [Documentation](https://vdiego28.github.io/Luna-Rust.jl).
 
 ## The Rust Backend (`luna-rust`)
 
@@ -47,7 +47,7 @@ The `luna-rust` crate provides the high-performance numerical engine that powers
 - **Cross-platform**: builds and runs on Linux, macOS, and Windows, including
   the `Scans.jl`/`QueueExec` file-locking path (`LockFileEx`/`UnlockFileEx` on
   Windows), which is exercised by CI on every push (`windows-2025-vs2026`
-  runner). See `BACKLOG.md`'s "Windows scan-lock validation" entry.
+  runner). See `docs/dev/BACKLOG.md`'s "Windows scan-lock validation" entry.
 
 The Rust backend is called transparently via Julia's `ccall` interface; no Rust knowledge is needed to use Luna-Rust.jl.
 
@@ -57,7 +57,7 @@ Luna-Rust.jl requires Julia v1.9 or later, which can be obtained from [here](htt
 
 ```julia
 ]
-add https://github.com/dvalenzuela-com/Luna-Rust.jl
+add https://github.com/vdiego28/Luna-Rust.jl
 ```
 
 This will install and precompile Luna-Rust.jl and all its dependencies (including automatically building the Rust backend).
@@ -89,7 +89,7 @@ julia> output["Eω"]
 The shape of this array is `(Nω x Nz)` where `Nω` is the number of frequency samples and `Nz` is the number of steps that were saved during the propagation. By default, `prop_capillary` will solve the full-field (carrier-resolved) UPPE. In this case, the numerical Fourier transforms are done using `rfft`, so the number of frequency samples is `(Nt/2 + 1)` with `Nt` the number of samples in the time domain.
 
 ### Multi-mode propagation
-`prop_capillary` accepts many keyword arguments (for a full list see the [documentation](http://lupo-lab.com/Luna-Rust.jl/dev/interface.html)) to customise the simulation parameters and input pulse. One of the most important is `modes`, which defines whether mode-averaged or multi-mode propagation is used, and which modes are included. By default, `prop_capillary` considers mode-averaged propagation in the fundamental (HE₁₁) mode of the capillary, which is fast and simple but less accurate, especially at high intensity when self-focusing and photoionisation play important roles in the propagation dynamics.
+`prop_capillary` accepts many keyword arguments (for a full list see the [documentation](https://vdiego28.github.io/Luna-Rust.jl/dev/interface.html)) to customise the simulation parameters and input pulse. One of the most important is `modes`, which defines whether mode-averaged or multi-mode propagation is used, and which modes are included. By default, `prop_capillary` considers mode-averaged propagation in the fundamental (HE₁₁) mode of the capillary, which is fast and simple but less accurate, especially at high intensity when self-focusing and photoionisation play important roles in the propagation dynamics.
 
 Mode-averaged propagation is activated using `modes=:HE11` (the default) or replacing the `:HE11` with a different mode designation (for mode-averaged propagation in a different mode). To run the same simulation as above with the first four modes (HE₁₁ to HE₁₄) of the capillary, set `modes` to `4` (this example also uses smaller time and frequency windows to make the simulation run a little faster):
 ```julia
@@ -133,7 +133,7 @@ PyPlot.Figure(PyObject <Figure size 1700x1000 with 1 Axes>)
 ![Propagation example 4](assets/readme_multiModeSpec.png)
 (Compare this to the mode-averaged case above and note the important differences, e.g. the appearance of additional ultraviolet dispersive waves in higher-order modes.)
 
-More plotting functions are available in the [`Plotting`](http://lupo-lab.com/Luna-Rust.jl/dev/modules/Plotting.html) module, including for propagation statistics (`Plotting.stats(output)`) and spectrograms (`Plotting.spectrogram()`)
+More plotting functions are available in the [`Plotting`](https://vdiego28.github.io/Luna-Rust.jl/dev/modules/Plotting.html) module, including for propagation statistics (`Plotting.stats(output)`) and spectrograms (`Plotting.spectrogram()`)
 
 ### Output processing
 The `Processing` module contains many useful functions for more detailed processing and manual plotting, including:
@@ -165,10 +165,10 @@ This should show a plot like this:
 The [examples folder](examples/) contains complete simulation examples for a variety of scenarios, both for the [simple interface](examples/simple_interface/) and the [low-level interface](examples/low_level_interface). Some of the simple interface examples require the `PyPlot` package to be present, and many of the low-level examples require other packages as well—you can install these by simply typing `] add PyPlot` at the Julia REPL or the equivalent for other packages.
 
 ## The low-level interface
-At its core, Luna-Rust.jl is extremely flexible, and the simple interface using `prop_capillary` only exposes part of what it can do. There are lots of examples in the [low-level interface examples folder](examples/low_level_interface). These are not actively maintained and are not guaranteed to run. As a side effect of its flexibility, it is quite easy to make mistakes when using the low-level interface. If you have trouble with this interface, [open an issue](https://github.com/dvalenzuela-com/Luna-Rust.jl/issues/new) with as much detail as possible.
+At its core, Luna-Rust.jl is extremely flexible, and the simple interface using `prop_capillary` only exposes part of what it can do. There are lots of examples in the [low-level interface examples folder](examples/low_level_interface). These are not actively maintained and are not guaranteed to run. As a side effect of its flexibility, it is quite easy to make mistakes when using the low-level interface. If you have trouble with this interface, [open an issue](https://github.com/vdiego28/Luna-Rust.jl/issues/new) with as much detail as possible.
 
 ## Running parameter scans
-Luna-Rust.jl comes with a built-in interface which allows for the running of single- and multi-dimensional parameter scans with very little additional code. An example can be found in the [examples folder](examples/simple_interface/scan.jl) and more information is available in the [documentation](http://lupo-lab.com/Luna-Rust.jl/dev/scans.html).
+Luna-Rust.jl comes with a built-in interface which allows for the running of single- and multi-dimensional parameter scans with very little additional code. An example can be found in the [examples folder](examples/simple_interface/scan.jl) and more information is available in the [documentation](https://vdiego28.github.io/Luna-Rust.jl/dev/scans.html).
 
 ## New to Julia?
 There are many resources to help you learn Julia. A good place to start is [Julia Academy](https://juliaacademy.com/) which has several courses for learning Julia depending on your current experience. There are additional resources linked from the [Julia website](https://julialang.org/learning/).
@@ -178,7 +178,7 @@ To edit and run Julia code, a very good option is the [Julia extension](https://
 Julia fully supports [Unicode symbols in code](https://docs.julialang.org/en/v1/manual/variables/), including Greek letters. Luna-Rust.jl makes heavy use of this to name variables `ω` instead of `omega`, `π` instead of `pi`, etc. In any Julia console you can enter many Unicode characters using [a backslash and the tab key](https://docs.julialang.org/en/v1/manual/unicode-input/), for example `\omega<tab>` will result in `ω`, and `\ne<tab>` will result in `≠` (and the latter is equivalent to `!=`). For even faster entry of Greek letters specifically, you can use [this AutoHotkey script](https://github.com/q2apro/ahk_greekletters) or a number of other solutions.
 
 ## Getting help & contributing
-If something does not work as expected, you have found a bug, or you simply want some advice, please [open a new issue](https://github.com/dvalenzuela-com/Luna-Rust.jl/issues/new) on this GitHub repository.
+If something does not work as expected, you have found a bug, or you simply want some advice, please [open a new issue](https://github.com/vdiego28/Luna-Rust.jl/issues/new) on this GitHub repository.
 
 Luna-Rust.jl is being actively developed on this GitHub repository. To contribute a bugfix or a new feature, please create a pull request here. If you are new to GitHub, follow any one of the [many](https://github.com/firstcontributions/first-contributions) [useful](https://akrabat.com/the-beginners-guide-to-contributing-to-a-github-project/) [guides](https://codeburst.io/a-step-by-step-guide-to-making-your-first-github-contribution-5302260a2940) around to learn the (very simple!) GitHub workflow.
 

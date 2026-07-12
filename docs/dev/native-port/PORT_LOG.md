@@ -1,7 +1,7 @@
 # Native-Rust Port Log
 
 > **Append-only.** Newest entries at the bottom. Every agent (and the lead) adds
-> a dated entry on finishing a unit of work — see [`AGENTS.md`](../../AGENTS.md)
+> a dated entry on finishing a unit of work — see `AGENTS.md`
 > for when and why. This log is how the lead resumes work after being away and
 > how a fresh agent learns what the last one actually did (not just what the plan
 > said).

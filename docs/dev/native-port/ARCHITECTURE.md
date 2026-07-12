@@ -5,8 +5,8 @@
 > native-Rust backend port is complete.
 > Companion docs: [MATH.md](MATH.md), [TESTING.md](TESTING.md),
 > [PORT_LOG.md](PORT_LOG.md), [BETA1_ANALYTIC.md](BETA1_ANALYTIC.md). Agent
-> workflow: [`AGENTS.md`](../../AGENTS.md).
-> Phase checklist: [`BACKLOG.md`](../../BACKLOG.md).
+> workflow: `AGENTS.md`.
+> Phase checklist: [`BACKLOG.md`](../BACKLOG.md).
 
 ## 1. Why this document exists
 

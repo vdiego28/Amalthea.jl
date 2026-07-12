@@ -1,4 +1,4 @@
-# Luna Documentation
-This is the documentation for [Luna](https://github.com/LupoLab/Luna). The [README](https://github.com/LupoLab/Luna/blob/master/README.md) contains installation and quickstart instructions. This documentation is intended to lay out the physical model used give deeper insight into the workings of Luna. It is not yet complete--any contributions are welcome!
+# Luna-Rust.jl Documentation
+This is the documentation for [Luna-Rust.jl](https://github.com/vdiego28/Luna-Rust.jl), a performance-focused fork of [Luna.jl](https://github.com/LupoLab/Luna.jl) that replaces performance-critical numerical kernels with a native Rust backend. The [README](https://github.com/vdiego28/Luna-Rust.jl/blob/main/README.md) contains installation and quickstart instructions. This documentation is intended to lay out the physical model used and give deeper insight into the workings of Luna-Rust.jl. It is not yet complete--any contributions are welcome!
 
-If you are new to Luna, the most interesting page is probably [the simple interface](#The-simple-interface). Details about the actual equation Luna solves can be found in [the numerical model](#The-numerical-model) section.
+If you are new to Luna-Rust.jl, the most interesting page is probably [the simple interface](#The-simple-interface). Details about the actual equation Luna-Rust.jl solves can be found in [the numerical model](#The-numerical-model) section.

@@ -1496,11 +1496,11 @@ application stay in Julia. "Exclusively Rust" therefore requires a **resident
 `NativeSim`** field + native RHS + FFTW binding, not a default-flip.
 
 Design docs (read before starting any phase):
-[`docs/native-port/ARCHITECTURE.md`](docs/native-port/ARCHITECTURE.md) ·
-[`docs/native-port/MATH.md`](docs/native-port/MATH.md) ·
-[`docs/native-port/TESTING.md`](docs/native-port/TESTING.md) ·
-[`docs/native-port/PORT_LOG.md`](docs/native-port/PORT_LOG.md) ·
-agent workflow [`AGENTS.md`](AGENTS.md). New toggle: `LUNA_USE_RUST_NATIVE`.
+[`docs/dev/native-port/ARCHITECTURE.md`](native-port/ARCHITECTURE.md) ·
+[`docs/dev/native-port/MATH.md`](native-port/MATH.md) ·
+[`docs/dev/native-port/TESTING.md`](native-port/TESTING.md) ·
+[`docs/dev/native-port/PORT_LOG.md`](native-port/PORT_LOG.md) ·
+agent workflow `AGENTS.md`. New toggle: `LUNA_USE_RUST_NATIVE`.
 
 Phases (each independently shippable; gate = single-step ~1e-13 **and**
 full-`solve` ~1e-6 vs the Julia oracle — see TESTING.md §3 nondeterminism floor):

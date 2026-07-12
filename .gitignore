@@ -39,3 +39,11 @@ test/benchmark_result.json
 
 # Per-worker logs from test/parallel_rust_tests.py
 .rust_test_logs/
+
+# Local Claude Code session config (not part of the project)
+.claude/
+.mcp.json
+
+# AI-agent workflow instructions (local dev aid, not shipped)
+CLAUDE.md
+AGENTS.md
