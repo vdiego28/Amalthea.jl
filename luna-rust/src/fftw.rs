@@ -187,6 +187,19 @@ type ExecSplitDftC2r = unsafe extern "C" fn(FftwPlan, *mut f64, *mut f64, *mut f
 // success (FFTW's own convention, unlike most of this file's 0=success FFI).
 type ImportWisdom = unsafe extern "C" fn(*const libc::c_char) -> c_int;
 type ExportWisdom = unsafe extern "C" fn(*const libc::c_char) -> c_int;
+// `void fftw_plan_with_nthreads(int)` / `int fftw_planner_nthreads(void)` —
+// process-global state (same library instance Julia's FFTW.jl already
+// loaded, see this module's doc). Used to force single-threaded planning
+// for the 1-D per-column plans below: FFTW's "execute is reentrant against
+// one shared plan with distinct buffers" guarantee only holds for plans
+// planned with nthreads=1 — a plan baked with nthreads>1 (which is exactly
+// what happens if planned while Julia's `Utils.FFTWthreads()` has already
+// raised the process-global thread count, e.g. `JULIA_NUM_THREADS=auto` in
+// CI) internally dispatches to FFTW's own worker pool on every execute, and
+// concurrent execute calls on such a plan from multiple rayon workers
+// deadlock (see BACKLOG.md's native-radial-threading hang postmortem).
+type PlanWithNthreads = unsafe extern "C" fn(c_int);
+type PlannerNthreads = unsafe extern "C" fn() -> c_int;
 
 /// Loaded FFTW API + the live library handle (kept alive while the API exists).
 pub struct FftwApi {
@@ -203,6 +216,8 @@ pub struct FftwApi {
     destroy_plan: DestroyPlan,
     import_wisdom: Option<ImportWisdom>,
     export_wisdom: Option<ExportWisdom>,
+    plan_with_nthreads: Option<PlanWithNthreads>,
+    planner_nthreads: Option<PlannerNthreads>,
     plan_guru_split_dft_1d: PlanGuruSplitDft1d,
     plan_guru_split_dft_r2c_1d: PlanGuruSplitDftR2c1d,
     plan_guru_split_dft_c2r_1d: PlanGuruSplitDftC2r1d,
@@ -258,6 +273,15 @@ impl FftwApi {
             .map(|p| unsafe { std::mem::transmute::<*mut c_void, ImportWisdom>(p) });
         let export_wisdom = unsafe { lib.sym("fftw_export_wisdom_to_filename") }
             .map(|p| unsafe { std::mem::transmute::<*mut c_void, ExportWisdom>(p) });
+        // Optional for the same reason: absence just means we can't force
+        // single-threaded planning (older/non-threaded FFTW build), so the
+        // 1-D per-column plans below fall back to whatever the ambient
+        // process-global thread count is — a latent deadlock risk under
+        // multi-threaded Julia, but not a hard dependency for plan creation.
+        let plan_with_nthreads = unsafe { lib.sym("fftw_plan_with_nthreads") }
+            .map(|p| unsafe { std::mem::transmute::<*mut c_void, PlanWithNthreads>(p) });
+        let planner_nthreads = unsafe { lib.sym("fftw_planner_nthreads") }
+            .map(|p| unsafe { std::mem::transmute::<*mut c_void, PlannerNthreads>(p) });
 
         let plan_guru_split_dft_1d = sym!("fftw_plan_guru_split_dft", PlanGuruSplitDft1d);
         let plan_guru_split_dft_r2c_1d = sym!("fftw_plan_guru_split_dft_r2c", PlanGuruSplitDftR2c1d);
@@ -286,7 +310,27 @@ impl FftwApi {
             exec_split_dft,
             exec_split_dft_r2c,
             exec_split_dft_c2r,
+            plan_with_nthreads,
+            planner_nthreads,
         })
+    }
+
+    /// Run `f` (a plan-creation closure) with FFTW's process-global thread
+    /// count forced to 1, restoring whatever it was before on the way out.
+    /// Must be called with `PLANNER_LOCK` already held (planning — and this
+    /// thread-count state, which is planning-time-only — are equally
+    /// not-safe-for-concurrent-callers). See `PlanWithNthreads`'s doc for why
+    /// every 1-D per-column plan needs this.
+    fn with_single_threaded_plan<T>(&self, f: impl FnOnce() -> T) -> T {
+        let (set, get) = match (self.plan_with_nthreads, self.planner_nthreads) {
+            (Some(s), Some(g)) => (s, g),
+            _ => return f(),
+        };
+        let prev = unsafe { get() };
+        unsafe { set(1) };
+        let result = f();
+        unsafe { set(if prev > 0 { prev } else { 1 }) };
+        result
     }
 
     /// Load previously-saved planner wisdom from `path` — BACKLOG.md S1
@@ -341,12 +385,11 @@ impl ComplexFft1d {
         let mut b = vec![[0.0f64; 2]; n];
         let f = flags | FFTW_UNALIGNED;
         let _guard = PLANNER_LOCK.lock().unwrap();
-        let fwd = unsafe {
-            (api.plan_dft_1d)(n as c_int, a.as_mut_ptr(), b.as_mut_ptr(), FFTW_FORWARD, f)
-        };
-        let inv = unsafe {
-            (api.plan_dft_1d)(n as c_int, a.as_mut_ptr(), b.as_mut_ptr(), FFTW_BACKWARD, f)
-        };
+        let (fwd, inv) = api.with_single_threaded_plan(|| unsafe {
+            let fwd = (api.plan_dft_1d)(n as c_int, a.as_mut_ptr(), b.as_mut_ptr(), FFTW_FORWARD, f);
+            let inv = (api.plan_dft_1d)(n as c_int, a.as_mut_ptr(), b.as_mut_ptr(), FFTW_BACKWARD, f);
+            (fwd, inv)
+        });
         ComplexFft1d { n, fwd, inv, destroy_plan: api.destroy_plan, exec_dft: api.exec_dft }
     }
 
@@ -385,9 +428,13 @@ impl Drop for ComplexFft1d {
 /// arguments, which is exactly how BACKLOG.md S2 (threading the native
 /// RHS, `native.rs`'s `rhs_radial`) uses this from multiple rayon workers
 /// — each worker's `&mut [Complex<f64>]` chunk is a disjoint slice of the
-/// caller's own column-major buffer. The raw `FftwPlan`/function-pointer
-/// fields otherwise block the auto-derived `Sync` Rust would normally
-/// infer were absent.
+/// caller's own column-major buffer. This guarantee only holds for plans
+/// created with FFTW's own internal thread count forced to 1 (`new` does
+/// this via `with_single_threaded_plan`) — a plan baked with nthreads>1
+/// dispatches to FFTW's own worker pool on every execute, and concurrent
+/// execute calls on such a plan deadlock (see that function's doc). The raw
+/// `FftwPlan`/function-pointer fields otherwise block the auto-derived
+/// `Sync` Rust would normally infer were absent.
 unsafe impl Sync for ComplexFft1d {}
 
 /// A real↔complex 1-D plan pair (RealGrid `rfft`/`irfft`).
@@ -409,15 +456,14 @@ impl RealFft1d {
         let mut sbuf = vec![[0.0f64; 2]; nspec];
         let f = flags | FFTW_UNALIGNED;
         let _guard = PLANNER_LOCK.lock().unwrap();
-        let r2c = unsafe {
-            (api.plan_r2c_1d)(n as c_int, tbuf.as_mut_ptr(), sbuf.as_mut_ptr(), f)
-        };
         // c2r destroys its input by default; PRESERVE_INPUT keeps the spectrum
         // intact (1-D c2r supports it). Matches the safe out-of-place pattern.
-        let c2r = unsafe {
-            (api.plan_c2r_1d)(n as c_int, sbuf.as_mut_ptr(), tbuf.as_mut_ptr(),
-                              f | FFTW_PRESERVE_INPUT)
-        };
+        let (r2c, c2r) = api.with_single_threaded_plan(|| unsafe {
+            let r2c = (api.plan_r2c_1d)(n as c_int, tbuf.as_mut_ptr(), sbuf.as_mut_ptr(), f);
+            let c2r = (api.plan_c2r_1d)(n as c_int, sbuf.as_mut_ptr(), tbuf.as_mut_ptr(),
+                                         f | FFTW_PRESERVE_INPUT);
+            (r2c, c2r)
+        });
         RealFft1d { n, nspec, r2c, c2r, destroy_plan: api.destroy_plan,
                     exec_r2c: api.exec_r2c, exec_c2r: api.exec_c2r }
     }
@@ -635,18 +681,17 @@ impl SplitComplexFft1d {
         // reusing the same dummy scratch with swapped argument order is
         // sufficient to fix the plan's sign; execution must swap the same
         // way (see `inverse`).
-        let fwd = unsafe {
-            (api.plan_guru_split_dft_1d)(
+        let (fwd, inv) = api.with_single_threaded_plan(|| unsafe {
+            let fwd = (api.plan_guru_split_dft_1d)(
                 1, dims.as_ptr(), 0, std::ptr::null(),
                 ar.as_mut_ptr(), ai.as_mut_ptr(), br.as_mut_ptr(), bi.as_mut_ptr(), f,
-            )
-        };
-        let inv = unsafe {
-            (api.plan_guru_split_dft_1d)(
+            );
+            let inv = (api.plan_guru_split_dft_1d)(
                 1, dims.as_ptr(), 0, std::ptr::null(),
                 ai.as_mut_ptr(), ar.as_mut_ptr(), bi.as_mut_ptr(), br.as_mut_ptr(), f,
-            )
-        };
+            );
+            (fwd, inv)
+        });
         SplitComplexFft1d { n, fwd, inv, destroy_plan: api.destroy_plan, exec_split_dft: api.exec_split_dft }
     }
 
@@ -709,22 +754,21 @@ impl SplitRealFft1d {
         let mut si = vec![0.0f64; nspec];
         let f = flags | FFTW_UNALIGNED;
         let _guard = PLANNER_LOCK.lock().unwrap();
-        let r2c = unsafe {
-            (api.plan_guru_split_dft_r2c_1d)(
-                1, dims.as_ptr(), 0, std::ptr::null(),
-                tbuf.as_mut_ptr(), sr.as_mut_ptr(), si.as_mut_ptr(), f,
-            )
-        };
         // 1-D split c2r does support PRESERVE_INPUT, matching RealFft1d's
         // AoS c2r plan (see that struct's own comment) — keep parity so a
         // caller that reuses the spectrum after inverse isn't broken.
-        let c2r = unsafe {
-            (api.plan_guru_split_dft_c2r_1d)(
+        let (r2c, c2r) = api.with_single_threaded_plan(|| unsafe {
+            let r2c = (api.plan_guru_split_dft_r2c_1d)(
+                1, dims.as_ptr(), 0, std::ptr::null(),
+                tbuf.as_mut_ptr(), sr.as_mut_ptr(), si.as_mut_ptr(), f,
+            );
+            let c2r = (api.plan_guru_split_dft_c2r_1d)(
                 1, dims.as_ptr(), 0, std::ptr::null(),
                 sr.as_mut_ptr(), si.as_mut_ptr(), tbuf.as_mut_ptr(),
                 f | FFTW_PRESERVE_INPUT,
-            )
-        };
+            );
+            (r2c, c2r)
+        });
         SplitRealFft1d { n, nspec, r2c, c2r, destroy_plan: api.destroy_plan,
                           exec_split_dft_r2c: api.exec_split_dft_r2c,
                           exec_split_dft_c2r: api.exec_split_dft_c2r }
