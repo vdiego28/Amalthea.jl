@@ -64,7 +64,7 @@ The Rust backend is called transparently via Julia's `ccall` interface; no Rust 
 
 ## Installation
 
-Amalthea.jl requires Julia v1.9 or later, which can be obtained from [here](https://julialang.org/downloads/), and a [Rust toolchain](https://rustup.rs/) for building the native backend. In a Julia terminal, to install Amalthea.jl enter the package manager with `]` and run:
+Amalthea.jl requires Julia v1.10 or later, which can be obtained from [here](https://julialang.org/downloads/), and a [Rust toolchain](https://rustup.rs/) for building the native backend. In a Julia terminal, to install Amalthea.jl enter the package manager with `]` and run:
 
 ```julia
 ]
