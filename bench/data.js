@@ -1,6 +1,6 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783888607037,
-  "repoUrl": "https://github.com/vdiego28/Luna-Rust.jl",
+  "lastUpdate": 1783890683792,
+  "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
       {
@@ -86,6 +86,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.975871,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "distinct": true,
+          "id": "0280cb463f8b3111fb25c1c29e2e4d6722cc1b88",
+          "message": "Rename package from Luna-Rust.jl to Amalthea.jl\n\nGives the fork an independent Julia package identity (new name and\nUUID, distinct from upstream Luna.jl's) and repo branding, ahead of\nregistering it as its own package in the General registry and cutting\na v1.0.0 release. Historical CHANGELOG/REVIEW entries are kept as\n\"formerly Luna-Rust.jl\" rather than rewritten.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-12T17:06:52-04:00",
+          "tree_id": "bf1da31a527a5cc6a1de6bbcb1f33d8c370e026b",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/0280cb463f8b3111fb25c1c29e2e4d6722cc1b88"
+        },
+        "date": 1783890683393,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.953231,
             "unit": "ms/step"
           }
         ]
