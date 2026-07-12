@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783890683792,
+  "lastUpdate": 1783891307751,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -115,6 +115,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.953231,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "distinct": true,
+          "id": "74bd6f644ae4b97cedb879cfdb4f76b41af2a67b",
+          "message": "Bump minimum Julia version to 1.10\n\nProject.toml declared julia = \"1.9\" but DSP = \"0.8\", and DSP >=0.8.0\nitself requires Julia >=1.10 — an unsatisfiable requirement at the\ndeclared floor. AutoMerge's Pkg.add on Julia 1.9.4 caught this on the\nAmalthea registration PR (JuliaRegistries/General#160997). Raising the\nfloor to 1.10 (already covered by CI's 'lts'/'1'/'pre' matrix) resolves\nit without touching the DSP compat bound.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-12T17:19:28-04:00",
+          "tree_id": "4c1e14b49d1c6bfd8ae4109e82c45d6b1daf2584",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/74bd6f644ae4b97cedb879cfdb4f76b41af2a67b"
+        },
+        "date": 1783891307248,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.956111,
             "unit": "ms/step"
           }
         ]
