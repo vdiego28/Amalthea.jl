@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783891307751,
+  "lastUpdate": 1783893359477,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -144,6 +144,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.956111,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "distinct": true,
+          "id": "440f368d269eb7bb94622ffa1ab99914b7dfed00",
+          "message": "Fix Windows prebuilt-download race and Documenter cross-references\n\n- deps/build.jl: download the prebuilt library and SHA256SUMS.txt into\n  a real temp directory instead of writing/deleting them directly in\n  the live luna-rust/target/release/ dir. On Windows that directory\n  can still be locked by the preceding `cargo build --release` CI\n  step (or antivirus), causing an EBUSY unlink error on cleanup. Only\n  a single atomic `mv` of the verified library now touches target/release/.\n  First exposed by real Windows release binaries existing for v1.0.0.\n\n- Documenter build was failing on 6 unresolved @ref links (all\n  pre-existing, unrelated to the rename):\n  - ZDepLinopMarcatili / ZDepLinopFree structs had rationale as plain\n    comments, not docstrings — added proper docstrings.\n  - prop_capillary_args's docstring was textually attached to the\n    wrong function (_prop_capillary_args, defined right after it) —\n    moved to the correct binding.\n  - 3 cross-module @ref links (LinearOps.make_linop_free_gradient,\n    Capillary.gradient, NonlinearRHS.norm_free_gradient) failed to\n    resolve from another module's @autodocs page; fully-qualified\n    them (Amalthea.<Module>.<name>) which Documenter resolves\n    regardless of the page's CurrentModule.\n\nVerified locally: `julia --project=docs docs/make.jl` now completes\nwith no cross-reference errors.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-12T17:52:13-04:00",
+          "tree_id": "abfe187e405fb97f0af47ed69f0dcaad54099823",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/440f368d269eb7bb94622ffa1ab99914b7dfed00"
+        },
+        "date": 1783893359212,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.968935,
             "unit": "ms/step"
           }
         ]
