@@ -185,6 +185,11 @@ jobs:
           output-file-path: test/benchmark_result.json
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: true
+          # Documenter's deploydocs (documenter.yml) deploys push-to-main docs
+          # under gh-pages:dev/ by default, clearing that folder on each
+          # deploy. Keep benchmark history out of the way of that path
+          # instead of at this action's own default (dev/bench).
+          benchmark-data-dir-path: bench
           alert-threshold: '150%'
           comment-on-alert: true
           fail-on-alert: true
