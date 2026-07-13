@@ -1,10 +1,10 @@
 import pytest
 from unittest.mock import MagicMock, patch
-import luna_rust
+import amalthea
 
-@patch('luna_rust.LunaOutput')
-@patch('luna_rust.get_julia')
-@patch('luna_rust.translate_kwargs')
+@patch('amalthea.LunaOutput')
+@patch('amalthea.get_julia')
+@patch('amalthea.translate_kwargs')
 def test_prop_capillary(mock_translate_kwargs, mock_get_julia, mock_LunaOutput):
     """Test prop_capillary string gas and list pressure conversion."""
     mock_translate_kwargs.return_value = {'lambda0': 800e-9}
@@ -20,7 +20,7 @@ def test_prop_capillary(mock_translate_kwargs, mock_get_julia, mock_LunaOutput):
     gas = "He"
     pressure = [0.0, 1.0]
 
-    result = luna_rust.prop_capillary(radius, flength, gas, pressure, test_arg=1)
+    result = amalthea.prop_capillary(radius, flength, gas, pressure, test_arg=1)
 
     mock_translate_kwargs.assert_called_once_with({'test_arg': 1})
     mock_jl.Symbol.assert_called_once_with("He")
@@ -31,9 +31,9 @@ def test_prop_capillary(mock_translate_kwargs, mock_get_julia, mock_LunaOutput):
     assert result == mock_LunaOutput.return_value
 
 
-@patch('luna_rust.LunaOutput')
-@patch('luna_rust.get_julia')
-@patch('luna_rust.translate_kwargs')
+@patch('amalthea.LunaOutput')
+@patch('amalthea.get_julia')
+@patch('amalthea.translate_kwargs')
 def test_prop_capillary_no_conversion(mock_translate_kwargs, mock_get_julia, mock_LunaOutput):
     """Test prop_capillary with non-string gas and scalar pressure (no conversion)."""
     mock_translate_kwargs.return_value = {}
@@ -46,7 +46,7 @@ def test_prop_capillary_no_conversion(mock_translate_kwargs, mock_get_julia, moc
     gas = MagicMock() # Not a string
     pressure = 1.0 # Not a list/tuple
 
-    result = luna_rust.prop_capillary(radius, flength, gas, pressure)
+    result = amalthea.prop_capillary(radius, flength, gas, pressure)
 
     mock_jl.Symbol.assert_not_called()
     mock_luna.prop_capillary.assert_called_once_with(
@@ -54,9 +54,9 @@ def test_prop_capillary_no_conversion(mock_translate_kwargs, mock_get_julia, moc
     )
 
 
-@patch('luna_rust.LunaOutput')
-@patch('luna_rust.get_julia')
-@patch('luna_rust.translate_kwargs')
+@patch('amalthea.LunaOutput')
+@patch('amalthea.get_julia')
+@patch('amalthea.translate_kwargs')
 def test_prop_gnlse(mock_translate_kwargs, mock_get_julia, mock_LunaOutput):
     """Test prop_gnlse list betas conversion."""
     mock_translate_kwargs.return_value = {'lambda0': 800e-9}
@@ -68,7 +68,7 @@ def test_prop_gnlse(mock_translate_kwargs, mock_get_julia, mock_LunaOutput):
     flength = 0.001
     betas = [0.0, 0.0, -1e-26]
 
-    result = luna_rust.prop_gnlse(gamma, flength, betas, test_arg=1)
+    result = amalthea.prop_gnlse(gamma, flength, betas, test_arg=1)
 
     mock_translate_kwargs.assert_called_once_with({'test_arg': 1})
     mock_luna.prop_gnlse.assert_called_once_with(
@@ -78,9 +78,9 @@ def test_prop_gnlse(mock_translate_kwargs, mock_get_julia, mock_LunaOutput):
     assert result == mock_LunaOutput.return_value
 
 
-@patch('luna_rust.LunaOutput')
-@patch('luna_rust.get_julia')
-@patch('luna_rust.translate_kwargs')
+@patch('amalthea.LunaOutput')
+@patch('amalthea.get_julia')
+@patch('amalthea.translate_kwargs')
 def test_prop_gnlse_no_conversion(mock_translate_kwargs, mock_get_julia, mock_LunaOutput):
     """Test prop_gnlse with non-list betas (no conversion)."""
     mock_translate_kwargs.return_value = {}
@@ -92,7 +92,7 @@ def test_prop_gnlse_no_conversion(mock_translate_kwargs, mock_get_julia, mock_Lu
     flength = 0.001
     betas = MagicMock() # Not a list/tuple
 
-    result = luna_rust.prop_gnlse(gamma, flength, betas)
+    result = amalthea.prop_gnlse(gamma, flength, betas)
 
     mock_luna.prop_gnlse.assert_called_once_with(
         gamma, flength, betas

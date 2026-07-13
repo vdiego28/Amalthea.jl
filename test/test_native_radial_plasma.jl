@@ -9,7 +9,7 @@ using TestItems
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 
-    libpath = RK45._LIBLUNA_RUST_RK45
+    libpath = RK45._LIBAMALTHEA_RK45
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
@@ -35,10 +35,10 @@ using TestItems
         densityfun(z) = dens0
         ionpot = PhysData.ionisation_potential(gas)
         # The native plasma path needs a Rust-backed ionisation-rate handle,
-        # which is only wired up if LUNA_USE_RUST_IONISATION=1 is set BEFORE
+        # which is only wired up if AMALTHEA_USE_RUST_IONISATION=1 is set BEFORE
         # the LUT is built (see test_native_phase2.jl's Phase 2b comment) —
         # not just around the later RustNativeStepper construction below.
-        ionrate = withenv("LUNA_USE_RUST_IONISATION" => "1") do
+        ionrate = withenv("AMALTHEA_USE_RUST_IONISATION" => "1") do
             Ionisation.IonRatePPTCached(gas, λ0)
         end
         plasma_resp = Nonlinear.PlasmaCumtrapz(grid.to, grid.to, ionrate, ionpot)
@@ -58,8 +58,8 @@ using TestItems
 
         @testset "Single-step equivalence (radial + plasma, ~1e-12)" begin
             s_jl = PreconStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10)
-            s_ru = withenv("LUNA_USE_RUST_NATIVE" => "1",
-                           "LUNA_USE_RUST_IONISATION" => "1") do
+            s_ru = withenv("AMALTHEA_USE_RUST_NATIVE" => "1",
+                           "AMALTHEA_USE_RUST_IONISATION" => "1") do
                 RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10)
             end
 
@@ -74,8 +74,8 @@ using TestItems
         @testset "Full-solve equivalence (radial + plasma, fixed dt)" begin
             s_jl = PreconStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
                                   max_dt=dt, min_dt=dt)
-            s_ru = withenv("LUNA_USE_RUST_NATIVE" => "1",
-                           "LUNA_USE_RUST_IONISATION" => "1") do
+            s_ru = withenv("AMALTHEA_USE_RUST_NATIVE" => "1",
+                           "AMALTHEA_USE_RUST_IONISATION" => "1") do
                 RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
                                   max_dt=dt, min_dt=dt)
             end
@@ -135,8 +135,8 @@ using TestItems
             # energy where the bug would actually show. Close that gap
             # directly: native vs Julia AT the plasma-matters energy, and
             # native vs Julia's plasma-OFF result (must NOT match).
-            s_ru_strong = withenv("LUNA_USE_RUST_NATIVE" => "1",
-                           "LUNA_USE_RUST_IONISATION" => "1") do
+            s_ru_strong = withenv("AMALTHEA_USE_RUST_NATIVE" => "1",
+                           "AMALTHEA_USE_RUST_IONISATION" => "1") do
                 RustNativeStepper(transform_strong, linop, copy(Eω_strong), t0, dt,
                                    rtol=1e-6, atol=1e-10, max_dt=dt, min_dt=dt)
             end
@@ -156,13 +156,13 @@ using TestItems
             # that actually exercises the plasma seam (test_native_radial.jl's
             # equivalent testset only covers the Kerr-only FFT seam). Same
             # disjoint-writes argument: must be exact, not within tolerance.
-            s1 = withenv("LUNA_USE_RUST_NATIVE" => "1",
-                         "LUNA_USE_RUST_IONISATION" => "1") do
+            s1 = withenv("AMALTHEA_USE_RUST_NATIVE" => "1",
+                         "AMALTHEA_USE_RUST_IONISATION" => "1") do
                 RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
                                    max_dt=dt, min_dt=dt, native_threads=1)
             end
-            s4 = withenv("LUNA_USE_RUST_NATIVE" => "1",
-                         "LUNA_USE_RUST_IONISATION" => "1") do
+            s4 = withenv("AMALTHEA_USE_RUST_NATIVE" => "1",
+                         "AMALTHEA_USE_RUST_IONISATION" => "1") do
                 RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
                                    max_dt=dt, min_dt=dt, native_threads=4)
             end

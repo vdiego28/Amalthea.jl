@@ -7,25 +7,25 @@ import LinearAlgebra: mul!, ldiv!
 
 # ─── Rust FFI helpers for Raman ──────────────────────────────────────────────
 #
-# The time-domain Raman solver in luna-rust computes the SDO ADE response in
+# The time-domain Raman solver in amalthea computes the SDO ADE response in
 # O(Nt) via an exponential integrator, replacing the O(Nt log Nt) FFT convolution
-# when LUNA_USE_RUST_RAMAN=1.  Eligibility check (CombinedRamanResponse with all-SDO
+# when AMALTHEA_USE_RUST_RAMAN=1.  Eligibility check (CombinedRamanResponse with all-SDO
 # components and density-independent τ2) lives in Interface.jl where Raman types are
 # visible; this module only provides the ccall wrappers, which require a module-level
 # const for the library path (Julia's ccall lowering constraint — see ec76fd2).
 
-function _libluna_rust_path()
+function _libamalthea_path()
     libname = if Sys.iswindows()
-        "luna_rust.dll"
+        "amalthea.dll"
     elseif Sys.isapple()
-        "libluna_rust.dylib"
+        "libamalthea.dylib"
     else
-        "libluna_rust.so"
+        "libamalthea.so"
     end
-    joinpath(Utils.lunadir(), "luna-rust", "target", "release", libname)
+    joinpath(Utils.lunadir(), "amalthea", "target", "release", libname)
 end
 
-const _LIBLUNA_RUST = _libluna_rust_path()
+const _LIBAMALTHEA = _libamalthea_path()
 
 """
 Mutable wrapper around a heap-allocated `TimeDomainRamanSolver` in the Rust shared
@@ -38,7 +38,7 @@ mutable struct RustRamanHandle
         h = new(ptr)
         finalizer(h) do self
             if self.ptr != C_NULL
-                ccall((:free_raman_solver, _LIBLUNA_RUST),
+                ccall((:free_raman_solver, _LIBAMALTHEA),
                       Cvoid, (Ptr{Cvoid},), self.ptr)
                 self.ptr = C_NULL
             end
@@ -57,14 +57,14 @@ Returns `nothing` when the toggle is off, the lib is missing, or init fails.
 function _make_rust_raman_handle(omegas::Vector{Float64}, gammas::Vector{Float64},
                                   couplings::Vector{Float64}, dt::Float64)
     Config.backend_config().raman || return nothing
-    if !isfile(_LIBLUNA_RUST)
-        @warn "LUNA_USE_RUST_RAMAN=1 but Rust lib not found at $_LIBLUNA_RUST — " *
-              "falling back to Julia. Build with `cargo build --release` in luna-rust/."
+    if !isfile(_LIBAMALTHEA)
+        @warn "AMALTHEA_USE_RUST_RAMAN=1 but Rust lib not found at $_LIBAMALTHEA — " *
+              "falling back to Julia. Build with `cargo build --release` in amalthea/."
         return nothing
     end
     isempty(omegas) && return nothing
     ptr = GC.@preserve omegas gammas couplings begin
-        ccall((:init_raman_solver, _LIBLUNA_RUST),
+        ccall((:init_raman_solver, _LIBAMALTHEA),
               Ptr{Cvoid},
               (Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Csize_t, Float64),
               pointer(omegas), pointer(gammas), pointer(couplings), Csize_t(length(omegas)), dt)
@@ -417,7 +417,7 @@ function (R::RamanPolar)(out, Et, ρ)
         e2_arr = R.E2  # preserve the backing array of E2v (GC.@preserve requires symbols)
         p_arr  = R.P
         ret = GC.@preserve e2_arr p_arr begin
-            ccall((:raman_solve, _LIBLUNA_RUST), Cint,
+            ccall((:raman_solve, _LIBAMALTHEA), Cint,
                   (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Csize_t),
                   rh.ptr, pointer(R.E2v), pointer(R.P), Csize_t(length(R.E2v)))
         end

@@ -1,7 +1,7 @@
 # supercontinuum from simple GNLSE parameters
 # Fig.3 of Dudley et. al, RMP 78 1135 (2006)
 
-using Amalthea
+using Amalthea, PyPlot
 
 γ = 0.11
 flength = 15e-2

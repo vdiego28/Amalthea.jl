@@ -265,8 +265,8 @@ pub unsafe extern "C" fn free_qdht_ffi(ptr: *mut QdhtFfiHandle) {
 }
 
 /// docs/dev/BACKLOG.md S5.2: sets/clears deterministic mode on the per-kernel
-/// (`LUNA_USE_RUST_QDHT`) QDHT handle — `on != 0` skips the BLAS-3 `dgemm`
-/// path (`crate::blas::get_blas_api()`) even when `LUNA_QDHT_BLAS` is
+/// (`AMALTHEA_USE_RUST_QDHT`) QDHT handle — `on != 0` skips the BLAS-3 `dgemm`
+/// path (`crate::blas::get_blas_api()`) even when `AMALTHEA_QDHT_BLAS` is
 /// enabled, forcing the row-parallel Rayon fallback instead. Mirrors
 /// `native_set_deterministic`, which covers the resident native-port
 /// radial geometry's own `QdhtFfiHandle` — this one covers the older

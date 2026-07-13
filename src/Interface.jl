@@ -579,7 +579,7 @@ Extract oscillator parameters from a Raman response object and build a Rust-side
     this is what lets a rotational, or rotational+vibrational, response
     reach the resident ADE solver, not just a single vibrational line)
   - All τ2 are density-independent (τ2ρ(1.0) ≈ τ2ρ(2.0))
-  - `LUNA_USE_RUST_RAMAN=1` and the Rust lib is present (checked inside `_make_rust_raman_handle`)
+  - `AMALTHEA_USE_RUST_RAMAN=1` and the Rust lib is present (checked inside `_make_rust_raman_handle`)
 Intermediate-broadening responses (Gaussian damping) are ineligible and stay on the Julia FFT path.
 
 !!! note

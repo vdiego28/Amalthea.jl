@@ -501,7 +501,7 @@ mod tests {
         let linop_ptr = linop.as_ptr() as *const libc::c_double;
 
         unsafe {
-            std::env::remove_var("LUNA_USE_RUST_CUDA_NATIVE");
+            std::env::remove_var("AMALTHEA_USE_RUST_CUDA_NATIVE");
         }
         let p = unsafe { crate::native::init_cuda_native_sim(linop_ptr, n) };
         assert!(
@@ -510,7 +510,7 @@ mod tests {
         );
 
         unsafe {
-            std::env::set_var("LUNA_USE_RUST_CUDA_NATIVE", "1");
+            std::env::set_var("AMALTHEA_USE_RUST_CUDA_NATIVE", "1");
         }
         // Null if this machine genuinely has no GPU/CUDA toolkit; must not panic or crash
         // either way now that opt-in is granted.
@@ -521,7 +521,7 @@ mod tests {
             }
         }
         unsafe {
-            std::env::remove_var("LUNA_USE_RUST_CUDA_NATIVE");
+            std::env::remove_var("AMALTHEA_USE_RUST_CUDA_NATIVE");
         }
     }
 

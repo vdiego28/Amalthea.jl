@@ -1,2 +1,3 @@
 [deps]
+Amalthea = "2a0a82e6-4dc7-4219-a2c1-d2369ab6895d"
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"

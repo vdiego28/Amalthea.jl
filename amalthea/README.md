@@ -1,6 +1,6 @@
-# Luna Rust (`luna-rust`)
+# Luna Rust (`amalthea`)
 
-`luna-rust` is a high-performance, stateless physical propagation engine rewritten in Rust. It serves as the optimized backend for `Amalthea.jl`, migrating critical physics kernels, solvers, and spatial/spectral grids to Rust 2024 to exploit hardware vectorization (AVX-512, Apple AMX) and GPU acceleration (CUDA, Vulkan).
+`amalthea` is a high-performance, stateless physical propagation engine rewritten in Rust. It serves as the optimized backend for `Amalthea.jl`, migrating critical physics kernels, solvers, and spatial/spectral grids to Rust 2024 to exploit hardware vectorization (AVX-512, Apple AMX) and GPU acceleration (CUDA, Vulkan).
 
 ---
 
@@ -48,7 +48,7 @@ The Rust migration replaces several numerical approximations from the original J
 
 ## 2. Solver Architecture (`stepper.rs`)
 
-`luna-rust` implements an adaptive **Dormand-Prince 5(4) Stepper** operating in the interaction picture:
+`amalthea` implements an adaptive **Dormand-Prince 5(4) Stepper** operating in the interaction picture:
 *   **Vectorized Integrating Factor (IF) Application**: Linear Integrating Factor propagation is applied to entire vectors outside the stage loops rather than element-by-element, reducing $3 \times \text{size}$ operations to single cache-aligned vector evaluations.
 *   **Lund PI Controller**: Controls adaptive stepping using error history to prevent step size oscillations and minimize rejected steps.
 *   **FSAL (First Same As Last)**: Reuses the final derivative evaluation of an accepted step as the first evaluation of the next step, reducing the number of RHS evaluations per step.
@@ -77,7 +77,7 @@ To compile the optimized C-compatible library for FFI:
 ```bash
 cargo build --release
 ```
-This produces `target/release/libluna_rust.so` (Linux), `libluna_rust.dylib` (macOS), or `luna_rust.dll` (Windows).
+This produces `target/release/libamalthea.so` (Linux), `libamalthea.dylib` (macOS), or `amalthea.dll` (Windows).
 
 ### Running Unit Tests
 To run the internal Rust test suite (covering Chebyshev fit, QDHT orthogonality, PPT ionization rate lower cutoff, Raman ADE, Integrating Factor quadrature, Dormand-Prince stepper, and hardware dispatcher):

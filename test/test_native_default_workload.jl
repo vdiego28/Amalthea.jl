@@ -8,7 +8,7 @@ using TestItems
     # (`prop_capillary` with `plasma = !envelope`, i.e. plasma ON by default)
     # silently fell back to the Julia stepper because the native plasma
     # wiring needed a Rust ionisation LUT handle that only got built behind
-    # the separate, opt-in `LUNA_USE_RUST_IONISATION` toggle. Phase C.1
+    # the separate, opt-in `AMALTHEA_USE_RUST_IONISATION` toggle. Phase C.1
     # decoupled that handle's construction from the toggle (built whenever
     # the native stepper is enabled, which is the default since Phase 8).
     # This test calls `prop_capillary` with NO environment toggles set at
@@ -18,7 +18,7 @@ using TestItems
     using Amalthea
     import Logging: with_logger, NullLogger
 
-    libpath = RK45._LIBLUNA_RUST_RK45
+    libpath = RK45._LIBAMALTHEA_RK45
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
@@ -31,8 +31,8 @@ using TestItems
         trange = 1e-12
 
         @testset "Default field-resolved prop_capillary (plasma on) uses RustNativeStepper" begin
-            withenv("LUNA_USE_RUST_NATIVE" => nothing, "LUNA_USE_RUST_IONISATION" => nothing,
-                    "LUNA_USE_RUST_STEPPER" => nothing) do
+            withenv("AMALTHEA_USE_RUST_NATIVE" => nothing, "AMALTHEA_USE_RUST_IONISATION" => nothing,
+                    "AMALTHEA_USE_RUST_STEPPER" => nothing) do
                 with_logger(NullLogger()) do
                     prop_capillary(radius, flength, gas, pressure;
                                     λ0, λlims, trange, energy=1e-7, τfwhm=30e-15, saveN=2)
@@ -46,7 +46,7 @@ using TestItems
             # Et_noise fix, this fell back silently (shotnoise=true is
             # Interface.jl's default for prop_gnlse too — Interface.jl:1053),
             # exactly mirroring the prop_capillary regression above.
-            withenv("LUNA_USE_RUST_NATIVE" => nothing) do
+            withenv("AMALTHEA_USE_RUST_NATIVE" => nothing) do
                 with_logger(NullLogger()) do
                     prop_gnlse(1.0, 1.0, [0.0, 0.0];
                                λ0=1550e-9, λlims=(1000e-9, 3000e-9), trange=10e-12,

@@ -6,10 +6,10 @@ using TestItems
     using Amalthea.RK45: PreconStepper, RustNativeStepper, step!
     import FFTW
 
-    use_native = get(ENV, "LUNA_USE_RUST_NATIVE", "0") == "1"
+    use_native = get(ENV, "AMALTHEA_USE_RUST_NATIVE", "0") == "1"
     
     # We only run if we can load the library
-    libpath = RK45._LIBLUNA_RUST_RK45
+    libpath = RK45._LIBAMALTHEA_RK45
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else

@@ -6,7 +6,7 @@ using TestItems
     using Amalthea.RK45: RustNativeStepper, NativeIneligible
     import Logging: with_logger, NullLogger
 
-    libpath = RK45._LIBLUNA_RUST_RK45
+    libpath = RK45._LIBAMALTHEA_RK45
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
@@ -65,7 +65,7 @@ using TestItems
 
         @testset "Missing Rust ionisation handle is rejected, not silently ignored" begin
             # A plasma response whose `ratefunc` was never built with a Rust
-            # handle (LUNA_USE_RUST_IONISATION unset/disabled at construction
+            # handle (AMALTHEA_USE_RUST_IONISATION unset/disabled at construction
             # time) must not silently propagate with plasma switched off —
             # that would be the same class of silent-wrong-physics bug as the
             # Phase I preamble's missing-density-factor finding, just for a
@@ -81,12 +81,12 @@ using TestItems
             ionpot = PhysData.ionisation_potential(gas)
             # `_make_rust_ionization_handle` (Ionisation.jl) builds a Rust
             # handle whenever the library is present and EITHER
-            # `LUNA_USE_RUST_IONISATION=1` OR the native stepper is enabled
-            # (`LUNA_USE_RUST_NATIVE`, on by default since Phase 8) — so
+            # `AMALTHEA_USE_RUST_IONISATION=1` OR the native stepper is enabled
+            # (`AMALTHEA_USE_RUST_NATIVE`, on by default since Phase 8) — so
             # `ionrate.rust_handle` is only genuinely `nothing` when BOTH are
             # explicitly turned off at construction time.
-            ionrate = withenv("LUNA_USE_RUST_IONISATION" => "0",
-                               "LUNA_USE_RUST_NATIVE" => "0") do
+            ionrate = withenv("AMALTHEA_USE_RUST_IONISATION" => "0",
+                               "AMALTHEA_USE_RUST_NATIVE" => "0") do
                 Ionisation.IonRatePPTCached(gas, λ0)
             end
             plasma_resp = Nonlinear.PlasmaCumtrapz(grid.to, grid.to, ionrate, ionpot)

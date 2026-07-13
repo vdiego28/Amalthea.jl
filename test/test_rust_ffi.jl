@@ -3,16 +3,16 @@
 
     # Locate the shared library
     libname = if Sys.iswindows()
-        "luna_rust.dll"
+        "amalthea.dll"
     elseif Sys.isapple()
-        "libluna_rust.dylib"
+        "libamalthea.dylib"
     else
-        "libluna_rust.so"
+        "libamalthea.so"
     end
-    libpath = joinpath(@__DIR__, "..", "luna-rust", "target", "release", libname)
+    libpath = joinpath(@__DIR__, "..", "amalthea", "target", "release", libname)
     if !isfile(libpath)
         @warn "Skipping Rust FFI test: shared library not found at $libpath. " *
-              "Build it with `cargo build --release` in luna-rust/ (or run `]build Amalthea`)."
+              "Build it with `cargo build --release` in amalthea/ (or run `]build Amalthea`)."
         return
     end
 

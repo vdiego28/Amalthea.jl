@@ -1,6 +1,6 @@
 # propagation in step index fibre
 
-using Amalthea
+using Amalthea, PyPlot
 
 # single mode fibre at 1030 nm
 a = 5e-6

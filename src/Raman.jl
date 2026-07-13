@@ -315,7 +315,7 @@ which share one common `τ2ρ`, per the nonrigid-rotor model's single-
 linewidth assumption — see the `TODO` on `RamanRespRotationalNonRigid`).
 Used to extract flat `Ω`/`K`/`τ2ρ` arrays for the resident time-domain ADE
 solver (`native.rs`'s `TimeDomainRamanSolver`, and the older
-`LUNA_USE_RUST_RAMAN` per-kernel wiring), which both already accept an
+`AMALTHEA_USE_RUST_RAMAN` per-kernel wiring), which both already accept an
 arbitrary number of oscillators — this is what lets a rotational (or
 rotational+vibrational) response reach that solver instead of only a
 single vibrational line. Returns `nothing` if `rr.Rs` contains anything

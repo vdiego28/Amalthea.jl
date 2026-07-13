@@ -379,7 +379,7 @@ impl NativeBackend for CudaNativeSim {
     // PPT only (docs/dev/BACKLOG.md S3 item 2, first slice — 2026-07-11). Mirrors
     // native.rs's `CpuNativeSim::set_plasma_params`: uploads the same
     // `SplineSegment` table `PptIonizationRate::rate_vector_gpu` already
-    // uploads for the standalone `LUNA_USE_RUST_IONISATION` path (identical
+    // uploads for the standalone `AMALTHEA_USE_RUST_IONISATION` path (identical
     // repr(C) layout, reused directly — no new upload format invented) and
     // stores the scalar params for use in `step()`'s plasma kernel sequence.
     // Requires `set_mode_avg_params` to have already run (needs `n_time`
@@ -748,7 +748,7 @@ impl NativeBackend for CudaNativeSim {
 
                         if self.has_plasma {
                             // Reuses ppt_ionization_kernel from the standalone
-                            // LUNA_USE_RUST_IONISATION path (same SplineSegment
+                            // AMALTHEA_USE_RUST_IONISATION path (same SplineSegment
                             // upload format, same kernel) — its `err_code` output is
                             // unused here: `plasma_rate` (native.rs, CPU reference)
                             // never propagates a strict-mode error either, it always

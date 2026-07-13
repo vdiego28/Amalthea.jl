@@ -1,4 +1,4 @@
-using Amalthea
+using Amalthea, PyPlot
 
 γ = 0.1
 β2 = -1e-26

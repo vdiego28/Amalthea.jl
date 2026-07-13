@@ -12,11 +12,11 @@ using TestItems
     # native=:off") left undone. Fills that gap.
 
     @testset "backend_config() defaults and truthiness" begin
-        withenv("LUNA_USE_RUST_NATIVE" => nothing, "LUNA_USE_RUST_STEPPER" => nothing,
-                "LUNA_USE_RUST_IONISATION" => nothing, "LUNA_USE_RUST_RAMAN" => nothing,
-                "LUNA_USE_RUST_DISPERSION" => nothing, "LUNA_USE_RUST_QDHT" => nothing,
-                "LUNA_QDHT_BLAS" => nothing, "LUNA_USE_RUST_CUDA_NATIVE" => nothing,
-                "LUNA_NATIVE_FFTW_WISDOM" => nothing) do
+        withenv("AMALTHEA_USE_RUST_NATIVE" => nothing, "AMALTHEA_USE_RUST_STEPPER" => nothing,
+                "AMALTHEA_USE_RUST_IONISATION" => nothing, "AMALTHEA_USE_RUST_RAMAN" => nothing,
+                "AMALTHEA_USE_RUST_DISPERSION" => nothing, "AMALTHEA_USE_RUST_QDHT" => nothing,
+                "AMALTHEA_QDHT_BLAS" => nothing, "AMALTHEA_USE_RUST_CUDA_NATIVE" => nothing,
+                "AMALTHEA_NATIVE_FFTW_WISDOM" => nothing) do
             cfg = Amalthea.Config.backend_config()
             @test cfg.native == true   # only toggle defaulting on (Phase 8)
             @test cfg.stepper == false
@@ -31,12 +31,12 @@ using TestItems
 
         # re-reads ENV every call (not a cached singleton) — flipping a
         # toggle mid-session must be visible immediately.
-        withenv("LUNA_USE_RUST_NATIVE" => "0") do
+        withenv("AMALTHEA_USE_RUST_NATIVE" => "0") do
             @test Amalthea.Config.backend_config().native == false
         end
     end
 
-    libpath = RK45._LIBLUNA_RUST_RK45
+    libpath = RK45._LIBAMALTHEA_RK45
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
@@ -49,7 +49,7 @@ using TestItems
         trange = 1e-12
 
         @testset "backend_report() reflects RustNativeStepper by default" begin
-            withenv("LUNA_USE_RUST_NATIVE" => nothing) do
+            withenv("AMALTHEA_USE_RUST_NATIVE" => nothing) do
                 with_logger(NullLogger()) do
                     prop_capillary(radius, flength, gas, pressure;
                                     λ0, λlims, trange, energy=1e-7, τfwhm=30e-15, saveN=2)
@@ -60,8 +60,8 @@ using TestItems
             end
         end
 
-        @testset "backend_report() reflects the Julia stepper under LUNA_USE_RUST_NATIVE=0" begin
-            withenv("LUNA_USE_RUST_NATIVE" => "0") do
+        @testset "backend_report() reflects the Julia stepper under AMALTHEA_USE_RUST_NATIVE=0" begin
+            withenv("AMALTHEA_USE_RUST_NATIVE" => "0") do
                 with_logger(NullLogger()) do
                     prop_capillary(radius, flength, gas, pressure;
                                     λ0, λlims, trange, energy=1e-7, τfwhm=30e-15, saveN=2)

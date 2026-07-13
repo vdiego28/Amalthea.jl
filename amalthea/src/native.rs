@@ -42,7 +42,7 @@
 //!       `native_set_raman_params`. Replaces `RamanPolarField`
 //!       (NonlinearRHS.jl:357-431). Scope: RealGrid, `thg=true` only (E²
 //!       intensity, no Hilbert transform), all-SDO density-independent-τ2
-//!       eligibility (same as the existing `LUNA_USE_RUST_RAMAN` FFI wiring).
+//!       eligibility (same as the existing `AMALTHEA_USE_RUST_RAMAN` FFI wiring).
 //!       Gate: full-solve Rust-vs-Julia 4.2e-8, with Raman independently
 //!       verified to change the Julia oracle by 1.1e-4 (self-validating —
 //!       a single 1cm z-step shows Raman's contribution below the FP floor
@@ -591,7 +591,7 @@ pub struct CpuNativeSim {
     pub thread_pool: Option<rayon::ThreadPool>,
 
     // ── S5.2: deterministic mode (docs/dev/BACKLOG.md) ─────────────────────────────────
-    /// When `true`, skip the QDHT BLAS-3 path (`LUNA_QDHT_BLAS`) even if a
+    /// When `true`, skip the QDHT BLAS-3 path (`AMALTHEA_QDHT_BLAS`) even if a
     /// BLAS library was loaded, forcing the row-parallel Rayon fallback
     /// instead — see `set_deterministic`'s doc on the trait for why this is
     /// the one real lever today (no `NativeBackend` RHS code reads
@@ -2971,20 +2971,20 @@ pub trait NativeBackend {
     /// single global configuration.
     unsafe fn set_threads(&mut self, n: size_t) -> i32;
     /// docs/dev/BACKLOG.md S5.2: forces the QDHT BLAS-3 `dgemm` path (opt-in via
-    /// `LUNA_QDHT_BLAS`) to be skipped in favor of the row-parallel Rayon
+    /// `AMALTHEA_QDHT_BLAS`) to be skipped in favor of the row-parallel Rayon
     /// fallback, regardless of whether a BLAS library was loaded.
     ///
     /// **What this actually guards against:** the default native path is
     /// already run-to-run deterministic on one machine — every other
     /// parallel seam in the codebase (the QDHT fallback itself, the older
-    /// per-kernel `LUNA_USE_RUST_QDHT` batch loops in `ffi.rs`) is
+    /// per-kernel `AMALTHEA_USE_RUST_QDHT` batch loops in `ffi.rs`) is
     /// embarrassingly parallel (each output row/column computed
     /// independently, no cross-thread reduction), and FFTW native plans
     /// only ever use `FFTW_ESTIMATE`, so thread count and repeated runs
     /// don't change the result even with `deterministic=false`. The one
     /// real lever this flag has is `BLAS_API`: it's a process-global
     /// `OnceLock`, populated once (if ever) by the per-kernel
-    /// `LUNA_USE_RUST_QDHT`+`LUNA_QDHT_BLAS` path, and once populated it
+    /// `AMALTHEA_USE_RUST_QDHT`+`AMALTHEA_QDHT_BLAS` path, and once populated it
     /// silently makes *every later* native-path QDHT call in that process
     /// eligible for the BLAS-3 route too. `deterministic=true` is what
     /// makes that eligibility **invariant to whether some other part of
@@ -4355,7 +4355,7 @@ impl NativeBackend for CpuNativeSim {
 /// explicitly set, so it can never be reached by accident via default
 /// dispatch — Julia's own eligibility guard (`RK45._gpu_native_eligible`)
 /// checks the same env var independently before ever calling this.
-const CUDA_NATIVE_OPT_IN_VAR: &str = "LUNA_USE_RUST_CUDA_NATIVE";
+const CUDA_NATIVE_OPT_IN_VAR: &str = "AMALTHEA_USE_RUST_CUDA_NATIVE";
 
 /// See `init_native_sim`'s doc — same seed-linop contract, GPU-backed.
 ///
@@ -5059,7 +5059,7 @@ pub unsafe extern "C" fn native_set_radial_noise_cplx(
 /// # Arguments
 /// * `omega`/`gamma`/`coupling` — per-oscillator SDO parameters (`Ω`,
 ///   `1/τ2ρ(1.0)`, `K`), same values `Interface._make_rust_raman_handle_from_response`
-///   already extracts for the existing `LUNA_USE_RUST_RAMAN` FFI wiring.
+///   already extracts for the existing `AMALTHEA_USE_RUST_RAMAN` FFI wiring.
 /// * `n_osc` — number of oscillators.
 /// * `dt` — `grid.to[2] - grid.to[1]` (oversampled grid spacing).
 /// * `density` — constant-medium density (raw, **not** folded with `ε₀·γ3`

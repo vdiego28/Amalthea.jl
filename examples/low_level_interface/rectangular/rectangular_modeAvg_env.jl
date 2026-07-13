@@ -1,4 +1,4 @@
-using Amalthea
+using Amalthea, PyPlot
 
 a = 50e-6
 b = 10e-6

@@ -4,7 +4,7 @@
 > Companion docs: [ARCHITECTURE.md](ARCHITECTURE.md), [TESTING.md](TESTING.md),
 > [PORT_LOG.md](PORT_LOG.md).
 >
-> **`luna-rust/README.md` is the authoritative equation reference** for the
+> **`amalthea/README.md` is the authoritative equation reference** for the
 > already-ported leaf kernels (Zeisberger/Marcatili dispersion, QDHT, PPT
 > ionization, Raman ADE, Gauss-Legendre integrating factor). This file adds the
 > **loop-level** math the native port must reproduce: the interaction-picture
@@ -149,7 +149,7 @@ nl .*= ωwin .* (-im·ω) ./ (2 .* normfun(z))
 ```
 
 **Reuse, don't reinvent — the resident QDHT is already built.** `ffi.rs`'s
-`QdhtFfiHandle` (used by the existing `LUNA_USE_RUST_QDHT` FFI wiring) already
+`QdhtFfiHandle` (used by the existing `AMALTHEA_USE_RUST_QDHT` FFI wiring) already
 holds Julia's `T` matrix in the correct convention and exposes
 `apply_real(data, n_time, scale)` / `apply_cplx(data, n_time, scale)` as plain
 Rust methods operating on a column-major `(n_time, n_r)` buffer — not just an
@@ -447,7 +447,7 @@ pressure ramp). **Critically, `εco(ω;z) - 1` factors as a fixed per-ω array
 (`γ(λ(ω))`) times a scalar function of z (`dens(z)`)** — the ω-dependence
 and z-dependence never mix. This means:
 - `nwg(ω)` is **exactly** the already-resident combine from the existing
-  `LUNA_USE_RUST_DISPERSION` wiring (`dispersion.rs::MarcatiliNeff::neff_vector`,
+  `AMALTHEA_USE_RUST_DISPERSION` wiring (`dispersion.rs::MarcatiliNeff::neff_vector`,
   `Capillary.jl:409-470`) — not re-derived, just re-implemented inline in
   `native.rs` (the opaque handle itself isn't shared with `NativeSim`, but
   the formula — `sqrt(εco-nwg)`/`1+(εco-1)/2-nwg`, then truncate `Im` if
@@ -578,18 +578,18 @@ as a single-step error of ~9.5e-6 (not machine epsilon), not a crash.
 
 ### 5.2 Plasma — `PlasmaCumtrapz` (`src/Nonlinear.jl:161-250`) — Phase 2, ported
 The expensive nonlinearity. Per RHS:
-1. ionization rate `W(|E|)` from the PPT LUT (already Rust, `LUNA_USE_RUST_IONISATION`);
+1. ionization rate `W(|E|)` from the PPT LUT (already Rust, `AMALTHEA_USE_RUST_IONISATION`);
 2. **three cumulative trapezoidal integrals** (`cumtrapz`): free-electron density
    `ρ(t)` from the rate; the loss/heating current; the polarization current;
 3. assemble the plasma current `J(t)` and add to `Pt`.
-Ported in Phase 2 as `rhs_plasma` (`luna-rust/src/native.rs`, `cumtrapz_slice_f64`
-+ `native_set_plasma_params`), gated on `LUNA_USE_RUST_IONISATION=1` (the native
+Ported in Phase 2 as `rhs_plasma` (`amalthea/src/native.rs`, `cumtrapz_slice_f64`
++ `native_set_plasma_params`), gated on `AMALTHEA_USE_RUST_IONISATION=1` (the native
 path silently falls back to Julia plasma physics if the ionization handle isn't
 wired — see PORT_LOG 2026-06-30 "Wire plasma" note).
 
 ### 5.3 Raman (`src/Nonlinear.jl:357-431`) — Phase 4, ported
 Delayed χ⁽³⁾. The carrier-field SDO path (`RamanPolarField`) is already Rust
-(`LUNA_USE_RUST_RAMAN`): a single-damped-oscillator ADE stepped by an exact
+(`AMALTHEA_USE_RUST_RAMAN`): a single-damped-oscillator ADE stepped by an exact
 exponential integrator (`x_{n+1} = A·x_n + B0·Iₙ + B1·I_{n+1}`), O(Nt) and
 allocation-free, vs. Julia's FFT convolution. Phase 4 makes that solver resident
 in the RHS. The envelope path (`RamanPolarEnv`) and intermediate-broadening
@@ -602,7 +602,7 @@ kernel only.)*
 
 **Reuse, don't reinvent — same pattern as Phase 3's QDHT.** `raman.rs`'s
 `TimeDomainRamanSolver` is already a self-contained, public Rust struct
-(`new`, `reset_state`, `solve`) — the existing `LUNA_USE_RUST_RAMAN` FFI
+(`new`, `reset_state`, `solve`) — the existing `AMALTHEA_USE_RUST_RAMAN` FFI
 wiring is a thin `ccall` wrapper around it. `NativeSim` stores one directly
 (`Option<TimeDomainRamanSolver>`), built once in a new
 `native_set_raman_params` from the same `omega`/`gamma`/`coupling` arrays
@@ -639,7 +639,7 @@ piece of work, deferred as a follow-up alongside `RamanPolarEnv` and
 intermediate-broadening (Gaussian-damped) responses, none of which are in
 this phase's scope.
 
-**Eligibility mirrors the existing `LUNA_USE_RUST_RAMAN` wiring exactly**
+**Eligibility mirrors the existing `AMALTHEA_USE_RUST_RAMAN` wiring exactly**
 (`Interface._make_rust_raman_handle_from_response`, `src/Interface.jl:581`):
 `CombinedRamanResponse` whose `Rs` are all `RamanRespSingleDampedOscillator`,
 with density-independent `τ2ρ`. Molecular gases (`:N2`, `:H2`, `:D2`, `:N2O`,

@@ -1,4 +1,4 @@
-using Amalthea
+using Amalthea, PyPlot
 
 a = 13e-6
 gas = :Ar

@@ -10,7 +10,7 @@ using TestItems
     import Amalthea.PhysData: wlfreq, c
     import Amalthea: Maths
 
-    libpath = RK45._LIBLUNA_RUST_RK45
+    libpath = RK45._LIBAMALTHEA_RK45
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
@@ -59,7 +59,7 @@ using TestItems
             dens_r = Ref{Float64}(0.0)
             beta1_r = Ref{Float64}(0.0)
             for z in (0.0, 0.0025, 0.01, 0.25, 0.49, 0.5)
-                ccall((:native_debug_beta1_at, RK45._LIBLUNA_RUST_RK45), Cint,
+                ccall((:native_debug_beta1_at, RK45._LIBAMALTHEA_RK45), Cint,
                       (Ptr{Cvoid}, Float64, Ptr{Float64}, Ptr{Float64}),
                       s_ru._handle.ptr, z, dens_r, beta1_r)
                 β_of_ω(ω) = ω/c*real(Amalthea.Capillary.neff(mode, ω; z=z))

@@ -1,6 +1,6 @@
 # supercontinuum in strand of silica in air
 
-using Amalthea
+using Amalthea, PyPlot
 
 # single mode fibre at 1030 nm
 a = 1.25e-6

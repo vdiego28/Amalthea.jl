@@ -13,16 +13,16 @@ using TestItems
 
     # ── locate the shared library ──────────────────────────────────────────────
     libname = if Sys.iswindows()
-        "luna_rust.dll"
+        "amalthea.dll"
     elseif Sys.isapple()
-        "libluna_rust.dylib"
+        "libamalthea.dylib"
     else
-        "libluna_rust.so"
+        "libamalthea.so"
     end
-    libpath = joinpath(@__DIR__, "..", "luna-rust", "target", "release", libname)
+    libpath = joinpath(@__DIR__, "..", "amalthea", "target", "release", libname)
     if !isfile(libpath)
         @warn "Skipping Rust Raman equivalence test: shared library not found at $libpath. " *
-              "Build it with `cargo build --release` in luna-rust/ (or run `]build Amalthea`)."
+              "Build it with `cargo build --release` in amalthea/ (or run `]build Amalthea`)."
         return
     end
 
@@ -53,7 +53,7 @@ using TestItems
     gammas    = Float64[1.0/τ2]
     couplings = Float64[K_normed]
 
-    rust_handle = withenv("LUNA_USE_RUST_RAMAN" => "1") do
+    rust_handle = withenv("AMALTHEA_USE_RUST_RAMAN" => "1") do
         with_logger(NullLogger()) do
             Nonlinear._make_rust_raman_handle(omegas, gammas, couplings, dt)
         end

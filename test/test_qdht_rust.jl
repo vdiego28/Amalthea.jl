@@ -13,13 +13,13 @@ using TestItems
     import Logging: with_logger, NullLogger
 
     # ── skip guard ────────────────────────────────────────────────────────────
-    libname = if Sys.iswindows(); "luna_rust.dll"
-              elseif Sys.isapple(); "libluna_rust.dylib"
-              else; "libluna_rust.so"; end
-    libpath = joinpath(@__DIR__, "..", "luna-rust", "target", "release", libname)
+    libname = if Sys.iswindows(); "amalthea.dll"
+              elseif Sys.isapple(); "libamalthea.dylib"
+              else; "libamalthea.so"; end
+    libpath = joinpath(@__DIR__, "..", "amalthea", "target", "release", libname)
     if !isfile(libpath)
         @warn "Skipping Rust QDHT test: shared library not found at $libpath. " *
-              "Build with `cargo build --release` in luna-rust/ (or `]build Amalthea`)."
+              "Build with `cargo build --release` in amalthea/ (or `]build Amalthea`)."
         return
     end
 
@@ -32,7 +32,7 @@ using TestItems
         n_time = 256
 
         # Build Rust handle
-        h = withenv("LUNA_USE_RUST_QDHT" => "1") do
+        h = withenv("AMALTHEA_USE_RUST_QDHT" => "1") do
             with_logger(NullLogger()) do
                 NonlinearRHS._make_rust_qdht_handle(q, n_time)
             end
@@ -112,7 +112,7 @@ using TestItems
         Eω_final_julia = out_julia.data["Eω"][:, :, end]
 
         # ── Rust path ─────────────────────────────────────────────────────────
-        Eω_rust, tr_rust, FT_rust = withenv("LUNA_USE_RUST_QDHT" => "1") do
+        Eω_rust, tr_rust, FT_rust = withenv("AMALTHEA_USE_RUST_QDHT" => "1") do
             with_logger(NullLogger()) do
                 Amalthea.setup(grid, q, densityfun, normfun, responses, inputs)
             end
@@ -128,7 +128,7 @@ using TestItems
     end
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Toggle-off: LUNA_USE_RUST_QDHT=0 → rust_ht is Nothing
+    # Toggle-off: AMALTHEA_USE_RUST_QDHT=0 → rust_ht is Nothing
     # ─────────────────────────────────────────────────────────────────────────
     @testset "Toggle-off leaves rust_ht as Nothing" begin
         R = 2e-3; N = 32

@@ -7,7 +7,7 @@ using TestItems
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 
-    libpath = RK45._LIBLUNA_RUST_RK45
+    libpath = RK45._LIBAMALTHEA_RK45
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else

@@ -10,9 +10,9 @@ def test_luna_output_getitem_keyerror():
     mock_julia_module = MagicMock()
     mock_julia_module.get_julia = mock_get_julia
 
-    with patch.dict('sys.modules', {'luna_rust._julia': mock_julia_module}):
+    with patch.dict('sys.modules', {'amalthea._julia': mock_julia_module}):
         # Now we can safely import LunaOutput
-        from luna_rust.output import LunaOutput
+        from amalthea.output import LunaOutput
 
         # Create a mock jl_output that raises an exception when accessing a key
         mock_jl_output = MagicMock()

@@ -47,7 +47,7 @@ steppers), and (b) importing wisdom before planning make plan selection —
 and therefore the adaptive step-size path, via the RK45 controller's
 near-cancellation sensitivity (see the Phase 2 gotcha in CLAUDE.md) — vary
 with whatever the on-disk file happens to contain from a prior run. Set
-`LUNA_NATIVE_FFTW_WISDOM=1` to restore persistence (import + export) for
+`AMALTHEA_NATIVE_FFTW_WISDOM=1` to restore persistence (import + export) for
 workloads where the accumulated wisdom is worth the tradeoff. See
 `docs/dev/native-port/PLAN_FFTW_WISDOM_FIX.md` for the full analysis.
 """
@@ -58,7 +58,7 @@ function solve_precon(f!, linop, y0, t, dt, tmax;
                     kwargs...)
     cfg = Amalthea.Config.backend_config()
     use_rust = cfg.stepper
-    # Phase 8: native is the default (LUNA_USE_RUST_NATIVE=0 opts back out).
+    # Phase 8: native is the default (AMALTHEA_USE_RUST_NATIVE=0 opts back out).
     use_native = cfg.native
     # Constant linop (Phases 1-6) or the narrow z-dependent case Phase 7 supports
     # (graded-core, constant-radius MarcatiliMode — see Capillary.jl / MATH.md
@@ -70,7 +70,7 @@ function solve_precon(f!, linop, y0, t, dt, tmax;
                 linop isa Amalthea.LinearOps.ZDepLinopFree ||
                 linop isa Amalthea.Capillary.ZDepLinopModalTaper
     stepper = nothing
-    if use_native && isfile(_LIBLUNA_RUST_RK45) && eltype(y0) == ComplexF64 && native_ok
+    if use_native && isfile(_LIBAMALTHEA_RK45) && eltype(y0) == ComplexF64 && native_ok
         # Any scope restriction accumulated across Phases 1-7 (EnvGrid
         # variants, full=true modal, thg=false Raman, an ineligible extra
         # response, ...) throws `NativeIneligible` from deep inside the
@@ -87,16 +87,16 @@ function solve_precon(f!, linop, y0, t, dt, tmax;
         catch e
             e isa NativeIneligible || rethrow()
             if !_NATIVE_FALLBACK_WARNED[]
-                @warn "LUNA_USE_RUST_NATIVE: falling back to the Julia stepper for a " *
+                @warn "AMALTHEA_USE_RUST_NATIVE: falling back to the Julia stepper for a " *
                       "config outside the native port's current scope ($(e.msg)). This " *
                       "warning prints once per session; every other config still uses " *
-                      "the resident Rust stepper. Set LUNA_USE_RUST_NATIVE=0 to disable " *
+                      "the resident Rust stepper. Set AMALTHEA_USE_RUST_NATIVE=0 to disable " *
                       "the native path entirely."
                 _NATIVE_FALLBACK_WARNED[] = true
             end
         end
     end
-    if isnothing(stepper) && use_rust && isfile(_LIBLUNA_RUST_RK45) && eltype(y0) == ComplexF64
+    if isnothing(stepper) && use_rust && isfile(_LIBAMALTHEA_RK45) && eltype(y0) == ComplexF64
         stepper = RustPreconStepper(f!, linop, y0, t, dt,
                       rtol=rtol, atol=atol, safety=safety, max_dt=max_dt, min_dt=min_dt, locextrap=locextrap, norm=norm)
     elseif isnothing(stepper)
@@ -545,15 +545,15 @@ function _is_plain_kerr_resp(r)
     length(flds) == 1 && occursin("γ3", string(flds[1]))
 end
 
-# ── Rust interaction-picture PreconStepper FFI (LUNA_USE_RUST_STEPPER=1) ───────
+# ── Rust interaction-picture PreconStepper FFI (AMALTHEA_USE_RUST_STEPPER=1) ───────
 
-function _libluna_rust_path_rk45()
-    libname = if Sys.iswindows(); "luna_rust.dll"
-              elseif Sys.isapple(); "libluna_rust.dylib"
-              else; "libluna_rust.so"; end
-    joinpath(lunadir(), "luna-rust", "target", "release", libname)
+function _libamalthea_path_rk45()
+    libname = if Sys.iswindows(); "amalthea.dll"
+              elseif Sys.isapple(); "libamalthea.dylib"
+              else; "libamalthea.so"; end
+    joinpath(lunadir(), "amalthea", "target", "release", libname)
 end
-const _LIBLUNA_RUST_RK45 = _libluna_rust_path_rk45()
+const _LIBAMALTHEA_RK45 = _libamalthea_path_rk45()
 
 "Result struct returned by precon_step_ffi — must match #[repr(C)] in Rust."
 struct PreconStepResult
@@ -569,13 +569,13 @@ end
 mutable struct RustPreconStepHandle
     ptr::Ptr{Cvoid}
     function RustPreconStepHandle(n::Int)
-        ptr = ccall((:init_precon_step_ffi, _LIBLUNA_RUST_RK45), Ptr{Cvoid},
+        ptr = ccall((:init_precon_step_ffi, _LIBAMALTHEA_RK45), Ptr{Cvoid},
                     (Csize_t,), Csize_t(n))
         h = new(ptr)
         finalizer(h) do h
             p = h.ptr
             if p != C_NULL
-                ccall((:free_precon_step_ffi, _LIBLUNA_RUST_RK45), Cvoid, (Ptr{Cvoid},), p)
+                ccall((:free_precon_step_ffi, _LIBAMALTHEA_RK45), Cvoid, (Ptr{Cvoid},), p)
                 h.ptr = C_NULL
             end
         end
@@ -679,7 +679,7 @@ function step!(s::RustPreconStepper)
         for i in 1:7
             s._k_ptrs[i] = pointer(s.ks[i])
         end
-        rc = ccall((:precon_step_ffi, _LIBLUNA_RUST_RK45), Cint,
+        rc = ccall((:precon_step_ffi, _LIBAMALTHEA_RK45), Cint,
             (Ptr{Cvoid},           # handle
              Ptr{ComplexF64},      # y
              Ptr{ComplexF64},      # yn
@@ -743,7 +743,7 @@ function interpolate(s::RustPreconStepper, ti::Float64)
     return out
 end
 
-# ─── Rust native interaction-picture Stepper FFI (LUNA_USE_RUST_NATIVE=1) ───────
+# ─── Rust native interaction-picture Stepper FFI (AMALTHEA_USE_RUST_NATIVE=1) ───────
 
 """
     NativeIneligible(msg)
@@ -760,7 +760,7 @@ back to the Julia stepper, while letting a genuine bug (an FFI call
 returning a nonzero error code, a shape/invariant mismatch, `init_native_sim`
 returning `C_NULL`, ...) propagate and crash loudly as before. Before Phase
 8, native was opt-in only, so a scope-restriction `error()` reaching the user
-meant they had deliberately turned on `LUNA_USE_RUST_NATIVE` for an
+meant they had deliberately turned on `AMALTHEA_USE_RUST_NATIVE` for an
 unsupported config — a crash with an instructive message was the right
 behavior. Now that native is the default, the exact same situation must be
 reachable by any ordinary user just running a simulation, so it can no
@@ -846,17 +846,17 @@ mutable struct RustNativeSimHandle
     function RustNativeSimHandle(linop::Array{ComplexF64}; use_gpu::Bool=false)
         n = length(linop)
         ptr = if use_gpu
-            ccall((:init_cuda_native_sim, _LIBLUNA_RUST_RK45), Ptr{Cvoid},
+            ccall((:init_cuda_native_sim, _LIBAMALTHEA_RK45), Ptr{Cvoid},
                   (Ptr{ComplexF64}, Csize_t), pointer(linop), Csize_t(n))
         else
-            ccall((:init_native_sim, _LIBLUNA_RUST_RK45), Ptr{Cvoid},
+            ccall((:init_native_sim, _LIBAMALTHEA_RK45), Ptr{Cvoid},
                   (Ptr{ComplexF64}, Csize_t), pointer(linop), Csize_t(n))
         end
         h = new(ptr)
         finalizer(h) do h
             p = h.ptr
             if p != C_NULL
-                ccall((:free_native_sim, _LIBLUNA_RUST_RK45), Cvoid, (Ptr{Cvoid},), p)
+                ccall((:free_native_sim, _LIBAMALTHEA_RK45), Cvoid, (Ptr{Cvoid},), p)
                 h.ptr = C_NULL
             end
         end
@@ -874,13 +874,13 @@ mutable struct RustNativeSimHandle
     # `native_step` call), so a zero seed is exact, not an approximation.
     function RustNativeSimHandle(linop, n::Int)
         seed = zeros(ComplexF64, n)
-        ptr = ccall((:init_native_sim, _LIBLUNA_RUST_RK45), Ptr{Cvoid},
+        ptr = ccall((:init_native_sim, _LIBAMALTHEA_RK45), Ptr{Cvoid},
                     (Ptr{ComplexF64}, Csize_t), pointer(seed), Csize_t(n))
         h = new(ptr)
         finalizer(h) do h
             p = h.ptr
             if p != C_NULL
-                ccall((:free_native_sim, _LIBLUNA_RUST_RK45), Cvoid, (Ptr{Cvoid},), p)
+                ccall((:free_native_sim, _LIBAMALTHEA_RK45), Cvoid, (Ptr{Cvoid},), p)
                 h.ptr = C_NULL
             end
         end
@@ -939,7 +939,7 @@ end
     _gpu_native_eligible(f!, linop)
 
 True iff the experimental GPU-resident stepper (`CudaNativeSim`,
-`luna-rust/src/cuda_native.rs`) can handle this exact config: mode-averaged
+`amalthea/src/cuda_native.rs`) can handle this exact config: mode-averaged
 (`TransModeAvg`), RealGrid, a constant (non-z-dependent) linop, a scalar
 (non-mixture) density, no shot noise, exactly one plain Kerr response, and
 at most one plasma response using PPT ionisation (`IonRatePPTAccel` —
@@ -947,7 +947,7 @@ at most one plasma response using PPT ionisation (`IonRatePPTAccel` —
 implemented on the GPU path yet; docs/dev/BACKLOG.md S3 item 2). No other response
 kind (e.g. Raman) is implemented on `CudaNativeSim` — every `set_*_params`
 beyond `set_mode_avg_params`/`set_plasma_params` returns -1. Also requires
-the `LUNA_USE_RUST_CUDA_NATIVE=1` opt-in; Rust's `init_cuda_native_sim`
+the `AMALTHEA_USE_RUST_CUDA_NATIVE=1` opt-in; Rust's `init_cuda_native_sim`
 re-checks the same env var independently, so this is purely to avoid
 attempting GPU init for an ineligible config where it would return a
 confusing null pointer instead of the real reason.
@@ -1075,7 +1075,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         ""
     end
 
-    rc = ccall((:native_set_fftw_plans, _LIBLUNA_RUST_RK45), Cint,
+    rc = ccall((:native_set_fftw_plans, _LIBAMALTHEA_RK45), Cint,
           (Ptr{Cvoid}, Cstring, Csize_t, Csize_t, Cint, Cuint, Cstring),
           handle.ptr, lib_path, n_time, n_time_over, is_real_grid ? 1 : 0, 64,
           native_wisdom_path)
@@ -1088,21 +1088,21 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     # of Julia's own threading model) for equivalence testing without
     # restarting Julia. `n<=1` is sequential on the Rust side (the pre-S2
     # default), so single-threaded Julia sessions see no behavior change.
-    rc = ccall((:native_set_threads, _LIBLUNA_RUST_RK45), Cint,
+    rc = ccall((:native_set_threads, _LIBAMALTHEA_RK45), Cint,
           (Ptr{Cvoid}, Csize_t), handle.ptr, native_threads)
     check_ffi(rc, "native_set_threads")
 
-    # docs/dev/BACKLOG.md S5.2: deterministic mode. `LUNA_NATIVE_DETERMINISTIC=1`
+    # docs/dev/BACKLOG.md S5.2: deterministic mode. `AMALTHEA_NATIVE_DETERMINISTIC=1`
     # forces the radial-geometry QDHT to skip the BLAS-3 `dgemm` path
-    # (`LUNA_QDHT_BLAS`) even if it's enabled, using the row-parallel Rayon
+    # (`AMALTHEA_QDHT_BLAS`) even if it's enabled, using the row-parallel Rayon
     # fallback instead. The native path is already run-to-run deterministic
     # on one machine by default — every parallel seam here (the QDHT
-    # fallback, the older per-kernel `LUNA_USE_RUST_QDHT` batch loops) is
+    # fallback, the older per-kernel `AMALTHEA_USE_RUST_QDHT` batch loops) is
     # embarrassingly parallel with no cross-thread reduction, and native
     # FFTW plans only ever use `FFTW_ESTIMATE`. The real lever this flag
-    # has: `BLAS_API` (luna-rust's `blas.rs`) is a process-global
+    # has: `BLAS_API` (amalthea's `blas.rs`) is a process-global
     # `OnceLock`, populated only by the per-kernel
-    # `LUNA_USE_RUST_QDHT`+`LUNA_QDHT_BLAS` path — once that happens
+    # `AMALTHEA_USE_RUST_QDHT`+`AMALTHEA_QDHT_BLAS` path — once that happens
     # anywhere in the process, every *later* native-path QDHT call becomes
     # eligible for BLAS too. `deterministic=true` makes that eligibility
     # invariant to whether some other part of the process touched BLAS,
@@ -1112,7 +1112,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     # **Not guaranteed:** bit-identical results across different
     # machines/CPU targets — the crate is built with `target-cpu=native`,
     # so a different build host takes a different SIMD/libm path.
-    rc = ccall((:native_set_deterministic, _LIBLUNA_RUST_RK45), Cint,
+    rc = ccall((:native_set_deterministic, _LIBAMALTHEA_RK45), Cint,
           (Ptr{Cvoid}, Cint), handle.ptr, Amalthea.Config.backend_config().deterministic ? 1 : 0)
     check_ffi(rc, "native_set_deterministic")
 
@@ -1173,7 +1173,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         nlscale = Amalthea.NonlinearRHS.nlscale
         sqrt_aeff = sqrt(f!.aeff(0.0))
 
-        rc = ccall((:native_set_mode_avg_params, _LIBLUNA_RUST_RK45), Cint,
+        rc = ccall((:native_set_mode_avg_params, _LIBAMALTHEA_RK45), Cint,
             (Ptr{Cvoid}, Csize_t, Csize_t,
              Ptr{Float64}, Ptr{Float64}, Ptr{UInt8},
              Ptr{Float64}, Ptr{Float64}, Ptr{Float64},
@@ -1191,12 +1191,12 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # each call) to `eto`/`eto_cplx`, matching `Et_nl = Eto + Et_noise/sc`.
         if !isnothing(f!.Et_noise)
             if is_real_grid
-                rc = ccall((:native_set_mode_avg_noise, _LIBLUNA_RUST_RK45), Cint,
+                rc = ccall((:native_set_mode_avg_noise, _LIBAMALTHEA_RK45), Cint,
                     (Ptr{Cvoid}, Ptr{Float64}, Csize_t),
                     handle.ptr, f!.Et_noise, length(f!.Et_noise))
                 check_ffi(rc, "native_set_mode_avg_noise")
             else
-                rc = ccall((:native_set_mode_avg_noise_cplx, _LIBLUNA_RUST_RK45), Cint,
+                rc = ccall((:native_set_mode_avg_noise_cplx, _LIBAMALTHEA_RK45), Cint,
                     (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Csize_t),
                     handle.ptr, real.(f!.Et_noise), imag.(f!.Et_noise), length(f!.Et_noise))
                 check_ffi(rc, "native_set_mode_avg_noise_cplx")
@@ -1206,8 +1206,8 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # Wire plasma if present and a Rust ionization handle is available.
         # Since Phase C (docs/dev/BACKLOG.md), `IonRatePPTAccel` builds this handle
         # whenever the Rust library is present and EITHER
-        # `LUNA_USE_RUST_IONISATION=1` OR the native stepper itself is
-        # enabled (`LUNA_USE_RUST_NATIVE` defaults to `"1"` since Phase 8) —
+        # `AMALTHEA_USE_RUST_IONISATION=1` OR the native stepper itself is
+        # enabled (`AMALTHEA_USE_RUST_NATIVE` defaults to `"1"` since Phase 8) —
         # decoupling it from the opt-in kernel toggle so the fork's default
         # field-resolved workload (`plasma = !envelope`) actually runs
         # natively out of the box (REVIEW.md §3.2). If the handle is still
@@ -1225,7 +1225,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                 if irf isa Amalthea.Ionisation.IonRatePPTAccel &&
                         !isnothing(irf.rust_handle) &&
                         irf.rust_handle.ptr != C_NULL
-                    rc = ccall((:native_set_plasma_params, _LIBLUNA_RUST_RK45), Cint,
+                    rc = ccall((:native_set_plasma_params, _LIBAMALTHEA_RK45), Cint,
                         (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64, Float64),
                         handle.ptr, irf.rust_handle.ptr,
                         r.ionpot, Amalthea.PhysData.e_ratio, r.preionfrac, r.δt, density)
@@ -1236,7 +1236,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                         irf.rust_handle.ptr != C_NULL
                     # Phase I item 3: ADK is closed-form, no LUT — same
                     # eligibility gate, a different (parameter-only) FFI setter.
-                    rc = ccall((:native_set_plasma_params_adk, _LIBLUNA_RUST_RK45), Cint,
+                    rc = ccall((:native_set_plasma_params_adk, _LIBAMALTHEA_RK45), Cint,
                         (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64, Float64),
                         handle.ptr, irf.rust_handle.ptr,
                         r.ionpot, Amalthea.PhysData.e_ratio, r.preionfrac, r.δt, density)
@@ -1244,8 +1244,8 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                     push!(gc_roots, irf.rust_handle)
                 else
                     throw(NativeIneligible("plasma detected but no Rust ionisation handle is " *
-                          "available (library missing, or both LUNA_USE_RUST_IONISATION and " *
-                          "LUNA_USE_RUST_NATIVE were explicitly disabled), or ratefunc is not " *
+                          "available (library missing, or both AMALTHEA_USE_RUST_IONISATION and " *
+                          "AMALTHEA_USE_RUST_NATIVE were explicitly disabled), or ratefunc is not " *
                           "an IonRatePPTAccel/IonRateADK — this config is not eligible for the " *
                           "native path."))
                 end
@@ -1289,7 +1289,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                     # decomposition (see docs/dev/BACKLOG.md), so it needs the resident
                     # FFT-convolution kernel instead of the ADE solver below.
                     raman_density = f!.densityfun(0.0)
-                    rc = ccall((:native_set_raman_fft_params, _LIBLUNA_RUST_RK45), Cint,
+                    rc = ccall((:native_set_raman_fft_params, _LIBAMALTHEA_RK45), Cint,
                         (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Csize_t,
                          Float64, Float64, Csize_t, Float64),
                         handle.ptr, rr.ωi, rr.Ai, rr.Γi, rr.γi, Csize_t(length(rr.ωi)),
@@ -1309,7 +1309,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                 gammas    = Float64[1.0 / ri.τ2ρ(raman_density) for ri in Rs]
                 couplings = Float64[ri.K for ri in Rs]
                 thg_flag = r isa Amalthea.Nonlinear.RamanPolarField ? Cint(r.thg) : Cint(1)
-                rc = ccall((:native_set_raman_params, _LIBLUNA_RUST_RK45), Cint,
+                rc = ccall((:native_set_raman_params, _LIBAMALTHEA_RK45), Cint,
                     (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Csize_t, Float64, Float64, Cint),
                     handle.ptr, omegas, gammas, couplings, Csize_t(length(omegas)),
                     r.dt, raman_density, thg_flag)
@@ -1367,7 +1367,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # bake `density(0)` into `kerr_fac` once) — see `ensure_linop_at`.
         eps0_gamma3 = Amalthea.PhysData.ε_0 * γ3
 
-        rc = ccall((:native_set_zdep_mode_avg_params, _LIBLUNA_RUST_RK45), Cint,
+        rc = ccall((:native_set_zdep_mode_avg_params, _LIBAMALTHEA_RK45), Cint,
             (Ptr{Cvoid}, Csize_t, Ptr{Float64}, Ptr{Float64},
              Csize_t, Ptr{Float64}, Ptr{Float64}, Ptr{Float64},
              Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64},
@@ -1459,7 +1459,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         ωwin = f!.grid.ωwin
         M = (ωwin .* (-im .* ω)) ./ (2 .* normarr)
 
-        rc = ccall((:native_set_radial_params, _LIBLUNA_RUST_RK45), Cint,
+        rc = ccall((:native_set_radial_params, _LIBAMALTHEA_RK45), Cint,
             (Ptr{Cvoid}, Csize_t, Csize_t, Csize_t,
              Ptr{Float64}, Float64, Float64,
              Ptr{Float64}, Float64,
@@ -1476,12 +1476,12 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # exactly (NonlinearRHS.jl:660-662).
         if !isnothing(f!.Et_noise)
             if is_real_grid
-                rc = ccall((:native_set_radial_noise, _LIBLUNA_RUST_RK45), Cint,
+                rc = ccall((:native_set_radial_noise, _LIBAMALTHEA_RK45), Cint,
                     (Ptr{Cvoid}, Ptr{Float64}, Csize_t),
                     handle.ptr, f!.Et_noise, length(f!.Et_noise))
                 check_ffi(rc, "native_set_radial_noise")
             else
-                rc = ccall((:native_set_radial_noise_cplx, _LIBLUNA_RUST_RK45), Cint,
+                rc = ccall((:native_set_radial_noise_cplx, _LIBAMALTHEA_RK45), Cint,
                     (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Csize_t),
                     handle.ptr, real.(f!.Et_noise), imag.(f!.Et_noise), length(f!.Et_noise))
                 check_ffi(rc, "native_set_radial_noise_cplx")
@@ -1489,7 +1489,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         end
 
         # Wire plasma if present and a Rust ionisation handle is available —
-        # same decoupled-from-LUNA_USE_RUST_IONISATION eligibility as the
+        # same decoupled-from-AMALTHEA_USE_RUST_IONISATION eligibility as the
         # mode-averaged wiring above (Phase C, docs/dev/BACKLOG.md). Must fail the
         # whole construction (NativeIneligible), not silently continue
         # without plasma, for the same silent-wrong-physics reason.
@@ -1499,7 +1499,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                 if irf isa Amalthea.Ionisation.IonRatePPTAccel &&
                         !isnothing(irf.rust_handle) &&
                         irf.rust_handle.ptr != C_NULL
-                    rc = ccall((:native_set_plasma_params, _LIBLUNA_RUST_RK45), Cint,
+                    rc = ccall((:native_set_plasma_params, _LIBAMALTHEA_RK45), Cint,
                         (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64, Float64),
                         handle.ptr, irf.rust_handle.ptr,
                         r.ionpot, Amalthea.PhysData.e_ratio, r.preionfrac, r.δt, density)
@@ -1510,7 +1510,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                         irf.rust_handle.ptr != C_NULL
                     # Phase I item 3: ADK is closed-form, no LUT — same
                     # eligibility gate, a different (parameter-only) FFI setter.
-                    rc = ccall((:native_set_plasma_params_adk, _LIBLUNA_RUST_RK45), Cint,
+                    rc = ccall((:native_set_plasma_params_adk, _LIBAMALTHEA_RK45), Cint,
                         (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64, Float64),
                         handle.ptr, irf.rust_handle.ptr,
                         r.ionpot, Amalthea.PhysData.e_ratio, r.preionfrac, r.δt, density)
@@ -1518,8 +1518,8 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                     push!(gc_roots, irf.rust_handle)
                 else
                     throw(NativeIneligible("plasma detected but no Rust ionisation handle is " *
-                          "available (library missing, or both LUNA_USE_RUST_IONISATION and " *
-                          "LUNA_USE_RUST_NATIVE were explicitly disabled), or ratefunc is not " *
+                          "available (library missing, or both AMALTHEA_USE_RUST_IONISATION and " *
+                          "AMALTHEA_USE_RUST_NATIVE were explicitly disabled), or ratefunc is not " *
                           "an IonRatePPTAccel/IonRateADK — this config is not eligible for the " *
                           "native path."))
                 end
@@ -1548,7 +1548,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                 omegas    = Float64[ri.Ω for ri in Rs]
                 gammas    = Float64[1.0 / ri.τ2ρ(raman_density) for ri in Rs]
                 couplings = Float64[ri.K for ri in Rs]
-                rc = ccall((:native_set_raman_params, _LIBLUNA_RUST_RK45), Cint,
+                rc = ccall((:native_set_raman_params, _LIBAMALTHEA_RK45), Cint,
                     (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Csize_t, Float64, Float64, Cint),
                     handle.ptr, omegas, gammas, couplings, Csize_t(length(omegas)),
                     r.dt, raman_density, Cint(r.thg))
@@ -1669,7 +1669,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
 
         lib_path = Cubature.Cubature_jll.libcubature
 
-        rc = ccall((:native_set_modal_params, _LIBLUNA_RUST_RK45), Cint,
+        rc = ccall((:native_set_modal_params, _LIBAMALTHEA_RK45), Cint,
             (Ptr{Cvoid}, Csize_t, Csize_t, Csize_t, Csize_t,
              Float64, Ptr{Float64}, Ptr{Float64}, Ptr{Int32}, Ptr{UInt8}, Ptr{Float64}, UInt8,
              Ptr{UInt8}, Ptr{Float64}, Float64, Ptr{Float64}, Ptr{Float64},
@@ -1686,7 +1686,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         if is_zdep_modal_taper
             w = linop
             n_a = length(w.a_x)
-            rc = ccall((:native_set_modal_zdep_params, _LIBLUNA_RUST_RK45), Cint,
+            rc = ccall((:native_set_modal_zdep_params, _LIBAMALTHEA_RK45), Cint,
                 (Ptr{Cvoid}, Float64, Float64,
                  Csize_t, Ptr{Float64}, Ptr{Float64}, Ptr{Float64},
                  Ptr{Float64}, Ptr{UInt8}, UInt8, UInt8,
@@ -1726,7 +1726,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                 omegas    = Float64[ri.Ω for ri in Rs]
                 gammas    = Float64[1.0 / ri.τ2ρ(raman_density) for ri in Rs]
                 couplings = Float64[ri.K for ri in Rs]
-                rc = ccall((:native_set_raman_params, _LIBLUNA_RUST_RK45), Cint,
+                rc = ccall((:native_set_raman_params, _LIBAMALTHEA_RK45), Cint,
                     (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Csize_t, Float64, Float64, Cint),
                     handle.ptr, omegas, gammas, couplings, Csize_t(length(omegas)),
                     r.dt, raman_density, Cint(r.thg))
@@ -1820,7 +1820,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         M = (ωwin .* (-im .* ω)) ./ (2 .* normarr)
 
         # FFTW_ESTIMATE = 1 << 6 = 64 — must match native_set_fftw_plans' flag.
-        rc = ccall((:native_set_free_params, _LIBLUNA_RUST_RK45), Cint,
+        rc = ccall((:native_set_free_params, _LIBAMALTHEA_RK45), Cint,
             (Ptr{Cvoid}, Csize_t, Csize_t, Csize_t, Csize_t, Cuint,
              Ptr{Float64}, Float64,
              Ptr{Float64}, Ptr{Float64}),
@@ -1832,7 +1832,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         if is_zdep_free
             w = linop
             eps0_gamma3 = Amalthea.PhysData.ε_0 * γ3
-            rc = ccall((:native_set_free_zdep_params, _LIBLUNA_RUST_RK45), Cint,
+            rc = ccall((:native_set_free_zdep_params, _LIBAMALTHEA_RK45), Cint,
                 (Ptr{Cvoid}, Float64, Float64, Float64,
                  Csize_t, Ptr{Float64}, Ptr{Float64}, Ptr{Float64},
                  Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Ptr{UInt8},
@@ -1856,7 +1856,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                     if irf isa Amalthea.Ionisation.IonRatePPTAccel &&
                             !isnothing(irf.rust_handle) &&
                             irf.rust_handle.ptr != C_NULL
-                        rc = ccall((:native_set_plasma_params, _LIBLUNA_RUST_RK45), Cint,
+                        rc = ccall((:native_set_plasma_params, _LIBAMALTHEA_RK45), Cint,
                             (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64, Float64),
                             handle.ptr, irf.rust_handle.ptr,
                             r.ionpot, Amalthea.PhysData.e_ratio, r.preionfrac, r.δt, density)
@@ -1865,7 +1865,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                     elseif irf isa Amalthea.Ionisation.IonRateADK &&
                             !isnothing(irf.rust_handle) &&
                             irf.rust_handle.ptr != C_NULL
-                        rc = ccall((:native_set_plasma_params_adk, _LIBLUNA_RUST_RK45), Cint,
+                        rc = ccall((:native_set_plasma_params_adk, _LIBAMALTHEA_RK45), Cint,
                             (Ptr{Cvoid}, Ptr{Cvoid}, Float64, Float64, Float64, Float64, Float64),
                             handle.ptr, irf.rust_handle.ptr,
                             r.ionpot, Amalthea.PhysData.e_ratio, r.preionfrac, r.δt, density)
@@ -1873,8 +1873,8 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                         push!(gc_roots, irf.rust_handle)
                     else
                         throw(NativeIneligible("plasma detected but no Rust ionisation handle is " *
-                              "available (library missing, or both LUNA_USE_RUST_IONISATION and " *
-                              "LUNA_USE_RUST_NATIVE were explicitly disabled), or ratefunc is not " *
+                              "available (library missing, or both AMALTHEA_USE_RUST_IONISATION and " *
+                              "AMALTHEA_USE_RUST_NATIVE were explicitly disabled), or ratefunc is not " *
                               "an IonRatePPTAccel/IonRateADK — this config is not eligible for the " *
                               "native path."))
                     end
@@ -1902,7 +1902,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                     omegas    = Float64[ri.Ω for ri in Rs]
                     gammas    = Float64[1.0 / ri.τ2ρ(raman_density) for ri in Rs]
                     couplings = Float64[ri.K for ri in Rs]
-                    rc = ccall((:native_set_raman_params, _LIBLUNA_RUST_RK45), Cint,
+                    rc = ccall((:native_set_raman_params, _LIBAMALTHEA_RK45), Cint,
                         (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Csize_t, Float64, Float64, Cint),
                         handle.ptr, omegas, gammas, couplings, Csize_t(length(omegas)),
                         r.dt, raman_density, Cint(r.thg))
@@ -1914,7 +1914,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     end
 
     # Copy initial field to Rust
-    ccall((:set_field, _LIBLUNA_RUST_RK45), Cint,
+    ccall((:set_field, _LIBAMALTHEA_RK45), Cint,
           (Ptr{Cvoid}, Ptr{ComplexF64}, Csize_t),
           handle.ptr, pointer(y0), Csize_t(n))
 
@@ -1927,7 +1927,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     if _native_wisdom_enabled() && !isempty(native_wisdom_path)
         try
             isdir(dirname(native_wisdom_path)) || mkpath(dirname(native_wisdom_path))
-            ccall((:native_export_fftw_wisdom, _LIBLUNA_RUST_RK45), Cint,
+            ccall((:native_export_fftw_wisdom, _LIBAMALTHEA_RK45), Cint,
                   (Ptr{Cvoid}, Cstring), handle.ptr, native_wisdom_path)
         catch
         end
@@ -1947,7 +1947,7 @@ function step!(s::RustNativeStepper)
     y_before = copy(s.yn)
 
     result_ref = Ref(NativeStepResult(0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
-    rc = ccall((:native_step, _LIBLUNA_RUST_RK45), Cint,
+    rc = ccall((:native_step, _LIBAMALTHEA_RK45), Cint,
         (Ptr{Cvoid}, Ptr{ComplexF64}, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Cint, Ptr{NativeStepResult}),
         s._handle.ptr, pointer(s.yn), s.t, s.tn, s.dtn, s.rtol, s.atol, s.safety, s.max_dt, s.min_dt, s.errlast, Cint(s.locextrap), result_ref
     )
@@ -1970,7 +1970,7 @@ function step!(s::RustNativeStepper)
 end
 
 function _native_field_resync!(s::RustNativeStepper)
-    rc = ccall((:native_resync_field, _LIBLUNA_RUST_RK45), Cint,
+    rc = ccall((:native_resync_field, _LIBAMALTHEA_RK45), Cint,
           (Ptr{Cvoid}, Ptr{ComplexF64}, Csize_t),
           s._handle.ptr, pointer(s.yn), Csize_t(length(s.yn)))
     check_ffi(rc, "native_resync_field (post-stepfun resync)")
@@ -2007,14 +2007,14 @@ function interpolate(s::RustNativeStepper, ti::Float64)
     yi = zero(s.yn)
     kbuf = similar(s.yn)
     for ii = 1:7
-        rc = ccall((:get_ks_stage, _LIBLUNA_RUST_RK45), Cint,
+        rc = ccall((:get_ks_stage, _LIBAMALTHEA_RK45), Cint,
               (Ptr{Cvoid}, Csize_t, Ptr{ComplexF64}, Csize_t),
               s._handle.ptr, Csize_t(ii - 1), kbuf, Csize_t(n))
         check_ffi(rc, "get_ks_stage")
         yi .+= kbuf .* b[ii]
     end
     out = @. s.y + s.dt * yi
-    rc = ccall((:native_apply_prop, _LIBLUNA_RUST_RK45), Cint,
+    rc = ccall((:native_apply_prop, _LIBAMALTHEA_RK45), Cint,
           (Ptr{Cvoid}, Ptr{ComplexF64}, Csize_t, Float64, Float64),
           s._handle.ptr, out, Csize_t(n), s.t, ti)
     check_ffi(rc, "native_apply_prop")

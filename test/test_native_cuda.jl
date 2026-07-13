@@ -7,7 +7,7 @@ using TestItems
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 
-    libpath = RK45._LIBLUNA_RUST_RK45
+    libpath = RK45._LIBAMALTHEA_RK45
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
@@ -15,10 +15,10 @@ using TestItems
         # Same scope as test_native_phase1.jl (mode-averaged, Kerr-only,
         # RealGrid): the only geometry/physics `cuda_native.rs`'s
         # `CudaNativeSim` implements (every other `NativeBackend` method on
-        # it returns -1). `LUNA_USE_RUST_CUDA_NATIVE=1` opts into the
+        # it returns -1). `AMALTHEA_USE_RUST_CUDA_NATIVE=1` opts into the
         # GPU-resident stepper on both the Julia (`RK45._gpu_native_eligible`)
         # and Rust (`init_cuda_native_sim`'s own env-var check) sides; this
-        # is independent from `LUNA_USE_RUST_NATIVE` (the CPU-resident
+        # is independent from `AMALTHEA_USE_RUST_NATIVE` (the CPU-resident
         # stepper, on by default since Phase 8).
         radius = 125e-6
         flength = 0.15
@@ -45,7 +45,7 @@ using TestItems
         local s_ru
         gpu_available = true
         gpu_error = nothing
-        withenv("LUNA_USE_RUST_CUDA_NATIVE" => "1") do
+        withenv("AMALTHEA_USE_RUST_CUDA_NATIVE" => "1") do
             try
                 s_ru = RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
                                           max_dt=dt, min_dt=dt)
@@ -112,7 +112,7 @@ end
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 
-    libpath = RK45._LIBLUNA_RUST_RK45
+    libpath = RK45._LIBAMALTHEA_RK45
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
@@ -150,7 +150,7 @@ end
         t0 = 0.0
         dt = 0.005
 
-        s_jl = withenv("LUNA_USE_RUST_IONISATION" => "1") do
+        s_jl = withenv("AMALTHEA_USE_RUST_IONISATION" => "1") do
             PreconStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
                           max_dt=dt, min_dt=dt)
         end
@@ -158,7 +158,7 @@ end
         local s_ru
         gpu_available = true
         gpu_error = nothing
-        withenv("LUNA_USE_RUST_CUDA_NATIVE" => "1", "LUNA_USE_RUST_IONISATION" => "1") do
+        withenv("AMALTHEA_USE_RUST_CUDA_NATIVE" => "1", "AMALTHEA_USE_RUST_IONISATION" => "1") do
             try
                 s_ru = RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
                                           max_dt=dt, min_dt=dt)
@@ -181,7 +181,7 @@ end
                 # NOT the same 1e-3 tier as the Kerr-only sibling test —
                 # measured (2026-07-11) at ~2.0e-2 for this exact config.
                 # Diagnosed, not just observed: the CPU-resident native
-                # stepper (`LUNA_USE_RUST_NATIVE=1`, no CUDA — proper
+                # stepper (`AMALTHEA_USE_RUST_NATIVE=1`, no CUDA — proper
                 # `n_time_over`-sized buffers) matches this exact
                 # Kerr+plasma config to 1.3e-16 against `PreconStepper`, so
                 # the gap is entirely GPU-specific. Sweeping energy

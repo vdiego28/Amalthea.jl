@@ -1,5 +1,5 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use luna_rust::diffraction::Qdht;
+use amalthea::diffraction::Qdht;
 use num_complex::Complex;
 
 fn bench_qdht(c: &mut Criterion) {

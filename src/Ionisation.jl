@@ -13,34 +13,34 @@ import Printf: @sprintf
 # ─── Rust FFI helpers ────────────────────────────────────────────────────────
 #
 # The PPT ionization rate can be evaluated by the Rust backend (using the same
-# cubic B-spline LUT as the Julia path) when LUNA_USE_RUST_IONISATION=1, or
+# cubic B-spline LUT as the Julia path) when AMALTHEA_USE_RUST_IONISATION=1, or
 # (since Phase C, docs/dev/BACKLOG.md) whenever the resident native stepper is enabled
-# (LUNA_USE_RUST_NATIVE, default "1" since Phase 8) — the native plasma wiring
+# (AMALTHEA_USE_RUST_NATIVE, default "1" since Phase 8) — the native plasma wiring
 # requires this handle to exist for the default field-resolved workload to
 # actually run natively. The opaque-handle pattern established here is the
 # template for subsequent kernel migrations (Raman → dispersion → QDHT → stepper).
 
 """
-    _libluna_rust_path() -> String
+    _libamalthea_path() -> String
 
-Return the platform-appropriate path to the `libluna_rust` shared library
-(built with `cargo build --release` in `luna-rust/`).
+Return the platform-appropriate path to the `libamalthea` shared library
+(built with `cargo build --release` in `amalthea/`).
 """
-function _libluna_rust_path()
+function _libamalthea_path()
     libname = if Sys.iswindows()
-        "luna_rust.dll"
+        "amalthea.dll"
     elseif Sys.isapple()
-        "libluna_rust.dylib"
+        "libamalthea.dylib"
     else
-        "libluna_rust.so"
+        "libamalthea.so"
     end
-    joinpath(Utils.lunadir(), "luna-rust", "target", "release", libname)
+    joinpath(Utils.lunadir(), "amalthea", "target", "release", libname)
 end
 
 # Global constant evaluated once at module load time.
 # Julia's ccall requires library paths to be literal strings or global constants
 # (not struct field accesses or arbitrary local expressions).
-const _LIBLUNA_RUST = _libluna_rust_path()
+const _LIBAMALTHEA = _libamalthea_path()
 
 """
 Mutable wrapper around a heap-allocated `PptIonizationRate` in the Rust shared
@@ -53,7 +53,7 @@ mutable struct RustIonizationHandle
         h = new(ptr)
         finalizer(h) do self
             if self.ptr != C_NULL
-                ccall((:free_ppt_ionization_lut, _LIBLUNA_RUST),
+                ccall((:free_ppt_ionization_lut, _LIBAMALTHEA),
                       Cvoid, (Ptr{Cvoid},), self.ptr)
                 self.ptr = C_NULL
             end
@@ -66,8 +66,8 @@ end
     _make_rust_ionization_handle(E, rate, Emin, Emax) -> Union{Nothing, RustIonizationHandle}
 
 Build a Rust-side PPT ionization LUT from the already-filtered (E, rate) data
-(the same knots the Julia `CSpline` uses), when either `LUNA_USE_RUST_IONISATION=1`
-is set explicitly, or the resident native stepper is enabled (`LUNA_USE_RUST_NATIVE`
+(the same knots the Julia `CSpline` uses), when either `AMALTHEA_USE_RUST_IONISATION=1`
+is set explicitly, or the resident native stepper is enabled (`AMALTHEA_USE_RUST_NATIVE`
 defaults to `"1"` since Phase 8 — see `RK45.jl`).
 
 The native stepper's plasma wiring (`RustNativeStepper`'s `native_set_plasma_params`)
@@ -76,7 +76,7 @@ The native stepper's plasma wiring (`RustNativeStepper`'s `native_set_plasma_par
 `NativeIneligible` and silently falls back to the Julia stepper — the native
 port's headline speedup would then never apply to the fork's own bread-and-butter
 use case (REVIEW.md §3.2 / docs/dev/BACKLOG.md Phase C.1). Decoupling this from the
-`LUNA_USE_RUST_IONISATION` opt-in toggle is safe only because the Rust and
+`AMALTHEA_USE_RUST_IONISATION` opt-in toggle is safe only because the Rust and
 Julia paths now agree above `Emax` too (Phase B.2's clamp parity) — before
 that fix, silently switching the default ionisation backend would have
 changed strong-field behaviour without the user asking for it.
@@ -88,22 +88,22 @@ function _make_rust_ionization_handle(E::AbstractVector, rate::AbstractVector,
                                        Emin::Float64, Emax::Float64)
     cfg = Config.backend_config()
     (cfg.ionisation || cfg.native) || return nothing
-    if !isfile(_LIBLUNA_RUST)
+    if !isfile(_LIBAMALTHEA)
         # Only warn when the user *explicitly* opted in via
-        # LUNA_USE_RUST_IONISATION=1 — the native-stepper-implied case is an
+        # AMALTHEA_USE_RUST_IONISATION=1 — the native-stepper-implied case is an
         # opportunistic "use it if present" check, not an explicit request,
         # so a fresh clone without a built Rust library (the common case)
         # must not spam a warning on every IonRatePPTAccel construction.
-        use_rust_ionisation && @warn "LUNA_USE_RUST_IONISATION=1 but Rust lib not found " *
-              "at $_LIBLUNA_RUST — falling back to Julia.  Build it with " *
-              "`cargo build --release` in luna-rust/."
+        use_rust_ionisation && @warn "AMALTHEA_USE_RUST_IONISATION=1 but Rust lib not found " *
+              "at $_LIBAMALTHEA — falling back to Julia.  Build it with " *
+              "`cargo build --release` in amalthea/."
         return nothing
     end
     # Ensure contiguous Float64 (sub-arrays or other eltypes are collected first)
     E_f64    = E isa Vector{Float64} ? E : collect(Float64, E)
     rate_f64 = rate isa Vector{Float64} ? rate : collect(Float64, rate)
     ptr = GC.@preserve E_f64 rate_f64 begin
-        ccall((:init_ppt_ionization_lut, _LIBLUNA_RUST),
+        ccall((:init_ppt_ionization_lut, _LIBAMALTHEA),
               Ptr{Cvoid},
               (Float64, Float64, Csize_t, Ptr{Float64}, Ptr{Float64}),
               Emin, Emax, length(E_f64), pointer(E_f64), pointer(rate_f64))
@@ -126,7 +126,7 @@ mutable struct RustAdkHandle
         h = new(ptr)
         finalizer(h) do self
             if self.ptr != C_NULL
-                ccall((:free_adk_ionization, _LIBLUNA_RUST),
+                ccall((:free_adk_ionization, _LIBAMALTHEA),
                       Cvoid, (Ptr{Cvoid},), self.ptr)
                 self.ptr = C_NULL
             end
@@ -141,15 +141,15 @@ end
 
 Build a Rust-side `AdkIonizationRate` from Julia's own already-computed ADK
 constants — closed-form, no LUT fitting (unlike `_make_rust_ionization_handle`).
-Same eligibility as the PPT handle: either `LUNA_USE_RUST_IONISATION=1` or the
+Same eligibility as the PPT handle: either `AMALTHEA_USE_RUST_IONISATION=1` or the
 native stepper default. Returns `nothing` when neither toggle is active, or
 the library/handle construction fails, so the pure-Julia path is taken.
 """
 function _make_rust_adk_handle(occupancy, ω_p, cn_sq, nstar, ω_t_prefac, thr, avfac)
     cfg = Config.backend_config()
     (cfg.ionisation || cfg.native) || return nothing
-    isfile(_LIBLUNA_RUST) || return nothing
-    ptr = ccall((:init_adk_ionization, _LIBLUNA_RUST),
+    isfile(_LIBAMALTHEA) || return nothing
+    ptr = ccall((:init_adk_ionization, _LIBAMALTHEA),
           Ptr{Cvoid},
           (Float64, Float64, Float64, Float64, Float64, Float64, Float64),
           Float64(occupancy), ω_p, cn_sq, nstar, ω_t_prefac, thr, avfac)
@@ -213,7 +213,7 @@ function IonRateADK(ionpot::Number; occupancy=2, threshold=true, cycle_average=f
 
     # docs/dev/BACKLOG.md Phase I item 3: ADK is closed-form (no LUT), so the Rust
     # handle just carries these already-computed constants — see
-    # `_make_rust_adk_handle`/`AdkIonizationRate` (luna-rust/src/ionization.rs).
+    # `_make_rust_adk_handle`/`AdkIonizationRate` (amalthea/src/ionization.rs).
     rust_handle = _make_rust_adk_handle(occupancy, ω_p, cn_sq, nstar, ω_t_prefac, thr, avfac)
     IonRateADK(ionpot, threshold, cycle_average,
                nstar, cn_sq, ω_p, ω_t_prefac, thr, avfac, occupancy, rust_handle)
@@ -512,7 +512,7 @@ function IonRatePPTAccel(E, rate)
     Emin = minimum(E)
     Emax = maximum(E)
     # Optionally build a Rust-backed LUT from the same knot data.
-    # Returns nothing when LUNA_USE_RUST_IONISATION is unset (pure-Julia default).
+    # Returns nothing when AMALTHEA_USE_RUST_IONISATION is unset (pure-Julia default).
     rust_handle = _make_rust_ionization_handle(E, rate, Emin, Emax)
     IonRatePPTAccel(cspl, Emin, Emax, rust_handle)
 end
@@ -592,7 +592,7 @@ function (ir::IonRatePPTAccel)(out::AbstractArray, E::AbstractArray)
         rh = ir.rust_handle
         if E isa Vector{Float64} && out isa Vector{Float64}
             ret = GC.@preserve E out begin
-                ccall((:ppt_ionization_rate_vector, _LIBLUNA_RUST),
+                ccall((:ppt_ionization_rate_vector, _LIBAMALTHEA),
                       Cint,
                       (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Csize_t),
                       rh.ptr, pointer(E), pointer(out), length(E))

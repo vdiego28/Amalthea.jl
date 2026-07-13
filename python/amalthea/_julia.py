@@ -24,8 +24,13 @@ def get_julia():
             if not os.environ.get("PYTHON_JULIAPKG_JULIA"):
                 os.environ["PYTHON_JULIAPKG_JULIA"] = os.environ.get("JULIA", "julia")
 
-            juliapkg.require_julia("1.9")
-            juliapkg.add("Amalthea", path=_luna_path)
+            juliapkg.require_julia("1.10")
+            juliapkg.add(
+                "Amalthea",
+                uuid="2a0a82e6-4dc7-4219-a2c1-d2369ab6895d",
+                dev=True,
+                path=_luna_path,
+            )
 
             from juliacall import Main as _main
             _main.seval("using Amalthea")

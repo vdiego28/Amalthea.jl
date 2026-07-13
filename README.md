@@ -5,7 +5,7 @@
 [![CI](https://github.com/vdiego28/Amalthea.jl/actions/workflows/run_tests.yml/badge.svg)](https://github.com/vdiego28/Amalthea.jl/actions/workflows/run_tests.yml)
 
 > [!IMPORTANT]
-> **Amalthea.jl** is a performance-focused fork of [Luna.jl](https://github.com/LupoLab/Luna.jl) that replaces performance-critical numerical kernels with a native Rust backend (`luna-rust`). The Julia high-level interface is fully preserved and backwards-compatible.
+> **Amalthea.jl** is a performance-focused fork of [Luna.jl](https://github.com/LupoLab/Luna.jl) that replaces performance-critical numerical kernels with a native Rust backend (`amalthea`). The Julia high-level interface is fully preserved and backwards-compatible.
 
 Amalthea.jl is a flexible platform for the simulation of nonlinear optical dynamics—both in waveguides (such as optical fibres) and free-space geometries—using the unidirectional pulse propagation equation (UPPE) and its approximate forms, such as the commonly used generalised nonlinear Schrödinger equation (GNLSE). Some of the key features of Amalthea.jl:
 
@@ -39,7 +39,7 @@ For a short introduction on how to use the simple interface, see the [Quickstart
 
 ## Relationship to Luna.jl
 
-Amalthea.jl is an independent hard fork of [Luna.jl](https://github.com/LupoLab/Luna.jl), not a set of changes intended to land upstream. The Julia-level API, physics models, and much of the original interface layer come directly from that project; what Amalthea.jl adds is a from-scratch Rust numerical backend (`luna-rust/`) that the compute-critical kernels are offloaded to, plus a resident native-Rust stepper that removes the per-step Julia↔Rust callback round-trip entirely (see [`docs/dev/native-port/ARCHITECTURE.md`](docs/dev/native-port/ARCHITECTURE.md)).
+Amalthea.jl is an independent hard fork of [Luna.jl](https://github.com/LupoLab/Luna.jl), not a set of changes intended to land upstream. The Julia-level API, physics models, and much of the original interface layer come directly from that project; what Amalthea.jl adds is a from-scratch Rust numerical backend (`amalthea/`) that the compute-critical kernels are offloaded to, plus a resident native-Rust stepper that removes the per-step Julia↔Rust callback round-trip entirely (see [`docs/dev/native-port/ARCHITECTURE.md`](docs/dev/native-port/ARCHITECTURE.md)).
 
 Two things worth being explicit about:
 
@@ -48,11 +48,11 @@ Two things worth being explicit about:
 
 If you're deciding which one to use: Luna.jl is the actively-maintained, PR-accepting original; Amalthea.jl trades that contribution model for raw throughput on the numerical hot path. They're expected to diverge further over time rather than reconverge.
 
-## The Rust Backend (`luna-rust`)
+## The Rust Backend (`amalthea`)
 
-The `luna-rust` crate provides the high-performance numerical engine that powers the most compute-intensive parts of the simulation. Key features include:
+The `amalthea` crate provides the high-performance numerical engine that powers the most compute-intensive parts of the simulation. Key features include:
 
-- **Automatic hardware dispatch**: at runtime, `luna-rust` detects the available hardware and selects the most performant code path—AVX2 SIMD, AVX-512 SIMD, CUDA (NVIDIA GPU), Vulkan (cross-vendor GPU), or a portable fallback.
+- **Automatic hardware dispatch**: at runtime, `amalthea` detects the available hardware and selects the most performant code path—AVX2 SIMD, AVX-512 SIMD, CUDA (NVIDIA GPU), Vulkan (cross-vendor GPU), or a portable fallback.
 - **Parallelised transforms**: the quasi-discrete Hankel transform (QDHT) used in free-space propagation is parallelised with [Rayon](https://github.com/rayon-rs/rayon).
 - **Raman solver**: the time-domain Raman solver uses an explicit matrix-exponential integrator with AVX2 optimisation.
 - **Cross-platform**: builds and runs on Linux, macOS, and Windows, including
@@ -206,7 +206,7 @@ If you use Amalthea.jl in your research, please cite it using the following DOI:
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20359893.svg)](https://doi.org/10.5281/zenodo.20359893)
 
 ```bibtex
-@software{valenzuela_berrios_2025_luna_rust,
+@software{valenzuela_berrios_2025_amalthea,
   author    = {Valenzuela Berríos, Diego Andrés},
   title     = {Amalthea.jl},
   year      = {2025},

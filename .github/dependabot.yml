@@ -20,7 +20,7 @@ updates:
 
   # Keep Rust/Cargo dependencies up to date
   - package-ecosystem: "cargo"
-    directory: "/luna-rust"
+    directory: "/amalthea"
     schedule:
       interval: "monthly"
     labels:

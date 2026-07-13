@@ -15,16 +15,16 @@ using TestItems
 
     # ── locate the shared library ──────────────────────────────────────────────
     libname = if Sys.iswindows()
-        "luna_rust.dll"
+        "amalthea.dll"
     elseif Sys.isapple()
-        "libluna_rust.dylib"
+        "libamalthea.dylib"
     else
-        "libluna_rust.so"
+        "libamalthea.so"
     end
-    libpath = joinpath(@__DIR__, "..", "luna-rust", "target", "release", libname)
+    libpath = joinpath(@__DIR__, "..", "amalthea", "target", "release", libname)
     if !isfile(libpath)
         @warn "Skipping Rust dispersion equivalence test: shared library not found at $libpath. " *
-              "Build it with `cargo build --release` in luna-rust/ (or run `]build Amalthea`)."
+              "Build it with `cargo build --release` in amalthea/ (or run `]build Amalthea`)."
         return
     end
 
@@ -56,7 +56,7 @@ using TestItems
 
     # ── Helper: compute Rust-path neff via neff_β_grid ────────────────────────
     function rust_neff_grid(mode)
-        _neff_cl, _β_cl = withenv("LUNA_USE_RUST_DISPERSION" => "1") do
+        _neff_cl, _β_cl = withenv("AMALTHEA_USE_RUST_DISPERSION" => "1") do
             with_logger(NullLogger()) do
                 LinearOps.neff_β_grid(grid, mode, λ0)
             end
@@ -146,7 +146,7 @@ using TestItems
         end
     end
 
-    # ── Toggle off: default (no LUNA_USE_RUST_DISPERSION) returns Julia neff ──
+    # ── Toggle off: default (no AMALTHEA_USE_RUST_DISPERSION) returns Julia neff ──
     @testset "Toggle off: neff_β_grid returns Julia values by default" begin
         m_he, neff_ref = julia_neff_grid(:HE)
         # No env toggle → neff_β_grid should use Julia
@@ -162,7 +162,7 @@ using TestItems
     # ── Caching: repeated calls at the same z return identical values ─────────
     @testset "Caching: repeated z=0 queries are idempotent" begin
         m_he, _ = julia_neff_grid(:HE)
-        _neff_cl, _ = withenv("LUNA_USE_RUST_DISPERSION" => "1") do
+        _neff_cl, _ = withenv("AMALTHEA_USE_RUST_DISPERSION" => "1") do
             with_logger(NullLogger()) do
                 LinearOps.neff_β_grid(grid, m_he, λ0)
             end
@@ -175,7 +175,7 @@ using TestItems
     # ── β closure is consistent with Re(neff) ─────────────────────────────────
     @testset "β closure consistent with Re(neff)" begin
         m_he, _ = julia_neff_grid(:HE)
-        _neff_cl, _β_cl = withenv("LUNA_USE_RUST_DISPERSION" => "1") do
+        _neff_cl, _β_cl = withenv("AMALTHEA_USE_RUST_DISPERSION" => "1") do
             with_logger(NullLogger()) do
                 LinearOps.neff_β_grid(grid, m_he, λ0)
             end
@@ -198,16 +198,16 @@ end
 
     # ── locate the shared library ──────────────────────────────────────────────
     libname = if Sys.iswindows()
-        "luna_rust.dll"
+        "amalthea.dll"
     elseif Sys.isapple()
-        "libluna_rust.dylib"
+        "libamalthea.dylib"
     else
-        "libluna_rust.so"
+        "libamalthea.so"
     end
-    libpath = joinpath(@__DIR__, "..", "luna-rust", "target", "release", libname)
+    libpath = joinpath(@__DIR__, "..", "amalthea", "target", "release", libname)
     if !isfile(libpath)
         @warn "Skipping Rust MarcatiliMode dispersion test: shared library not found at $libpath. " *
-              "Build it with `cargo build --release` in luna-rust/ (or run `]build Amalthea`)."
+              "Build it with `cargo build --release` in amalthea/ (or run `]build Amalthea`)."
         return
     end
 
@@ -229,9 +229,9 @@ end
         [_neff_cl(iω; z=0.0) for iω in sidcs]
     end
 
-    # Rust-accelerated: same function with LUNA_USE_RUST_DISPERSION=1
+    # Rust-accelerated: same function with AMALTHEA_USE_RUST_DISPERSION=1
     function rust_neff(mode)
-        _neff_cl, _ = withenv("LUNA_USE_RUST_DISPERSION" => "1") do
+        _neff_cl, _ = withenv("AMALTHEA_USE_RUST_DISPERSION" => "1") do
             with_logger(NullLogger()) do
                 LinearOps.neff_β_grid(grid, mode, λ0)
             end
@@ -302,7 +302,7 @@ end
     # ── Caching: same z → identical output ────────────────────────────────────
     @testset "Caching idempotency" begin
         m = Capillary.MarcatiliMode(a, gas, pressure; kind=:HE, model=:full, loss=true)
-        _neff_cl, _ = withenv("LUNA_USE_RUST_DISPERSION" => "1") do
+        _neff_cl, _ = withenv("AMALTHEA_USE_RUST_DISPERSION" => "1") do
             with_logger(NullLogger()) do
                 LinearOps.neff_β_grid(grid, m, λ0)
             end
@@ -315,7 +315,7 @@ end
     # ── β closure consistent with Re(neff) ────────────────────────────────────
     @testset "β closure consistent with Re(neff)" begin
         m = Capillary.MarcatiliMode(a, gas, pressure; kind=:HE, model=:full, loss=true)
-        _neff_cl, _β_cl = withenv("LUNA_USE_RUST_DISPERSION" => "1") do
+        _neff_cl, _β_cl = withenv("AMALTHEA_USE_RUST_DISPERSION" => "1") do
             with_logger(NullLogger()) do
                 LinearOps.neff_β_grid(grid, m, λ0)
             end

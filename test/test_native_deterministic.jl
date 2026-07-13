@@ -1,6 +1,6 @@
 using TestItems
 
-@testitem "Native deterministic mode (LUNA_NATIVE_DETERMINISTIC)" tags=[:rust] begin
+@testitem "Native deterministic mode (AMALTHEA_NATIVE_DETERMINISTIC)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
     using Amalthea
     import Amalthea: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear
@@ -8,19 +8,19 @@ using TestItems
     import Hankel
     import Logging: with_logger, NullLogger
 
-    libpath = RK45._LIBLUNA_RUST_RK45
+    libpath = RK45._LIBAMALTHEA_RK45
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
         # Radial geometry (resident QDHT) — the only backend surface
-        # `LUNA_NATIVE_DETERMINISTIC` currently affects (docs/dev/BACKLOG.md S5.2):
+        # `AMALTHEA_NATIVE_DETERMINISTIC` currently affects (docs/dev/BACKLOG.md S5.2):
         # it forces the native path's QDHT to skip the opt-in BLAS-3
         # `dgemm` path and always use the row-parallel Rayon fallback.
         #
         # The subtlety this test exists to catch: `crate::blas::BLAS_API`
         # is a *process-global* `OnceLock` in the Rust library, populated
         # only by `NonlinearRHS._init_rust_qdht_blas` (the older per-kernel
-        # `LUNA_USE_RUST_QDHT` wiring). The native-port radial path never
+        # `AMALTHEA_USE_RUST_QDHT` wiring). The native-port radial path never
         # calls that itself — so in a process where no per-kernel Rust QDHT
         # handle has ever been built, the native path *always* takes the
         # Rayon fallback regardless of `deterministic`, and a naive
@@ -53,13 +53,13 @@ using TestItems
         dt = 0.001
 
         @testset "backend_config default is off" begin
-            withenv("LUNA_NATIVE_DETERMINISTIC" => nothing) do
+            withenv("AMALTHEA_NATIVE_DETERMINISTIC" => nothing) do
                 @test !Amalthea.Config.backend_config().deterministic
             end
         end
 
         @testset "T1: deterministic=1, two runs bit-identical (BLAS never engaged)" begin
-            withenv("LUNA_NATIVE_DETERMINISTIC" => "1") do
+            withenv("AMALTHEA_NATIVE_DETERMINISTIC" => "1") do
                 @test Amalthea.Config.backend_config().deterministic
 
                 s1 = RustNativeStepper(transform, linop, copy(Eω), t0, dt,
@@ -80,7 +80,7 @@ using TestItems
         # the scenario `deterministic` must guard against for the native
         # path (docs/dev/BACKLOG.md S1.6/S1 item 1's "process-global state
         # contaminates later constructions" class of bug).
-        h = withenv("LUNA_USE_RUST_QDHT" => "1", "LUNA_QDHT_BLAS" => "1") do
+        h = withenv("AMALTHEA_USE_RUST_QDHT" => "1", "AMALTHEA_QDHT_BLAS" => "1") do
             with_logger(NullLogger()) do
                 NonlinearRHS._make_rust_qdht_handle(q, length(grid.to))
             end
@@ -88,13 +88,13 @@ using TestItems
         @test !isnothing(h)
 
         @testset "T2: after BLAS_API is populated, deterministic changes the QDHT codepath" begin
-            s_blas = withenv("LUNA_NATIVE_DETERMINISTIC" => nothing) do
+            s_blas = withenv("AMALTHEA_NATIVE_DETERMINISTIC" => nothing) do
                 s = RustNativeStepper(transform, linop, copy(Eω), t0, dt,
                                        rtol=1e-6, atol=1e-10, max_dt=dt, min_dt=dt)
                 solve(s, L)
                 s
             end
-            s_det = withenv("LUNA_NATIVE_DETERMINISTIC" => "1") do
+            s_det = withenv("AMALTHEA_NATIVE_DETERMINISTIC" => "1") do
                 s = RustNativeStepper(transform, linop, copy(Eω), t0, dt,
                                        rtol=1e-6, atol=1e-10, max_dt=dt, min_dt=dt)
                 solve(s, L)
@@ -111,7 +111,7 @@ using TestItems
         end
 
         @testset "T3: deterministic=1, still bit-identical across repeats after contamination" begin
-            withenv("LUNA_NATIVE_DETERMINISTIC" => "1") do
+            withenv("AMALTHEA_NATIVE_DETERMINISTIC" => "1") do
                 s1 = RustNativeStepper(transform, linop, copy(Eω), t0, dt,
                                         rtol=1e-6, atol=1e-10, max_dt=dt, min_dt=dt)
                 s2 = RustNativeStepper(transform, linop, copy(Eω), t0, dt,
@@ -125,7 +125,7 @@ using TestItems
         end
 
         @testset "T4: toggle off restores default behavior (no crash, sane result)" begin
-            withenv("LUNA_NATIVE_DETERMINISTIC" => nothing) do
+            withenv("AMALTHEA_NATIVE_DETERMINISTIC" => nothing) do
                 @test !Amalthea.Config.backend_config().deterministic
                 s = RustNativeStepper(transform, linop, copy(Eω), t0, dt,
                                        rtol=1e-6, atol=1e-10, max_dt=dt, min_dt=dt)

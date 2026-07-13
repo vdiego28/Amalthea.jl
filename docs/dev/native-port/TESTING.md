@@ -31,13 +31,13 @@ using TestItems
     import LinearAlgebra: norm
 
     # ── skip guard (copy verbatim) ──────────────────────────────────────────
-    libname = if Sys.iswindows(); "luna_rust.dll"
-              elseif Sys.isapple(); "libluna_rust.dylib"
-              else; "libluna_rust.so"; end
-    libpath = joinpath(@__DIR__, "..", "luna-rust", "target", "release", libname)
+    libname = if Sys.iswindows(); "amalthea.dll"
+              elseif Sys.isapple(); "libamalthea.dylib"
+              else; "libamalthea.so"; end
+    libpath = joinpath(@__DIR__, "..", "amalthea", "target", "release", libname)
     if !isfile(libpath)
         @warn "Skipping: shared library not found at $libpath. " *
-              "Build with `cargo build --release` in luna-rust/."
+              "Build with `cargo build --release` in amalthea/."
         return
     end
 
@@ -50,7 +50,7 @@ using TestItems
         out_julia = with_logger(NullLogger()) do
             prop_capillary(args...; kw...)
         end
-        out_rust = withenv("LUNA_USE_RUST_NATIVE" => "1") do
+        out_rust = withenv("AMALTHEA_USE_RUST_NATIVE" => "1") do
             with_logger(NullLogger()) do
                 prop_capillary(args...; kw...)
             end
@@ -227,13 +227,13 @@ failure is a real bug, not a tolerance problem.
 
 ```bash
 # Build the library first (required for any :rust test to run, else it skips)
-cd luna-rust && cargo build --release
+cd amalthea && cargo build --release
 
 # Run only the Rust/native equivalence group
 LUNA_TEST_GROUP=rust julia --project test/runtests.jl
 
 # Rust unit tests
-cd luna-rust && cargo test
+cd amalthea && cargo test
 
 # Full Julia suite (Phase 8 gate)
 julia --project -e 'using Pkg; Pkg.test("Luna")'

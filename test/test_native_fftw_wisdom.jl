@@ -1,12 +1,12 @@
 using TestItems
 
-@testitem "Native FFTW wisdom persistence toggle (LUNA_NATIVE_FFTW_WISDOM)" tags=[:rust] begin
+@testitem "Native FFTW wisdom persistence toggle (AMALTHEA_NATIVE_FFTW_WISDOM)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
     using Amalthea
     using Amalthea.RK45: RustNativeStepper
     import Logging: with_logger, NullLogger
 
-    libpath = RK45._LIBLUNA_RUST_RK45
+    libpath = RK45._LIBAMALTHEA_RK45
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
@@ -36,7 +36,7 @@ using TestItems
         # T1: default (env var unset) must not touch the on-disk wisdom file
         # at all — this is the whole point of making persistence opt-in.
         @testset "T1: default is off, no disk writes" begin
-            withenv("LUNA_NATIVE_FFTW_WISDOM" => nothing) do
+            withenv("AMALTHEA_NATIVE_FFTW_WISDOM" => nothing) do
                 isfile(wisdom_path) && rm(wisdom_path)
                 @test !RK45._native_wisdom_enabled()
 
@@ -50,7 +50,7 @@ using TestItems
         # T2: opt-in (env var = "1") writes a non-empty wisdom file and does
         # not error across repeated constructions in the same process.
         @testset "T2: opt-in exports and imports without error" begin
-            withenv("LUNA_NATIVE_FFTW_WISDOM" => "1") do
+            withenv("AMALTHEA_NATIVE_FFTW_WISDOM" => "1") do
                 isfile(wisdom_path) && rm(wisdom_path)
                 @test RK45._native_wisdom_enabled()
 

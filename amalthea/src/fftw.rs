@@ -1045,7 +1045,7 @@ mod tests {
     /// Try to load FFTW for tests; return None to "skip" (the Rust analog of the
     /// Julia skip-guard) when no FFTW is installed on the test host.
     fn try_api() -> Option<FftwApi> {
-        let path = std::env::var("LUNA_FFTW_LIB").ok();
+        let path = std::env::var("AMALTHEA_FFTW_LIB").ok();
         FftwApi::load(path.as_deref()).ok()
     }
 

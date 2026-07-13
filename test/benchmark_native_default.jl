@@ -39,7 +39,7 @@ import Printf: @sprintf
 set_fftw_mode(:estimate)
 
 function main()
-libpath = RK45._LIBLUNA_RUST_RK45
+libpath = RK45._LIBAMALTHEA_RK45
 if !isfile(libpath)
     @warn "Rust library not found — skipping benchmark, writing an empty result."
     write(joinpath(@__DIR__, "benchmark_result.json"), "[]")

@@ -8,7 +8,7 @@ using TestItems
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 
-    libpath = RK45._LIBLUNA_RUST_RK45
+    libpath = RK45._LIBAMALTHEA_RK45
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
@@ -19,7 +19,7 @@ using TestItems
 
         @testset "Envelope Raman (RamanPolarEnv, mode-averaged EnvGrid)" begin
             # docs/dev/BACKLOG.md Phase F item 2: RamanPolarEnv was never natively
-            # wired at all (neither the old LUNA_USE_RUST_RAMAN per-kernel
+            # wired at all (neither the old AMALTHEA_USE_RUST_RAMAN per-kernel
             # path nor the native port) — its intensity formula
             # (sqr!(R::RamanPolarEnv,E) = 1/2*|E|^2, Nonlinear.jl:351-354)
             # has no thg branch, so the resident real-valued ADE solver

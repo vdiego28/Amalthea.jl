@@ -421,26 +421,26 @@ end
 
 # ─── Rust FFI scaffolding for MarcatiliMode dispersion ───────────────────────
 #
-# When LUNA_USE_RUST_DISPERSION=1 the per-step batch neff evaluation in
-# neff_β_grid for constant-core-radius MarcatiliMode is offloaded to luna-rust.
+# When AMALTHEA_USE_RUST_DISPERSION=1 the per-step batch neff evaluation in
+# neff_β_grid for constant-core-radius MarcatiliMode is offloaded to amalthea.
 # The precomputed nwg(ω) (cladding-dependent, z-independent) is stored in a
 # Rust-side handle at setup time.  Per step only nco(ω; z) changes and is
 # passed as a packed array; Rust returns neff_re/neff_im in-place.
 #
 # ccall library-path argument MUST be a module-level const (Julia constraint).
 
-function _libluna_rust_path_cap()
+function _libamalthea_path_cap()
     libname = if Sys.iswindows()
-        "luna_rust.dll"
+        "amalthea.dll"
     elseif Sys.isapple()
-        "libluna_rust.dylib"
+        "libamalthea.dylib"
     else
-        "libluna_rust.so"
+        "libamalthea.so"
     end
-    joinpath(lunadir(), "luna-rust", "target", "release", libname)
+    joinpath(lunadir(), "amalthea", "target", "release", libname)
 end
 
-const _LIBLUNA_RUST_CAP = _libluna_rust_path_cap()
+const _LIBAMALTHEA_CAP = _libamalthea_path_cap()
 
 mutable struct RustMarcatiliHandle
     ptr::Ptr{Cvoid}
@@ -448,7 +448,7 @@ mutable struct RustMarcatiliHandle
         h = new(ptr)
         finalizer(h) do self
             if self.ptr != C_NULL
-                ccall((:free_marcatili_neff, _LIBLUNA_RUST_CAP),
+                ccall((:free_marcatili_neff, _LIBAMALTHEA_CAP),
                       Cvoid, (Ptr{Cvoid},), self.ptr)
                 self.ptr = C_NULL
             end
@@ -459,14 +459,14 @@ end
 
 function _make_rust_marcatili_handle(nwg_re_s, nwg_im_s, model_code::Cuint, loss_on::Cuint)
     Config.backend_config().dispersion || return nothing
-    if !isfile(_LIBLUNA_RUST_CAP)
-        @warn "luna-rust library not found at $(_LIBLUNA_RUST_CAP) — MarcatiliMode neff_β_grid using Julia."
+    if !isfile(_LIBAMALTHEA_CAP)
+        @warn "amalthea library not found at $(_LIBAMALTHEA_CAP) — MarcatiliMode neff_β_grid using Julia."
         return nothing
     end
     n = length(nwg_re_s)
     nwg_re = nwg_re_s; nwg_im = nwg_im_s
     ptr = GC.@preserve nwg_re nwg_im begin
-        ccall((:init_marcatili_neff, _LIBLUNA_RUST_CAP), Ptr{Cvoid},
+        ccall((:init_marcatili_neff, _LIBAMALTHEA_CAP), Ptr{Cvoid},
               (Ptr{Float64}, Ptr{Float64}, Csize_t, Cuint, Cuint),
               pointer(nwg_re), pointer(nwg_im), Csize_t(n), model_code, loss_on)
     end
@@ -482,7 +482,7 @@ end
    form to add:
      1. z-level memoization — the first closure call at a new z fills the full
         neff_cache for all sidcs; subsequent calls at the same z are O(1) lookups.
-     2. Optional Rust batch path (LUNA_USE_RUST_DISPERSION=1) — nwg is passed
+     2. Optional Rust batch path (AMALTHEA_USE_RUST_DISPERSION=1) — nwg is passed
         to the Rust handle at setup; only nco(ω; z) is supplied per step.
    This is used by LinearOps.make_linop. =#
 function neff_β_grid(grid,
@@ -526,7 +526,7 @@ function neff_β_grid(grid,
             nco_re = nco_re_s; nco_im = nco_im_s
             neff_re = neff_re_s; neff_im = neff_im_s
             ret = GC.@preserve nco_re nco_im neff_re neff_im begin
-                ccall((:marcatili_neff_vector, _LIBLUNA_RUST_CAP), Cint,
+                ccall((:marcatili_neff_vector, _LIBAMALTHEA_CAP), Cint,
                       (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Csize_t),
                       rh_ptr, pointer(nco_re), pointer(nco_im),
                       pointer(neff_re), pointer(neff_im), Csize_t(n_side))

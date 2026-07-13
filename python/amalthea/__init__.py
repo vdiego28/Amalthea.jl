@@ -1,4 +1,4 @@
-"""luna_rust — Python interface to the Amalthea.jl simulation backend."""
+"""amalthea — Python interface to the Amalthea.jl simulation backend."""
 from ._julia import get_julia
 from ._kwargs import translate_kwargs
 from .output import LunaOutput

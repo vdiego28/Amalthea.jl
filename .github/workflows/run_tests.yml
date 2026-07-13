@@ -79,13 +79,13 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "luna-rust"
+          workspaces: "amalthea"
 
 
       - name: Run Rust unit tests
         if: matrix.group == 'rust'
         run: cargo test
-        working-directory: luna-rust
+        working-directory: amalthea
         env:
           RUSTFLAGS: "" # neutralize target-cpu=native from .cargo/config.toml
 
@@ -94,7 +94,7 @@ jobs:
       - name: Build Rust release library (for Julia FFI tests)
         if: matrix.group == 'rust'
         run: cargo build --release
-        working-directory: luna-rust
+        working-directory: amalthea
         env:
           RUSTFLAGS: "" # neutralize target-cpu=native from .cargo/config.toml
 
@@ -144,7 +144,7 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "luna-rust"
+          workspaces: "amalthea"
 
       - uses: julia-actions/setup-julia@v3
         with:
@@ -207,7 +207,7 @@ jobs:
 
       - name: Build Rust release library (for Julia FFI)
         run: cargo build --release
-        working-directory: luna-rust
+        working-directory: amalthea
         env:
           RUSTFLAGS: ""
 

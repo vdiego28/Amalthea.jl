@@ -61,7 +61,7 @@ else in this document.
 
 **Verified on real CUDA hardware 2026-07-07** (RTX 5060 Ti, CUDA 13.3 —
 the same machine, confirmed via `nvidia-smi`) and **wired into `RK45.jl`**,
-opt-in via `LUNA_USE_RUST_CUDA_NATIVE=1` (`RustNativeSimHandle`'s `use_gpu`
+opt-in via `AMALTHEA_USE_RUST_CUDA_NATIVE=1` (`RustNativeSimHandle`'s `use_gpu`
 kwarg, dispatched from `_gpu_native_eligible`). This first real-hardware run
 surfaced and fixed 6 independent bugs invisible to the (self-skipping, no
 real GPU) CI-only unit tests — missing `init_gpu_context()`, a
@@ -90,7 +90,7 @@ ionisation (`IonRatePPTAccel` — ADK still returns `-1`).
 
 **Plasma support added 2026-07-11** (BACKLOG.md S3 item 2): PPT ionisation
 rate lookup (reuses `ppt_ionization_kernel`, the same kernel and
-`SplineSegment` upload format the standalone `LUNA_USE_RUST_IONISATION`
+`SplineSegment` upload format the standalone `AMALTHEA_USE_RUST_IONISATION`
 path already uses) → a 3-stage cumtrapz sequence (ionisation fraction,
 free-electron current, plasma polarisation — each fused with its adjacent
 elementwise transform into one single-thread sequential kernel, since
@@ -123,11 +123,11 @@ buffer-sizing change in `cuda_native.rs`/`kernels.cu`, not attempted yet.
 
 **Test coverage:** `test/test_native_cuda.jl` has two testitems (Kerr-only,
 Kerr+plasma), each constructing a GPU-backed stepper via
-`withenv("LUNA_USE_RUST_CUDA_NATIVE" => "1")`; both self-skip cleanly on CI
+`withenv("AMALTHEA_USE_RUST_CUDA_NATIVE" => "1")`; both self-skip cleanly on CI
 (no GPU/toolkit) but on real hardware assert `_gpu_native_eligible`
 actually returned `true` (not a vacuous CPU-vs-CPU comparison) and check
-full-solve field agreement against `PreconStepper`. `luna-rust/src/lib.rs`
-and `luna-rust/tests/test_gpu_cuda.jl` also self-skip without a GPU —
+full-solve field agreement against `PreconStepper`. `amalthea/src/lib.rs`
+and `amalthea/tests/test_gpu_cuda.jl` also self-skip without a GPU —
 **still true in CI today**: no CI runner has a GPU, so none of this
 executes except when run by hand on hardware like this machine. This is
 `BACKLOG.md`'s open "GPU CI coverage" item (Phase G.2) — not resolved by
@@ -140,8 +140,8 @@ manual runs, not a standing CI job.
    modal/free-space geometries, and ADK plasma remain unimplemented; every
    other `set_*_params` still returns `-1` as noted above.
 3. Problem-size dispatch threshold (measured crossover, not guessed) so
-   small grids stay on CPU; `LUNA_NATIVE_GPU=0/1/auto` env override — not
-   started. Today it's all-or-nothing per `LUNA_USE_RUST_CUDA_NATIVE`.
+   small grids stay on CPU; `AMALTHEA_NATIVE_GPU=0/1/auto` env override — not
+   started. Today it's all-or-nothing per `AMALTHEA_USE_RUST_CUDA_NATIVE`.
 4. Raman ADE / ADK plasma GPU kernels, radial/modal/free-space geometries —
    or an explicit `NativeIneligible`-style split keeping those configs on
    CPU, documented as such. A work-efficient parallel prefix scan for
@@ -174,9 +174,9 @@ still never been run on real CUDA hardware** — the fix is only checked for log
 against `CpuNativeSim::step`, not numerically verified.
 
 **Opt-in gate added:** `init_cuda_native_sim` now refuses to initialize (returns null +
-prints a warning to stderr) unless `LUNA_USE_RUST_CUDA_NATIVE=1` is set in the environment,
+prints a warning to stderr) unless `AMALTHEA_USE_RUST_CUDA_NATIVE=1` is set in the environment,
 and prints a second warning on successful opt-in reminding the caller this path is
-unverified. This is deliberately stricter than a normal `LUNA_USE_RUST_*` feature toggle —
+unverified. This is deliberately stricter than a normal `AMALTHEA_USE_RUST_*` feature toggle —
 those default-enable once verified; this one requires explicit, repeated opt-in until it has
 been checked against the Julia oracle on real GPU hardware. See
 `test_cuda_native_sim_ffi_gated_by_env_var` in `lib.rs`.

@@ -8,7 +8,7 @@ using TestItems
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 
-    libpath = RK45._LIBLUNA_RUST_RK45
+    libpath = RK45._LIBAMALTHEA_RK45
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
@@ -31,7 +31,7 @@ using TestItems
         dens0 = PhysData.density(gas, pres)
         densityfun(z) = dens0
         ionpot = PhysData.ionisation_potential(gas)
-        ionrate = withenv("LUNA_USE_RUST_IONISATION" => "1") do
+        ionrate = withenv("AMALTHEA_USE_RUST_IONISATION" => "1") do
             Ionisation.IonRatePPTCached(gas, λ0)
         end
         plasma_resp = Nonlinear.PlasmaCumtrapz(grid.to, grid.to, ionrate, ionpot)
@@ -51,8 +51,8 @@ using TestItems
 
         @testset "Single-step equivalence (free-space + plasma, ~1e-12)" begin
             s_jl = PreconStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10)
-            s_ru = withenv("LUNA_USE_RUST_NATIVE" => "1",
-                           "LUNA_USE_RUST_IONISATION" => "1") do
+            s_ru = withenv("AMALTHEA_USE_RUST_NATIVE" => "1",
+                           "AMALTHEA_USE_RUST_IONISATION" => "1") do
                 RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10)
             end
 
@@ -67,8 +67,8 @@ using TestItems
         @testset "Full-solve equivalence (free-space + plasma, fixed dt)" begin
             s_jl = PreconStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
                                   max_dt=dt, min_dt=dt)
-            s_ru = withenv("LUNA_USE_RUST_NATIVE" => "1",
-                           "LUNA_USE_RUST_IONISATION" => "1") do
+            s_ru = withenv("AMALTHEA_USE_RUST_NATIVE" => "1",
+                           "AMALTHEA_USE_RUST_IONISATION" => "1") do
                 RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
                                   max_dt=dt, min_dt=dt)
             end
@@ -110,8 +110,8 @@ using TestItems
             # equivalence check would let a "native silently contributes
             # zero" bug hide exactly like the Phase I preamble's density bug
             # did for mode-averaged/radial plasma.
-            s_ru_strong = withenv("LUNA_USE_RUST_NATIVE" => "1",
-                           "LUNA_USE_RUST_IONISATION" => "1") do
+            s_ru_strong = withenv("AMALTHEA_USE_RUST_NATIVE" => "1",
+                           "AMALTHEA_USE_RUST_IONISATION" => "1") do
                 RustNativeStepper(transform_strong, linop, copy(Eω_strong), t0, dt,
                                    rtol=1e-6, atol=1e-10, max_dt=dt, min_dt=dt)
             end

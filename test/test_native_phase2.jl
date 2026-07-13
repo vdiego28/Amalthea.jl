@@ -7,7 +7,7 @@ using TestItems
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 
-    libpath = RK45._LIBLUNA_RUST_RK45
+    libpath = RK45._LIBAMALTHEA_RK45
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
@@ -75,7 +75,7 @@ end
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 
-    libpath = RK45._LIBLUNA_RUST_RK45
+    libpath = RK45._LIBAMALTHEA_RK45
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
@@ -93,13 +93,13 @@ end
                energy=2e-6, τfwhm=30e-15)
 
         # The native plasma path needs a Rust-backed ionization-rate handle,
-        # which is only wired up if LUNA_USE_RUST_IONISATION=1 is set BEFORE
+        # which is only wired up if AMALTHEA_USE_RUST_IONISATION=1 is set BEFORE
         # the ionization LUT is built inside prop_capillary_args (not just
         # around the later RustNativeStepper construction below) — so the
         # whole setup is wrapped in one withenv rather than relying on an
         # ambient CI-wide env var (which would conflict with
         # test_ionisation_rust.jl's check that the default is off).
-        Eω, grid, linop, transform, FT, output = withenv("LUNA_USE_RUST_IONISATION" => "1") do
+        Eω, grid, linop, transform, FT, output = withenv("AMALTHEA_USE_RUST_IONISATION" => "1") do
             with_logger(NullLogger()) do
                 Interface.prop_capillary_args(args...; kw...)
             end
@@ -113,8 +113,8 @@ end
 
             @testset "Single-step equivalence (RealGrid + plasma, ~1e-13)" begin
                 s_jl = PreconStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10)
-                s_ru = withenv("LUNA_USE_RUST_NATIVE" => "1",
-                               "LUNA_USE_RUST_IONISATION" => "1") do
+                s_ru = withenv("AMALTHEA_USE_RUST_NATIVE" => "1",
+                               "AMALTHEA_USE_RUST_IONISATION" => "1") do
                     RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10)
                 end
 
@@ -135,8 +135,8 @@ end
                 # genuine multi-step state-accumulation error.
                 s_jl = PreconStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
                                       max_dt=dt, min_dt=dt)
-                s_ru = withenv("LUNA_USE_RUST_NATIVE" => "1",
-                               "LUNA_USE_RUST_IONISATION" => "1") do
+                s_ru = withenv("AMALTHEA_USE_RUST_NATIVE" => "1",
+                               "AMALTHEA_USE_RUST_IONISATION" => "1") do
                     RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
                                       max_dt=dt, min_dt=dt)
                 end
@@ -165,7 +165,7 @@ end
                              shotnoise=false, energy=1.6e-3, τfwhm=30e-15)
                 kw_strong_noplasma = (; λ0, λlims, trange, raman=false, plasma=false, kerr=true,
                              shotnoise=false, energy=1.6e-3, τfwhm=30e-15)
-                Eω_s, grid_s, linop_s, transform_s, FT_s, output_s = withenv("LUNA_USE_RUST_IONISATION" => "1") do
+                Eω_s, grid_s, linop_s, transform_s, FT_s, output_s = withenv("AMALTHEA_USE_RUST_IONISATION" => "1") do
                     with_logger(NullLogger()) do
                         Interface.prop_capillary_args(args...; kw_strong...)
                     end
@@ -178,7 +178,7 @@ end
                                         max_dt=dt_s, min_dt=dt_s)
                 s_jl_np = PreconStepper(transform_sn, linop_sn, copy(Eω_sn), t0, dt_s, rtol=1e-6, atol=1e-10,
                                          max_dt=dt_s, min_dt=dt_s)
-                s_ru_p = withenv("LUNA_USE_RUST_NATIVE" => "1", "LUNA_USE_RUST_IONISATION" => "1") do
+                s_ru_p = withenv("AMALTHEA_USE_RUST_NATIVE" => "1", "AMALTHEA_USE_RUST_IONISATION" => "1") do
                     RustNativeStepper(transform_s, linop_s, copy(Eω_s), t0, dt_s, rtol=1e-6, atol=1e-10,
                                        max_dt=dt_s, min_dt=dt_s)
                 end

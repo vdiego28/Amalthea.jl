@@ -12,9 +12,9 @@ Sys.iswindows() && (ENV["HDF5_USE_FILE_LOCKING"] = "FALSE")
     # Resolve the platform-correct shared library extension
     _LIB_EXT = Sys.iswindows() ? "dll" : Sys.isapple() ? "dylib" : "so"
     LIB_PATH = if Sys.iswindows()
-        joinpath(@__DIR__, "../target/release/luna_rust.dll")
+        joinpath(@__DIR__, "../target/release/amalthea.dll")
     else
-        joinpath(@__DIR__, "../target/release/libluna_rust.$_LIB_EXT")
+        joinpath(@__DIR__, "../target/release/libamalthea.$_LIB_EXT")
     end
 
     # Explicitly load `libsz` and other dependent libraries implicitly needed by `HDF5.API.libhdf5` before calling Rust.
@@ -24,11 +24,11 @@ Sys.iswindows() && (ENV["HDF5_USE_FILE_LOCKING"] = "FALSE")
     HDF5.h5open
 
     # Pass HDF5 path to Rust side so it doesn't have to guess or search for it
-    ENV["LUNA_HDF5_LIB"] = HDF5.API.libhdf5
+    ENV["AMALTHEA_HDF5_LIB"] = HDF5.API.libhdf5
     
     if !isfile(LIB_PATH)
         @warn "Skipping Rust scans/IO test: shared library not found at $LIB_PATH. " *
-              "Build it with `cargo build --release` in luna-rust/ (or run `]build Amalthea`)."
+              "Build it with `cargo build --release` in amalthea/ (or run `]build Amalthea`)."
         return
     end
     

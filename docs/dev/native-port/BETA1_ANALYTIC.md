@@ -81,7 +81,7 @@ four remaining quantities —
 — are **z-independent constants**, computed once at `RustNativeStepper`
 construction (`Capillary.jl`'s `make_linop` specialization) and shipped over
 FFI as 7 `f64`s (`ω0, γ0, dγ0, Re(nwg0), Im(nwg0), Re(dnwg0), Im(dnwg0)`).
-`NativeSim::ensure_linop_at` (`luna-rust/src/native.rs`) then computes
+`NativeSim::ensure_linop_at` (`amalthea/src/native.rs`) then computes
 `β1(z)` in ~6 lines using these constants and the `dens` it already computes
 for the linop — no LUT, no spline, no per-z Julia round-trip.
 

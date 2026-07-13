@@ -13,16 +13,16 @@ using TestItems
 
     # ── locate the shared library ──────────────────────────────────────────────
     libname = if Sys.iswindows()
-        "luna_rust.dll"
+        "amalthea.dll"
     elseif Sys.isapple()
-        "libluna_rust.dylib"
+        "libamalthea.dylib"
     else
-        "libluna_rust.so"
+        "libamalthea.so"
     end
-    libpath = joinpath(@__DIR__, "..", "luna-rust", "target", "release", libname)
+    libpath = joinpath(@__DIR__, "..", "amalthea", "target", "release", libname)
     if !isfile(libpath)
         @warn "Skipping Rust ionization equivalence test: shared library not found at $libpath. " *
-              "Build it with `cargo build --release` in luna-rust/ (or run `]build Amalthea`)."
+              "Build it with `cargo build --release` in amalthea/ (or run `]build Amalthea`)."
         return
     end
 
@@ -31,8 +31,8 @@ using TestItems
     # and reproduces what IonRatePPTAccel(material, λ0) would do internally.
     #
     # Since Phase C (docs/dev/BACKLOG.md), the Rust ionisation LUT is built whenever
-    # EITHER `LUNA_USE_RUST_IONISATION=1` OR the native stepper is enabled
-    # (`LUNA_USE_RUST_NATIVE` defaults to `"1"` since Phase 8) — the native
+    # EITHER `AMALTHEA_USE_RUST_IONISATION=1` OR the native stepper is enabled
+    # (`AMALTHEA_USE_RUST_NATIVE` defaults to `"1"` since Phase 8) — the native
     # plasma wiring needs this handle to exist for the fork's default
     # workload to actually run natively (REVIEW.md §3.2). So a true
     # Julia-only reference must explicitly force BOTH toggles off.
@@ -47,7 +47,7 @@ using TestItems
         Ionisation.ionrate_PPT.(gas, λ0, E_full)
     end
 
-    ir_julia = withenv("LUNA_USE_RUST_IONISATION" => "0", "LUNA_USE_RUST_NATIVE" => "0") do
+    ir_julia = withenv("AMALTHEA_USE_RUST_IONISATION" => "0", "AMALTHEA_USE_RUST_NATIVE" => "0") do
         with_logger(NullLogger()) do
             Ionisation.IonRatePPTAccel(E_full, rate_full)
         end
@@ -55,7 +55,7 @@ using TestItems
     @test ir_julia.rust_handle === nothing
 
     # ── build Rust-backed IonRatePPTAccel (explicit toggle) ───────────────────
-    ir_rust = withenv("LUNA_USE_RUST_IONISATION" => "1") do
+    ir_rust = withenv("AMALTHEA_USE_RUST_IONISATION" => "1") do
         with_logger(NullLogger()) do
             Ionisation.IonRatePPTAccel(E_full, rate_full)
         end
@@ -63,11 +63,11 @@ using TestItems
     @test ir_rust.rust_handle !== nothing  # handle must be non-null
     @test ir_rust.rust_handle.ptr != C_NULL
 
-    # ── Phase C: native-default alone (no explicit LUNA_USE_RUST_IONISATION)
-    # must ALSO build the handle, since LUNA_USE_RUST_NATIVE defaults to "1".
+    # ── Phase C: native-default alone (no explicit AMALTHEA_USE_RUST_IONISATION)
+    # must ALSO build the handle, since AMALTHEA_USE_RUST_NATIVE defaults to "1".
     @testset "Native default builds the ionisation handle without the opt-in toggle" begin
-        ir_native_default = withenv("LUNA_USE_RUST_IONISATION" => nothing,
-                                     "LUNA_USE_RUST_NATIVE" => nothing) do
+        ir_native_default = withenv("AMALTHEA_USE_RUST_IONISATION" => nothing,
+                                     "AMALTHEA_USE_RUST_NATIVE" => nothing) do
             with_logger(NullLogger()) do
                 Ionisation.IonRatePPTAccel(E_full, rate_full)
             end
@@ -75,8 +75,8 @@ using TestItems
         @test ir_native_default.rust_handle !== nothing
         @test ir_native_default.rust_handle.ptr != C_NULL
 
-        ir_native_explicit_off = withenv("LUNA_USE_RUST_IONISATION" => nothing,
-                                          "LUNA_USE_RUST_NATIVE" => "0") do
+        ir_native_explicit_off = withenv("AMALTHEA_USE_RUST_IONISATION" => nothing,
+                                          "AMALTHEA_USE_RUST_NATIVE" => "0") do
             with_logger(NullLogger()) do
                 Ionisation.IonRatePPTAccel(E_full, rate_full)
             end

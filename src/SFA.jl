@@ -4,7 +4,6 @@ import FFTW
 import DataStructures: CircularBuffer
 import Amalthea: Maths, PhysData, Ionisation
 import Amalthea.PhysData: wlfreq, c
-import PyPlot: plt
 
 
 """

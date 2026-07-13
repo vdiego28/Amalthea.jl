@@ -1,4 +1,4 @@
-# Cargo build configuration for luna-rust
+# Cargo build configuration for amalthea
 #
 # target-cpu=native tells rustc/LLVM to optimise for the CPU on which the
 # library is compiled, enabling AVX2, AVX-512, etc. automatically.

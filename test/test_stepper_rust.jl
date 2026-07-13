@@ -7,13 +7,13 @@ using TestItems
     import LinearAlgebra: norm
 
     # ── skip guard ────────────────────────────────────────────────────────────
-    libname = if Sys.iswindows(); "luna_rust.dll"
-              elseif Sys.isapple(); "libluna_rust.dylib"
-              else; "libluna_rust.so"; end
-    libpath = joinpath(@__DIR__, "..", "luna-rust", "target", "release", libname)
+    libname = if Sys.iswindows(); "amalthea.dll"
+              elseif Sys.isapple(); "libamalthea.dylib"
+              else; "libamalthea.so"; end
+    libpath = joinpath(@__DIR__, "..", "amalthea", "target", "release", libname)
     if !isfile(libpath)
         @warn "Skipping Rust PreconStepper test: shared library not found at $libpath. " *
-              "Build with `cargo build --release` in luna-rust/."
+              "Build with `cargo build --release` in amalthea/."
         return
     end
 
@@ -38,7 +38,7 @@ using TestItems
         Eω_julia = out_julia["Eω"][:, end]
 
         # ── Rust stepper path ─────────────────────────────────────────────────
-        out_rust = withenv("LUNA_USE_RUST_STEPPER" => "1") do
+        out_rust = withenv("AMALTHEA_USE_RUST_STEPPER" => "1") do
             with_logger(NullLogger()) do
                 prop_capillary(radius, L, gas, pres;
                                λ0=λ0, τfwhm=τ, energy=energy,

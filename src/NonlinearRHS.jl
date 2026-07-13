@@ -12,14 +12,14 @@ import Logging: @warn
 import Amalthea.Utils: lunadir
 import Libdl
 
-# ── Rust QDHT FFI (opt-in via LUNA_USE_RUST_QDHT=1) ──────────────────────────
-function _libluna_rust_path_rhs()
-    libname = if Sys.iswindows(); "luna_rust.dll"
-              elseif Sys.isapple(); "libluna_rust.dylib"
-              else; "libluna_rust.so"; end
-    joinpath(lunadir(), "luna-rust", "target", "release", libname)
+# ── Rust QDHT FFI (opt-in via AMALTHEA_USE_RUST_QDHT=1) ──────────────────────────
+function _libamalthea_path_rhs()
+    libname = if Sys.iswindows(); "amalthea.dll"
+              elseif Sys.isapple(); "libamalthea.dylib"
+              else; "libamalthea.so"; end
+    joinpath(lunadir(), "amalthea", "target", "release", libname)
 end
-const _LIBLUNA_RUST_RHS = _libluna_rust_path_rhs()
+const _LIBAMALTHEA_RHS = _libamalthea_path_rhs()
 
 mutable struct RustQdhtHandle
     ptr::Ptr{Cvoid}
@@ -27,7 +27,7 @@ mutable struct RustQdhtHandle
         h = new(ptr)
         finalizer(h) do self
             if self.ptr != C_NULL
-                ccall((:free_qdht_ffi, _LIBLUNA_RUST_RHS),
+                ccall((:free_qdht_ffi, _LIBAMALTHEA_RHS),
                       Cvoid, (Ptr{Cvoid},), self.ptr)
                 self.ptr = C_NULL
             end
@@ -48,7 +48,7 @@ function _init_rust_qdht_blas()
     Config.backend_config().qdht_blas || return
     try
         blas_path = Libdl.dlpath(Libdl.dlopen(LinearAlgebra.BLAS.libblastrampoline))
-        rc = ccall((:init_blas_path, _LIBLUNA_RUST_RHS), Cint, (Cstring,), blas_path)
+        rc = ccall((:init_blas_path, _LIBAMALTHEA_RHS), Cint, (Cstring,), blas_path)
         rc == 0 || @warn "init_blas_path failed; QDHT falls back to the Rayon kernel"
     catch e
         @warn "could not resolve libblastrampoline for the Rust QDHT BLAS-3 path" exception=e
@@ -57,7 +57,7 @@ end
 
 function _make_rust_qdht_handle(HT, n_time::Int)
     Config.backend_config().qdht || return nothing
-    !isfile(_LIBLUNA_RUST_RHS) && (@warn "libluna_rust not found at $(_LIBLUNA_RUST_RHS); QDHT stays on Julia"; return nothing)
+    !isfile(_LIBAMALTHEA_RHS) && (@warn "libamalthea not found at $(_LIBAMALTHEA_RHS); QDHT stays on Julia"; return nothing)
     _init_rust_qdht_blas()
     T_mat = Matrix{Float64}(HT.T)  # ensure Float64 col-major copy
     n_r = HT.N
@@ -66,7 +66,7 @@ function _make_rust_qdht_handle(HT, n_time::Int)
     scale_inv = 1.0 / scale_fwd
     T_mat_local = T_mat
     ptr = GC.@preserve T_mat_local begin
-        ccall((:init_qdht_ffi, _LIBLUNA_RUST_RHS), Ptr{Cvoid},
+        ccall((:init_qdht_ffi, _LIBAMALTHEA_RHS), Ptr{Cvoid},
               (Ptr{Float64}, Csize_t, Float64, Float64, Csize_t),
               pointer(T_mat_local), Csize_t(n_r), scale_fwd, scale_inv, Csize_t(n_time))
     end
@@ -75,7 +75,7 @@ function _make_rust_qdht_handle(HT, n_time::Int)
     # docs/dev/BACKLOG.md S5.2: this is the only call site that ever populates the
     # process-global `BLAS_API` (via `_init_rust_qdht_blas` above), so it's
     # also where `deterministic` must be applied to actually take effect.
-    ccall((:qdht_ffi_set_deterministic, _LIBLUNA_RUST_RHS), Cint,
+    ccall((:qdht_ffi_set_deterministic, _LIBAMALTHEA_RHS), Cint,
           (Ptr{Cvoid}, Cint), h.ptr, Config.backend_config().deterministic ? 1 : 0)
     h
 end
@@ -91,7 +91,7 @@ end
     nto, nr = size(A)
     A_local = A
     GC.@preserve A_local begin
-        ret = ccall((:qdht_ffi_mul_real, _LIBLUNA_RUST_RHS), Cint,
+        ret = ccall((:qdht_ffi_mul_real, _LIBAMALTHEA_RHS), Cint,
                     (Ptr{Cvoid}, Ptr{Float64}, Csize_t, Csize_t),
                     h.ptr, pointer(A_local), Csize_t(nto), Csize_t(nr))
     end
@@ -102,7 +102,7 @@ end
     nto, nr = size(A)
     A_local = A
     GC.@preserve A_local begin
-        ret = ccall((:qdht_ffi_ldiv_real, _LIBLUNA_RUST_RHS), Cint,
+        ret = ccall((:qdht_ffi_ldiv_real, _LIBAMALTHEA_RHS), Cint,
                     (Ptr{Cvoid}, Ptr{Float64}, Csize_t, Csize_t),
                     h.ptr, pointer(A_local), Csize_t(nto), Csize_t(nr))
     end
@@ -113,7 +113,7 @@ end
     nto, nr = size(A)
     A_local = A
     GC.@preserve A_local begin
-        ret = ccall((:qdht_ffi_mul_cplx, _LIBLUNA_RUST_RHS), Cint,
+        ret = ccall((:qdht_ffi_mul_cplx, _LIBAMALTHEA_RHS), Cint,
                     (Ptr{Cvoid}, Ptr{Float64}, Csize_t, Csize_t),
                     h.ptr, Ptr{Float64}(pointer(A_local)), Csize_t(nto), Csize_t(nr))
     end
@@ -124,7 +124,7 @@ end
     nto, nr = size(A)
     A_local = A
     GC.@preserve A_local begin
-        ret = ccall((:qdht_ffi_ldiv_cplx, _LIBLUNA_RUST_RHS), Cint,
+        ret = ccall((:qdht_ffi_ldiv_cplx, _LIBAMALTHEA_RHS), Cint,
                     (Ptr{Cvoid}, Ptr{Float64}, Csize_t, Csize_t),
                     h.ptr, Ptr{Float64}(pointer(A_local)), Csize_t(nto), Csize_t(nr))
     end

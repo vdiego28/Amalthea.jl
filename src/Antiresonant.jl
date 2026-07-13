@@ -10,8 +10,8 @@ import Amalthea.Modes: AbstractMode, dimlimits, neff, field, Aeff, N, α, chkzkw
 
 # ─── Rust FFI helpers for Zeisberger dispersion ──────────────────────────────
 #
-# When LUNA_USE_RUST_DISPERSION=1 the per-step neff_β_grid computation for
-# ZeisbergerMode is offloaded to luna-rust.  Julia still evaluates nco(ω) and
+# When AMALTHEA_USE_RUST_DISPERSION=1 the per-step neff_β_grid computation for
+# ZeisbergerMode is offloaded to amalthea.  Julia still evaluates nco(ω) and
 # ncl(ω) via its own multi-term Sellmeier (ref_index_fun), then passes the
 # resulting arrays to Rust which applies only the Zeisberger geometry (eq. 15).
 # This guarantees near-machine-epsilon equivalence (same formula + same inputs).
@@ -19,18 +19,18 @@ import Amalthea.Modes: AbstractMode, dimlimits, neff, field, Aeff, N, α, chkzkw
 # The ccall library-path argument MUST be a module-level const — not a struct
 # field or local variable (Julia constraint, fixed in ec76fd2 / 1262e5b).
 
-function _libluna_rust_path()
+function _libamalthea_path()
     libname = if Sys.iswindows()
-        "luna_rust.dll"
+        "amalthea.dll"
     elseif Sys.isapple()
-        "libluna_rust.dylib"
+        "libamalthea.dylib"
     else
-        "libluna_rust.so"
+        "libamalthea.so"
     end
-    joinpath(Utils.lunadir(), "luna-rust", "target", "release", libname)
+    joinpath(Utils.lunadir(), "amalthea", "target", "release", libname)
 end
 
-const _LIBLUNA_RUST = _libluna_rust_path()
+const _LIBAMALTHEA = _libamalthea_path()
 
 """
 Mutable wrapper around a heap-allocated `ZeisbergerNeff` in the Rust shared
@@ -43,7 +43,7 @@ mutable struct RustZeisbergerHandle
         h = new(ptr)
         finalizer(h) do self
             if self.ptr != C_NULL
-                ccall((:free_zeisberger_neff, _LIBLUNA_RUST),
+                ccall((:free_zeisberger_neff, _LIBAMALTHEA),
                       Cvoid, (Ptr{Cvoid},), self.ptr)
                 self.ptr = C_NULL
             end
@@ -176,14 +176,14 @@ Returns `nothing` when the toggle is off, the lib is missing, or init fails.
 """
 function _make_rust_zeisberger_handle(m::ZeisbergerMode)
     Config.backend_config().dispersion || return nothing
-    if !isfile(_LIBLUNA_RUST)
-        @warn "LUNA_USE_RUST_DISPERSION=1 but Rust lib not found at $_LIBLUNA_RUST — " *
-              "falling back to Julia. Build with `cargo build --release` in luna-rust/."
+    if !isfile(_LIBAMALTHEA)
+        @warn "AMALTHEA_USE_RUST_DISPERSION=1 but Rust lib not found at $_LIBAMALTHEA — " *
+              "falling back to Julia. Build with `cargo build --release` in amalthea/."
         return nothing
     end
     kind_c = _kind_code(m.m.kind)
     loss_on, loss_scale = _loss_args(m.loss)
-    ptr = ccall((:init_zeisberger_neff, _LIBLUNA_RUST),
+    ptr = ccall((:init_zeisberger_neff, _LIBAMALTHEA),
                 Ptr{Cvoid},
                 (Float64, Float64, Cuint, Float64, Cuint, Float64),
                 m.m.unm, Float64(m.m.m), kind_c, m.wallthickness, loss_on, loss_scale)
@@ -198,7 +198,7 @@ end
     neff_β_grid(grid, mode::ZeisbergerMode, λ0)
 
 Specialised `neff_β_grid` for anti-resonant fibre modes.  When
-`LUNA_USE_RUST_DISPERSION=1` this uses the Rust `zeisberger_neff_vector` FFI to
+`AMALTHEA_USE_RUST_DISPERSION=1` this uses the Rust `zeisberger_neff_vector` FFI to
 batch-compute the complex effective index for all positive-frequency grid points
 in a single Rust call per propagation step, replacing the per-ω Julia loop.
 
@@ -256,7 +256,7 @@ function neff_β_grid(grid, mode::ZeisbergerMode, λ0)
             nclad_re = ncl_re_s;  nclad_im = ncl_im_s
             neff_re  = neff_re_s; neff_im  = neff_im_s
             ret = GC.@preserve ωa ncore_re ncore_im nclad_re nclad_im neff_re neff_im begin
-                ccall((:zeisberger_neff_vector, _LIBLUNA_RUST),
+                ccall((:zeisberger_neff_vector, _LIBAMALTHEA),
                       Cint,
                       (Ptr{Cvoid},
                        Ptr{Float64}, Ptr{Float64}, Ptr{Float64},

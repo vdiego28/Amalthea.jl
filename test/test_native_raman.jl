@@ -7,7 +7,7 @@ using TestItems
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 
-    libpath = RK45._LIBLUNA_RUST_RK45
+    libpath = RK45._LIBAMALTHEA_RK45
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
@@ -17,7 +17,7 @@ using TestItems
         # N2's vibrational line is a single SDO with density-independent τ2
         # (eligible for the native path); its rotational line uses a
         # multi-line RamanRespRotationalNonRigid model with density-dependent
-        # τ2 (ineligible — same limitation the existing LUNA_USE_RUST_RAMAN
+        # τ2 (ineligible — same limitation the existing AMALTHEA_USE_RUST_RAMAN
         # FFI wiring already has, not something Phase 4 newly solves).
         radius = 125e-6
         flength = 0.05

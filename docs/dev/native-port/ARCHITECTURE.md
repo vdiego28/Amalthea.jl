@@ -12,23 +12,23 @@
 
 The goal is to make the propagation backend run **exclusively in Rust** — the
 per-step hot loop should execute with no return into Julia. Today it does not,
-even with every `LUNA_USE_RUST_*` toggle enabled. This document explains the
+even with every `AMALTHEA_USE_RUST_*` toggle enabled. This document explains the
 current architecture, why it cannot reach that goal, the target architecture
 that can, and the rationale behind each load-bearing decision.
 
 ## 2. Current architecture (per-kernel offload + callback stepper)
 
 Luna offloads five kernels to Rust, each behind an opt-in env toggle that
-defaults **off** (`get(ENV, "LUNA_USE_RUST_*", "0") == "1"`):
+defaults **off** (`get(ENV, "AMALTHEA_USE_RUST_*", "0") == "1"`):
 
 | Kernel | Toggle | Julia site | Rust handle |
 |--------|--------|-----------|-------------|
-| PPT ionization LUT | `LUNA_USE_RUST_IONISATION` | `src/Ionisation.jl:516` | `RustIonizationHandle` |
-| Raman SDO ADE | `LUNA_USE_RUST_RAMAN` | `src/Nonlinear.jl:379` | `RustRamanHandle` |
-| Zeisberger neff/β | `LUNA_USE_RUST_DISPERSION` | `src/Antiresonant.jl:251` | `RustZeisbergerHandle` |
-| Marcatili neff/β | `LUNA_USE_RUST_DISPERSION` | `src/Capillary.jl:445` | `RustMarcatiliHandle` |
-| QDHT k↔r transform | `LUNA_USE_RUST_QDHT` | `src/NonlinearRHS.jl:665,675` | `RustQdhtHandle` |
-| RK45 tableau/PI control | `LUNA_USE_RUST_STEPPER` | `src/RK45.jl:24` | `RustPreconStepHandle` |
+| PPT ionization LUT | `AMALTHEA_USE_RUST_IONISATION` | `src/Ionisation.jl:516` | `RustIonizationHandle` |
+| Raman SDO ADE | `AMALTHEA_USE_RUST_RAMAN` | `src/Nonlinear.jl:379` | `RustRamanHandle` |
+| Zeisberger neff/β | `AMALTHEA_USE_RUST_DISPERSION` | `src/Antiresonant.jl:251` | `RustZeisbergerHandle` |
+| Marcatili neff/β | `AMALTHEA_USE_RUST_DISPERSION` | `src/Capillary.jl:445` | `RustMarcatiliHandle` |
+| QDHT k↔r transform | `AMALTHEA_USE_RUST_QDHT` | `src/NonlinearRHS.jl:665,675` | `RustQdhtHandle` |
+| RK45 tableau/PI control | `AMALTHEA_USE_RUST_STEPPER` | `src/RK45.jl:24` | `RustPreconStepHandle` |
 
 Each follows the same lifecycle pattern: a `mutable struct *Handle` wrapping a
 `Ptr{Cvoid}` with a GC finalizer that calls `free_*`; an env toggle gating
@@ -38,8 +38,8 @@ construction; an `@testitem tags=[:rust]` equivalence test guarding the boundary
 
 The RK45 stepper is **interaction-picture Dormand-Prince**: each accepted step
 performs ~7 nonlinear-RHS evaluations and ~13 linear-propagator applications
-(`src/RK45.jl:173-229`). When `LUNA_USE_RUST_STEPPER=1`, the Rust side
-(`luna-rust/src/ffi.rs:1002` `precon_step_inner`) owns only the Butcher tableau,
+(`src/RK45.jl:173-229`). When `AMALTHEA_USE_RUST_STEPPER=1`, the Rust side
+(`amalthea/src/ffi.rs:1002` `precon_step_inner`) owns only the Butcher tableau,
 FSAL bookkeeping, error norm, and the Lund PI controller. For the actual math it
 calls **back into Julia** through two C function pointers on every stage:
 
@@ -154,7 +154,7 @@ independently shippable and independently testable.
 | `TransModal` + overlap cubature | `src/NonlinearRHS.jl:421` | 5 | ✅ done | narrow scope: `libcubature` reused (dlopen, not reimplemented), `HE,n=1`/`full=false`/Kerr-only |
 | `TransFree` (3D FFT) | `src/NonlinearRHS.jl:826` | 6 | ✅ done | joint 3-D FFTW plan (same libfftw3, new plan rank); RealGrid + const_norm_free + Kerr-only |
 | z-dependent linop assembly | `src/LinearOps.jl:77,185,337` | 7 | ✅ done | narrow scope: mode-averaged, graded-core constant-radius `MarcatiliMode` (`Capillary.gradient`, two-point pressure gradient) only; radial/modal/free-space z-dependent `nfun` deferred — see MATH.md §3.5 |
-| Default-flip + cleanup | — | 8 | ✅ done | `LUNA_USE_RUST_NATIVE` defaults to `"1"`; every scope restriction now a catchable `NativeIneligible` → Julia fallback instead of a crash |
+| Default-flip + cleanup | — | 8 | ✅ done | `AMALTHEA_USE_RUST_NATIVE` defaults to `"1"`; every scope restriction now a catchable `NativeIneligible` → Julia fallback instead of a crash |
 
 ## 6. Out of scope (stays Julia) — the three categories, and which is a real barrier
 
@@ -201,7 +201,7 @@ determinism reason: importing wisdom before planning lets accumulated
 on-disk/in-process wisdom perturb plan selection, which — via the RK45
 controller's near-cancellation sensitivity (CLAUDE.md's Phase 2 gotcha) —
 can shift the adaptive step-size path run to run. Set
-`LUNA_NATIVE_FFTW_WISDOM=1` to opt back in. See
+`AMALTHEA_NATIVE_FFTW_WISDOM=1` to opt back in. See
 `docs/native-port/PLAN_FFTW_WISDOM_FIX.md` for the full analysis and
 `BACKLOG.md` S1 item 1 for the resolution. The determinism boundary this
 leaves in place: exact bit-level step-path reproducibility across runs is

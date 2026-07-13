@@ -1,4 +1,4 @@
-using Amalthea
+using Amalthea, PyPlot
 
 radius = 13e-6 # HCF core radius
 flength = 2 # HCF length

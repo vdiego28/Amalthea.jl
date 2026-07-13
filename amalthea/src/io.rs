@@ -128,7 +128,7 @@ impl Drop for Library {
 
 fn find_hdf5_lib_path() -> Option<PathBuf> {
     // 1. Check user override environment variable
-    if let Ok(val) = std::env::var("LUNA_HDF5_LIB") {
+    if let Ok(val) = std::env::var("AMALTHEA_HDF5_LIB") {
         let p = PathBuf::from(val);
         if p.exists() {
             return Some(p);

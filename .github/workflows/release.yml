@@ -1,4 +1,4 @@
-name: Release prebuilt luna-rust binaries
+name: Release prebuilt amalthea binaries
 
 # Triggered by the same `vX.Y.Z` tags TagBot.yml pushes after a Julia
 # registry release, so a release's binaries always match the Project.toml
@@ -22,13 +22,13 @@ jobs:
         include:
           - os: ubuntu-latest
             triple: x86_64-unknown-linux-gnu
-            libname: libluna_rust.so
+            libname: libamalthea.so
           - os: macos-latest
             triple: aarch64-apple-darwin
-            libname: libluna_rust.dylib
+            libname: libamalthea.dylib
           - os: windows-2025-vs2026
             triple: x86_64-pc-windows-msvc
-            libname: luna_rust.dll
+            libname: amalthea.dll
     steps:
       - uses: actions/checkout@v7
 
@@ -42,7 +42,7 @@ jobs:
       # run on any user's CPU, not just this runner's.
       - name: Build release library (portable, no target-cpu=native)
         run: cargo build --release
-        working-directory: luna-rust
+        working-directory: amalthea
         env:
           RUSTFLAGS: ""
 
@@ -52,8 +52,8 @@ jobs:
         run: |
           mkdir -p staging
           ext="${{ matrix.libname }}"; ext="${ext##*.}"
-          asset="libluna_rust-${{ matrix.triple }}.${ext}"
-          cp "luna-rust/target/release/${{ matrix.libname }}" "staging/$asset"
+          asset="libamalthea-${{ matrix.triple }}.${ext}"
+          cp "amalthea/target/release/${{ matrix.libname }}" "staging/$asset"
           ( cd staging && shasum -a 256 "$asset" > "$asset.sha256" )
 
       - name: Stage asset (Windows)
@@ -61,14 +61,14 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path staging | Out-Null
-          $dest = "staging/libluna_rust-${{ matrix.triple }}.dll"
-          Copy-Item "luna-rust/target/release/${{ matrix.libname }}" $dest
+          $dest = "staging/libamalthea-${{ matrix.triple }}.dll"
+          Copy-Item "amalthea/target/release/${{ matrix.libname }}" $dest
           $hash = (Get-FileHash -Algorithm SHA256 $dest).Hash.ToLower()
-          "$hash libluna_rust-${{ matrix.triple }}.dll" | Out-File -Encoding ascii "$dest.sha256"
+          "$hash libamalthea-${{ matrix.triple }}.dll" | Out-File -Encoding ascii "$dest.sha256"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: luna-rust-${{ matrix.triple }}
+          name: amalthea-${{ matrix.triple }}
           path: staging/*
           if-no-files-found: error
 

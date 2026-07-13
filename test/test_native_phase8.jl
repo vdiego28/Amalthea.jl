@@ -6,7 +6,7 @@ using TestItems
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 
-    libpath = RK45._LIBLUNA_RUST_RK45
+    libpath = RK45._LIBAMALTHEA_RK45
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
@@ -27,17 +27,17 @@ using TestItems
             # Kerr-only, mode-averaged, RealGrid — eligible since Phase 1.
             kw = (; common..., raman=false, plasma=false, kerr=true, shotnoise=false)
 
-            out_native_explicit = withenv("LUNA_USE_RUST_NATIVE" => "1") do
+            out_native_explicit = withenv("AMALTHEA_USE_RUST_NATIVE" => "1") do
                 with_logger(NullLogger()) do
                     prop_capillary(radius, flength, gas, pressure; kw...)
                 end
             end
-            out_default = withenv("LUNA_USE_RUST_NATIVE" => nothing) do
+            out_default = withenv("AMALTHEA_USE_RUST_NATIVE" => nothing) do
                 with_logger(NullLogger()) do
                     prop_capillary(radius, flength, gas, pressure; kw...)
                 end
             end
-            out_julia_explicit = withenv("LUNA_USE_RUST_NATIVE" => "0") do
+            out_julia_explicit = withenv("AMALTHEA_USE_RUST_NATIVE" => "0") do
                 with_logger(NullLogger()) do
                     prop_capillary(radius, flength, gas, pressure; kw...)
                 end
@@ -77,12 +77,12 @@ using TestItems
             kw = (; common..., raman=true, thg=false, rotation=false, vibration=true,
                   plasma=false, kerr=true, shotnoise=false)
 
-            out_default = withenv("LUNA_USE_RUST_NATIVE" => nothing) do
+            out_default = withenv("AMALTHEA_USE_RUST_NATIVE" => nothing) do
                 with_logger(NullLogger()) do
                     prop_capillary(radius, flength, gas_raman, pressure; kw...)
                 end
             end
-            out_julia_explicit = withenv("LUNA_USE_RUST_NATIVE" => "0") do
+            out_julia_explicit = withenv("AMALTHEA_USE_RUST_NATIVE" => "0") do
                 with_logger(NullLogger()) do
                     prop_capillary(radius, flength, gas_raman, pressure; kw...)
                 end
@@ -120,12 +120,12 @@ using TestItems
             # correction at the query time — see PORT_LOG Phase 8.
             kw = (; common..., saveN=50, raman=false, plasma=false, kerr=true, shotnoise=false)
 
-            out_native = withenv("LUNA_USE_RUST_NATIVE" => "1") do
+            out_native = withenv("AMALTHEA_USE_RUST_NATIVE" => "1") do
                 with_logger(NullLogger()) do
                     prop_capillary(radius, flength, gas, pressure; kw...)
                 end
             end
-            out_julia = withenv("LUNA_USE_RUST_NATIVE" => "0") do
+            out_julia = withenv("AMALTHEA_USE_RUST_NATIVE" => "0") do
                 with_logger(NullLogger()) do
                     prop_capillary(radius, flength, gas, pressure; kw...)
                 end
