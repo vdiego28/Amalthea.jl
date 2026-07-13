@@ -26,7 +26,10 @@ mock_get_julia = MagicMock(return_value=(mock_jl, mock_luna))
 
 import pytest
 @pytest.fixture(autouse=True)
-def mock_julia_backend(monkeypatch):
+def mock_julia_backend(request, monkeypatch):
+    if request.node.get_closest_marker("integration"):
+        # Let integration-marked tests hit the real Julia/Amalthea backend.
+        return
     import amalthea
     monkeypatch.setattr(amalthea._julia, "get_julia", mock_get_julia)
     monkeypatch.setattr(amalthea, "get_julia", mock_get_julia)

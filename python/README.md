@@ -160,6 +160,38 @@ guaranteed just because `__getitem__` works, so it's worth confirming
 explicitly if you rely on `in` for a different output type (e.g. an
 `HDF5Output` after closing/reopening).
 
+## Error propagation
+
+`prop_capillary`/`prop_gnlse` do not wrap or translate Julia-side errors.
+An invalid argument (an unrecognised gas symbol, an inconsistent grid
+parameter, a missing required keyword, ...) raises whatever `juliacall`
+raises for a Julia exception — typically `juliacall.JuliaError` — with the
+underlying Julia backtrace attached to the exception message. This is
+legible enough to debug directly from Python; there is no separate
+Python-side exception hierarchy to learn.
+
+## Examples
+
+Two runnable scripts under `python/examples/`:
+
+- `capillary_selfcompression.py` — hollow-core capillary self-compression,
+  the same parameters as the Quickstart above.
+- `gnlse_supercontinuum.py` — supercontinuum generation, a Python
+  translation of `examples/simple_interface/gnlse_scg.jl` (Dudley et al.,
+  RMP 78, 1135 (2006), Fig. 3) — see that file for the Julia/PyPlot version
+  with plots.
+
+Run either directly:
+
+```bash
+python python/examples/capillary_selfcompression.py
+python python/examples/gnlse_supercontinuum.py
+```
+
+Both print the output shape/dtype/keys and save the `Eω`/`z` arrays to an
+`.npz` file, matching the no-plotting limitation described next — plot the
+saved arrays yourself with `matplotlib` afterward.
+
 ## Known limitation: no plotting through the Python wrapper
 
 `Amalthea.Plotting` (the Julia-side plotting helpers, backed by PyPlot) is
@@ -189,13 +221,27 @@ also embeds Python.
 ## Tests
 
 ```bash
-pip install -e ./python
+pip install -e "./python[test]"
 pytest python/tests/
 ```
 
-The existing test suite (`python/tests/*.py`) mocks `get_julia()` via
-`conftest.py`'s `mock_julia_backend` fixture — it exercises kwarg
-translation, `LunaOutput`'s interface, and duplicate-kwarg detection, but
-does not call real Julia/Amalthea. There is currently no automated
-real-Julia integration test; the quickstart example above was run manually
-against a live `Amalthea` build to produce the output shown.
+Most of the test suite (`test_init.py`, `test_kwargs.py`, `test_output.py`,
+`test_python_api.py`) mocks `get_julia()` via `conftest.py`'s
+`mock_julia_backend` fixture — it exercises kwarg translation,
+`LunaOutput`'s interface, and duplicate-kwarg detection without calling
+real Julia/Amalthea, so it runs in seconds.
+
+`test_integration.py` is real: it's marked `@pytest.mark.integration`,
+which `conftest.py` recognises and skips mocking for, so it boots actual
+Julia, loads the real `Amalthea` package, and calls into the real
+Rust-accelerated backend (the same capillary case as the Quickstart above,
+plus a GNLSE case, an invalid-argument error-propagation check, and an
+`HDF5Output` round-trip). It's skip-guarded, not a hard failure, if the
+Rust shared library hasn't been built (`cargo build --release` in
+`amalthea/`) or Julia/Amalthea can't load.
+
+```bash
+pytest python/tests/                        # everything, including the real test (~2-4 min cold)
+pytest -m "not integration" python/tests/    # fast loop, skips the real test
+pytest -m integration python/tests/          # only the real test
+```

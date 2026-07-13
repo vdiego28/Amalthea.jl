@@ -13,3 +13,12 @@ dependencies = [
     "numpy >= 1.24",
     "h5py >= 3.8",
 ]
+
+[project.optional-dependencies]
+test = ["pytest >= 7"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: exercises the real Julia/Amalthea backend (slow, requires Julia + built Rust lib; not mocked).",
+]
