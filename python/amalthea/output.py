@@ -74,7 +74,11 @@ class LunaOutput:
             return list(self._jl_output.data.keys())
         elif _jl.isa(self._jl_output, _jl.Amalthea.Output.HDF5Output):
             fpath = self._jl_output.fpath
-            return [str(k) for k in _jl.keys(_jl.Amalthea.Output.HDF5.h5open(fpath, "r"))]
+            file = _jl.Amalthea.Output.HDF5.h5open(fpath, "r")
+            try:
+                return [str(k) for k in _jl.keys(file)]
+            finally:
+                _jl.close(file)
         elif _jl.isa(self._jl_output, _jl.Amalthea.Output.HDF5.Group) or _jl.isa(self._jl_output, _jl.Amalthea.Output.HDF5.File):
             return [str(k) for k in _jl.keys(self._jl_output)]
         elif _jl.isa(self._jl_output, _jl.Amalthea.Output.AbstractOutput):
