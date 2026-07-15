@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783893359477,
+  "lastUpdate": 1784077183700,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -173,6 +173,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.968935,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "distinct": true,
+          "id": "ca72e9f693bb4c97ecd7f4c2d06aee98855e5666",
+          "message": "Add mocked unit tests for LunaOutput's dispatch logic\n\ntest_output.py had exactly one test (__getitem__'s KeyError wrapping)\nexercising the real LunaOutput class -- everywhere else in the suite\nuses a separate, simpler MockLunaOutput that bypasses it entirely. So\n_to_python's isa-dispatch, __contains__, and keys() (3-5 branches\neach) had zero fast/mocked coverage; their only exercise was\nincidental, via the real integration tests hitting a subset of paths.\n\nAdds mocked tests for the reachable keys()/__contains__ branches\n(Dict, MemoryOutput, HDF5Output, AbstractOutput, and the no-match\nfallback), including a direct regression test for the HDF5 file-close\nfix in the prior commit -- confirmed it actually catches the\nregression by temporarily reintroducing the leak and watching it fail.\n\nThe HDF5.Group/File and generic AbstractOutput-.data-fallback\nbranches are left untested/unremoved: MemoryOutput and HDF5Output are\nthe only AbstractOutput subtypes in this codebase, so those branches\nare currently unreachable through the public API -- harmless\ndefensive code, not worth testing or deleting.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-13T11:20:25-04:00",
+          "tree_id": "a3820d90ce1fb3399927fa9f9dd093d5b7e40220",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/ca72e9f693bb4c97ecd7f4c2d06aee98855e5666"
+        },
+        "date": 1784077182751,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.959503,
             "unit": "ms/step"
           }
         ]
