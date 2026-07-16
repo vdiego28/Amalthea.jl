@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784077183700,
+  "lastUpdate": 1784240683387,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -202,6 +202,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.959503,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "distinct": true,
+          "id": "60daa6e67ab9290dbefebbacd4fbe0c276a4911a",
+          "message": "Extend high-level API to ZeisbergerMode/VincettiMode/StepIndexMode; add native-support matrix\n\nprop_capillary's makemode_s now accepts prebuilt AbstractMode(s) via modes=,\nletting ZeisbergerMode/VincettiMode reuse the existing gas/pressure pipeline.\nStepIndexMode gets its own prop_stepindex entry point (mirrors prop_gnlse),\nsince it has no gas/density concept. Adds docs/dev/native-port/NATIVE_SUPPORT_MATRIX.md\ndocumenting what runs natively vs falls back.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-16T18:17:45-04:00",
+          "tree_id": "bd292f23d33e88a2ba87eb5edc71ed69f7ce7d8b",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/60daa6e67ab9290dbefebbacd4fbe0c276a4911a"
+        },
+        "date": 1784240683043,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.929755,
             "unit": "ms/step"
           }
         ]
