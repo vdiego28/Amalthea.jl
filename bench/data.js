@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784240683387,
+  "lastUpdate": 1784244967608,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -231,6 +231,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.929755,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "distinct": true,
+          "id": "32ae9dde0005d02be6962d5d438846ce1d2d70b6",
+          "message": "Correct amalthea/README.md's stale hardware-dispatcher claims\n\ndispatch.rs's HardwarePath/SimulationEngine is detection-only and\nunreferenced outside its own unit tests -- no RHS kernel or the real\nGPU path (CudaNativeSim/cuda.rs) uses it (see BACKLOG.md S5.2, S1\nitem 4). Replaces the old \"multi-branch dispatcher\" description with\nwhat's actually true: CPU throughput comes from target-cpu=native +\nLLVM auto-vectorization (verified via objdump), the one hand-written\nSIMD lane is raman.rs::solve_avx2 (needed for its sequential\nrecurrence), and GPU offload runs through CudaNativeSim independently.\nAlso records this session's measured CPU-vs-GPU numbers on real\nhardware (RTX 5060 Ti): GPU ~20-30x slower with plasma active, ~5-27x\nfaster for Kerr-only above n≈16k.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-16T19:31:17-04:00",
+          "tree_id": "e371bb1642b3184f15eb8290dbdc3869a1a8cc53",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/32ae9dde0005d02be6962d5d438846ce1d2d70b6"
+        },
+        "date": 1784244966965,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.419185,
             "unit": "ms/step"
           }
         ]
