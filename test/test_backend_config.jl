@@ -16,6 +16,7 @@ using TestItems
                 "AMALTHEA_USE_RUST_IONISATION" => nothing, "AMALTHEA_USE_RUST_RAMAN" => nothing,
                 "AMALTHEA_USE_RUST_DISPERSION" => nothing, "AMALTHEA_USE_RUST_QDHT" => nothing,
                 "AMALTHEA_QDHT_BLAS" => nothing, "AMALTHEA_USE_RUST_CUDA_NATIVE" => nothing,
+                "AMALTHEA_NATIVE_GPU" => nothing,
                 "AMALTHEA_NATIVE_FFTW_WISDOM" => nothing) do
             cfg = Amalthea.Config.backend_config()
             @test cfg.native == true   # only toggle defaulting on (Phase 8)
@@ -26,6 +27,7 @@ using TestItems
             @test cfg.qdht == false
             @test cfg.qdht_blas == false
             @test cfg.cuda_native == false
+            @test cfg.gpu_dispatch == :auto
             @test cfg.native_wisdom == false
         end
 

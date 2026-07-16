@@ -936,7 +936,7 @@ function RustNativeStepper(linop, y0, t, dt; kwargs...)
 end
 
 """
-    _gpu_native_eligible(f!, linop)
+    _gpu_kernel_supports(f!, linop)
 
 True iff the experimental GPU-resident stepper (`CudaNativeSim`,
 `amalthea/src/cuda_native.rs`) can handle this exact config: mode-averaged
@@ -946,14 +946,13 @@ at most one plasma response using PPT ionisation (`IonRatePPTAccel` —
 `CudaNativeSim::set_plasma_params_adk` still returns -1, ADK is not
 implemented on the GPU path yet; docs/dev/BACKLOG.md S3 item 2). No other response
 kind (e.g. Raman) is implemented on `CudaNativeSim` — every `set_*_params`
-beyond `set_mode_avg_params`/`set_plasma_params` returns -1. Also requires
-the `AMALTHEA_USE_RUST_CUDA_NATIVE=1` opt-in; Rust's `init_cuda_native_sim`
-re-checks the same env var independently, so this is purely to avoid
-attempting GPU init for an ineligible config where it would return a
-confusing null pointer instead of the real reason.
+beyond `set_mode_avg_params`/`set_plasma_params` returns -1.
+
+Pure config-shape check: does not read the `cuda_native`/`gpu_dispatch`
+toggles or the problem size — see [`_gpu_native_eligible`](@ref) for the full
+dispatch decision.
 """
-function _gpu_native_eligible(f!, linop)
-    Amalthea.Config.backend_config().cuda_native || return false
+function _gpu_kernel_supports(f!, linop)
     f! isa Amalthea.NonlinearRHS.TransModeAvg || return false
     linop isa Array{ComplexF64} || return false
     f!.grid isa Amalthea.Grid.RealGrid || return false
@@ -966,6 +965,81 @@ function _gpu_native_eligible(f!, linop)
     length(plasma_resps) <= 1 || return false
     isempty(plasma_resps) || plasma_resps[1].ratefunc isa Amalthea.Ionisation.IonRatePPTAccel || return false
     true
+end
+
+"""
+    _GPU_KERR_ONLY_N_THRESHOLD
+
+Minimum problem size (`length(y0)`, i.e. Nω) at which the GPU-resident
+stepper measurably outperforms the CPU-resident one for a Kerr-only
+mode-averaged config — measured, not guessed (docs/dev/BACKLOG.md S3 item 3),
+on real hardware (RTX 5060 Ti, 2026-07-16). Below this the GPU path is
+dominated by CUDA kernel-launch/sync overhead (`cuda_native.rs::step`'s
+`launch_checked` synchronizes after every one of ~dozens of per-stage kernel
+launches); above it, cuFFT throughput wins. Measured sweep (mode-avg,
+RealGrid, Kerr-only, `plasma=false`, fixed-step `native_step`, 10-iteration
+average after a 3-iteration warmup):
+
+| n (=length(Eω)) | CPU µs/step | GPU µs/step | GPU speedup |
+|---:|---:|---:|---:|
+| 2,049   |    427  |  1,014 | 0.42x |
+| 4,097   |    899  |    877 | 1.03x |
+| 8,193   |  1,849  |  1,412 | 1.31x |
+| 16,385  |  4,152  |    802 | 5.17x |
+| 32,769  |  9,684  |  1,188 | 8.15x |
+| 65,537  | 20,689  |  1,471 | 14.07x |
+| 131,073 | 47,514  |  3,440 | 13.81x |
+| 262,145 | 139,084 |  5,168 | 26.91x |
+
+16384 sits just above the measured breakeven (n=8,193, 1.31x) with margin,
+rather than at the exact crossover, since GPU time isn't a clean monotonic
+function of n at these small sizes (compare n=2,049 vs. n=16,385 above —
+launch/sync overhead noise, not throughput, dominates down there).
+
+**This threshold does NOT apply when a plasma response is present.** The
+same sweep repeated with `plasma=true` (PPT, `gas=:Ar`) showed the GPU path
+consistently 20-30x *slower* than CPU at every size up to n=131,073,
+*worsening* with n rather than improving —
+`plasma_fraction_kernel`/`plasma_current_kernel`/`plasma_polarization_kernel`
+are documented single-GPU-thread sequential scans (BACKLOG.md S3 item 2/4/6,
+a deliberate V1 tradeoff), which don't benefit from n the way cuFFT does. No
+crossover was found in the tested range, so `:auto` dispatch excludes any
+plasma-bearing config entirely rather than guessing an unsupported threshold.
+"""
+const _GPU_KERR_ONLY_N_THRESHOLD = 16384
+
+"""
+    _gpu_native_eligible(f!, linop, n)
+
+Full GPU dispatch decision for `RustNativeStepper`: `true` iff
+[`_gpu_kernel_supports`](@ref)`(f!, linop)` holds AND the current
+`AMALTHEA_NATIVE_GPU` dispatch policy
+(`Amalthea.Config.backend_config().gpu_dispatch`, one of `:off`/`:on`/`:auto`,
+default `:auto`) selects GPU for this exact config:
+
+- `:off` — never (forces CPU even when `AMALTHEA_USE_RUST_CUDA_NATIVE=1`).
+- `:on` — always, whenever the kernel supports it (the old unconditional
+  behavior — useful to force GPU on a small config, e.g. to reproduce a
+  specific benchmark/test run regardless of the measured threshold).
+- `:auto` (default) — GPU only for a plasma-free config with
+  `n >= _GPU_KERR_ONLY_N_THRESHOLD`; see that constant's docstring for the
+  measured data this is based on.
+
+Also requires the `AMALTHEA_USE_RUST_CUDA_NATIVE=1` master opt-in
+(`cuda_native` field) regardless of `gpu_dispatch` — Rust's
+`init_cuda_native_sim` re-checks that same env var independently, so this
+function is purely to avoid attempting GPU init for an ineligible config
+where it would return a confusing null pointer instead of the real reason.
+"""
+function _gpu_native_eligible(f!, linop, n::Integer)
+    cfg = Amalthea.Config.backend_config()
+    cfg.cuda_native || return false
+    _gpu_kernel_supports(f!, linop) || return false
+    cfg.gpu_dispatch === :off && return false
+    cfg.gpu_dispatch === :on && return true
+    # :auto — plasma-free and large enough (see _GPU_KERR_ONLY_N_THRESHOLD)
+    any(r -> r isa Amalthea.Nonlinear.PlasmaCumtrapz, f!.resp) && return false
+    n >= _GPU_KERR_ONLY_N_THRESHOLD
 end
 
 function RustNativeStepper(f!, linop, y0, t, dt;
@@ -982,7 +1056,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                   "— got flength=$flength."))
         handle = RustNativeSimHandle(linop, n)
     else
-        handle = RustNativeSimHandle(linop; use_gpu=_gpu_native_eligible(f!, linop))
+        handle = RustNativeSimHandle(linop; use_gpu=_gpu_native_eligible(f!, linop, n))
     end
 
     handle.ptr == C_NULL && error("init_native_sim failed")

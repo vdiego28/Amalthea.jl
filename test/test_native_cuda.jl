@@ -45,7 +45,12 @@ using TestItems
         local s_ru
         gpu_available = true
         gpu_error = nothing
-        withenv("AMALTHEA_USE_RUST_CUDA_NATIVE" => "1") do
+        # `AMALTHEA_NATIVE_GPU=on` forces the GPU path regardless of the
+        # size-based `:auto` dispatch policy (docs/dev/BACKLOG.md S3 item 3)
+        # — this test's whole point is exercising the GPU kernel directly at
+        # a small, fast config, not the dispatch heuristic (that has its own
+        # coverage in test_native_gpu_dispatch.jl).
+        withenv("AMALTHEA_USE_RUST_CUDA_NATIVE" => "1", "AMALTHEA_NATIVE_GPU" => "on") do
             try
                 s_ru = RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
                                           max_dt=dt, min_dt=dt)
@@ -66,8 +71,8 @@ using TestItems
                 # that silently narrows `_gpu_native_eligible` can't make
                 # this test pass vacuously). Must be checked inside this
                 # `withenv` block — `_gpu_native_eligible` reads the same
-                # env var, which is reverted once `withenv` returns.
-                @test RK45._gpu_native_eligible(transform, linop)
+                # env vars, which are reverted once `withenv` returns.
+                @test RK45._gpu_native_eligible(transform, linop, length(Eω))
             end
 
             @testset "Full-solve equivalence (fixed step size)" begin
@@ -158,7 +163,14 @@ end
         local s_ru
         gpu_available = true
         gpu_error = nothing
-        withenv("AMALTHEA_USE_RUST_CUDA_NATIVE" => "1", "AMALTHEA_USE_RUST_IONISATION" => "1") do
+        # `AMALTHEA_NATIVE_GPU=on` forces GPU despite `:auto`'s policy of
+        # never selecting GPU for a plasma-bearing config (measured
+        # 20-30x slower than CPU in that regime — BACKLOG.md S3 item 3) —
+        # this test intentionally drives that known-slow path to verify
+        # numerical correctness, not to claim it's a good idea to run this
+        # way by default.
+        withenv("AMALTHEA_USE_RUST_CUDA_NATIVE" => "1", "AMALTHEA_USE_RUST_IONISATION" => "1",
+                "AMALTHEA_NATIVE_GPU" => "on") do
             try
                 s_ru = RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
                                           max_dt=dt, min_dt=dt)
@@ -169,7 +181,7 @@ end
             end
 
             @testset "GPU handle actually used (not silently CPU)" begin
-                @test RK45._gpu_native_eligible(transform, linop)
+                @test RK45._gpu_native_eligible(transform, linop, length(Eω))
             end
 
             @testset "Full-solve equivalence (fixed step size)" begin

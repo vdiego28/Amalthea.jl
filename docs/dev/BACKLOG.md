@@ -1401,8 +1401,55 @@ implemented), verified on real hardware, wired behind
    §8) amplified roughly 40× by plasma's Keldysh-exponential sensitivity to
    field amplitude, not a new bug. Full 7-group gate green, zero
    regressions (rust 42117/42117 = 42113 baseline + 4 new assertions).
-3. Problem-size dispatch threshold (measured crossover, not guessed) so
-   small grids stay on CPU; `LUNA_NATIVE_GPU=0/1/auto` env override.
+3. 🟢 **Done (2026-07-16).** Problem-size dispatch threshold — measured, not
+   guessed, on real hardware (RTX 5060 Ti). Benchmarked `native_step`
+   CPU-vs-GPU directly (mode-avg, RealGrid, fixed-step, 10-iteration average
+   after warmup) across a size sweep before writing any dispatch code, per
+   this backlog's own "benchmark first" discipline (the r2c/c2r item, #3 in
+   Phase I above, was investigated the same session and *failed* that same
+   gate — no benchmark existed there, so it was correctly left alone).
+   **Two very different regimes, not one crossover:**
+   - **Kerr-only**: GPU is slower below ~n=8,193 (breakeven ~1.3x there),
+     then wins increasingly — 5x at n=16,385, 14x at n=65,537, 27x at
+     n=262,145. Dominated by cuFFT throughput at scale; small-n loss is
+     CUDA kernel-launch/sync overhead (`cuda_native.rs::step`'s
+     `launch_checked` synchronizes after every one of ~dozens of per-stage
+     launches).
+   - **Kerr+plasma (PPT)**: GPU is 20-30x *slower* than CPU at every size up
+     to n=131,073 tested, and the gap *widens* with n — the opposite trend
+     from Kerr-only. Root cause: `cuda_native.rs`'s plasma kernels
+     (`plasma_fraction_kernel`/`plasma_current_kernel`/
+     `plasma_polarization_kernel`) are single-GPU-thread sequential scans
+     (item 2's documented V1 tradeoff, item 4/6 below), so they don't
+     benefit from n the way cuFFT does — they're pure serial overhead that
+     scales with grid size. No crossover exists in the tested range, so a
+     single numeric threshold across both regimes would be actively
+     misleading.
+   - **Fix**: `AMALTHEA_NATIVE_GPU=off/on/auto` (`Config.jl`'s new
+     `gpu_dispatch::Symbol` field), layered on top of
+     `AMALTHEA_USE_RUST_CUDA_NATIVE`'s existing master opt-in (unchanged).
+     `off` forces CPU; `on` restores the old unconditional-GPU behavior
+     (kept for forcing GPU on a small/known config, e.g. reproducing a
+     specific benchmark); `auto` (**new default**) requires a plasma-free
+     config at `n >= _GPU_KERR_ONLY_N_THRESHOLD = 16384` (chosen with margin
+     above the measured n=8,193 breakeven, since GPU time isn't cleanly
+     monotonic in n at small sizes) — a plasma-bearing config is rejected by
+     `:auto` outright, at any size, since no threshold is supported by data
+     there. `RK45._gpu_native_eligible(f!, linop)` split into a pure
+     config-shape check (`_gpu_kernel_supports`, unchanged logic) and the
+     new size/policy-aware `_gpu_native_eligible(f!, linop, n)` (now 3-arg;
+     `n = length(y0)`, threaded through from `RustNativeStepper`'s existing
+     `n`). Full measured table and reasoning live in
+     `RK45._GPU_KERR_ONLY_N_THRESHOLD`'s docstring, next to the code it
+     justifies. Both existing `test_native_cuda.jl` GPU-vs-CPU equivalence
+     tests now explicitly set `AMALTHEA_NATIVE_GPU=on` (they test raw kernel
+     correctness at deliberately small/known configs, independent of the
+     dispatch heuristic — including the Kerr+plasma test, which
+     intentionally still drives the known-slow path for numerical
+     verification). New `test/test_native_gpu_dispatch.jl` covers the
+     `:off`/`:on`/`:auto` decision matrix directly (pure Julia-side logic,
+     no `ccall`, so it runs without GPU hardware, unlike the sibling
+     equivalence tests).
 4. Raman ADE kernel, ADK plasma kernel, radial/modal/free-space geometries
    — or explicit `NativeIneligible`-style eligibility split keeping those
    configs on CPU for GPU v1, documented as such. A work-efficient parallel

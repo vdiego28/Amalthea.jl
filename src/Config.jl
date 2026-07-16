@@ -18,6 +18,14 @@ Fields (each `Bool`, default `false` unless noted):
 - `native`: `AMALTHEA_USE_RUST_NATIVE`, default `true` — the native-port
   resident stepper (Phase 8 default-flip).
 - `cuda_native`: `AMALTHEA_USE_RUST_CUDA_NATIVE` — GPU-resident stepper opt-in.
+- `gpu_dispatch`: `AMALTHEA_NATIVE_GPU` (`"off"`/`"on"`/`"auto"`, default `"auto"`) —
+  dispatch policy layered on top of `cuda_native`'s master opt-in: `off` forces
+  CPU even when `cuda_native` is on; `on` uses GPU for every config the kernel
+  supports (the old unconditional behavior); `auto` additionally requires a
+  plasma-free config above a measured problem-size threshold. See
+  `RK45._gpu_native_eligible`/`RK45._GPU_KERR_ONLY_N_THRESHOLD`'s docstrings
+  and `docs/dev/BACKLOG.md` S3 item 3 for the measured CPU-vs-GPU crossover
+  data this is based on.
 - `stepper`: `AMALTHEA_USE_RUST_STEPPER` — the older per-kernel callback stepper.
 - `ionisation`: `AMALTHEA_USE_RUST_IONISATION` — PPT ionization LUT kernel.
 - `raman`: `AMALTHEA_USE_RUST_RAMAN` — time-domain Raman SDO ADE kernel.
@@ -43,6 +51,7 @@ Fields (each `Bool`, default `false` unless noted):
 Base.@kwdef struct BackendConfig
     native::Bool = true
     cuda_native::Bool = false
+    gpu_dispatch::Symbol = :auto
     stepper::Bool = false
     ionisation::Bool = false
     raman::Bool = false
@@ -54,6 +63,12 @@ Base.@kwdef struct BackendConfig
 end
 
 _truthy(var, default) = get(ENV, var, default) == "1"
+
+"`\"off\"`/`\"on\"` map exactly; anything else (including the `\"auto\"` default and typos) is `:auto`."
+function _gpu_mode(var, default)
+    v = get(ENV, var, default)
+    v == "off" ? :off : v == "on" ? :on : :auto
+end
 
 """
     backend_config() -> BackendConfig
@@ -71,6 +86,7 @@ function backend_config()
     BackendConfig(
         native       = _truthy("AMALTHEA_USE_RUST_NATIVE", "1"),
         cuda_native  = _truthy("AMALTHEA_USE_RUST_CUDA_NATIVE", "0"),
+        gpu_dispatch = _gpu_mode("AMALTHEA_NATIVE_GPU", "auto"),
         stepper      = _truthy("AMALTHEA_USE_RUST_STEPPER", "0"),
         ionisation   = _truthy("AMALTHEA_USE_RUST_IONISATION", "0"),
         raman        = _truthy("AMALTHEA_USE_RUST_RAMAN", "0"),
