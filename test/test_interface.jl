@@ -437,6 +437,95 @@ end
 end
 
 ##
+@testset "Non-Marcatili modes via prop_capillary/prop_stepindex" begin
+    # docs/dev/BACKLOG.md Phase I item 5 — ZeisbergerMode/VincettiMode/
+    # StepIndexMode are now reachable through the high-level API by passing
+    # a pre-built mode via `modes=` (Zeisberger/Vincetti, still gas-filled
+    # capillary physics, reuse prop_capillary's gas/pressure/density/response
+    # pipeline unchanged) or via the new `prop_stepindex` sibling entry point
+    # (StepIndexMode, solid fibre, no gas/density concept).
+    #
+    # Surprise found while verifying this (not assumed): all three single-mode
+    # configs below actually run on `RK45.RustNativeStepper`, not the Julia
+    # fallback. `RK45.jl`'s `all(m -> m isa Capillary.MarcatiliMode, modes)`
+    # restriction only gates the *multi-mode* `TransModal` path — the
+    # mode-averaged (`TransModeAvg`) native RHS never inspects the concrete
+    # mode type at all, only `NonlinearRHS.norm_pre`/`norm_βfun`/
+    # `Modes.Aeff(mode; z=z)`, which are already mode-agnostic. So single-mode
+    # native support for these three mode types was already complete before
+    # this change — Choice A's remaining native-port follow-up is narrower
+    # than originally scoped: only the multi-mode `TransModal` case (several
+    # `ZeisbergerMode`/`VincettiMode`/`StepIndexMode`s propagating together)
+    # still needs native wiring.
+    #
+    # Also confirmed while verifying: a *bare* single `Modes.AbstractMode`
+    # passed via `modes=` (this new `makemode_s` dispatch) hits a different,
+    # pre-existing `Interface.setup` method than the `modes=1`/`modes=:HE11`
+    # signifier path (which wraps into a 1-element `Vector` and goes through
+    # the multi-mode `setup`/`Amalthea.setup(...,modes,...)` overload,
+    # producing a 3-D `(freq, 1, z)` array). The bare-mode branch calls the
+    # mode-averaged-specific `Amalthea.setup(grid, density, responses,
+    # inputs, βfun!, aeff; noise_field)` overload instead, which has no
+    # mode/pol axis at all — its `Eω` is 2-D, `(freq, z)`. Not a bug (this
+    # branch already existed and behaves identically for a bare
+    # `MarcatiliMode`), but it means `size(Eω, 2)` here is `saveN`, not a
+    # mode count — asserting `isfinite`/the stepper type below instead.
+    a = 15e-6
+    gas = :Ar
+    pres = 1.0
+    w = 700e-9
+    flength = 0.01
+    λ0 = 800e-9
+    kwargs = (λ0=λ0, τfwhm=20e-15, energy=1e-7, trange=1e-12,
+              λlims=(200e-9, 3000e-9), raman=false, plasma=false, saveN=2,
+              shotnoise=false)
+
+    @testset "ZeisbergerMode" begin
+        m = Antiresonant.ZeisbergerMode(a, gas, pres; wallthickness=w, loss=false)
+        o = prop_capillary(a, flength, gas, pres; modes=m, kwargs...)
+        @test size(o["Eω"], 1) > 0
+        @test size(o["Eω"], 2) == kwargs.saveN
+        @test all(isfinite, o["Eω"])
+        @test RK45._LAST_STEPPER_TYPE[] <: RK45.RustNativeStepper
+    end
+
+    @testset "VincettiMode" begin
+        mv = Antiresonant.VincettiMode(a; wallthickness=w, tube_radius=a,
+                                       Ntubes=6, loss=false)
+        o = prop_capillary(a, flength, gas, pres; modes=mv, kwargs...)
+        @test size(o["Eω"], 1) > 0
+        @test size(o["Eω"], 2) == kwargs.saveN
+        @test all(isfinite, o["Eω"])
+        @test RK45._LAST_STEPPER_TYPE[] <: RK45.RustNativeStepper
+    end
+
+    @testset "single prebuilt mode + vector-field-required error" begin
+        m = Antiresonant.ZeisbergerMode(a, gas, pres; wallthickness=w, loss=false)
+        @test_throws ErrorException prop_capillary(a, flength, gas, pres;
+            modes=m, polarisation=:circular, kwargs...)
+    end
+
+    @testset "StepIndexMode via prop_stepindex" begin
+        a2 = 5e-6
+        # accellims matters for more than speed here: without it, `neff` does
+        # a fresh `Roots.find_zeros` root-search on every call (no closed
+        # form) — slow enough, when queried repeatedly (e.g. by Stats.default's
+        # dispersion-curve computation), to look like a hang. Always pass it
+        # for a StepIndexMode used in a real propagation, matching every
+        # existing low-level example.
+        stepindex_saveN = 2
+        o = prop_stepindex(a2, 0.01, :SiO2, :Air;
+            λ0=1030e-9, τfwhm=1e-12, energy=1e-9, trange=10e-12,
+            λlims=(980e-9, 1200e-9), envelope=true, raman=true, saveN=stepindex_saveN,
+            shotnoise=false, accellims=(900e-9, 1200e-9, 100))
+        @test size(o["Eω"], 1) > 0
+        @test size(o["Eω"], 2) == stepindex_saveN
+        @test all(isfinite, o["Eω"])
+        @test RK45._LAST_STEPPER_TYPE[] <: RK45.RustNativeStepper
+    end
+end
+
+##
 Logging.global_logger(old_logger)
 
 end

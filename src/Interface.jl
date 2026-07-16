@@ -410,6 +410,18 @@ function _prop_capillary_args(radius, flength, gas, pressure;
     pol = both_modes || needpol_modes(modes)
     @info "Vector fields are "* (pol ? "required." : "not required.")
 
+    # A pre-built single AbstractMode (e.g. a ZeisbergerMode/VincettiMode
+    # passed directly via `modes=`) has no signifier for `makemodes_pol` to
+    # derive a companion ϕ from, unlike `modes=:HE11`-style signifiers. Ask
+    # the caller to pass a 2-element vector instead of silently propagating
+    # a scalar mode through a vector-field configuration.
+    if modes isa Modes.AbstractMode && pol
+        error("A vector field is required (orthogonal polarisation energy " *
+              "and/or the mode itself needs both polarisations), but `modes` " *
+              "is a single pre-built mode. Pass a 2-element vector of modes " *
+              "instead (e.g. `[m_x, m_y]`).")
+    end
+
     plasma = isnothing(plasma) ? !envelope : plasma
     thg = isnothing(thg) ? !envelope : thg
 
@@ -483,6 +495,15 @@ function needpol_modes(modes::Tuple)
     end
 end
 
+# A pre-built AbstractMode (ZeisbergerMode/VincettiMode/StepIndexMode/
+# MarcatiliMode passed directly via `modes=`, bypassing the `makemode_s`
+# signifier system below) — key off `modeinfo` rather than direct field
+# access, since ZeisbergerMode/VincettiMode nest `:kind`/`:n` under `.m`.
+function needpol_modes(mode::Modes.AbstractMode)
+    info = Modes.modeinfo(mode)
+    info[:kind] ≠ :HE || info[:n] > 1
+end
+needpol_modes(modes::AbstractVector{<:Modes.AbstractMode}) = any(needpol_modes, modes)
 
 const_linop(radius::Number, pressure::Number) = Val(true)
 const_linop(radius, pressure) = Val(false)
@@ -548,6 +569,15 @@ end
 function makemode_s(modes::Tuple, args...)
     _flatten([makemode_s(m, args...) for m in modes])
 end
+
+# A caller can also pass an already-built mode (or vector of modes) directly
+# via `modes=`, bypassing the signifier system entirely — e.g. a
+# `ZeisbergerMode`/`VincettiMode`/`StepIndexMode` (or a `MarcatiliMode`
+# built with options `makemodes_pol` doesn't expose). `flength`/`radius`/
+# `gas`/`pressure`/`temperature`/`model`/`loss`/`both` are ignored: the
+# caller already fully specified the mode(s).
+makemode_s(mode::Modes.AbstractMode, args...) = mode
+makemode_s(modes::AbstractVector{<:Modes.AbstractMode}, args...) = modes
 
 # Iterators.flatten recursively flattens arrays of arrays, but can't handle scalars
 _flatten(modes::Vector{<:AbstractArray}) = collect(Iterators.flatten(modes))
@@ -728,7 +758,8 @@ end
 
 function _findmode(mode_s::AbstractArray, md)
     return findall(mode_s) do m
-        (m.kind == md[:kind]) && (m.n == md[:n]) && (m.m == md[:m])
+        info = Modes.modeinfo(m)
+        (info[:kind] == md[:kind]) && (info[:n] == md[:n]) && (info[:m] == md[:m])
     end
 end
 
@@ -906,7 +937,8 @@ function setup(grid, mode::Modes.AbstractMode, density, responses, inputs, pol, 
 end
 
 needfull(modes) = !all(modes) do mode
-    (mode.kind == :HE) && (mode.n == 1)
+    info = Modes.modeinfo(mode)
+    (info[:kind] == :HE) && (info[:n] == 1)
 end
 
 function setup(grid, modes, density, responses, inputs, pol, rtol, c::Val{true};
@@ -1106,6 +1138,133 @@ function _prop_gnlse_args(γ, flength, βs; λ0, λlims, trange,
         saveN, filepath, filename)
 
     return Eω, grid, linop, transform, FT, output
+end
+
+"""
+    prop_stepindex(a, flength, core, clad; λ0, λlims, trange, kwargs...)
+
+Simulate pulse propagation in a step-index fibre (`StepIndexFibre.StepIndexMode`).
+Unlike `prop_capillary`, there is no gas fill: the fibre is a solid dielectric
+(`core`/`clad` materials, e.g. `:SiO2`/`:Air`), so density is fixed at 1 and the
+nonlinear response is built directly from the core material's `χ3`, mirroring
+`prop_gnlse`'s standalone response construction rather than `prop_capillary`'s
+gas-based `makeresponse`.
+
+# Mandatory arguments
+- `a`: core radius (a `Number`, or a function of `z` for a tapered fibre — NOTE:
+    only a constant radius is currently supported by this high-level entry point).
+- `flength`: length of the fibre.
+- `core`, `clad`: material `Symbol`s (e.g. `:SiO2`, `:Air`) for the fibre core/cladding,
+    passed straight to `StepIndexFibre.StepIndexMode`.
+
+# Keyword arguments
+- `λ0`: central wavelength of the pulse.
+- `λlims::Tuple`: wavelength limits of the simulation grid.
+- `trange`: total width of the time window.
+- `envelope::Bool`: whether to use envelope (`EnvGrid`) or full-field (`RealGrid`)
+    simulation. Defaults to `false`.
+- `n`, `m`, `kind`, `parity`, `pts`, `accellims`: passed straight to
+    `StepIndexFibre.StepIndexMode` (see its docstring).
+- `kerr::Bool`: whether to include the Kerr response. Defaults to `true`.
+- `raman`: whether to include the Raman response. Defaults to `nothing`, which
+    disables it (unlike `prop_capillary`, there is no gas-based default to infer
+    from — pass `raman=true` explicitly to enable it).
+- `fr`: fractional Raman contribution to `χ3`. Defaults to `0.18`.
+- `ramanmodel`: `:sdo` (default, needs `τ1`/`τ2`) or `:SiO2` (Hollenbeck & Cantrell).
+- `τ1`, `τ2`: Raman oscillator/damping times for `:sdo`.
+
+Other keyword arguments (`pulses`, `shotnoise`, `saveN`, `filepath`, `scan`, ...)
+match `prop_capillary`/`prop_gnlse`.
+
+Only a single, constant-radius, `:linear`-polarisation mode is supported — see
+`docs/dev/BACKLOG.md` Phase I item 5 / `ARCHITECTURE.md` §6 for the documented
+scope of what's high-level-reachable today.
+"""
+function prop_stepindex(args...; status_period=5, kwargs...)
+    kw = Fields.resolve_greek_aliases(kwargs)
+    Eω, grid, linop, transform, FT, output = prop_stepindex_args(args...; kw...)
+    Amalthea.run(Eω, grid, linop, transform, FT, output; status_period)
+    output
+end
+
+function prop_stepindex_args(args...; kwargs...)
+    kw = Fields.resolve_greek_aliases(kwargs)
+    _prop_stepindex_args(args...; kw...)
+end
+
+function _prop_stepindex_args(a, flength, core, clad; λ0, λlims, trange,
+                        envelope=false, thg=nothing, δt=1,
+                        n=1, m=1, kind=:HE, parity=:even, pts=100, accellims=nothing,
+                        τfwhm=nothing, τw=nothing, ϕ=Float64[],
+                        power=nothing, energy=nothing,
+                        pulseshape=:gauss, propagator=nothing,
+                        pulses=nothing,
+                        shotnoise=true,
+                        rng=GLOBAL_RNG,
+                        raman=nothing, kerr=true, fr=0.18,
+                        ramanmodel=:sdo, τ1=12.2e-15, τ2=32e-15,
+                        saveN=201, filepath=nothing,
+                        scan=nothing, scanidx=nothing, filename=nothing)
+    thg = isnothing(thg) ? !envelope : thg
+    polarisation = :linear
+
+    grid = makegrid(flength, λ0, λlims, trange, envelope, thg, δt)
+    mode_s = StepIndexFibre.StepIndexMode(a; n, m, kind, core, clad, parity, pts, accellims)
+    density = z -> 1.0 # solid fibre: no gas/pressure density concept
+    resp = makestepindexresponse(grid, core, kerr, raman, thg, fr, ramanmodel, τ1, τ2)
+
+    inputs = makeinputs(mode_s, λ0, pulses, τfwhm, τw, ϕ,
+                        power, energy, pulseshape, polarisation, propagator)
+    inputs, noise_field = makenoise(grid, mode_s, inputs, shotnoise, rng)
+    linop, Eω, transform, FT = setup(grid, mode_s, density, resp, inputs, false,
+                                     0.0, Val(true); noise_field)
+    stats = Stats.default(grid, Eω, mode_s, linop, transform)
+    output = makeoutput(grid, saveN, stats, filepath, scan, scanidx, filename)
+
+    saveargs(output; a, flength, core, clad, λlims, trange, envelope, thg, δt,
+        n, m, kind, parity, pts, accellims, λ0, τfwhm, τw, ϕ, power, energy,
+        pulseshape, propagator, pulses, shotnoise, raman, kerr, fr, ramanmodel,
+        τ1, τ2, saveN, filepath, filename)
+
+    return Eω, grid, linop, transform, FT, output
+end
+
+# Builds the Kerr/Raman response directly from the core material's χ3 —
+# mirroring prop_gnlse's own standalone response construction (:1104-1123
+# above) rather than prop_capillary's gas-based `makeresponse`, since a
+# step-index fibre is a solid dielectric with no gas/density concept at all
+# (see examples/low_level_interface/stepindex/*.jl, which hardcode this
+# exact pattern against a fixed :SiO2 core).
+function makestepindexresponse(grid, core, kerr, raman, thg, fr, ramanmodel, τ1, τ2)
+    israman = isnothing(raman) ? false : raman
+    out = Any[]
+    if kerr
+        χ3 = (1 - (israman ? fr : 0.0)) * PhysData.χ3(core)
+        if grid isa Grid.EnvGrid
+            push!(out, thg ?
+                Nonlinear.Kerr_env_thg(χ3, PhysData.wlfreq(grid.referenceλ), grid.to) :
+                Nonlinear.Kerr_env(χ3))
+        else
+            push!(out, thg ? Nonlinear.Kerr_field(χ3) :
+                              Nonlinear.Kerr_field_nothg(χ3, length(grid.to)))
+        end
+    end
+    if israman
+        rr = if ramanmodel == :SiO2
+            Raman.raman_response(grid.to, :SiO2, fr*PhysData.ε_0*PhysData.χ3(core))
+        elseif ramanmodel == :sdo
+            (isnothing(τ1) || isnothing(τ2)) &&
+                error("for :sdo ramanmodel you must specify τ1 and τ2")
+            Raman.CombinedRamanResponse(grid.to,
+                [Raman.RamanRespNormedSingleDampedOscillator(
+                    fr*PhysData.χ3(core)*PhysData.ε_0, 1/τ1, τ2)])
+        else
+            error("unrecognised value for ramanmodel")
+        end
+        push!(out, grid isa Grid.EnvGrid ? Nonlinear.RamanPolarEnv(grid.to, rr) :
+                                            Nonlinear.RamanPolarField(grid.to, rr))
+    end
+    Tuple(out)
 end
 
 end

@@ -78,6 +78,7 @@ include("Interface.jl")
 
 prop_capillary = Interface.prop_capillary
 prop_gnlse = Interface.prop_gnlse
+prop_stepindex = Interface.prop_stepindex
 Pulses = Interface.Pulses
 
 Scan = Scans.Scan
@@ -102,7 +103,7 @@ backend_report() = (config = Config.backend_config(), last_stepper_type = RK45._
 export Utils, Scans, Output, Maths, PhysData, Grid, RK45, Modes, Capillary, RectModes,
        Nonlinear, Ionisation, NonlinearRHS, LinearOps, Stats, Polarisation,
        Tools, Plotting, Raman, Antiresonant, Fields, Processing, Interface, SFA,
-       prop_capillary, prop_gnlse, Pulses, Scan, runscan, makefilename, addvariable!,
+       prop_capillary, prop_gnlse, prop_stepindex, Pulses, Scan, runscan, makefilename, addvariable!,
        StepIndexFibre, SimpleFibre, Config, backend_report
 
 # for a tuple of TimeFields we assume all inputs are for mode 1

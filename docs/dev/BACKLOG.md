@@ -587,11 +587,71 @@ this commit if plasma played a physically meaningful role.
    projection and free-space's 2-D Cartesian normalization may or may not
    collapse the same way; needs its own discriminating check before
    assuming it's equally trivial).
-5. ⚪ **Modal path restricted to `MarcatiliMode`** (`RK45.jl:1352-1354`) —
-   `StepIndexMode`/`ZeisbergerMode`/`VincettiMode` exist but
-   `prop_capillary`'s `makemode_s` only ever builds `MarcatiliMode`s; the
-   other mode types are only reachable via the low-level API. Rare in
-   practice.
+5. 🟡 **High-level API reach done (2026-07-16); native Rust port still
+   open.** `StepIndexMode`/`ZeisbergerMode`/`VincettiMode` were previously
+   only reachable via the low-level API. Two-part fix:
+   - **`ZeisbergerMode`/`VincettiMode`**: both wrap a `Capillary.MarcatiliMode`
+     in `.m` and only override dispersion — `prop_capillary`'s existing
+     gas/pressure → `makedensity`/`makeresponse` pipeline never touches the
+     mode object, so this was a small additive change. `makemode_s` gained
+     two new dispatches (`Interface.jl`) that let a caller pass an
+     already-built `Modes.AbstractMode` (or `Vector` thereof) directly via
+     `modes=`, bypassing the `:HE11`-style signifier system entirely. Fixed
+     an accessor gap this surfaced: `needfull`/`_findmode`/`needpol_modes`
+     read `mode.kind`/`mode.n`/`mode.m` as direct struct fields, which is
+     wrong for these two types (nested under `.m`) — now read through
+     `Modes.modeinfo(mode)` instead (an existing, already-tested accessor
+     — see `Capillary.jl:57`/`RectModes.jl:36` — extended to
+     `ZeisbergerMode`/`VincettiMode`/`StepIndexMode` via their existing
+     field-forwarding loops in `Antiresonant.jl`). A single prebuilt mode
+     combined with a vector-field-requiring config (e.g.
+     `polarisation=:circular`) now raises a clear error instead of silently
+     misbehaving, since the prebuilt path has no signifier to derive a
+     companion-mode `ϕ` from.
+   - **`StepIndexMode`**: turned out *not* to fit the same extension —
+     it's solid-fibre physics with no gas/pressure/density concept at all
+     (its own example hardcodes `densityfun = z -> 1.0` and builds
+     Kerr/Raman straight from `PhysData.χ3`, bypassing
+     `makedensity`/`makeresponse` entirely). Given a new sibling top-level
+     function, `prop_stepindex` (`Interface.jl`), mirroring `prop_gnlse`'s
+     existing precedent for exactly this situation (its own `SimpleMode`
+     also needs no gas/density machinery) — builds the mode via
+     `StepIndexFibre.StepIndexMode`, density fixed at 1, and Kerr/Raman
+     response directly from the core material's `χ3` (generalizing the
+     `:SiO2`-only example).
+   - **`src/RK45.jl`'s native-eligibility guards were deliberately not
+     touched — and it turns out they didn't need to be, for the single-mode
+     case.** Verified (not assumed) by running each of the three configs
+     above and checking `Amalthea.backend_report()`/
+     `RK45._LAST_STEPPER_TYPE[]`: all three actually run on
+     `RK45.RustNativeStepper` already. The `all(m -> m isa
+     Capillary.MarcatiliMode, modes)` restriction (`RK45.jl`) only gates the
+     *multi-mode* `TransModal` path — mode-averaged (`TransModeAvg`), the
+     path every config in this item's tests uses, never inspects the
+     concrete mode type at all (only `NonlinearRHS.norm_pre`/`norm_βfun`/
+     `Modes.Aeff(mode; z=z)`, all already mode-agnostic). So single-mode
+     native support for `ZeisbergerMode`/`VincettiMode`/`StepIndexMode` was
+     already complete before this item — this plan's own original framing
+     ("Choice A now, native Rust port as a follow-up") overstated the
+     remaining native-port gap. New regression test
+     (`test/test_interface.jl`) asserts `RK45._LAST_STEPPER_TYPE[] <:
+     RK45.RustNativeStepper` for all three, pinning this down.
+   - **What's actually still native-ineligible, and the real follow-up: the
+     multi-mode `TransModal` case** (several `ZeisbergerMode`/
+     `VincettiMode`/`StepIndexMode`s propagating together, e.g. two
+     polarisation components or several radial orders) — that path's
+     `RK45.jl` guard genuinely does require `Capillary.MarcatiliMode`
+     (`native.rs`'s `rhs_modal_pointcalc` synthesizes the mode field from
+     Marcatili's `unm`/Bessel-order/`ϕ` parameterization directly). Scoped
+     per mode type by existing native-readiness: Zeisberger's dispersion
+     already has a Rust kernel (`ZeisbergerNeff`); Vincetti's
+     (`CL`/`Rco_eff`/`Δneff`) does not yet; StepIndexMode's `neff` needs
+     numerical root-finding (`Roots.find_zeros`), no closed form, making it
+     the hardest of the three.
+   - Out of scope for this pass: multi-mode configurations for any of these
+     three types (see above), tapered (`z`-dependent) `StepIndexMode`
+     radius, and auto-generating a companion mode for both-polarisation
+     configs on the prebuilt-mode path.
 6. 🟢 **Done (2026-07-09): free-space (`TransFree`) gains plasma and/or
    Raman.** `apply_plasma_free`/`apply_raman_free` (native.rs) mirror
    `apply_plasma_radial`/`apply_raman_radial` verbatim over `n_y*n_x`
@@ -704,14 +764,15 @@ future work, roughly ordered by value.
    `RamanPolarEnv` too). Summation-order change → validate with the
    fixed-step discipline (TESTING.md §3); benchmark first to confirm the
    convolution is actually a measurable fraction of a gnlse step.
-4. ⚪ **User-facing native-support matrix.** What runs natively vs falls
-   back (geometry × grid × response × options) is currently derivable
-   only from this file + PORT_LOG + the `NativeIneligible` sites. A
-   single README (or `docs/`) table — rows: mode-avg/radial/modal/
-   free-space; columns: RealGrid/EnvGrid, Kerr/plasma/Raman(SDO/SiO2)/
-   noise/mixtures/z-dep — would let users predict performance without
-   reading the port history. Generate it from the audit in Phase I's
-   preamble; keep it next to the code so guard changes update it.
+4. 🟢 **Done (2026-07-16).** User-facing native-support matrix —
+   `docs/dev/native-port/NATIVE_SUPPORT_MATRIX.md`, a geometry × grid ×
+   response table (rows: mode-avg/radial/modal/free-space; columns:
+   RealGrid/EnvGrid; cells noting Kerr/plasma/Raman(SDO/SiO2)/noise/
+   mixtures/z-dep support) derived directly from the current
+   `NativeIneligible` guard sites in `src/RK45.jl`, cross-referenced
+   against `ARCHITECTURE.md` §6's three-category taxonomy for *why* a
+   given cell is a bare fallback. Not auto-generated — the doc's own
+   closing section asks that future guard-touching PRs update it by hand.
 5. ⚪ **Consolidate the two resident Raman kernels' shared plumbing.**
    Step 3b (ADE) and Step 3c (FFT-conv) in `rhs_mode_avg_env` duplicate
    the `0.5·|E|²` intensity loop and the `pto += E·(ρ·P)` accumulation;
@@ -730,13 +791,53 @@ future work, roughly ordered by value.
    three-category taxonomy of what stays Julia (setup-by-design /
    ineligible-but-portable / arbitrary-closures barrier) is written up
    in ARCHITECTURE.md §6.
-7. ⚪ **FFI-surface robustness tests.** The FFI now has ~30 `native_set_*`
-   entry points whose error paths (null pointers, mismatched sizes,
-   wrong call order) are each hand-checked but never systematically
-   exercised. A single Rust test that calls every setter on a fresh
-   `NativeSim` with adversarial inputs (nulls, zero lengths, `n_time`
-   mismatches) and asserts non-zero return codes — no crash, no UB —
-   would fence the whole surface cheaply. Pairs well with S4.2's
+7. 🟢 **Done (2026-07-16).** Added a `#[cfg(test)]` suite to
+   `amalthea/src/native.rs` covering every `native_set_*`/lifecycle FFI
+   entry point: a comprehensive "null `sim` is rejected everywhere"
+   test across all ~26 entry points, plus per-family tests for
+   zero-length arrays, mismatched sizes, and wrong call order (e.g.
+   `native_set_raman_params`/`native_set_zdep_mode_avg_params`/
+   `native_set_modal_zdep_params`/`native_set_free_zdep_params` before
+   their prerequisite `*_params` setter has run). **Real gap found
+   while writing it, then fixed (not blind — found by source
+   inspection, fixed, and verified green before being called done):**
+   several setters dereferenced a non-`sim` pointer argument
+   unconditionally once their own shape/order guard passed, with no
+   null check on that argument specifically —
+   `native_set_radial_params`'s `t_matrix`/`m_re`/`m_im`,
+   `native_set_modal_params`'s `unm`/`inv_sqrt_n`/`order`/`kind`/`phi`/
+   `pol_select`/`nlfac_re`/`nlfac_im`/`lib_path`,
+   `native_set_free_params`'s `m_re`/`m_im`, the three `*_zdep_params`
+   setters' spline/array pointers, `native_set_raman_params`'s
+   `omega`/`gamma`/`coupling`, `native_set_fftw_plans`'s `lib_path`
+   (straight into `CStr::from_ptr`), `native_debug_beta1_at`'s
+   `out_dens`/`out_beta1`, and
+   `set_field`/`native_resync_field`/`get_field`/`get_ks_stage`/
+   `native_apply_prop`/`native_debug_linop_at`'s data/`y` buffer once
+   the length check passes. None of these was reachable through any
+   documented Julia call site (Julia always passes real, GC-rooted,
+   correctly-sized buffers), so this was latent hardening debt, not a
+   live bug. **Fix:** every pointer above now has an explicit
+   `is_null()` guard (returning `-1`, matching every sibling setter's
+   existing convention) placed before that function's first `unsafe`
+   dereference of it. Most of the new guards are directly exercised by
+   a corresponding test (e.g. `raman_params_rejects_null_oscillator_
+   arrays`, the extended `radial_params_rejects_zero_or_non_dividing_
+   n_r`/`modal_params_rejects_zero_or_invalid_npol_and_non_dividing_
+   n_modes`/`free_params_rejects_zero_transverse_dims_and_non_dividing_
+   size`); the two `*_zdep_params` guards that require a real, loadable
+   FFTW/`libcubature` to get past their own call-order check
+   (`native_set_free_zdep_params`, `native_set_modal_zdep_params`) are
+   verified by code inspection only, documented as such at each test
+   site, to keep the suite hermetic. `native_set_plasma_params(_adk)`'s
+   `ion_ptr` is deliberately unguarded still — that setter stores the
+   pointer without dereferencing it, so null there isn't UB in the
+   setter itself (see `plasma_params_stores_null_handle_without_
+   crashing_the_setter_itself`); the real risk is downstream in
+   `native_step`, which Julia's own caller (`src/RK45.jl`) already
+   guards against structurally. Verified: `cargo test` 69/69 (was
+   68/68 before this fix's own tests were added), and clean under
+   `RUSTFLAGS="-D warnings"`, zero regressions. Pairs well with S4.2's
    `FfiStatus` enum.
 
 **Where the project goes from here** (the port itself is done — items

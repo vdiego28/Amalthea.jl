@@ -3,7 +3,7 @@ import StaticArrays: SVector
 using Reexport
 @reexport using Amalthea.Modes
 import Amalthea.PhysData: c, ε_0, μ_0, ref_index_fun, wlfreq
-import Amalthea.Modes: AbstractMode, dimlimits, neff, field, dispersion, dispersion_func
+import Amalthea.Modes: AbstractMode, dimlimits, neff, field, dispersion, dispersion_func, modeinfo
 export StepIndexMode, dimlimits, neff, field
 import SpecialFunctions: besselj, besselk
 import Roots: find_zeros
@@ -219,6 +219,12 @@ Calculate the effective index of a StepIndexMode.
 function neff(m::StepIndexMode, ω; z=0)
     findneff(radius(m, z), ω/c, m.coren(ω, z=z), m.cladn(ω, z=z), m.n, m.m, m.kind, m.pts)
 end
+
+# `StepIndexMode` already has top-level `kind`/`n`/`m` fields, but callers
+# should key off `modeinfo` (like every other mode type) rather than direct
+# field access — see Interface.jl's `needfull`/`_findmode`/`needpol_modes`.
+modeinfo(m::StepIndexMode) = Dict(:kind => m.kind, :n => m.n, :m => m.m,
+                                  :parity => m.parity, :pts => m.pts)
 
 function neff(m::StepIndexMode{<:Number, Tco, Tcl, Val{true}, NT, BT}, ω; z=0) where {Tcl, Tco, NT, BT}
     m.neff(ω)

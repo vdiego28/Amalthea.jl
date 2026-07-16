@@ -6,7 +6,7 @@ import Amalthea: Capillary, Utils, Config
 import Amalthea.PhysData: c, wlfreq, ref_index_fun
 import Amalthea.LinearOps: neff_β_grid
 @reexport using Amalthea.Modes
-import Amalthea.Modes: AbstractMode, dimlimits, neff, field, Aeff, N, α, chkzkwarg
+import Amalthea.Modes: AbstractMode, dimlimits, neff, field, Aeff, N, α, chkzkwarg, modeinfo
 
 # ─── Rust FFI helpers for Zeisberger dispersion ──────────────────────────────
 #
@@ -119,8 +119,11 @@ wraptype(loss) = throw(
 # Effective index is given by eq (15) in [1]
 neff(m::ZeisbergerMode, ω; z=0) = _neff(m.m, ω, m.wallthickness, m.loss; z=z)
 
-# All other mode properties are identical to a MarcatiliMode
-for fun in (:Aeff, :field, :N, :dimlimits)
+# All other mode properties are identical to a MarcatiliMode. `modeinfo` is
+# included so callers that key off `:kind`/`:n`/`:m` (e.g. Interface.jl's
+# `needfull`/`_findmode`/`needpol_modes`) see the wrapped mode's values
+# instead of the generic empty-Dict `AbstractMode` fallback.
+for fun in (:Aeff, :field, :N, :dimlimits, :modeinfo)
     @eval ($fun)(m::ZeisbergerMode, args...; kwargs...) = ($fun)(m.m, args...; kwargs...)
 end
 
@@ -371,8 +374,11 @@ neff(m::VincettiMode, ω; z=0) = neff_real(m, ω; z) + 1im*c/ω*α(m, ω; z)
 α(m::VincettiMode{mT, cT, Val{false}}, ω; z=0) where {mT, cT} = zero(ω)
 α(m::VincettiMode{mT, cT, <:Number}, ω; z=0) where {mT, cT} = m.loss * log(10)/10 * CL(m, ω; z)
 
-# All other mode properties are identical to a MarcatiliMode
-for fun in (:field, :N, :dimlimits)
+# All other mode properties are identical to a MarcatiliMode. `modeinfo` is
+# included so callers that key off `:kind`/`:n`/`:m` (e.g. Interface.jl's
+# `needfull`/`_findmode`/`needpol_modes`) see the wrapped mode's values
+# instead of the generic empty-Dict `AbstractMode` fallback.
+for fun in (:field, :N, :dimlimits, :modeinfo)
     @eval ($fun)(m::VincettiMode, args...; kwargs...) = ($fun)(m.m, args...; kwargs...)
 end
 
