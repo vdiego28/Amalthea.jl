@@ -1,6 +1,6 @@
 # Luna Rust (`amalthea`)
 
-`amalthea` is a high-performance, stateless physical propagation engine rewritten in Rust. It serves as the optimized backend for `Amalthea.jl`, migrating critical physics kernels, solvers, and spatial/spectral grids to Rust 2024 to exploit hardware vectorization (AVX-512, Apple AMX) and GPU acceleration (CUDA, Vulkan).
+`amalthea` is a high-performance, stateless physical propagation engine rewritten in Rust. It serves as the optimized backend for `Amalthea.jl`, migrating critical physics kernels, solvers, and spatial/spectral grids to Rust 2024. CPU throughput comes from `target-cpu=native` plus LLVM auto-vectorization of the branchless RHS kernels (confirmed via disassembly — see §3 below), not hand-written intrinsics; GPU acceleration (CUDA) is real and opt-in via the native-port's `CudaNativeSim`.
 
 ---
 
@@ -56,17 +56,15 @@ The Rust migration replaces several numerical approximations from the original J
 
 ---
 
-## 3. Multi-Branch Hardware Dispatcher (`dispatch.rs`)
+## 3. Hardware Paths: What's Real vs. `dispatch.rs`
 
-To achieve maximum performance across platforms, the engine implements a runtime dispatcher that automatically routes calculations to the most efficient branch available, with seamless fallbacks:
+`dispatch.rs` defines a `HardwarePath`/`SimulationEngine` enum (`Auto`, `CpuX86AVX512`, `CpuX86AVX2`, `CpuArmNeon`, `CpuArmAMX`, `GpuCuda`, `GpuVulkan`, `CpuPortable`) that *detects* available hardware features (`std::is_x86_feature_detected!("avx512f")`, Vulkan `dlopen` probing, etc.) and records which one was picked. **It is not wired into any RHS kernel or the real GPU path** — grep the crate and the only callers are its own unit tests (`lib.rs`). Investigated directly (`docs/dev/BACKLOG.md` S5.2, S1 item 4) before relying on it for anything:
 
-### Fallback Priority Cascade:
-1.  **GPU Branch (CUDA/Vulkan)**: Checks for CUDA drivers (`libcuda.so` / `/dev/nvidia0` on Linux). If CUDA is unavailable, queries Vulkan driver libraries. Offloads FFTs, Hankel transforms, and time-domain convolutions to GPU VRAM.
-2.  **Vectorized CPU Branch (AVX-512 / Apple AMX)**: If a CPU architecture is detected, uses `std::is_x86_feature_detected!("avx512f")` (on x86) or Apple Silicon vendor checks to leverage 512-bit registers or AMX matrix units.
-3.  **Standard CPU Vectorization (AVX2 / NEON)**: Targets standard vector pipelines (AVX2 on x86, NEON on ARM).
-4.  **CpuPortable**: A generic, highly-optimized scalar fallback loop.
+- **CPU vectorization is real, but compiler-driven, not `dispatch.rs`-driven.** `.cargo/config.toml` sets `target-cpu=native`; LLVM auto-vectorizes the branchless elementwise RHS loops (Kerr, FFT scaling, windowing, noise) into AVX2/AVX-512 `%ymm`/`%zmm` instructions for whatever CPU the binary is actually compiled on — confirmed via `objdump`/`nm` on the release `.so`, not assumed. No runtime branch selects between hand-written AVX2/AVX-512/NEON kernel variants; there aren't any, except one:
+- **The one genuine hand-written SIMD lane is `raman.rs::solve_avx2`**, because the Raman ADE update is a sequential recurrence (`x_{n+1}` depends on `x_n`) that LLVM's auto-vectorizer structurally cannot parallelize — the opposite situation from the flat Kerr/window broadcasts above.
+- **GPU acceleration is real and does run**, but through the native-port's own `CudaNativeSim`/`cuda.rs` (`init_gpu_context`, opt-in via `AMALTHEA_USE_RUST_CUDA_NATIVE=1`), which never touches `dispatch.rs` either. Currently scoped to mode-averaged Kerr(+PPT plasma); measured on real hardware (RTX 5060 Ti) to be **~20-30x slower than the CPU path when plasma is active** (single-thread sequential cumtrapz kernels, a documented V1 tradeoff — BACKLOG S3 item 4/6) but **~5-27x faster for Kerr-only above n≈16k grid points** (FFT-dominated, embarrassingly parallel). No automatic size-based dispatch exists yet — it's a manual opt-in.
 
-Users can manually force a specific path using the FFI initialization code or let the engine auto-detect.
+If you're looking for "the SIMD dispatcher," there isn't a real one — the compiler is already doing that job for the parallel case, and `raman.rs::solve_avx2` is the one place a human had to.
 
 ---
 
