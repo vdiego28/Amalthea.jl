@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784244967608,
+  "lastUpdate": 1784246677167,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -260,6 +260,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.419185,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "distinct": true,
+          "id": "28630151d4fa75797e47a84fd65159414d2da4d3",
+          "message": "Add measured problem-size dispatch threshold for the GPU-resident stepper\n\nAMALTHEA_NATIVE_GPU=off/on/auto (Config.jl's new gpu_dispatch field) layers\na dispatch policy on top of AMALTHEA_USE_RUST_CUDA_NATIVE's existing master\nopt-in. Benchmarked CPU-vs-GPU native_step directly on real hardware (RTX\n5060 Ti) before choosing a threshold: Kerr-only crosses over around n=8-16k\nand wins up to 27x at n=262k (cuFFT-dominated), but Kerr+plasma is 20-30x\nslower than CPU at every size tested up to n=131k and gets worse with n\n(single-thread sequential plasma-scan kernels, a documented V1 tradeoff) --\ntwo different regimes, not one crossover. `auto` (new default) requires a\nplasma-free config at n >= 16384; `on` restores the old unconditional\nbehavior; `off` forces CPU. RK45._gpu_native_eligible split into a pure\nconfig-shape check (_gpu_kernel_supports) and the new size/policy-aware\n3-arg eligibility function. Full measured table lives in\nRK45._GPU_KERR_ONLY_N_THRESHOLD's docstring.\n\nExisting GPU equivalence tests pinned to AMALTHEA_NATIVE_GPU=on (they test\nraw kernel correctness at small/known configs, independent of the dispatch\nheuristic). New test/test_native_gpu_dispatch.jl covers the off/on/auto\ndecision matrix directly.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-16T19:58:41-04:00",
+          "tree_id": "fdd1fbc7e3e89eafc49a8a082b06b8628a154da9",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/28630151d4fa75797e47a84fd65159414d2da4d3"
+        },
+        "date": 1784246676802,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.935759,
             "unit": "ms/step"
           }
         ]
