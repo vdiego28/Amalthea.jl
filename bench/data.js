@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784246677167,
+  "lastUpdate": 1784497424318,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -289,6 +289,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.935759,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "distinct": true,
+          "id": "c80338d0ff471689971abdc037fe1f8c99f0e7ca",
+          "message": "Docs: correct stale ~1e-13 phase8 endpoint tolerance comment to measured ~1.6e-11\n\nNative-vs-Julia endpoint agreement for the eligible config is ~1.6e-11\n(measured, printed by the test), not ~1e-13. Comment/println only; the\n<1e-8 assertion is unchanged. Flagged during S5 dense-output review.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-07-19T17:40:25-04:00",
+          "tree_id": "e05c193d353c3dda307d2a37db62a7b1dec094bb",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/c80338d0ff471689971abdc037fe1f8c99f0e7ca"
+        },
+        "date": 1784497424000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.935014,
             "unit": "ms/step"
           }
         ]
