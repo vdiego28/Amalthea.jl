@@ -1286,8 +1286,23 @@ then reproducing the crash directly:**
    `par_chunks_mut` without new per-worker scratch structures. Only
    `apply_raman_radial`'s single shared `raman_solver` (and, when
    `raman_thg==false`, shared Hilbert scratch) has the genuine
-   shared-mutable-state hazard the backlog warns about — deferred to a
-   follow-up (per-worker solver instances), not bundled into this pass.
+   shared-mutable-state hazard the backlog warns about. **🟢 Done
+   2026-07-19 (S2 Phase 4 item 1):** parallelized by partitioning the
+   r-columns into ≤`n_threads` *contiguous* groups, each rayon task owning
+   its **own cloned `TimeDomainRamanSolver`** and **own Hilbert scratch**
+   (no `current_thread_index`, no interior mutability, provably disjoint
+   column slices; `solve()` resets oscillator state at entry, so a cloned
+   solver is bit-identical to the shared one). No new GC-root hazard — the
+   solver is Rust-owned and only *cloned*, not a persistent raw pointer
+   into Julia-owned memory (contrast the plasma-pointer UAF fixed on
+   `main`). Verified to the full S2 bar: `n_threads=1`-vs-`4`
+   **bit-identical** (`s.yn` exact) in `test/test_native_radial_raman.jl`,
+   plus an 8-cycle forced-`GC.gc()` stress repro with no crash.
+   Modal (item 3) and free-space (item 4) threading remain the open
+   follow-ups (the latter needs an isolated multi-threaded FFTW plan under
+   `PLANNER_LOCK`: `fftw.rs`'s `unsafe impl Sync` only holds for
+   single-threaded plans, so an `nthreads>1` plan would deadlock under the
+   existing concurrent `fftw_execute_dft` path).
    **Measured 2026-07-10** (temporary `Instant` profiling, reverted after
    reading, same discipline as S1.6): FFT-loop + plasma-loop share of
    `rhs_radial` time, at N=32/N=128 r-points, with/without plasma:
