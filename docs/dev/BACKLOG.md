@@ -1495,11 +1495,36 @@ the gate test itself was missing.*
   + 14 new assertions).
 
 ### 🟡 S5 — Numerics options (suggestions 10, 11, 12)
-*Item 2 done 2026-07-11 (re-scoped, see below). Items 1, 3 not started.*
-1. Mixed-precision spike (item 10) — timeboxed Criterion bench only;
-   proceed to real implementation only if >1.4× projected AND the b5−b4
-   cancellation analysis (TESTING.md §3) shows the f64-reduced estimate
-   keeps the same step sequence on the benchmark case.
+*Item 2 done 2026-07-11 (re-scoped). Items 1 and 3 investigated 2026-07-19
+— both re-scoped after measurement, see below (item 1: bar not cleared,
+reverted; item 3: backlog premise wrong, DP5 5th-order continuous extension
+is not the coefficient swap the entry implied — deferred as a larger item).*
+1. 🟢 **Done 2026-07-19 — measured, bar not cleared, reverted (S1.6
+   discipline).** Mixed-precision spike (item 10). Added a timeboxed
+   Criterion bench (`amalthea/benches/mixed_precision_bench.rs`, since
+   reverted) microbenchmarking the precision-sensitive inner arithmetic of
+   one accepted Dormand-Prince step — the two 7-term stage combinations
+   (`yn = field + dt·Σ b5ᵢ·kᵢ`, `yerr = dt·Σ errᵢ·kᵢ`) plus the weak error
+   norm (`native.rs`'s `native_step`, lines ~4272-4363) — in f64 vs. an
+   f32-mixed variant (stages held/combined in f32, norm reduced in f64:
+   the most generous case for the error estimate).
+   - **Measured speedup (`target-cpu=native`, this 12-core host): ~1.0-1.06×**
+     — f64 vs f32-mixed at n=8192: 65.8µs vs 64.8µs (1.02×); n=16384:
+     132.9µs vs 131.4µs (1.01×); n=65536: 577µs vs 546µs (1.06×). Far
+     below the >1.4× gate (a). The loop is compute/FMA-bound and already
+     well auto-vectorised in f64, not the memory-bandwidth-bound loop that
+     would have let f32's halved byte-count translate to speed — so f32
+     buys almost nothing here.
+   - Gate (b) would also fail regardless of (a): the error estimate is the
+     b5−b4 near-total cancellation (TESTING.md §3 / CLAUDE.md's Phase-2
+     gotcha — a ~1e-15 summation-order difference already amplifies into a
+     ~20% relative `err` swing near the FP-noise floor, which the PI
+     controller turns into a different step path). f32's ~1e-7 relative
+     precision on the cancelling `Σ errᵢ·kᵢ` sum cannot keep the adaptive
+     step sequence identical, so even a hypothetical speed win would change
+     the propagation.
+   - **Decision: do not implement; bench reverted** (only the numbers above
+     retained, per the S1.6 add/measure/revert precedent).
 2. 🟢 **Done 2026-07-11 — re-scoped, backlog's own premise was partly
    wrong.** Deterministic mode (item 11). Investigated before writing any
    code (per the S1.4/S4 pattern of checking the backlog's premise against
@@ -1569,11 +1594,53 @@ the gate test itself was missing.*
      zero drift elsewhere), physics/sim-interface/sim-multimode/
      sim-propagation/io/fields all green (see "Done (recent)" for the
      dated full run).
-3. 5th-order dense output (item 12) — Shampine's DP5 continuous extension
-   in `native.rs::interpolate` (stages already exposed via
-   `get_ks_stage`, Phase 8) **and** `RK45.jl`'s `interpC`, same commit —
-   removes the Julia-vs-native saved-grid tolerance tier entirely (only
-   valid if both sides change together).
+3. 🟡 **Investigated 2026-07-19 — backlog premise wrong; the stated goal is
+   unachievable by an interpolant-order change. Delivered the tighter
+   regression guard the item could actually achieve; the genuine 5th-order
+   continuous extension is deferred as a larger (extra-stage) item.**
+   The entry read: "Shampine's DP5 continuous extension in
+   `native.rs::interpolate` and `RK45.jl`'s `interpC`, same commit — removes
+   the Julia-vs-native saved-grid tolerance tier entirely." Two structural
+   facts (config-independent, not just measured) make this incorrect:
+   - **There is no `native.rs::interpolate`.** Dense output for the native
+     stepper is reconstructed *in Julia* (`interpolate(s::RustNativeStepper,
+     ti)`, `RK45.jl:2053`): it fetches the 7 resident RK stages via the
+     `get_ks_stage` FFI and applies the *same* `interpC` quartic as
+     `PreconStepper` (which reads them from `s.ks`), then re-expresses the
+     polynomial at the query time via `native_apply_prop`. Rust exposes the
+     stages and the propagator; the interpolation math is Julia-side for
+     *both* steppers.
+   - **Changing interpolant order therefore cannot change native-vs-Julia
+     agreement.** Both sides evaluate the identical interpolant from the
+     identical stages, so their saved-grid difference is the Phase-1
+     native-vs-Julia *method* tolerance (FFT/summation-order + Rust-`exp`
+     vs Julia-`exp` in the propagator), not an interpolation-order effect.
+     Measured (Kerr-only default config, `test_native_phase8.jl`): dense
+     output (saveN=50) native-vs-Julia rel = **2.2e-11**, essentially the
+     same order as the saveN=2 endpoints, **1.1e-11** — no interpolation-
+     driven tier exists to "remove." (The old test threshold was `1e-8`,
+     ~3 orders looser than reality; tightened to `1e-9` this pass — the one
+     shippable piece of the item. Aside: the endpoint comment claims
+     "~1e-13"; the real figure is ~1e-11, 2 orders looser than documented —
+     unrelated doc drift, left as-is.)
+   - **A genuine 5th-order continuous extension is real but different work.**
+     DP5's 7-stage FSAL "free" interpolant is provably *order 4* (Hairer &
+     Wanner II.6; it's the same MATLAB `ntrp45`/scipy interpolant), so
+     reaching order 5 requires *extra function evaluation(s)* per
+     interpolated step (Shampine 1986), i.e. a lazy extra-stage machinery on
+     both the resident Rust stepper (a new FFI to evaluate + return the
+     extra stage) and Julia. Its benefit is better accuracy of dense output
+     **against the true solution** — which no current test measures (the
+     whole suite's only native dense-output check is the native-vs-Julia one
+     above; there is no dense-vs-analytic tier where 4th-order interpolation
+     error is the limiter). So it neither shrinks the native-vs-Julia tier
+     nor tightens any existing test; it's a standalone accuracy improvement,
+     deferred until someone wants it. **Future implementer:** add an extra
+     stage to `native.rs` exposed via a new `get_extra_stage`-style FFI,
+     port the order-5 continuous-extension coefficients into a shared Julia
+     helper used by both `interpolate` methods, and add a *new*
+     dense-vs-fine-reference test (not a native-vs-Julia one) to show the
+     order gain.
 
 ### ⚪ S6 — Distribution & ecosystem (suggestions 9, 13, 14)
 *Item 1 done 2026-07-11. Items 2, 3 not started.*
