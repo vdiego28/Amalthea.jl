@@ -103,7 +103,7 @@ use crate::raman::{RamanOscillator, TimeDomainRamanSolver};
 use crate::spline::HermiteSpline;
 use libc::{c_char, c_double, c_int, c_uint, c_void, size_t};
 use num_complex::Complex;
-use rayon::iter::{IndexedParallelIterator, ParallelIterator};
+use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 use rayon::slice::{ParallelSlice, ParallelSliceMut};
 use std::ffi::CStr;
 
@@ -1194,39 +1194,136 @@ impl CpuNativeSim {
         let n_time_over = self.n_time_over;
         let n_r = self.n_r;
         let rho = self.raman_density;
-
         let thg = self.raman_thg;
-        let fft = self.raman_hilbert_fft.take();
-        for r in 0..n_r {
-            let start = r * n_time_over;
-            let end = start + n_time_over;
-            if thg {
-                for i in start..end {
-                    let e = self.radial_eto[i];
-                    self.raman_intensity[i] = e * e;
+        let n_threads = self.n_threads;
+
+        if n_threads > 1 && n_r > 1 {
+            // docs/dev/BACKLOG.md S2 Phase 4 item 1: parallelize the per-r-column
+            // Raman ADE solve. Unlike plasma (stateless per column), the solver
+            // and the Hilbert scratch (`raman_hilbert_a`/`_b`) are *shared
+            // mutable* state on the sequential path, so naive `par_chunks_mut`
+            // would race exactly as the S2 plan warns. Fix: partition the
+            // r-columns into <= n_threads *contiguous* groups and give each
+            // parallel task its OWN cloned solver and OWN Hilbert a/b scratch —
+            // no `current_thread_index`, no interior mutability. Each task
+            // provably touches only disjoint column slices of every buffer AND
+            // owns its own solver/scratch. `solve()` resets oscillator state at
+            // entry (raman.rs), so a cloned solver produces output *bit-identical*
+            // to the shared one — the n_threads=1-vs-N exact-equality the S2 plan
+            // mandates (there is no cross-column reduction either: the final
+            // `pto += rho·eto·p` accumulate is elementwise/per-column). The FFT
+            // plan is `Sync` and shared read-only (fftw_execute is thread-safe
+            // against distinct buffers, which the per-task a/b are).
+            let norm = self.fft_norm_over;
+            let group_len = n_r.div_ceil(n_threads);
+            let chunk = group_len * n_time_over;
+            let n_chunks = n_r.div_ceil(group_len);
+
+            let base_solver = self.raman_solver.clone();
+            let scratch_len = if thg { 0 } else { n_time_over };
+            let scratch: Vec<(
+                Option<TimeDomainRamanSolver>,
+                Vec<Complex<f64>>,
+                Vec<Complex<f64>>,
+            )> = (0..n_chunks)
+                .map(|_| {
+                    (
+                        base_solver.clone(),
+                        vec![Complex::new(0.0, 0.0); scratch_len],
+                        vec![Complex::new(0.0, 0.0); scratch_len],
+                    )
+                })
+                .collect();
+
+            let pool = self.thread_pool.get_or_insert_with(|| {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(n_threads)
+                    .build()
+                    .expect(
+                        "failed to build rayon thread pool for native RHS (docs/dev/BACKLOG.md S2)",
+                    )
+            });
+
+            let fft_ref = self.raman_hilbert_fft.as_ref();
+            let eto = &self.radial_eto;
+            let pto = &mut self.radial_pto;
+            let inten = &mut self.raman_intensity;
+            let pol = &mut self.raman_p;
+
+            pool.install(|| {
+                eto.par_chunks(chunk)
+                    .zip(pto.par_chunks_mut(chunk))
+                    .zip(inten.par_chunks_mut(chunk))
+                    .zip(pol.par_chunks_mut(chunk))
+                    .zip(scratch.into_par_iter())
+                    .for_each(
+                        |(
+                            (((eto_c, pto_c), inten_c), pol_c),
+                            (mut solver_opt, mut buf_a, mut buf_b),
+                        )| {
+                            let ncol = eto_c.len() / n_time_over;
+                            for col in 0..ncol {
+                                let s = col * n_time_over;
+                                let e = s + n_time_over;
+                                if thg {
+                                    for i in s..e {
+                                        let ev = eto_c[i];
+                                        inten_c[i] = ev * ev;
+                                    }
+                                } else if let Some(fft) = fft_ref {
+                                    hilbert_intensity(
+                                        fft,
+                                        &mut buf_a,
+                                        &mut buf_b,
+                                        &eto_c[s..e],
+                                        &mut inten_c[s..e],
+                                        norm,
+                                    );
+                                }
+                                if let Some(ref mut solver) = solver_opt {
+                                    solver.solve(&inten_c[s..e], &mut pol_c[s..e]);
+                                }
+                                for i in s..e {
+                                    pto_c[i] += rho * eto_c[i] * pol_c[i];
+                                }
+                            }
+                        },
+                    );
+            });
+        } else {
+            // Sequential path — bit-identical to pre-S2 behavior, untouched.
+            let fft = self.raman_hilbert_fft.take();
+            for r in 0..n_r {
+                let start = r * n_time_over;
+                let end = start + n_time_over;
+                if thg {
+                    for i in start..end {
+                        let e = self.radial_eto[i];
+                        self.raman_intensity[i] = e * e;
+                    }
+                } else if let Some(ref fft) = fft {
+                    let norm = self.fft_norm_over;
+                    hilbert_intensity(
+                        fft,
+                        &mut self.raman_hilbert_a,
+                        &mut self.raman_hilbert_b,
+                        &self.radial_eto[start..end],
+                        &mut self.raman_intensity[start..end],
+                        norm,
+                    );
                 }
-            } else if let Some(ref fft) = fft {
-                let norm = self.fft_norm_over;
-                hilbert_intensity(
-                    fft,
-                    &mut self.raman_hilbert_a,
-                    &mut self.raman_hilbert_b,
-                    &self.radial_eto[start..end],
-                    &mut self.raman_intensity[start..end],
-                    norm,
-                );
+                if let Some(ref mut solver) = self.raman_solver {
+                    solver.solve(
+                        &self.raman_intensity[start..end],
+                        &mut self.raman_p[start..end],
+                    );
+                }
+                for i in start..end {
+                    self.radial_pto[i] += rho * self.radial_eto[i] * self.raman_p[i];
+                }
             }
-            if let Some(ref mut solver) = self.raman_solver {
-                solver.solve(
-                    &self.raman_intensity[start..end],
-                    &mut self.raman_p[start..end],
-                );
-            }
-            for i in start..end {
-                self.radial_pto[i] += rho * self.radial_eto[i] * self.raman_p[i];
-            }
+            self.raman_hilbert_fft = fft;
         }
-        self.raman_hilbert_fft = fft;
     }
 
     /// Free-space counterpart of `apply_plasma_radial` — docs/dev/BACKLOG.md Phase I

@@ -10,7 +10,12 @@ pub const H5F_ACC_TRUNC: libc::c_uint = 0x0002;
 pub const H5P_DEFAULT: i64 = 0;
 pub const H5S_ALL: i64 = 0;
 pub const H5S_UNLIMITED: u64 = u64::MAX;
-pub const H5T_COMPOUND: libc::c_int = 3;
+// HDF5 datatype class enum: INTEGER=0, FLOAT=1, TIME=2, STRING=3, BITFIELD=4,
+// OPAQUE=5, COMPOUND=6. (Previously mis-defined as 3 = STRING, which turned the
+// `h5t_complex` compound into a 16-byte string type — latent because the scan
+// queue only writes ints and Julia writes complex via HDF5.jl; first exercised
+// by `scan_write_point`. See BACKLOG.md S6 item 2.)
+pub const H5T_COMPOUND: libc::c_int = 6;
 
 // Dynamic API structure loaded at runtime
 #[allow(non_snake_case)]
@@ -590,6 +595,135 @@ impl Hdf5Writer {
         unsafe {
             (self.api.H5Gclose)(group_id);
         }
+    }
+
+    /// Create an N-dimensional dataset whose `dims` are given in **Julia
+    /// (column-major) order**.
+    ///
+    /// HDF5's C API is row-major while Julia is column-major; HDF5.jl bridges
+    /// this by declaring the dataspace with the dimension list *reversed* and
+    /// then writing the raw column-major buffer unchanged. We replicate that
+    /// exactly so a dataset written here is read back by `HDF5.read` in Julia
+    /// as the original array with no transpose. (Matching HDF5.jl rather than
+    /// inventing our own layout is the whole point — see `scan_write_point`.)
+    pub fn create_dataset_nd_julia(
+        &self,
+        loc_id: i64,
+        name: &str,
+        dtype: i64,
+        julia_dims: &[u64],
+    ) -> Result<i64, String> {
+        let mut c_dims: Vec<u64> = julia_dims.iter().rev().copied().collect();
+        if c_dims.is_empty() {
+            // 0-D Julia array is not something we expect here; treat as scalar-ish 1-elem.
+            c_dims.push(1);
+        }
+        self.create_dataset_2d(loc_id, name, dtype, &c_dims, &c_dims)
+    }
+}
+
+/// Write one completed scan point's output arrays directly from native buffers
+/// into an HDF5 file, producing the same on-disk layout HDF5.jl's `HDF5Output`
+/// creates (groups `stats`/`meta`, a complex `yname` field dataset, and an f64
+/// `tname` propagation-coordinate dataset).
+///
+/// `y_ptr` points to the field array's column-major `Complex<f64>` bytes with
+/// shape `y_julia_dims` (Julia order, e.g. `(nω, nmodes, nz)`); `z_ptr` points
+/// to `nz` `f64` propagation coordinates.
+///
+/// If `lock_path` is `Some`, the whole create+write sequence is performed while
+/// holding the process-level `FlockLock` at that path — the same lock the scan
+/// queue uses — so concurrent scan workers writing to a shared file serialise.
+/// Per-scanidx output files (the common case) can pass `None`.
+///
+/// The file is created fresh (truncating any existing file), matching the
+/// non-cache `HDF5Output` behaviour of writing a whole result in one shot.
+#[allow(clippy::too_many_arguments)]
+pub fn scan_write_point(
+    fpath: &str,
+    yname: &str,
+    y: &[Complex<f64>],
+    y_julia_dims: &[u64],
+    tname: &str,
+    z: &[f64],
+    lock_path: Option<&str>,
+) -> Result<(), String> {
+    // Validate the field buffer length against the declared dims up front so a
+    // caller mistake is a clean error, not an out-of-bounds HDF5 read.
+    let expected: u64 = y_julia_dims.iter().product();
+    if expected as usize != y.len() {
+        return Err(format!(
+            "scan_write_point: y length {} != product of dims {:?} = {}",
+            y.len(),
+            y_julia_dims,
+            expected
+        ));
+    }
+    if let Some(&last) = y_julia_dims.last() {
+        if last as usize != z.len() {
+            return Err(format!(
+                "scan_write_point: last y dim {} != z length {}",
+                last,
+                z.len()
+            ));
+        }
+    }
+
+    // Optionally serialise the write behind the scan-queue-style file lock.
+    let _lock_guard = match lock_path {
+        Some(lp) => {
+            let lock = crate::scans::FlockLock::new(lp)?;
+            lock.lock()?;
+            Some(LockGuard(lock))
+        }
+        None => None,
+    };
+
+    let api = get_hdf5_api()?;
+
+    // Fresh file: remove any stale file so we never append into a half-written
+    // or differently-shaped previous result.
+    if std::path::Path::new(fpath).exists() {
+        std::fs::remove_file(fpath)
+            .map_err(|e| format!("scan_write_point: failed to remove existing {}: {}", fpath, e))?;
+    }
+    let writer = Hdf5Writer::open_or_create(fpath)?;
+
+    // Skeleton groups so the file structure matches HDF5Output's.
+    let stats_gid = writer.create_group("stats")?;
+    writer.close_group(stats_gid);
+    let meta_gid = writer.create_group("meta")?;
+    writer.close_group(meta_gid);
+
+    // Field dataset (complex compound {r,i}), Julia-ordered dims.
+    let dset_y =
+        writer.create_dataset_nd_julia(writer.file_id, yname, api.h5t_complex, y_julia_dims)?;
+    let wres = writer.write_dataset_complex(dset_y, y);
+    writer.close_dataset(dset_y);
+    wres?;
+
+    // Propagation-coordinate dataset (f64, 1-D).
+    let z_dims = [z.len() as u64];
+    let dset_z = writer.create_dataset_2d(
+        writer.file_id,
+        tname,
+        api.h5t_native_double,
+        &z_dims,
+        &z_dims,
+    )?;
+    let zres = writer.write_dataset_f64(dset_z, z);
+    writer.close_dataset(dset_z);
+    zres?;
+
+    Ok(())
+}
+
+/// RAII guard that releases a held `FlockLock` when dropped, so an early
+/// `?`-return from `scan_write_point` still unlocks.
+struct LockGuard(crate::scans::FlockLock);
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
     }
 }
 
