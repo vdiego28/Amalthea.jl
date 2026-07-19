@@ -9,6 +9,21 @@ import Printf: @sprintf
 import Amalthea: Scans, Utils
 import FileWatching.Pidfile: mkpidlock
 
+# Path to the native shared library (mirrors Nonlinear._libamalthea_path); used
+# by the opt-in native scan-point HDF5 writer (`write_scan_point_native`).
+function _libamalthea_path_out()
+    libname = if Sys.iswindows()
+        "amalthea.dll"
+    elseif Sys.isapple()
+        "libamalthea.dylib"
+    else
+        "libamalthea.so"
+    end
+    joinpath(Utils.lunadir(), "amalthea", "target", "release", libname)
+end
+
+const _LIBAMALTHEA_OUT = _libamalthea_path_out()
+
 abstract type AbstractOutput end
 
 "Output handler for writing only to memory"
@@ -558,6 +573,41 @@ end
 
 function ScanMemoryOutput(scan, scanidx, args...; kwargs...)
     savescan(MemoryOutput(args...; kwargs...), scan, scanidx)
+end
+
+"""
+    write_scan_point_native(fpath, y, z; yname="Eω", tname="z", lockpath=nothing)
+
+Opt-in backend (BACKLOG.md S6 item 2): write one completed scan point's output
+arrays directly to the HDF5 file at `fpath` via the native Rust writer
+(`scan_write_point_ffi`), bypassing HDF5.jl for the large field array `y`.
+
+`y` is the complex field array (any shape; its last dimension indexes the
+propagation coordinate) and `z` the propagation coordinates. The resulting file
+matches the on-disk layout `HDF5Output` produces (groups `stats`/`meta`, a
+complex `yname` dataset, and an f64 `tname` dataset), so it reads back through
+`HDF5Output`/`HDF5.read` unchanged.
+
+If `lockpath` is given, the create+write is performed while holding the same
+process-level file lock the scan queue uses — for concurrent workers writing a
+shared file. Per-scanidx files (the usual case) can leave it `nothing`.
+
+This is a deliberate opt-in: the default Julia `HDF5Output` path is unchanged.
+"""
+function write_scan_point_native(fpath::AbstractString, y::AbstractArray, z::AbstractVector;
+                                 yname::AbstractString="Eω", tname::AbstractString="z",
+                                 lockpath=nothing)
+    yc = convert(Array{ComplexF64}, y)
+    zc = convert(Array{Float64}, z)
+    dims = UInt64[size(yc)...]
+    rc = ccall((:scan_write_point_ffi, _LIBAMALTHEA_OUT), Cint,
+               (Cstring, Cstring, Ptr{ComplexF64}, Ptr{UInt64}, Csize_t,
+                Cstring, Ptr{Float64}, Csize_t, Cstring),
+               fpath, yname, yc, dims, length(dims),
+               tname, zc, length(zc),
+               isnothing(lockpath) ? Cstring(C_NULL) : String(lockpath))
+    rc == 0 || error("native scan_write_point failed (rc=$rc) for $fpath")
+    return fpath
 end
 
 function savescan(out, scan, scanidx)
