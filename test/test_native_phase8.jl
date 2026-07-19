@@ -52,12 +52,12 @@ using TestItems
 
             # Confirms the default run did NOT silently take the Julia path:
             # native vs Julia agree only to the established Phase-1 method
-            # tolerance (~1e-13), not bit-for-bit, so an exact match here
-            # would be suspicious rather than reassuring.
+            # tolerance (~1.6e-11 measured here), not bit-for-bit, so an exact
+            # match here would be suspicious rather than reassuring.
             rel_default_vs_julia = norm(Eω_default - Eω_julia) / norm(Eω_julia)
             println("Phase 8 default-vs-explicit-native (eligible config): ",
                     Eω_default == Eω_native ? "bit-identical" : "MISMATCH")
-            println("Phase 8 default-vs-Julia rel (eligible config, expect ~1e-13): ",
+            println("Phase 8 default-vs-Julia rel (eligible config, expect ~1.6e-11): ",
                     rel_default_vs_julia)
             @test 0 < rel_default_vs_julia < 1e-8
         end
@@ -96,7 +96,7 @@ using TestItems
             # before any stepping happens), so agreement should be at the
             # Julia-vs-Julia reproducibility floor established by
             # test_stepper_rust.jl (~1e-6, FFTW summation-order), not exact
-            # equality and not the ~1e-13 native-vs-Julia method tolerance.
+            # equality and not the ~1e-11 native-vs-Julia method tolerance.
             rel = norm(Eω_default - Eω_julia) / norm(Eω_julia)
             println("Phase 8 NativeIneligible fallback rel (expect Julia-vs-Julia floor): ", rel)
             @test rel < 1e-6
