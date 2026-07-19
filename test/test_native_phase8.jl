@@ -135,7 +135,22 @@ using TestItems
             Eω_julia = out_julia["Eω"]
             rel = norm(Eω_native - Eω_julia) / norm(Eω_julia)
             println("Phase 8 dense-output (saveN=50) native-vs-Julia rel: ", rel)
-            @test rel < 1e-8
+            # Tightened 1e-8 → 1e-9 (BACKLOG S5 item 3, 2026-07-19). The
+            # native and Julia dense outputs are reconstructed by the *same*
+            # Julia `interpC` quartic (PreconStepper from `s.ks`,
+            # RustNativeStepper from `get_ks_stage`), so their agreement is
+            # the Phase-1 native-vs-Julia method tolerance (~1e-11 here,
+            # measured), NOT an interpolation-order effect — dense output
+            # (~2.2e-11) is the same order as the saveN=2 endpoints
+            # (~1.1e-11). The old 1e-8 threshold was ~3 orders looser than
+            # reality; 1e-9 keeps ~45× margin (safe against cross-platform
+            # `exp`/SIMD deltas and the default-adaptive-stepping path
+            # sensitivity, TESTING.md §3) while catching any order-of-
+            # magnitude dense-output regression. See BACKLOG S5 item 3 for
+            # why a genuine 5th-order continuous extension neither shrinks
+            # this tier (shared interpolant) nor is a coefficient swap
+            # (DP5's 7-stage FSAL free interpolant is provably order 4).
+            @test rel < 1e-9
         end
     end
 end

@@ -1390,3 +1390,66 @@ pub unsafe extern "C" fn init_blas_path(path_ptr: *const libc::c_char) -> c_int 
         -1
     }
 }
+
+// ─── Scan-point HDF5 writer FFI (BACKLOG.md S6 item 2) ────────────────────────
+
+/// Write one completed scan point's output arrays directly to an HDF5 file,
+/// bypassing Julia's HDF5.jl for the (large) field array — see
+/// [`crate::io::scan_write_point`]. Returns 0 on success, `-1` on a null
+/// required pointer or invalid UTF-8 path, `-2` on any I/O / HDF5 error.
+///
+/// # Safety
+/// Every non-null pointer must be valid for its described length for the whole
+/// call. `fpath_ptr`, `yname_ptr`, `tname_ptr` must be non-null, NUL-terminated
+/// C strings; `lock_path_ptr` may be null (no locking). `y_ptr` points to
+/// `prod(dims)` interleaved re/im `f64` (`Complex<f64>`), `dims_ptr` to `n_dims`
+/// `u64` dimensions in Julia (column-major) order, `z_ptr` to `nz` `f64`.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn scan_write_point_ffi(
+    fpath_ptr: *const libc::c_char,
+    yname_ptr: *const libc::c_char,
+    y_ptr: *const Complex<f64>,
+    dims_ptr: *const u64,
+    n_dims: usize,
+    tname_ptr: *const libc::c_char,
+    z_ptr: *const f64,
+    nz: usize,
+    lock_path_ptr: *const libc::c_char,
+) -> c_int {
+    if fpath_ptr.is_null()
+        || yname_ptr.is_null()
+        || tname_ptr.is_null()
+        || y_ptr.is_null()
+        || dims_ptr.is_null()
+        || z_ptr.is_null()
+    {
+        return -1;
+    }
+    let cstr = |p: *const libc::c_char| unsafe { std::ffi::CStr::from_ptr(p) }.to_str();
+    let (fpath, yname, tname) = match (cstr(fpath_ptr), cstr(yname_ptr), cstr(tname_ptr)) {
+        (Ok(a), Ok(b), Ok(c)) => (a, b, c),
+        _ => return -1,
+    };
+    let lock_path: Option<&str> = if lock_path_ptr.is_null() {
+        None
+    } else {
+        match cstr(lock_path_ptr) {
+            Ok(s) => Some(s),
+            Err(_) => return -1,
+        }
+    };
+
+    let dims = unsafe { std::slice::from_raw_parts(dims_ptr, n_dims) };
+    let total: u64 = dims.iter().product();
+    let y = unsafe { std::slice::from_raw_parts(y_ptr, total as usize) };
+    let z = unsafe { std::slice::from_raw_parts(z_ptr, nz) };
+
+    match crate::io::scan_write_point(fpath, yname, y, dims, tname, z, lock_path) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("Luna-Rust scan_write_point error: {}", e);
+            -2
+        }
+    }
+}

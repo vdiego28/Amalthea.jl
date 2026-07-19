@@ -95,5 +95,27 @@ using TestItems
             println("Radial Raman-on vs Raman-off rel (Julia, non-vacuousness): ", rel_raman_effect)
             @test rel_raman_effect > 1e-6
         end
+
+        @testset "n_threads=1 vs n_threads=4 bit-identical (docs/dev/BACKLOG.md S2 Phase 4)" begin
+            # S2 Phase 4 item 1 parallelizes apply_raman_radial's per-r-column
+            # ADE solve. Unlike plasma, the solver + Hilbert scratch are shared
+            # mutable state on the sequential path, so the parallel branch gives
+            # each worker its OWN cloned solver (solve() resets state at entry →
+            # history-independent → cloned == shared) and OWN Hilbert scratch.
+            # Writes are per-column disjoint with no cross-column reduction, so
+            # the two thread counts must agree EXACTLY, not within tolerance —
+            # any mismatch is a real aliasing/chunking bug, never noise.
+            s1 = withenv("AMALTHEA_USE_RUST_NATIVE" => "1") do
+                RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
+                                   max_dt=dt, min_dt=dt, native_threads=1)
+            end
+            s4 = withenv("AMALTHEA_USE_RUST_NATIVE" => "1") do
+                RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
+                                   max_dt=dt, min_dt=dt, native_threads=4)
+            end
+            solve(s1, L)
+            solve(s4, L)
+            @test s1.yn == s4.yn
+        end
     end
 end
