@@ -1318,12 +1318,50 @@ then reproducing the crash directly:**
    proceeding. QDHT dominates the rest (already internally
    parallel/BLAS-backed via S1 item 5's BLAS-3 QDHT fix — out of scope
    for this item).
-3. Modal: rayon inside `hcubature_v`'s batch callback only — cubature's
-   adaptive node placement stays sequential/deterministic. *Not started
-   this pass.*
+3. 🟢 **Modal: DONE 2026-07-20.** rayon over the cubature batch's nodes
+   inside both `integrand_v` callbacks (`modal_integrand_v` /
+   `modal_integrand_v_full`) — cubature's own adaptive node *placement* stays
+   sequential/deterministic; only the per-node integrand evaluation is
+   parallelized. **Measured first** (temp `Instant` counters on `rhs_modal`,
+   add/measure/revert per S1.6/S2-Phase-2 discipline): the integrand loop is
+   **90.3%** (full=false, 1 mode) / **95.6%** (full=true) / **82.8%**
+   (2-mode) of `rhs_modal` wall time — well above the proceed bar (radial was
+   38-61%; S1.6 parked at ~2%). Batch sizes are small for full=false (~4
+   nodes/batch) but each node is ~27-33µs of FFT-heavy work, so threading
+   still nets a win; full=true batches ~25 nodes. **Measured wall-clock
+   speedup (`native_threads`=1→4, this 12-core host, 300-step fixed-dt solve,
+   min-of-3):** full=false 1-mode **1.31×**, full=false 2-mode **1.52×**,
+   full=true **2.64×** — every config a genuine speedup (even the small-batch
+   full=false regime S3.3/S1.6 warned could go net-negative), which also
+   proves the parallel branch actually engages (the bit-identical test isn't
+   vacuously passing on a silently-sequential path). No min-npt guard needed.
+   **Refactor:**
+   `rhs_modal_pointcalc` (a `&mut self` method scribbling on ~13 shared
+   `self.modal_*`/`raman_*` scratch buffers) was split into a `Sync`
+   read-only view (`ModalRO`: `&[..]`/`Copy`/`Option<&Plan>`, FFT wrappers
+   already `Sync`) + per-worker `ModalScratch` (all written buffers, pooled on
+   `self.modal_scratch_pool`, entry 0 = sequential path) and a free-standing
+   associated fn `modal_pointcalc(&ro, sc, r, θ, out)` used by BOTH paths (one
+   code path, no duplicated 270-line body). Nodes split into `≤ n_threads`
+   contiguous groups; each group's `out[p*fdim..]` is disjoint with no
+   cross-node reduction ⇒ **bit-identical** `n_threads`=1-vs-4 (the S2 gate,
+   not a tolerance). Raman-modal threaded too: each worker's `ModalScratch`
+   carries its **own cloned** `TimeDomainRamanSolver` + Hilbert scratch (same
+   discipline as radial item 1; `solve()` resets state at entry ⇒ clone ==
+   shared, bit-identical); the Hilbert FFT plan is shared read-only
+   (`fftw_execute` thread-safe against distinct buffers). No new GC-root
+   hazard — the solver is Rust-owned/cloned, not a persistent raw pointer into
+   Julia memory (contrast the plasma-pointer UAF fixed on `main`). New
+   `test/test_native_modal_threading.jl` (Kerr full=false/full=true/2-mode/
+   npol=2, Raman :N2, + forced-`GC.gc()` stress loop): all bit-identical
+   1-vs-4, native-vs-Julia unchanged at ~2e-16 (Kerr) / ~1e-6 (Raman ADE-vs-
+   FFT floor). 70/70 Rust unit tests; clean `-D warnings` build.
 4. 3-D free-space FFT: `fftw_plan_with_nthreads`/`fftw_init_threads`
-   (dlopened `libfftw3_threads`, silent fallback if absent). *Not started
-   this pass.*
+   (dlopened `libfftw3_threads`, silent fallback if absent). *Not started —
+   the last open S2 item.* Blocked on `fftw.rs`'s `unsafe impl Sync` holding
+   only for single-threaded plans: an `nthreads>1` plan would deadlock under
+   the existing concurrent `fftw_execute_dft` path, so it needs an isolated
+   multi-threaded plan under `PLANNER_LOCK` first.
 5. 🟢 Error-norm reduction stays sequential (determinism, ties to S5.2) —
    confirmed already sequential (`weaknorm_c64`), untouched by this item.
 - Gate: universal + fixed-step equivalence under `JULIA_NUM_THREADS=4` +
@@ -1658,7 +1696,8 @@ is not the coefficient swap the entry implied — deferred as a larger item).*
      order gain.
 
 ### ⚪ S6 — Distribution & ecosystem (suggestions 9, 13, 14)
-*Item 1 done 2026-07-11. Items 2, 3 not started.*
+*Item 1 done 2026-07-11. Item 2 done 2026-07-19 (commit 05c4a4e). Item 3 not
+started.*
 1. 🟢 **Done 2026-07-11.** Prebuilt binaries (item 13).
    `.github/workflows/release.yml`: triggered on `v*` tags (same tags
    TagBot.yml pushes after a Julia registry release) or manual dispatch;
@@ -1697,10 +1736,15 @@ is not the coefficient swap the entry implied — deferred as a larger item).*
    installs correctly. **Not yet verified:** an actual tagged release
    completing the `release.yml` pipeline and `deps/build.jl` consuming it
    end-to-end in the wild — that only happens on the next real version tag.
-2. Rust-side scan HDF5 writer (item 9) — `io.rs` `scan_write_point(...)`
-   writing directly from native buffers under the existing flock/
-   `LockFileEx` queue lock (hard dependency: Windows scan-lock validation
-   below, for the Windows half). Opt-in `Output.jl` backend.
+2. 🟢 **Done 2026-07-19 (commit 05c4a4e).** Rust-side scan HDF5 writer
+   (item 9) — `io.rs` `scan_write_point(...)` (+ `create_dataset_nd_julia`)
+   writes a finished scan point's field/z arrays directly from native buffers,
+   matching HDF5.jl's column-major dim-reversal so Julia reads them back
+   untransposed; optional scan-queue `FlockLock`/`LockFileEx` coordination.
+   Exposed via `scan_write_point_ffi` + the opt-in
+   `Output.write_scan_point_native` (default Julia `HDF5Output` path
+   unchanged). Also fixed a latent `io::H5T_COMPOUND` constant bug (was 3 =
+   H5T_STRING). Test: `test/test_scan_native_write.jl` (:rust).
 3. Standalone CLI (item 14) — `luna-rust/src/bin/luna-cli.rs`
    (`[[bin]]` in the existing crate, not a new workspace member — see the
    root-workspace-removal history in "Done (recent)"). TOML config in,

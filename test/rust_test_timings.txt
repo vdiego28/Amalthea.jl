@@ -29,6 +29,7 @@ test_native_modal_general_order.jl 34.1
 test_native_modal_npol2.jl 33.5
 test_native_modal_raman.jl 33.7
 test_native_modal_taper.jl 41.5
+test_native_modal_threading.jl 45.0
 test_native_multipoint_gradient.jl 43.2
 test_native_phase0.jl 27.8
 test_native_phase1.jl 32.1

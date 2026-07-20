@@ -1,7 +1,9 @@
 # Plan: BACKLOG.md S2 — Threading the native RHS
 
-Status: **Phases 1-3 (radial: threading plumbing, measurement, FFT+plasma
-parallelization) all done. RE-LANDED 2026-07-11.** Phase 3 was originally
+Status: **Phases 1-3 (radial: plumbing, measurement, FFT+plasma) + Phase 4
+Raman-radial + Phase 4 modal all done. RE-LANDED 2026-07-11; modal threading
+landed 2026-07-20.** Only free-space 3-D FFT threading (Phase 4, last bullet)
+remains open. Phase 3 was originally
 implemented, committed, pushed, then REVERTED (2026-07-10) after a
 post-push wall-clock benchmark surfaced an intermittent segfault. The
 revert's isolation experiment correctly implicated
@@ -131,16 +133,42 @@ specific `n_r % n_threads`), never a tolerance to loosen. Full 7-group
 gate at `n_threads=1` (must match all baselines exactly) plus a second
 `rust`-group-only run with 4 threads.
 
-## Phase 4 (not started) — Raman per-worker solver, modal, free-space
+## Phase 4 — Raman per-worker solver, modal, free-space
 
-- Raman per-worker `TimeDomainRamanSolver` instances (indexed by
-  `rayon::current_thread_index()`, sized to `n_threads`).
-- Modal (`rhs_modal`/`modal_integrand_v`/`modal_integrand_v_full`,
-  native.rs:2313-2387): rayon over the batch's `npt` points inside the
-  callback (cubature's own adaptive node placement stays sequential).
+- **Raman per-worker `TimeDomainRamanSolver` — DONE 2026-07-20** (radial,
+  item 1 of the BACKLOG S2 entry). Each rayon task owns its **own cloned**
+  solver + Hilbert scratch over a contiguous r-column group (no
+  `current_thread_index`, no interior mutability). `solve()` resets state at
+  entry, so a clone is bit-identical to the shared one.
+- **Modal (`rhs_modal` batch callbacks) — DONE 2026-07-20.** The two
+  cubature `integrand_v` callbacks (`modal_integrand_v` /
+  `modal_integrand_v_full`) now hand off to `CpuNativeSim::modal_eval_pairs`,
+  which parallelizes the batch's nodes across rayon workers when
+  `n_threads > 1`. The core refactor: `rhs_modal_pointcalc` (a `&mut self`
+  method scribbling on ~13 shared `self.modal_*`/`raman_*` scratch buffers)
+  became a free-standing associated fn `modal_pointcalc(ro: &ModalRO,
+  sc: &mut ModalScratch, r, θ, out)` — read-only sim state in a `Sync`
+  `ModalRO` view (`&`/`Copy`/`Option<&Plan>`, FFT wrappers already `Sync`),
+  every written buffer in a per-worker `ModalScratch` (pooled on
+  `self.modal_scratch_pool`, entry 0 = sequential path). Nodes are split into
+  `≤ n_threads` contiguous groups (`par_chunks` over coords + `fvals` zipped
+  with `par_iter_mut` over the pool), each group's `out[p*fdim..]` disjoint,
+  no cross-node reduction ⇒ **bit-identical** `n_threads`=1-vs-4. Measured
+  parallelizable fraction (temp `Instant` counters, reverted): 90.3%
+  (full=false 1 mode), 95.6% (full=true), 82.8% (2-mode) — well above the
+  proceed bar (radial was 38-61%, S1.6 parked at 2%). Raman-modal threaded
+  too: each worker's `ModalScratch` carries its own cloned solver + Hilbert
+  scratch (same discipline as radial), Hilbert FFT plan shared read-only. No
+  new GC-root hazard (the solver is Rust-owned/cloned, not a persistent raw
+  pointer into Julia memory — contrast the plasma-pointer UAF fixed on
+  `main`). Test: `test/test_native_modal_threading.jl` (Kerr full=false/
+  full=true/2-mode/npol=2, Raman :N2, + a forced-`GC.gc()` stress loop).
 - Free-space 3-D FFT threading via `fftw_init_threads`/
   `fftw_plan_with_nthreads` (new bindings in `fftw.rs`, a planning-time
-  setting under `PLANNER_LOCK`).
+  setting under `PLANNER_LOCK`) — **still open**. `fftw.rs`'s
+  `unsafe impl Sync` only holds for single-threaded plans, so an
+  `nthreads>1` plan would deadlock under the existing concurrent
+  `fftw_execute_dft` path; needs an isolated multi-threaded plan first.
 
 ## Verification (every phase)
 

@@ -103,7 +103,9 @@ use crate::raman::{RamanOscillator, TimeDomainRamanSolver};
 use crate::spline::HermiteSpline;
 use libc::{c_char, c_double, c_int, c_uint, c_void, size_t};
 use num_complex::Complex;
-use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
+use rayon::iter::{
+    IndexedParallelIterator, IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
+};
 use rayon::slice::{ParallelSlice, ParallelSliceMut};
 use std::ffi::CStr;
 
@@ -364,20 +366,15 @@ pub struct CpuNativeSim {
     pub modal_rtol: f64,
     pub modal_atol: f64,
     pub modal_maxevals: usize,
-    // Per-node scratch (one node at a time — looped, not batched, see doc
-    // comment above). Sized once in `native_set_modal_params`.
-    pub modal_ems: Vec<f64>,
-    pub modal_erw: Vec<Complex<f64>>,
-    pub modal_erwo: Vec<Complex<f64>>,
-    pub modal_er: Vec<f64>,
-    pub modal_pr: Vec<f64>,
-    pub modal_prwo: Vec<Complex<f64>>,
-    pub modal_prw: Vec<Complex<f64>>,
-    /// EnvGrid (c2c) counterparts of `modal_er`/`modal_pr` — only allocated
-    /// (non-empty) when `is_real == false` (Phase E.4 item 5), same split as
-    /// `radial_eto_c`/`radial_pto_c` (Phase D.1).
-    pub modal_er_c: Vec<Complex<f64>>,
-    pub modal_pr_c: Vec<Complex<f64>>,
+    /// Per-worker scratch for the modal per-node integrand (`modal_pointcalc`).
+    /// Entry 0 is always present (sized in `native_set_modal_params`) and is
+    /// the sole scratch used on the sequential path (`n_threads == 1`).
+    /// Entries 1.. are allocated lazily by `ensure_modal_pool` when
+    /// `n_threads > 1` so each rayon worker owns a disjoint `ModalScratch`
+    /// (docs/dev/BACKLOG.md S2 Phase 4 — modal RHS threading). Every buffer a
+    /// node writes lives here, so the read-only `ModalRO` view of `self` can be
+    /// shared `&` across threads while each worker mutates only its own entry.
+    pub modal_scratch_pool: Vec<ModalScratch>,
     /// Snapshot of the trial field (`Emω`, flattened column-major
     /// `(n_spec, n_modes)`) for the duration of one `rhs_modal` call — the
     /// `libcubature` callback only receives a `void*`, so the field to
@@ -766,15 +763,7 @@ impl CpuNativeSim {
             modal_rtol: 1e-3,
             modal_atol: 0.0,
             modal_maxevals: 512,
-            modal_ems: Vec::new(),
-            modal_erw: Vec::new(),
-            modal_erwo: Vec::new(),
-            modal_er: Vec::new(),
-            modal_pr: Vec::new(),
-            modal_prwo: Vec::new(),
-            modal_prw: Vec::new(),
-            modal_er_c: Vec::new(),
-            modal_pr_c: Vec::new(),
+            modal_scratch_pool: Vec::new(),
             modal_emega: Vec::new(),
             is_free: false,
             n_y: 0,
@@ -1950,14 +1939,14 @@ impl CpuNativeSim {
     /// analytically). For `full=true` (Phase E.3), `θ` is a genuine
     /// cubature dimension and the Jacobian is just `r`. Writes the packed
     /// real/imag `Prmω[·,·]·jacobian` into `out` (length `2·n_spec·n_modes`).
-    fn rhs_modal_pointcalc(&mut self, r: f64, theta: f64, out: &mut [f64]) {
-        let n_modes = self.n_modes;
-        let npol = self.npol;
-        let n_spec = self.n_spec;
-        let n_spec_over = self.n_spec_over;
-        let n_time_over = self.n_time_over;
+    fn modal_pointcalc(ro: &ModalRO, sc: &mut ModalScratch, r: f64, theta: f64, out: &mut [f64]) {
+        let n_modes = ro.n_modes;
+        let npol = ro.npol;
+        let n_spec = ro.n_spec;
+        let n_spec_over = ro.n_spec_over;
+        let n_time_over = ro.n_time_over;
 
-        if r <= 0.0 || r >= self.modal_a {
+        if r <= 0.0 || r >= ro.modal_a {
             out.fill(0.0);
             return;
         }
@@ -1965,119 +1954,117 @@ impl CpuNativeSim {
         // ── mode field synthesis at (r,θ): Exy = J_order(r·unm/a)/√N ·
         // (ax,ay) — see `mode_angle_xy` for the per-kind angular formula.
         for m in 0..n_modes {
-            let x = r * self.modal_unm[m] / self.modal_a;
-            let base = jn(self.modal_order[m], x) * self.modal_inv_sqrt_n[m];
+            let x = r * ro.modal_unm[m] / ro.modal_a;
+            let base = jn(ro.modal_order[m], x) * ro.modal_inv_sqrt_n[m];
             let (ax, ay) = mode_angle_xy(
-                self.modal_kind[m],
-                self.modal_order[m],
-                self.modal_phi[m],
+                ro.modal_kind[m],
+                ro.modal_order[m],
+                ro.modal_phi[m],
                 theta,
             );
-            for (p, &sel) in self.modal_pol_select.iter().enumerate() {
-                self.modal_ems[m * npol + p] = base * if sel == 0 { ax } else { ay };
+            for (p, &sel) in ro.modal_pol_select.iter().enumerate() {
+                sc.ems[m * npol + p] = base * if sel == 0 { ax } else { ay };
             }
         }
 
         // ── to_space!: Erω[iω,p] = Σ_m Emω[iω,m]·Ems[m,p] ────────────────────────
-        for v in self.modal_erw.iter_mut() {
+        for v in sc.erw.iter_mut() {
             *v = Complex::new(0.0, 0.0);
         }
         for p in 0..npol {
             for m in 0..n_modes {
-                let coeff = self.modal_ems[m * npol + p];
+                let coeff = sc.ems[m * npol + p];
                 if coeff == 0.0 {
                     continue;
                 }
-                let em_col = &self.modal_emega[m * n_spec..(m + 1) * n_spec];
-                let er_col = &mut self.modal_erw[p * n_spec..(p + 1) * n_spec];
+                let em_col = &ro.modal_emega[m * n_spec..(m + 1) * n_spec];
+                let er_col = &mut sc.erw[p * n_spec..(p + 1) * n_spec];
                 for i in 0..n_spec {
                     er_col[i] += em_col[i] * coeff;
                 }
             }
         }
 
-        self.modal_erwo.fill(Complex::new(0.0, 0.0));
-        if self.is_real {
+        sc.erwo.fill(Complex::new(0.0, 0.0));
+        if ro.is_real {
             // ── to_time! per polarisation column (RealGrid r2c, looped rank-1 plan) ──
             let scale_fwd = (n_spec_over - 1) as f64 / (n_spec - 1) as f64;
             for p in 0..npol {
-                let in_col = &self.modal_erw[p * n_spec..(p + 1) * n_spec];
-                let out_col = &mut self.modal_erwo[p * n_spec_over..(p + 1) * n_spec_over];
+                let in_col = &sc.erw[p * n_spec..(p + 1) * n_spec];
+                let out_col = &mut sc.erwo[p * n_spec_over..(p + 1) * n_spec_over];
                 for i in 0..n_spec {
                     out_col[i] = in_col[i] * scale_fwd;
                 }
             }
-            if let Some(ref fft) = self.fft_r2c_over {
+            if let Some(fft) = ro.fft_r2c_over {
                 for p in 0..npol {
                     let spec_start = p * n_spec_over;
                     let time_start = p * n_time_over;
-                    let spec_col = &mut self.modal_erwo[spec_start..spec_start + n_spec_over];
-                    let time_col = &mut self.modal_er[time_start..time_start + n_time_over];
+                    let spec_col = &mut sc.erwo[spec_start..spec_start + n_spec_over];
+                    let time_col = &mut sc.er[time_start..time_start + n_time_over];
                     fft.inverse(spec_col, time_col);
                 }
-                let inv_nto = self.fft_norm_over;
-                for v in &mut self.modal_er {
+                let inv_nto = ro.fft_norm_over;
+                for v in &mut sc.er {
                     *v *= inv_nto;
                 }
             }
 
             // ── Kerr (KerrScalar!/KerrVector!, src/Nonlinear.jl:81-93) ───────────────
-            self.modal_pr.fill(0.0);
-            let fac = self.modal_kerr_fac;
+            sc.pr.fill(0.0);
+            let fac = ro.modal_kerr_fac;
             if npol == 1 {
                 for i in 0..n_time_over {
-                    let e = self.modal_er[i];
-                    self.modal_pr[i] += fac * e * e * e;
+                    let e = sc.er[i];
+                    sc.pr[i] += fac * e * e * e;
                 }
             } else {
                 for i in 0..n_time_over {
-                    let ex = self.modal_er[i];
-                    let ey = self.modal_er[n_time_over + i];
+                    let ex = sc.er[i];
+                    let ey = sc.er[n_time_over + i];
                     let sq = ex * ex + ey * ey;
-                    self.modal_pr[i] += fac * sq * ex;
-                    self.modal_pr[n_time_over + i] += fac * sq * ey;
+                    sc.pr[i] += fac * sq * ex;
+                    sc.pr[n_time_over + i] += fac * sq * ey;
                 }
             }
 
             // ── Raman polarisation (if enabled), npol=1 scalar field only ────────────
             // Phase D.4 (docs/dev/BACKLOG.md): same `apply_raman_real` ADE-solve formula,
-            // applied per quadrature node — `rhs_modal_pointcalc` is called
-            // sequentially per node (see `modal_integrand_v`'s doc), so the
-            // single resident `raman_solver` (which resets its own state at
-            // solve-entry) can be reused across nodes with no cross-node
-            // leakage, exactly like `apply_raman_radial`'s per-r-column reuse.
+            // applied per quadrature node. Each parallel worker owns its own
+            // cloned `raman_solver` + Hilbert scratch in `sc` (S2 Phase 4 modal
+            // threading), so no cross-node/cross-thread state leaks; `solve()`
+            // resets oscillator state at entry, so a cloned solver is
+            // bit-identical to the shared one (exactly like `apply_raman_radial`).
+            // The Hilbert FFT plan is shared read-only (`ro.raman_hilbert_fft`,
+            // Sync; `fftw_execute` is thread-safe against distinct buffers).
             // RealGrid-only (native.rs's inline ADE solve is a real-buffer
             // solver) — Julia rejects Raman+EnvGrid before this is reached.
-            if self.has_raman {
-                let rho = self.raman_density;
-                if self.raman_thg {
+            if ro.has_raman {
+                let rho = ro.raman_density;
+                if ro.raman_thg {
                     for i in 0..n_time_over {
-                        let e = self.modal_er[i];
-                        self.raman_intensity[i] = e * e;
+                        let e = sc.er[i];
+                        sc.raman_intensity[i] = e * e;
                     }
-                } else {
-                    let fft = self.raman_hilbert_fft.take();
-                    if let Some(ref fft) = fft {
-                        let norm = self.fft_norm_over;
-                        hilbert_intensity(
-                            fft,
-                            &mut self.raman_hilbert_a,
-                            &mut self.raman_hilbert_b,
-                            &self.modal_er[..n_time_over],
-                            &mut self.raman_intensity[..n_time_over],
-                            norm,
-                        );
-                    }
-                    self.raman_hilbert_fft = fft;
+                } else if let Some(fft) = ro.raman_hilbert_fft {
+                    let norm = ro.fft_norm_over;
+                    hilbert_intensity(
+                        fft,
+                        &mut sc.raman_hilbert_a,
+                        &mut sc.raman_hilbert_b,
+                        &sc.er[..n_time_over],
+                        &mut sc.raman_intensity[..n_time_over],
+                        norm,
+                    );
                 }
-                if let Some(ref mut solver) = self.raman_solver {
+                if let Some(ref mut solver) = sc.raman_solver {
                     solver.solve(
-                        &self.raman_intensity[..n_time_over],
-                        &mut self.raman_p[..n_time_over],
+                        &sc.raman_intensity[..n_time_over],
+                        &mut sc.raman_p[..n_time_over],
                     );
                 }
                 for i in 0..n_time_over {
-                    self.modal_pr[i] += rho * self.modal_er[i] * self.raman_p[i];
+                    sc.pr[i] += rho * sc.er[i] * sc.raman_p[i];
                 }
             }
 
@@ -2085,18 +2072,18 @@ impl CpuNativeSim {
             for p in 0..npol {
                 let start = p * n_time_over;
                 for t in 0..n_time_over {
-                    self.modal_pr[start + t] *= self.towin[t];
+                    sc.pr[start + t] *= ro.towin[t];
                 }
             }
 
             // ── to_freq! per column ───────────────────────────────────────────────────
             let scale_inv2 = (n_spec - 1) as f64 / (n_spec_over - 1) as f64;
-            if let Some(ref fft) = self.fft_r2c_over {
+            if let Some(fft) = ro.fft_r2c_over {
                 for p in 0..npol {
                     let time_start = p * n_time_over;
                     let spec_start = p * n_spec_over;
-                    let time_col = &mut self.modal_pr[time_start..time_start + n_time_over];
-                    let spec_col = &mut self.modal_prwo[spec_start..spec_start + n_spec_over];
+                    let time_col = &mut sc.pr[time_start..time_start + n_time_over];
+                    let spec_col = &mut sc.prwo[spec_start..spec_start + n_spec_over];
                     fft.forward(time_col, spec_col);
                 }
             }
@@ -2104,7 +2091,7 @@ impl CpuNativeSim {
                 let in_start = p * n_spec_over;
                 let out_start = p * n_spec;
                 for i in 0..n_spec {
-                    self.modal_prw[out_start + i] = self.modal_prwo[in_start + i] * scale_inv2;
+                    sc.prw[out_start + i] = sc.prwo[in_start + i] * scale_inv2;
                 }
             }
         } else {
@@ -2117,8 +2104,8 @@ impl CpuNativeSim {
             let half = n_spec / 2;
             let scale_fwd = n_spec_over as f64 / n_spec as f64;
             for p in 0..npol {
-                let in_col = &self.modal_erw[p * n_spec..(p + 1) * n_spec];
-                let out_col = &mut self.modal_erwo[p * n_spec_over..(p + 1) * n_spec_over];
+                let in_col = &sc.erw[p * n_spec..(p + 1) * n_spec];
+                let out_col = &mut sc.erwo[p * n_spec_over..(p + 1) * n_spec_over];
                 for i in 0..half {
                     out_col[i] = in_col[i] * scale_fwd;
                 }
@@ -2126,38 +2113,38 @@ impl CpuNativeSim {
                     out_col[n_spec_over - half + i] = in_col[n_spec - half + i] * scale_fwd;
                 }
             }
-            if let Some(ref fft) = self.fft_c2c_over {
+            if let Some(fft) = ro.fft_c2c_over {
                 for p in 0..npol {
                     let spec_start = p * n_spec_over;
                     let time_start = p * n_time_over;
-                    let spec_col = &mut self.modal_erwo[spec_start..spec_start + n_spec_over];
-                    let time_col = &mut self.modal_er_c[time_start..time_start + n_time_over];
+                    let spec_col = &mut sc.erwo[spec_start..spec_start + n_spec_over];
+                    let time_col = &mut sc.er_c[time_start..time_start + n_time_over];
                     fft.inverse(spec_col, time_col);
                 }
-                let inv_nto = self.fft_norm_over;
-                for v in &mut self.modal_er_c {
+                let inv_nto = ro.fft_norm_over;
+                for v in &mut sc.er_c {
                     *v *= inv_nto;
                 }
             }
 
             // ── Kerr_env (KerrScalarEnv!/KerrVectorEnv!, src/Nonlinear.jl:120-133) ──
-            self.modal_pr_c.fill(Complex::new(0.0, 0.0));
-            let fac = Complex::new(0.75 * self.modal_kerr_fac, 0.0);
+            sc.pr_c.fill(Complex::new(0.0, 0.0));
+            let fac = Complex::new(0.75 * ro.modal_kerr_fac, 0.0);
             if npol == 1 {
                 for i in 0..n_time_over {
-                    let e = self.modal_er_c[i];
-                    self.modal_pr_c[i] += fac * e.norm_sqr() * e;
+                    let e = sc.er_c[i];
+                    sc.pr_c[i] += fac * e.norm_sqr() * e;
                 }
             } else {
                 let third = 1.0 / 3.0;
                 for i in 0..n_time_over {
-                    let ex = self.modal_er_c[i];
-                    let ey = self.modal_er_c[n_time_over + i];
+                    let ex = sc.er_c[i];
+                    let ey = sc.er_c[n_time_over + i];
                     let ex2 = ex.norm_sqr();
                     let ey2 = ey.norm_sqr();
-                    self.modal_pr_c[i] +=
+                    sc.pr_c[i] +=
                         fac * ((ex2 + 2.0 * third * ey2) * ex + third * ex.conj() * ey * ey);
-                    self.modal_pr_c[n_time_over + i] +=
+                    sc.pr_c[n_time_over + i] +=
                         fac * ((ey2 + 2.0 * third * ex2) * ey + third * ey.conj() * ex * ex);
                 }
             }
@@ -2166,18 +2153,18 @@ impl CpuNativeSim {
             for p in 0..npol {
                 let start = p * n_time_over;
                 for t in 0..n_time_over {
-                    self.modal_pr_c[start + t] *= self.towin[t];
+                    sc.pr_c[start + t] *= ro.towin[t];
                 }
             }
 
             // ── to_freq! per column ───────────────────────────────────────────────────
             let scale_inv2 = n_spec as f64 / n_spec_over as f64;
-            if let Some(ref fft) = self.fft_c2c_over {
+            if let Some(fft) = ro.fft_c2c_over {
                 for p in 0..npol {
                     let time_start = p * n_time_over;
                     let spec_start = p * n_spec_over;
-                    let time_col = &mut self.modal_pr_c[time_start..time_start + n_time_over];
-                    let spec_col = &mut self.modal_prwo[spec_start..spec_start + n_spec_over];
+                    let time_col = &mut sc.pr_c[time_start..time_start + n_time_over];
+                    let spec_col = &mut sc.prwo[spec_start..spec_start + n_spec_over];
                     fft.forward(time_col, spec_col);
                 }
             }
@@ -2185,27 +2172,27 @@ impl CpuNativeSim {
                 let in_start = p * n_spec_over;
                 let out_start = p * n_spec;
                 for i in 0..half {
-                    self.modal_prw[out_start + i] = self.modal_prwo[in_start + i] * scale_inv2;
+                    sc.prw[out_start + i] = sc.prwo[in_start + i] * scale_inv2;
                 }
                 for i in 0..half {
-                    self.modal_prw[out_start + n_spec - half + i] =
-                        self.modal_prwo[in_start + n_spec_over - half + i] * scale_inv2;
+                    sc.prw[out_start + n_spec - half + i] =
+                        sc.prwo[in_start + n_spec_over - half + i] * scale_inv2;
                 }
             }
         }
 
         // ── ωwin + norm! (precomputed modal_nlfac, per ω, same for every pol column) ──
         for p in 0..npol {
-            let col = &mut self.modal_prw[p * n_spec..(p + 1) * n_spec];
+            let col = &mut sc.prw[p * n_spec..(p + 1) * n_spec];
             for i in 0..n_spec {
-                col[i] *= self.modal_nlfac[i];
+                col[i] *= ro.modal_nlfac[i];
             }
         }
 
         // ── back-projection: Prmω[iω,m] = Σ_p Prω[iω,p]·Ems[m,p] ─────────────────
         // `full=false`: Jacobian is `2πr` (θ-integral done analytically).
         // `full=true`: Jacobian is just `r` (θ genuinely integrated).
-        let pre = if self.modal_full {
+        let pre = if ro.modal_full {
             r
         } else {
             2.0 * std::f64::consts::PI * r
@@ -2214,7 +2201,7 @@ impl CpuNativeSim {
             for i in 0..n_spec {
                 let mut acc = Complex::new(0.0, 0.0);
                 for p in 0..npol {
-                    acc += self.modal_prw[p * n_spec + i] * self.modal_ems[m * npol + p];
+                    acc += sc.prw[p * n_spec + i] * sc.ems[m * npol + p];
                 }
                 acc *= pre;
                 let idx = i + n_spec * m;
@@ -2222,6 +2209,182 @@ impl CpuNativeSim {
                 out[2 * idx + 1] = acc.im;
             }
         }
+    }
+
+    /// Grow `modal_scratch_pool` to at least `n_workers` entries (entry 0 is
+    /// created in `native_set_modal_params`), and — when Raman is active —
+    /// lazily size each worker's own Raman scratch and clone the resident
+    /// `raman_solver` into it. The solver resets oscillator state at
+    /// solve-entry, so a persistent per-worker clone is bit-identical to the
+    /// shared one (see `apply_raman_radial`). docs/dev/BACKLOG.md S2 Phase 4.
+    fn ensure_modal_pool(&mut self, n_workers: usize) {
+        if self.modal_scratch_pool.is_empty() {
+            self.modal_scratch_pool.push(ModalScratch::new(
+                self.n_modes,
+                self.npol,
+                self.n_spec,
+                self.n_spec_over,
+                self.n_time_over,
+            ));
+        }
+        while self.modal_scratch_pool.len() < n_workers {
+            let sc = ModalScratch::new(
+                self.n_modes,
+                self.npol,
+                self.n_spec,
+                self.n_spec_over,
+                self.n_time_over,
+            );
+            self.modal_scratch_pool.push(sc);
+        }
+        if self.has_raman {
+            let nto = self.n_time_over;
+            for i in 0..n_workers {
+                let sc = &mut self.modal_scratch_pool[i];
+                if sc.raman_intensity.len() != nto {
+                    sc.raman_intensity = vec![0.0; nto];
+                    sc.raman_p = vec![0.0; nto];
+                    sc.raman_hilbert_a = vec![Complex::new(0.0, 0.0); nto];
+                    sc.raman_hilbert_b = vec![Complex::new(0.0, 0.0); nto];
+                }
+            }
+            for i in 0..n_workers {
+                if self.modal_scratch_pool[i].raman_solver.is_none() {
+                    let cloned = self.raman_solver.clone();
+                    self.modal_scratch_pool[i].raman_solver = cloned;
+                }
+            }
+        }
+    }
+
+    /// `full=false` (1-D pcubature) integrand batch: `xs[p]` = r, θ = 0.
+    fn modal_eval_batch_1d(&mut self, xs: &[f64], fvals: &mut [f64], fdim: usize) {
+        let coords: Vec<(f64, f64)> = xs.iter().map(|&r| (r, 0.0)).collect();
+        self.modal_eval_pairs(&coords, fvals, fdim);
+    }
+
+    /// `full=true` (2-D hcubature) integrand batch: `xs` point-major,
+    /// `xs[2p]` = r, `xs[2p+1]` = θ.
+    fn modal_eval_batch_2d(&mut self, xs: &[f64], fvals: &mut [f64], fdim: usize) {
+        let coords: Vec<(f64, f64)> = xs.chunks_exact(2).map(|c| (c[0], c[1])).collect();
+        self.modal_eval_pairs(&coords, fvals, fdim);
+    }
+
+    /// Evaluate `modal_pointcalc` at a batch of `(r,θ)` nodes, writing each
+    /// node's packed result into `fvals[p*fdim..(p+1)*fdim]`. Sequential for
+    /// `n_threads == 1` or a single node; otherwise partitions the nodes into
+    /// `≤ n_threads` contiguous groups, each rayon worker owning a disjoint
+    /// `ModalScratch`. Bit-identical to sequential (each node writes only its
+    /// own `out` slice, scratch is re-initialised per node inside
+    /// `modal_pointcalc`, cloned Raman solvers reset at solve-entry; no
+    /// cross-node reduction). docs/dev/BACKLOG.md S2 Phase 4 (modal RHS).
+    fn modal_eval_pairs(&mut self, coords: &[(f64, f64)], fvals: &mut [f64], fdim: usize) {
+        let npt = coords.len();
+        if npt == 0 {
+            return;
+        }
+        let n_threads = self.n_threads;
+        let n_workers = if n_threads > 1 && npt > 1 {
+            n_threads.min(npt)
+        } else {
+            1
+        };
+        self.ensure_modal_pool(n_workers);
+
+        // Disjoint field borrows via destructuring: `ro` holds immutable reads,
+        // `modal_scratch_pool` the per-worker mutable scratch, `thread_pool` the
+        // resident rayon pool — all distinct fields, so all three coexist.
+        let Self {
+            n_modes,
+            npol,
+            n_spec,
+            n_spec_over,
+            n_time_over,
+            modal_a,
+            modal_full,
+            is_real,
+            modal_unm,
+            modal_order,
+            modal_kind,
+            modal_phi,
+            modal_inv_sqrt_n,
+            modal_pol_select,
+            modal_emega,
+            modal_nlfac,
+            modal_kerr_fac,
+            fft_r2c_over,
+            fft_c2c_over,
+            fft_norm_over,
+            towin,
+            has_raman,
+            raman_density,
+            raman_thg,
+            raman_hilbert_fft,
+            modal_scratch_pool,
+            thread_pool,
+            ..
+        } = self;
+        let ro = ModalRO {
+            n_modes: *n_modes,
+            npol: *npol,
+            n_spec: *n_spec,
+            n_spec_over: *n_spec_over,
+            n_time_over: *n_time_over,
+            modal_a: *modal_a,
+            modal_full: *modal_full,
+            is_real: *is_real,
+            modal_unm: modal_unm.as_slice(),
+            modal_order: modal_order.as_slice(),
+            modal_kind: modal_kind.as_slice(),
+            modal_phi: modal_phi.as_slice(),
+            modal_inv_sqrt_n: modal_inv_sqrt_n.as_slice(),
+            modal_pol_select: modal_pol_select.as_slice(),
+            modal_emega: modal_emega.as_slice(),
+            modal_nlfac: modal_nlfac.as_slice(),
+            modal_kerr_fac: *modal_kerr_fac,
+            fft_r2c_over: fft_r2c_over.as_ref(),
+            fft_c2c_over: fft_c2c_over.as_ref(),
+            fft_norm_over: *fft_norm_over,
+            towin: towin.as_slice(),
+            has_raman: *has_raman,
+            raman_density: *raman_density,
+            raman_thg: *raman_thg,
+            raman_hilbert_fft: raman_hilbert_fft.as_ref(),
+        };
+
+        if n_workers == 1 {
+            let sc = &mut modal_scratch_pool[0];
+            for (p, &(r, theta)) in coords.iter().enumerate() {
+                Self::modal_pointcalc(&ro, sc, r, theta, &mut fvals[p * fdim..(p + 1) * fdim]);
+            }
+            return;
+        }
+
+        let group = npt.div_ceil(n_workers);
+        let n_chunks = npt.div_ceil(group);
+        let pool = thread_pool.get_or_insert_with(|| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(n_threads)
+                .build()
+                .expect("failed to build rayon thread pool for native RHS (docs/dev/BACKLOG.md S2)")
+        });
+        pool.install(|| {
+            coords
+                .par_chunks(group)
+                .zip(fvals.par_chunks_mut(group * fdim))
+                .zip(modal_scratch_pool[..n_chunks].par_iter_mut())
+                .for_each(|((coord_chunk, fval_chunk), sc)| {
+                    for (i, &(r, theta)) in coord_chunk.iter().enumerate() {
+                        Self::modal_pointcalc(
+                            &ro,
+                            sc,
+                            r,
+                            theta,
+                            &mut fval_chunk[i * fdim..(i + 1) * fdim],
+                        );
+                    }
+                });
+        });
     }
 
     /// Free-space (`TransFree`) RHS: joint 3-D FFT (RealGrid, scalar Kerr —
@@ -2690,9 +2853,103 @@ impl CpuNativeSim {
     }
 }
 
+/// Per-worker mutable scratch for `CpuNativeSim::modal_pointcalc` — one
+/// instance per rayon worker (entry 0 alone on the sequential path). Holds
+/// every buffer a single node writes, so the read-only `ModalRO` view of the
+/// sim can be shared `&` across threads while each worker mutates only its own
+/// entry (docs/dev/BACKLOG.md S2 Phase 4 — modal RHS threading).
+pub struct ModalScratch {
+    /// Mode-field weights `(ax,ay)·J_order/√N` — `n_modes*npol`.
+    ems: Vec<f64>,
+    /// `to_space!` result `Erω[iω,p]` — `npol*n_spec`.
+    erw: Vec<Complex<f64>>,
+    /// Oversampled spectrum scratch — `npol*n_spec_over`.
+    erwo: Vec<Complex<f64>>,
+    /// RealGrid time-domain field — `npol*n_time_over`.
+    er: Vec<f64>,
+    /// RealGrid time-domain polarisation — `npol*n_time_over`.
+    pr: Vec<f64>,
+    /// Oversampled polarisation spectrum — `npol*n_spec_over`.
+    prwo: Vec<Complex<f64>>,
+    /// `to_freq!`'d polarisation `Prω[iω,p]` — `npol*n_spec`.
+    prw: Vec<Complex<f64>>,
+    /// EnvGrid (c2c) counterparts of `er`/`pr` — `npol*n_time_over` (Phase E.4).
+    er_c: Vec<Complex<f64>>,
+    pr_c: Vec<Complex<f64>>,
+    /// Per-worker Raman scratch — separate from the shared `self.raman_*`
+    /// buffers (used by mode-averaged/radial). Sized + solver cloned lazily by
+    /// `ensure_modal_pool`, only when `has_raman`.
+    raman_intensity: Vec<f64>,
+    raman_p: Vec<f64>,
+    raman_hilbert_a: Vec<Complex<f64>>,
+    raman_hilbert_b: Vec<Complex<f64>>,
+    raman_solver: Option<TimeDomainRamanSolver>,
+}
+
+impl ModalScratch {
+    fn new(
+        n_modes: usize,
+        npol: usize,
+        n_spec: usize,
+        n_spec_over: usize,
+        n_time_over: usize,
+    ) -> Self {
+        ModalScratch {
+            ems: vec![0.0; n_modes * npol],
+            erw: vec![Complex::new(0.0, 0.0); n_spec * npol],
+            erwo: vec![Complex::new(0.0, 0.0); n_spec_over * npol],
+            er: vec![0.0; n_time_over * npol],
+            pr: vec![0.0; n_time_over * npol],
+            prwo: vec![Complex::new(0.0, 0.0); n_spec_over * npol],
+            prw: vec![Complex::new(0.0, 0.0); n_spec * npol],
+            er_c: vec![Complex::new(0.0, 0.0); n_time_over * npol],
+            pr_c: vec![Complex::new(0.0, 0.0); n_time_over * npol],
+            raman_intensity: Vec::new(),
+            raman_p: Vec::new(),
+            raman_hilbert_a: Vec::new(),
+            raman_hilbert_b: Vec::new(),
+            raman_solver: None,
+        }
+    }
+}
+
+/// Read-only borrowed view of the parts of `CpuNativeSim` that
+/// `modal_pointcalc` reads. Every field is `Copy`, `&[..]`, or `Option<&Plan>`
+/// where the FFT-plan wrappers are `Sync` (fftw.rs) — so `ModalRO: Sync` and a
+/// single `&ModalRO` can be shared across rayon workers.
+struct ModalRO<'a> {
+    n_modes: usize,
+    npol: usize,
+    n_spec: usize,
+    n_spec_over: usize,
+    n_time_over: usize,
+    modal_a: f64,
+    modal_full: bool,
+    is_real: bool,
+    modal_unm: &'a [f64],
+    modal_order: &'a [i32],
+    modal_kind: &'a [u8],
+    modal_phi: &'a [f64],
+    modal_inv_sqrt_n: &'a [f64],
+    modal_pol_select: &'a [u8],
+    modal_emega: &'a [Complex<f64>],
+    modal_nlfac: &'a [Complex<f64>],
+    modal_kerr_fac: f64,
+    fft_r2c_over: Option<&'a RealFft1d>,
+    fft_c2c_over: Option<&'a ComplexFft1d>,
+    fft_norm_over: f64,
+    towin: &'a [f64],
+    has_raman: bool,
+    raman_density: f64,
+    raman_thg: bool,
+    raman_hilbert_fft: Option<&'a ComplexFft1d>,
+}
+
 /// C `integrand_v` callback for `pcubature_v` — reconstructs `&mut NativeSim`
-/// from `fdata` and loops `rhs_modal_pointcalc` over the batch of nodes
-/// (evaluated one at a time, not truly vectorized — mirrors Phase 3's
+/// from `fdata` and hands the batch to `modal_eval_batch_1d`, which evaluates
+/// `modal_pointcalc` per node (sequential, or rayon-parallel over the batch's
+/// nodes when `n_threads > 1` — docs/dev/BACKLOG.md S2 Phase 4). Nodes are
+/// evaluated one at a time per worker, not truly vectorized (mirrors Phase 3's
 /// "loop the existing rank-1 plan" precedent, see MATH.md §3.3).
 ///
 /// # Safety
@@ -2713,10 +2970,7 @@ unsafe extern "C" fn modal_integrand_v(
         let fdim = fdim as usize;
         let xs = unsafe { std::slice::from_raw_parts(x, npt) };
         let fvals = unsafe { std::slice::from_raw_parts_mut(fval, npt * fdim) };
-        for p in 0..npt {
-            let out = &mut fvals[p * fdim..(p + 1) * fdim];
-            sim.rhs_modal_pointcalc(xs[p], 0.0, out);
-        }
+        sim.modal_eval_batch_1d(xs, fvals, fdim);
     }));
     match result {
         Ok(()) => 0,
@@ -2766,10 +3020,7 @@ unsafe extern "C" fn modal_integrand_v_full(
         let fdim = fdim as usize;
         let xs = unsafe { std::slice::from_raw_parts(x, 2 * npt) };
         let fvals = unsafe { std::slice::from_raw_parts_mut(fval, npt * fdim) };
-        for p in 0..npt {
-            let out = &mut fvals[p * fdim..(p + 1) * fdim];
-            sim.rhs_modal_pointcalc(xs[2 * p], xs[2 * p + 1], out);
-        }
+        sim.modal_eval_batch_2d(xs, fvals, fdim);
     }));
     match result {
         Ok(()) => 0,
@@ -3957,15 +4208,16 @@ impl NativeBackend for CpuNativeSim {
         s.modal_atol = atol;
         s.modal_maxevals = maxevals;
 
-        s.modal_ems = vec![0.0; n_modes * npol];
-        s.modal_erw = vec![Complex::new(0.0, 0.0); n_spec * npol];
-        s.modal_erwo = vec![Complex::new(0.0, 0.0); s.n_spec_over * npol];
-        s.modal_er = vec![0.0; n_time_over * npol];
-        s.modal_pr = vec![0.0; n_time_over * npol];
-        s.modal_prwo = vec![Complex::new(0.0, 0.0); s.n_spec_over * npol];
-        s.modal_prw = vec![Complex::new(0.0, 0.0); n_spec * npol];
-        s.modal_er_c = vec![Complex::new(0.0, 0.0); n_time_over * npol];
-        s.modal_pr_c = vec![Complex::new(0.0, 0.0); n_time_over * npol];
+        // Per-worker scratch pool, entry 0 sized here (sole scratch on the
+        // sequential path). `ensure_modal_pool` grows it to `n_threads` entries
+        // lazily on the first threaded batch (S2 Phase 4 — modal RHS threading).
+        s.modal_scratch_pool = vec![ModalScratch::new(
+            n_modes,
+            npol,
+            n_spec,
+            s.n_spec_over,
+            n_time_over,
+        )];
         s.modal_emega = vec![Complex::new(0.0, 0.0); s.n];
 
         0
