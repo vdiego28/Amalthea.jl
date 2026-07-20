@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784497424318,
+  "lastUpdate": 1784564509826,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -318,6 +318,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.935014,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "distinct": true,
+          "id": "051feb824a35bf2209f5aaeab4420949c75831ce",
+          "message": "S2 Phase 4 (modal): thread the native modal RHS over cubature nodes\n\nParallelizes the per-node modal integrand (`modal_pointcalc`) across rayon\nworkers when `n_threads > 1`, the third of S2's four threading seams (after\nradial FFT+plasma and radial Raman).\n\nMeasured first (temp `Instant` counters, reverted): the integrand loop is\n90.3% (full=false, 1 mode) / 95.6% (full=true) / 82.8% (2-mode) of `rhs_modal`\nwall time — well above the proceed bar (radial was 38-61%; S1.6 parked ~2%).\n\nRefactor: `rhs_modal_pointcalc` (a `&mut self` method scribbling on ~13 shared\n`self.modal_*`/`raman_*` scratch buffers) became a free associated fn\n`modal_pointcalc(&ModalRO, &mut ModalScratch, r, θ, out)` — read-only sim state\nin a `Sync` `ModalRO` view (all `&[..]`/`Copy`/`Option<&Plan>`, FFT wrappers\nalready `Sync`), every written buffer in a per-worker `ModalScratch` pooled on\n`self.modal_scratch_pool` (entry 0 = sequential path). Both paths share the one\nfunction body. Nodes split into <= n_threads contiguous groups; each group's\n`out[p*fdim..]` is disjoint with no cross-node reduction => bit-identical\nn_threads=1-vs-4. Raman-modal threaded too: each worker owns a cloned\n`TimeDomainRamanSolver` + Hilbert scratch (solve() resets state at entry =>\nclone == shared; Hilbert FFT plan shared read-only). No new GC-root hazard —\nthe solver is Rust-owned/cloned, not a persistent raw pointer into Julia memory.\n\nVerified:\n- bit-identical n_threads=1 vs 4 across Kerr full=false/full=true/2-mode/npol=2\n  and Raman :N2 (test/test_native_modal_threading.jl, + forced-GC.gc() stress)\n- native-vs-Julia parity unchanged (~2e-16 Kerr, ~1e-6 Raman ADE-vs-FFT floor)\n- wall-clock speedup 1->4 threads: full=false 1.31x/1.52x (1/2-mode),\n  full=true 2.64x — proves the parallel branch actually engages\n- full 7-group gate green: rust 42160/42160, sim-multimode 33/33,\n  sim-propagation 18/18, physics 1657/1657, sim-interface 314/314, io 2302/2302,\n  fields 334/334; 70/70 Rust unit tests; clean -D warnings build\n\nDocs: BACKLOG S2 item 3 + PLAN_S2_THREADING.md Phase 4 (modal done; only\nfree-space 3-D FFT threading remains open). Also folded in a stale-doc fix\nmarking S6 item 2 (native scan HDF5 writer) done (commit 05c4a4e).\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-07-20T12:18:19-04:00",
+          "tree_id": "f2f27ff1150c5f1bdb4bffd74d7f9a359d0f58b6",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/051feb824a35bf2209f5aaeab4420949c75831ce"
+        },
+        "date": 1784564508794,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.92089,
             "unit": "ms/step"
           }
         ]
