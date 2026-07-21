@@ -1745,12 +1745,35 @@ started.*
    `Output.write_scan_point_native` (default Julia `HDF5Output` path
    unchanged). Also fixed a latent `io::H5T_COMPOUND` constant bug (was 3 =
    H5T_STRING). Test: `test/test_scan_native_write.jl` (:rust).
-3. Standalone CLI (item 14) — `luna-rust/src/bin/luna-cli.rs`
-   (`[[bin]]` in the existing crate, not a new workspace member — see the
-   root-workspace-removal history in "Done (recent)"). TOML config in,
-   scoped to native-eligible configs, HDF5 out; compare against a
-   Julia run of the same config as the acceptance test. WASM demo only
-   after the CLI exists.
+3. 🔴 **Measured, then parked — recommend against building as specified.**
+   Standalone CLI (item 14). See
+   `docs/dev/native-port/PLAN_S6_3_CLI.md` for the full feasibility writeup.
+   Finding: a Julia-free CLI needs the *entire* `prop_capillary` setup path
+   (grid construction, mode dispersion, pulse synthesis, gas properties)
+   reimplemented in Rust with nothing left to fall back on — exactly the
+   one-time setup code `ARCHITECTURE.md` §6a already classified as
+   "stays Julia by design, porting it buys nothing" for the per-step-loop
+   goal, being asked for again for a different reason. Two pieces are
+   genuine new dependencies, not mechanical ports: `PhysData.density`
+   (needed for the Kerr coefficient) calls the external CoolProp real-gas
+   library, and mode-averaged `Aeff` needs a Bessel-J evaluator + Bessel-
+   zero root-finder (cubature.rs already supplies the quadrature
+   primitive, so this one is smaller than first assessed, but still new
+   special-function surface). The comparison-against-Julia acceptance
+   test also would not be bit-parity — it inherits every setup-path
+   numerical divergence, the same situation as Phase 7's β1
+   analytic-vs-FD gap. TOML/cargo-feature gating itself is *not* a
+   blocker (confirmed: `optional = true` deps + `required-features` on
+   the `[[bin]]` leaves plain `cargo build --release` unaffected).
+   Recommended alternative if this is ever picked up: a much smaller
+   "dump-and-replay" CLI — Julia serializes the exact arrays it already
+   passes to `native_set_mode_avg_params`/etc. once, and `luna-cli`
+   replays them through the unmodified native stepper — which needs no
+   new setup-porting work and gives a genuine bit-identical acceptance
+   test, at the cost of not being Julia-free from a cold start. WASM
+   (the item's stated follow-on) is blocked separately regardless: FFTW
+   and HDF5 are both `dlopen`ed native libraries with no general `dlopen`
+   equivalent in WASM.
 
 **Suggested execution order** (per `SUGGESTIONS.md`, adjusted for what's
 already partially done): S1 → S4 → S2 → S5.2/S5.3 → S6.1 → finish S3 →
