@@ -1090,26 +1090,24 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # Gas mixtures (`MarcatiliMode(a, (gas1,gas2,...), (p1,p2,...))`) give
         # `densityfun(z)` a per-species Vector return type and a nested
         # tuple-of-tuples `resp` (one response tuple per component). Since
-        # Phase F item 4 (docs/dev/BACKLOG.md) the mode-averaged path handles this
-        # (Kerr-only — see the `is_mode_avg` block below); radial/modal/free
-        # still expect a scalar density and a flat response tuple, and
-        # nothing upstream rejects a mixture for them, so a Vector density
-        # there would silently compute garbage `kerr_fac`/`beta` that only
-        # fails much later at the FFI boundary with an opaque `MethodError`.
-        # Reject those here instead, with a message that says what's
-        # actually unsupported.
+        # Phase F item 4 / Phase I item 4 (docs/dev/BACKLOG.md), all four
+        # native RHS geometries (mode-averaged, radial, modal, free-space)
+        # handle this — Kerr's linearity in density·γ3 collapses a
+        # per-species mixture to one scalar `kerr_fac` regardless of
+        # geometry, since the only place density enters any of their RHS
+        # kernels is the same generic `NonlinearRHS.Et_to_Pt!`, which
+        # already dispatches per-species for an `AbstractVector` density —
+        # see each `is_*` block below for the per-geometry discriminating
+        # check and mixture branch. Anything that is not a scalar or a
+        # per-species `Vector{<:Real}` would otherwise silently compute
+        # garbage `kerr_fac`/`beta` that only fails much later at the FFI
+        # boundary with an opaque `MethodError` — reject it here instead,
+        # with a message that says what's actually unsupported.
         dens0 = f!.densityfun(0.0)
-        if is_mode_avg || is_radial
-            dens0 isa Real || dens0 isa AbstractVector{<:Real} ||
-                throw(NativeIneligible("densityfun(z) returned $(typeof(dens0)) — the " *
-                      "native mode-averaged/radial path only understands a scalar density " *
-                      "or a per-species Vector{<:Real} (gas mixture)."))
-        else
-            dens0 isa Real || throw(NativeIneligible("densityfun(z) returned " *
-                  "a non-scalar value — gas mixtures are only supported by the native " *
-                  "mode-averaged/radial paths (docs/dev/BACKLOG.md Phase F item 4 / Phase I item 4); " *
-                  "modal/free-space mixtures are not yet supported."))
-        end
+        dens0 isa Real || dens0 isa AbstractVector{<:Real} ||
+            throw(NativeIneligible("densityfun(z) returned $(typeof(dens0)) — the " *
+                  "native path only understands a scalar density or a per-species " *
+                  "Vector{<:Real} (gas mixture)."))
 
         grid = f!.grid
         is_real_grid = grid isa Amalthea.Grid.RealGrid   # EnvGrid uses c2c FFTs
@@ -1698,42 +1696,81 @@ function RustNativeStepper(f!, linop, y0, t, dt;
 
         towin = f!.grid.towin
 
-        γ3 = Amalthea.Nonlinear.kerr_γ3(f!.resp)
-        # Phase 5 gate is Kerr-only; Phase D.4 (docs/dev/BACKLOG.md) adds Raman
-        # (RealGrid, npol=1, either `thg` value since Phase F.1 — same
-        # per-node scalar-field scope as Kerr here) alongside it. Any other
-        # response type remains ineligible.
-        is_kerr_resp_modal(r) = _is_plain_kerr_resp(r)
-        for r in f!.resp
-            is_kerr_resp_modal(r) || r isa Amalthea.Nonlinear.RamanPolarField ||
-                throw(NativeIneligible("modal: only Kerr and/or Raman (RealGrid) " *
-                      "responses are supported by the native path " *
-                      "(Phase D.4 gate) — this also rejects Kerr_field_nothg/" *
-                      "Kerr_env_thg, see `_is_plain_kerr_resp`."))
-            # native.rs's inline Raman ADE solve only ever touches modal
-            # polarisation column 0 (`rhs_modal_pointcalc`'s "npol=1 scalar
-            # field only" Raman block) — with npol=2 it would silently drop
-            # the second (y) column's Raman contribution instead of raising.
-            r isa Amalthea.Nonlinear.RamanPolarField && npol != 1 &&
-                throw(NativeIneligible("modal: Raman (RamanPolarField) is only " *
-                      "supported natively for npol=1 — native.rs's inline " *
-                      "solver does not yet handle a second polarisation column."))
-            # native.rs's inline Raman ADE solve operates on real time-domain
-            # buffers only (`modal_er`/`modal_pr`) — EnvGrid modal (Phase E.4
-            # item 5) uses complex buffers (`modal_er_c`/`modal_pr_c`) with no
-            # Raman wiring at all.
-            r isa Amalthea.Nonlinear.RamanPolarField && !is_real_grid &&
-                throw(NativeIneligible("modal: Raman (RamanPolarField) is only " *
-                      "supported natively for RealGrid — native.rs has no EnvGrid " *
-                      "Raman path for modal."))
-        end
-        γ3 != 0.0 ||
-            throw(NativeIneligible("modal: no Kerr response found (γ3=0) — the " *
-                  "native modal path requires a Kerr response."))
-
+        # docs/dev/BACKLOG.md Phase I item 4 (modal): discriminating check —
+        # does anything in TransModal's per-mode projection introduce a
+        # per-species density dependence at the point kerr_fac is computed?
+        # No: `Erω_to_Prω!` calls `Et_to_Pt!(t.Pr, t.Er, t.resp, t.density)`
+        # at every quadrature node (NonlinearRHS.jl), the SAME generic
+        # `Et_to_Pt!` that already has an `AbstractVector`-density overload
+        # dispatching per-species — identical mechanism to mode-averaged/
+        # radial. The two modal-specific quantities that also enter the
+        # native RHS, `invsqrtn = 1/√N(m,z=0)` (Modes.N — mode-area
+        # normalization, a pure function of `unm`/radius/kind, no gas/
+        # density argument at all, Capillary.jl:285-288) and `nlfac`
+        # (probed from `norm_modal`, a pure function of grid.ω/ω0, no
+        # density argument, NonlinearRHS.jl:476-481) are both density-
+        # independent. So Kerr's linearity in density·γ3 collapses a
+        # per-species mixture to one scalar kerr_fac exactly like the
+        # mode-averaged/radial cases — no different physics, just a
+        # different RHS shape wrapped around the same `Et_to_Pt!` call.
         _check_density_zindependent(f!.densityfun, flength)
         density = f!.densityfun(0.0)
-        kerr_fac = density * Amalthea.PhysData.ε_0 * γ3
+        is_mixture = density isa AbstractVector
+
+        if is_mixture
+            # Kerr-only, mirroring the mode-averaged/radial mixture branches
+            # exactly: plasma/Raman mixtures are not a simple linear sum, so
+            # they are rejected rather than silently ignored.
+            length(f!.resp) == length(density) ||
+                throw(NativeIneligible("modal mixture: densityfun(z) returned " *
+                      "$(length(density)) species but f!.resp has $(length(f!.resp)) " *
+                      "entries — shape mismatch."))
+            kerr_fac = 0.0
+            for (ρi, respi) in zip(density, f!.resp)
+                length(respi) == 1 && _is_plain_kerr_resp(respi[1]) ||
+                    throw(NativeIneligible("modal mixture species response $(respi) is " *
+                          "not a single plain Kerr response — only Kerr is wired for the " *
+                          "native modal mixture path (Phase I item 4); plasma/Raman " *
+                          "mixtures are out of scope."))
+                γ3i = Amalthea.Nonlinear.kerr_γ3((respi[1],))
+                kerr_fac += ρi * Amalthea.PhysData.ε_0 * γ3i
+            end
+        else
+            γ3 = Amalthea.Nonlinear.kerr_γ3(f!.resp)
+            # Phase 5 gate is Kerr-only; Phase D.4 (docs/dev/BACKLOG.md) adds Raman
+            # (RealGrid, npol=1, either `thg` value since Phase F.1 — same
+            # per-node scalar-field scope as Kerr here) alongside it. Any other
+            # response type remains ineligible.
+            is_kerr_resp_modal(r) = _is_plain_kerr_resp(r)
+            for r in f!.resp
+                is_kerr_resp_modal(r) || r isa Amalthea.Nonlinear.RamanPolarField ||
+                    throw(NativeIneligible("modal: only Kerr and/or Raman (RealGrid) " *
+                          "responses are supported by the native path " *
+                          "(Phase D.4 gate) — this also rejects Kerr_field_nothg/" *
+                          "Kerr_env_thg, see `_is_plain_kerr_resp`."))
+                # native.rs's inline Raman ADE solve only ever touches modal
+                # polarisation column 0 (`rhs_modal_pointcalc`'s "npol=1 scalar
+                # field only" Raman block) — with npol=2 it would silently drop
+                # the second (y) column's Raman contribution instead of raising.
+                r isa Amalthea.Nonlinear.RamanPolarField && npol != 1 &&
+                    throw(NativeIneligible("modal: Raman (RamanPolarField) is only " *
+                          "supported natively for npol=1 — native.rs's inline " *
+                          "solver does not yet handle a second polarisation column."))
+                # native.rs's inline Raman ADE solve operates on real time-domain
+                # buffers only (`modal_er`/`modal_pr`) — EnvGrid modal (Phase E.4
+                # item 5) uses complex buffers (`modal_er_c`/`modal_pr_c`) with no
+                # Raman wiring at all.
+                r isa Amalthea.Nonlinear.RamanPolarField && !is_real_grid &&
+                    throw(NativeIneligible("modal: Raman (RamanPolarField) is only " *
+                          "supported natively for RealGrid — native.rs has no EnvGrid " *
+                          "Raman path for modal."))
+            end
+            γ3 != 0.0 ||
+                throw(NativeIneligible("modal: no Kerr response found (γ3=0) — the " *
+                      "native modal path requires a Kerr response."))
+
+            kerr_fac = density * Amalthea.PhysData.ε_0 * γ3
+        end
 
         # Extract exactly what `ωwin .* norm!` computes by numerically probing
         # the closure (robust to norm_modal's shock/no-shock branch — avoids
@@ -1786,8 +1823,9 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # one shared buffer sequentially across quadrature nodes, exactly
         # like mode-averaged's single per-call buffer — see native.rs's
         # `apply_raman_radial` doc for why the same solver instance is safe
-        # to reuse this way).
-        for r in f!.resp
+        # to reuse this way). Mixtures are Kerr-only by construction
+        # (validated above), so this loop is skipped entirely for them.
+        for r in (is_mixture ? () : f!.resp)
             if r isa Amalthea.Nonlinear.RamanPolarField
                 rr = r.r
                 Rs = rr isa Amalthea.Raman.CombinedRamanResponse ?
@@ -1842,46 +1880,95 @@ function RustNativeStepper(f!, linop, y0, t, dt;
 
         towin = f!.grid.towin
 
-        γ3 = Amalthea.Nonlinear.kerr_γ3(f!.resp)
-
-        if is_real_grid
-            for r in f!.resp
-                _is_plain_kerr_resp(r) || r isa Amalthea.Nonlinear.PlasmaCumtrapz ||
-                    r isa Amalthea.Nonlinear.RamanPolarField ||
-                    throw(NativeIneligible("free-space: only Kerr, plasma, and/or Raman " *
-                          "(RealGrid, RamanPolarField) responses are supported by the " *
-                          "native path (Phase I item 6 gate) — this also rejects " *
-                          "Kerr_field_nothg, see `_is_plain_kerr_resp`."))
-            end
-        else
-            length(f!.resp) == 1 && γ3 != 0.0 && _is_plain_kerr_resp(f!.resp[1]) ||
-                throw(NativeIneligible("free-space (EnvGrid): only single-response " *
-                      "Kerr-only is supported by the native path — plasma/Raman are " *
-                      "RealGrid-only (Phase I item 6), and a lone non-Kerr response or " *
-                      "Kerr_env_thg (see `_is_plain_kerr_resp`) are not wired either."))
-        end
-        γ3 != 0.0 ||
-            throw(NativeIneligible("free-space: no Kerr response found (γ3=0) — the " *
-                  "native free-space path requires a Kerr response."))
-
-        has_plasma_free = is_real_grid && any(r -> r isa Amalthea.Nonlinear.PlasmaCumtrapz, f!.resp)
-        has_raman_free  = is_real_grid && any(r -> r isa Amalthea.Nonlinear.RamanPolarField, f!.resp)
-
         is_zdep_free = f!.normfun isa Amalthea.NonlinearRHS.ZDepNormFree
         if is_zdep_free
             linop isa Amalthea.LinearOps.ZDepLinopFree ||
                 throw(NativeIneligible("free-space: a z-dependent normfun (ZDepNormFree) " *
                       "requires a matching z-dependent linop (ZDepLinopFree) — got " *
                       "$(typeof(linop))."))
-            has_plasma_free && throw(NativeIneligible("free-space: plasma combined with a " *
-                  "z-dependent normfun is not supported by the native path."))
-            has_raman_free && throw(NativeIneligible("free-space: Raman combined with a " *
-                  "z-dependent normfun is not supported by the native path."))
         else
             _check_density_zindependent(f!.densityfun, flength)
         end
         density = f!.densityfun(0.0)
-        kerr_fac = density * Amalthea.PhysData.ε_0 * γ3
+        is_mixture = density isa AbstractVector
+
+        # docs/dev/BACKLOG.md Phase I item 4 (free-space): discriminating check —
+        # `(t::TransFree)(nl,Eωk,z)` calls
+        # `Et_to_Pt!(t.Pto, t.Eto, t.resp, t.densityfun(z), t.idcs)`
+        # (NonlinearRHS.jl:875-891), which recurses per-(y,x)-column
+        # (`Et_to_Pt!(Pt,Et,responses,density,idcs)`, the 5-arg overload)
+        # into the SAME generic 4-arg `Et_to_Pt!` that already has an
+        # `AbstractVector`-density overload dispatching per-species —
+        # identical mechanism to mode-averaged/radial/modal. The only other
+        # per-frequency quantity, `M` (folding `normfun`+ωwin, computed once
+        # below from `f!.normfun(0.0)`), comes from `const_norm_free`/
+        # `norm_free`, both pure functions of the grid's (ω,kx,ky) and the
+        # *linear* refractive index `nfun` supplied at construction — no
+        # runtime density argument, already baked in before native
+        # construction, exactly like radial's normalization array. So
+        # Kerr's linearity in density·γ3 collapses a per-species mixture to
+        # one scalar kerr_fac here too, for either RealGrid or EnvGrid.
+        has_plasma_free = false
+        has_raman_free = false
+        if is_mixture
+            # Kerr-only, mirroring the mode-averaged/radial/modal mixture
+            # branches: plasma/Raman mixtures are not a simple linear sum,
+            # so they are rejected rather than silently ignored. A
+            # z-dependent normfun bakes a single-species `gamma_arr`/`densf`
+            # (`norm_free_gradient`) that doesn't generalize to a per-species
+            # sum either, so that combination is rejected too — same
+            # reasoning as mode-averaged's z-dependent-linop rejection.
+            is_zdep_free && throw(NativeIneligible("free-space: gas mixtures are not " *
+                  "supported together with a z-dependent (pressure-gradient) normfun."))
+            length(f!.resp) == length(density) ||
+                throw(NativeIneligible("free-space mixture: densityfun(z) returned " *
+                      "$(length(density)) species but f!.resp has $(length(f!.resp)) " *
+                      "entries — shape mismatch."))
+            kerr_fac = 0.0
+            for (ρi, respi) in zip(density, f!.resp)
+                length(respi) == 1 && _is_plain_kerr_resp(respi[1]) ||
+                    throw(NativeIneligible("free-space mixture species response $(respi) " *
+                          "is not a single plain Kerr response — only Kerr is wired for " *
+                          "the native free-space mixture path (Phase I item 4); " *
+                          "plasma/Raman mixtures are out of scope."))
+                γ3i = Amalthea.Nonlinear.kerr_γ3((respi[1],))
+                kerr_fac += ρi * Amalthea.PhysData.ε_0 * γ3i
+            end
+        else
+            γ3 = Amalthea.Nonlinear.kerr_γ3(f!.resp)
+
+            if is_real_grid
+                for r in f!.resp
+                    _is_plain_kerr_resp(r) || r isa Amalthea.Nonlinear.PlasmaCumtrapz ||
+                        r isa Amalthea.Nonlinear.RamanPolarField ||
+                        throw(NativeIneligible("free-space: only Kerr, plasma, and/or Raman " *
+                              "(RealGrid, RamanPolarField) responses are supported by the " *
+                              "native path (Phase I item 6 gate) — this also rejects " *
+                              "Kerr_field_nothg, see `_is_plain_kerr_resp`."))
+                end
+            else
+                length(f!.resp) == 1 && γ3 != 0.0 && _is_plain_kerr_resp(f!.resp[1]) ||
+                    throw(NativeIneligible("free-space (EnvGrid): only single-response " *
+                          "Kerr-only is supported by the native path — plasma/Raman are " *
+                          "RealGrid-only (Phase I item 6), and a lone non-Kerr response or " *
+                          "Kerr_env_thg (see `_is_plain_kerr_resp`) are not wired either."))
+            end
+            γ3 != 0.0 ||
+                throw(NativeIneligible("free-space: no Kerr response found (γ3=0) — the " *
+                      "native free-space path requires a Kerr response."))
+
+            has_plasma_free = is_real_grid && any(r -> r isa Amalthea.Nonlinear.PlasmaCumtrapz, f!.resp)
+            has_raman_free  = is_real_grid && any(r -> r isa Amalthea.Nonlinear.RamanPolarField, f!.resp)
+
+            if is_zdep_free
+                has_plasma_free && throw(NativeIneligible("free-space: plasma combined with a " *
+                      "z-dependent normfun is not supported by the native path."))
+                has_raman_free && throw(NativeIneligible("free-space: Raman combined with a " *
+                      "z-dependent normfun is not supported by the native path."))
+            end
+
+            kerr_fac = density * Amalthea.PhysData.ε_0 * γ3
+        end
 
         # Precompute M[iω,iky,ikx] = ωwin[iω]·(-i·ω[iω]) / (2·normfun(0.0)[iω,iky,ikx]).
         # Folds norm_free + ωwin into one array. For the z-dependent case this
