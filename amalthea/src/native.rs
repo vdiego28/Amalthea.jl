@@ -1315,6 +1315,100 @@ impl CpuNativeSim {
         }
     }
 
+    /// EnvGrid (envelope) counterpart of `apply_raman_radial` — closes the
+    /// "Radial EnvGrid Raman" gap in `docs/dev/native-port/NATIVE_SUPPORT_MATRIX.md`
+    /// (previously ❌: `RamanPolarField` only, no radial `RamanPolarEnv`
+    /// wiring). Composes two already-ported pieces rather than inventing new
+    /// math: `rhs_mode_avg_env`'s envelope Raman step (`RamanPolarEnv`,
+    /// `sqr!(R::RamanPolarEnv, E) = 1/2·|E|²`, `Nonlinear.jl:387-389` — no
+    /// `thg` branch, unlike the carrier-field case) applied independently
+    /// per r-column, exactly the way `apply_raman_radial` already applies
+    /// the RealGrid `RamanPolarField` ADE solve per r-column. `solve()`
+    /// resets the oscillator state at entry (`raman.rs`), so the single
+    /// resident `raman_solver` is safe to reuse sequentially across
+    /// r-columns for the same reason `apply_raman_radial`'s doc gives.
+    fn apply_raman_radial_env(&mut self) {
+        let n_time_over = self.n_time_over;
+        let n_r = self.n_r;
+        let rho = self.raman_density;
+        let n_threads = self.n_threads;
+
+        if n_threads > 1 && n_r > 1 {
+            // Same contiguous-column-group parallelization as
+            // `apply_raman_radial` (docs/dev/BACKLOG.md S2 Phase 4 item 1):
+            // each task gets its own cloned solver (state reset at every
+            // `solve()` call, so a clone's output is bit-identical to the
+            // shared instance) and touches only disjoint column slices of
+            // every buffer — no shared mutable state, matching the repo's
+            // n_threads=1-vs-N bit-identical bar.
+            let group_len = n_r.div_ceil(n_threads);
+            let chunk = group_len * n_time_over;
+            let n_chunks = n_r.div_ceil(group_len);
+
+            let base_solver = self.raman_solver.clone();
+            let scratch: Vec<Option<TimeDomainRamanSolver>> =
+                (0..n_chunks).map(|_| base_solver.clone()).collect();
+
+            let pool = self.thread_pool.get_or_insert_with(|| {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(n_threads)
+                    .build()
+                    .expect(
+                        "failed to build rayon thread pool for native RHS (docs/dev/BACKLOG.md S2)",
+                    )
+            });
+
+            let eto = &self.radial_eto_c;
+            let pto = &mut self.radial_pto_c;
+            let inten = &mut self.raman_intensity;
+            let pol = &mut self.raman_p;
+
+            pool.install(|| {
+                eto.par_chunks(chunk)
+                    .zip(pto.par_chunks_mut(chunk))
+                    .zip(inten.par_chunks_mut(chunk))
+                    .zip(pol.par_chunks_mut(chunk))
+                    .zip(scratch.into_par_iter())
+                    .for_each(
+                        |((((eto_c, pto_c), inten_c), pol_c), mut solver_opt)| {
+                            let ncol = eto_c.len() / n_time_over;
+                            for col in 0..ncol {
+                                let s = col * n_time_over;
+                                let e = s + n_time_over;
+                                for i in s..e {
+                                    inten_c[i] = 0.5 * eto_c[i].norm_sqr();
+                                }
+                                if let Some(ref mut solver) = solver_opt {
+                                    solver.solve(&inten_c[s..e], &mut pol_c[s..e]);
+                                }
+                                for i in s..e {
+                                    pto_c[i] += eto_c[i] * (rho * pol_c[i]);
+                                }
+                            }
+                        },
+                    );
+            });
+        } else {
+            // Sequential path — bit-identical to pre-parallelization behavior.
+            for r in 0..n_r {
+                let start = r * n_time_over;
+                let end = start + n_time_over;
+                for i in start..end {
+                    self.raman_intensity[i] = 0.5 * self.radial_eto_c[i].norm_sqr();
+                }
+                if let Some(ref mut solver) = self.raman_solver {
+                    solver.solve(
+                        &self.raman_intensity[start..end],
+                        &mut self.raman_p[start..end],
+                    );
+                }
+                for i in start..end {
+                    self.radial_pto_c[i] += self.radial_eto_c[i] * (rho * self.raman_p[i]);
+                }
+            }
+        }
+    }
+
     /// Free-space counterpart of `apply_plasma_radial` — docs/dev/BACKLOG.md Phase I
     /// item 6. `TransFree`'s `Et_to_Pt!` dispatches each response over
     /// `t.idcs` (`CartesianIndices((Ny,Nx))`), so `PlasmaCumtrapz` sees a
@@ -1791,6 +1885,11 @@ impl CpuNativeSim {
         for i in 0..(no * n_r) {
             let e = self.radial_eto_c[i];
             self.radial_pto_c[i] += kf * e.norm_sqr() * e;
+        }
+
+        // ── Step 3b: Raman polarisation (envelope, `RamanPolarEnv`), per r-column ──
+        if self.has_raman {
+            self.apply_raman_radial_env();
         }
 
         // ── Step 4: time-window apodization per r-column ─────────────────────────
