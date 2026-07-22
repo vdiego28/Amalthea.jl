@@ -64,14 +64,18 @@ The Rust backend is called transparently via Julia's `ccall` interface; no Rust 
 
 ## Installation
 
-Amalthea.jl requires Julia v1.10 or later, which can be obtained from [here](https://julialang.org/downloads/), and a [Rust toolchain](https://rustup.rs/) for building the native backend. In a Julia terminal, to install Amalthea.jl enter the package manager with `]` and run:
+Amalthea.jl requires Julia v1.10 or later, which can be obtained from [here](https://julialang.org/downloads/). In a Julia terminal, to install Amalthea.jl enter the package manager with `]` and run:
 
 ```julia
 ]
 add https://github.com/vdiego28/Amalthea.jl
 ```
 
-This will install and precompile Amalthea.jl and all its dependencies (including automatically building the Rust backend).
+This will install and precompile Amalthea.jl and all its dependencies (including the native Rust backend, `amalthea`).
+
+**On the Rust toolchain requirement.** For the three platforms Amalthea.jl intends to publish release binaries for (Linux x86_64, macOS aarch64/Apple Silicon, Windows x86_64), the build step (`deps/build.jl`) *attempts* to download a prebuilt `amalthea` library matching your package version before falling back to compiling from source — when that download path is working end to end, users on those platforms need no Rust toolchain at all. **In practice, as of this writing, the toolchain is required for everyone**: the download intentionally never throws on failure, so a missing or mismatched release asset is silent and just falls through to a source build (see `try_download_prebuilt` in `deps/build.jl`) — check the project's current release assets if you want to confirm whether this has changed. Either way, when the download path doesn't cover you, the build falls back to compiling `amalthea` from source with `cargo build --release`, which **does** require a working [Rust toolchain](https://rustup.rs/) (cargo >= 1.85) installed and on `PATH`. This is a build-time-only requirement inherited from this fork's native backend — plain [Luna.jl](https://github.com/LupoLab/Luna.jl) users won't have seen it. (`AMALTHEA_RUST_SKIP_DOWNLOAD=1` forces the source-build path directly, skipping the download attempt.)
+
+If `Pkg.build`/`Pkg.instantiate` fails, look for a `Failed to find/compile the Rust library` error from the build script — it names the actual problem and how to fix it. The most common cause is simply that `cargo` isn't installed or isn't on `PATH`; installing it via [rustup.rs](https://rustup.rs/) and re-running `Pkg.build("Amalthea")` resolves it.
 
 ## Quickstart
 
@@ -176,7 +180,7 @@ This should show a plot like this:
 The [examples folder](examples/) contains complete simulation examples for a variety of scenarios, both for the [simple interface](examples/simple_interface/) and the [low-level interface](examples/low_level_interface). Some of the simple interface examples require the `PyPlot` package to be present, and many of the low-level examples require other packages as well—you can install these by simply typing `] add PyPlot` at the Julia REPL or the equivalent for other packages.
 
 ## The low-level interface
-At its core, Amalthea.jl is extremely flexible, and the simple interface using `prop_capillary` only exposes part of what it can do. There are lots of examples in the [low-level interface examples folder](examples/low_level_interface). These are not actively maintained and are not guaranteed to run. As a side effect of its flexibility, it is quite easy to make mistakes when using the low-level interface. If you have trouble with this interface, [open an issue](https://github.com/vdiego28/Amalthea.jl/issues/new) with as much detail as possible.
+At its core, Amalthea.jl is extremely flexible, and the simple interface using `prop_capillary` only exposes part of what it can do. There are lots of examples in the [low-level interface examples folder](examples/low_level_interface). A representative subset of these (covering mode-averaged, modal, GNLSE, Raman, mixture, and step-index propagation) is smoke-tested in CI at a shrunk fibre length — see `test/test_examples_smoke.jl` — but most of the folder is not actively maintained and not guaranteed to run. As a side effect of its flexibility, it is quite easy to make mistakes when using the low-level interface. If you have trouble with this interface, [open an issue](https://github.com/vdiego28/Amalthea.jl/issues/new) with as much detail as possible.
 
 ## Running parameter scans
 Amalthea.jl comes with a built-in interface which allows for the running of single- and multi-dimensional parameter scans with very little additional code. An example can be found in the [examples folder](examples/simple_interface/scan.jl) and more information is available in the [documentation](https://vdiego28.github.io/Amalthea.jl/dev/scans.html).

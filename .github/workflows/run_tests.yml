@@ -67,6 +67,16 @@ jobs:
             julia-version: '1'
             group: fields
 
+          # Examples smoke group (ubuntu-latest only) — runs a representative
+          # subset of examples/low_level_interface/ at a shrunk fibre length
+          # so an API change that breaks the documented low-level entry point
+          # fails CI (docs/dev/BACKLOG.md "Distribution & example-code
+          # maintenance" item 2). See test/test_examples_smoke.jl for what is
+          # and isn't covered. ~45s of test time as of 2026-07-22.
+          - os: ubuntu-latest
+            julia-version: '1'
+            group: examples
+
     if: github.event.pull_request.draft == false
     steps:
       - uses: actions/checkout@v7
