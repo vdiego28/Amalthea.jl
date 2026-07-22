@@ -4785,7 +4785,7 @@ pub unsafe extern "C" fn init_cuda_native_sim(linop: *const c_double, n: size_t)
     }
     if std::env::var(CUDA_NATIVE_OPT_IN_VAR).as_deref() != Ok("1") {
         eprintln!(
-            "Luna-Rust warning: GPU-resident stepper (CudaNativeSim) is experimental \
+            "Amalthea warning: GPU-resident stepper (CudaNativeSim) is experimental \
              (mode-averaged Kerr-only) — refusing to initialize. Set {}=1 to opt in (see \
              docs/dev/BACKLOG.md).",
             CUDA_NATIVE_OPT_IN_VAR
@@ -4793,7 +4793,7 @@ pub unsafe extern "C" fn init_cuda_native_sim(linop: *const c_double, n: size_t)
         return std::ptr::null_mut();
     }
     eprintln!(
-        "Luna-Rust warning: {}=1 — using the GPU-resident stepper (mode-averaged Kerr-only; \
+        "Amalthea warning: {}=1 — using the GPU-resident stepper (mode-averaged Kerr-only; \
          any other geometry/physics on this config is not implemented, not just unverified).",
         CUDA_NATIVE_OPT_IN_VAR
     );

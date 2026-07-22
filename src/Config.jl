@@ -35,7 +35,7 @@ Fields (each `Bool`, default `false` unless noted):
   of `qdht`; see docs/dev/BACKLOG.md S1 item 5).
 - `native_wisdom`: `AMALTHEA_NATIVE_FFTW_WISDOM` — on-disk FFTW planner-wisdom
   persistence for the native path (default off; see
-  `docs/dev/native-port/PLAN_FFTW_WISDOM_FIX.md`).
+  `docs/dev/native-port/PLANS.md §1`).
 - `deterministic`: `AMALTHEA_NATIVE_DETERMINISTIC` — docs/dev/BACKLOG.md S5.2. Forces
   both Rust-side QDHT handles — the native-port radial-geometry one
   (`RK45.jl`'s `native_set_deterministic`) and the older per-kernel

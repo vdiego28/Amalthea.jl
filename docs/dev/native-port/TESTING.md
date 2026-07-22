@@ -1,7 +1,7 @@
 # Native-Rust Backend Port — Testing & Equivalence
 
 > Status: design doc for the phased port. Phases 0-8 are implemented and
-> passing (see `docs/native-port/PORT_LOG.md`) — the native-Rust backend
+> passing (see `docs/dev/native-port/PORT_LOG.md`) — the native-Rust backend
 > port is complete, and the follow-on scope phases (BACKLOG.md Phases D-I,
 > all ✅ 2026-07-08) extended it to essentially every configuration the
 > high-level API can construct. The testing discipline below (tolerance

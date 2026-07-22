@@ -1,5 +1,33 @@
 # Amalthea.jl (formerly Luna-Rust.jl) vs upstream Luna.jl — review report (2026-07-02)
 
+> ## ✅ Fully executed — kept as provenance, not as a queue
+>
+> **Every finding in this report has been fixed** (verified in code
+> 2026-07-22). Do not re-open or re-fix anything below; do not read it as a
+> description of the current codebase, which it no longer is.
+>
+> It is kept because it is the origin document for
+> [`ARCHIVE.md`](ARCHIVE.md)'s Phases A-J, and because its section numbers
+> are deep-linked from source and tests (`src/RK45.jl:1285`,
+> `src/Ionisation.jl:78`, `test/test_native_density_guard.jl:20`,
+> `test/test_native_default_workload.jl:7`, and others cite "REVIEW.md §3.2"
+> etc.). Renumbering its sections would break those.
+>
+> | Finding | Fixed in |
+> |---|---|
+> | §1.1 `#428` — `Polarisation.ellipse` angle always 0 | `src/Polarisation.jl:62` + regression test |
+> | §1.2 `#427` — `SSHExec` `files` kwarg | `src/Scans.jl` (merged into the shell-escaped `runscan`) |
+> | §3.1 `_safe_n` clamps glass index to 1.0 | `src/PhysData.jl:13` |
+> | §3.2 native path skips the default workload | `src/RK45.jl:1281` |
+> | §3.3 Rust errors above `Emax` | `amalthea/src/ionization.rs:267` (+ the CUDA kernel, found later) |
+> | §3.4 density frozen at z=0 | `src/RK45.jl:828` |
+> | §3.5 Windows support claim | `README.md` §58-61 |
+> | §5 native-path scope gaps | Phases D-I, see [`ARCHIVE.md`](ARCHIVE.md) |
+>
+> Env-var names and file paths in the body were mechanically refreshed
+> 2026-07-22 (`LUNA_USE_RUST_*` → `AMALTHEA_USE_RUST_*`, `luna-rust/` →
+> `amalthea/`); the prose is otherwise as written.
+
 Scope: full comparison of this fork against the freshly-downloaded upstream
 `Luna.jl` (`../Luna.jl`, master @ `0a52ffb`, 2026-06-24), plus a correctness
 review of the fork's own changes (Julia and Rust sides). Method: upstream was
@@ -43,7 +71,7 @@ Remaining upstream commits since the base are CI-only (dependabot).
   usability bug). Deliberate, documented divergence.
 - The β1(z) analytic closed form (Phase 7) is *more* accurate than
   upstream's adaptive-FD `Modes.dispersion` — see
-  `docs/native-port/BETA1_ANALYTIC.md`.
+  `docs/dev/native-port/BETA1_ANALYTIC.md`.
 - Assorted allocation fixes (`@views`, generator instead of array
   comprehensions) and the `pointcalc!` data-race fix (sequential loop).
 
@@ -65,20 +93,20 @@ case guard it, don't clamp globally.
 `prop_capillary` defaults to `plasma = !envelope`, i.e. **every default
 field-resolved run includes plasma**. The native stepper's plasma wiring
 requires `IonRatePPTAccel.rust_handle`, which is only constructed when
-`LUNA_USE_RUST_IONISATION=1` — and that toggle **defaults to 0**. So in the
-out-of-the-box configuration (`LUNA_USE_RUST_NATIVE=1`,
-`LUNA_USE_RUST_IONISATION=0`), the flagship resident-Rust stepper throws
+`AMALTHEA_USE_RUST_IONISATION=1` — and that toggle **defaults to 0**. So in the
+out-of-the-box configuration (`AMALTHEA_USE_RUST_NATIVE=1`,
+`AMALTHEA_USE_RUST_IONISATION=0`), the flagship resident-Rust stepper throws
 `NativeIneligible` and silently (one-time `@warn`) falls back to the Julia
 stepper for the fork's bread-and-butter use case. The port's headline
 speedup does not apply to default HCF simulations. Fix: build the ionisation
 LUT handle whenever the native path is active (decouple it from the opt-in
-kernel toggle), or flip `LUNA_USE_RUST_IONISATION` default to 1 after fixing
+kernel toggle), or flip `AMALTHEA_USE_RUST_IONISATION` default to 1 after fixing
 3.3.
 
 ### 3.3 Rust/Julia disagree above `Emax` on the opt-in ionisation path (🟡)
 Julia's `IonRatePPTAccel` clamps above `Emax`; the Rust
 `PptIonizationRate::rate` still **errors** (`ionization.rs:222`). With
-`LUNA_USE_RUST_IONISATION=1`, one above-`Emax` sample makes
+`AMALTHEA_USE_RUST_IONISATION=1`, one above-`Emax` sample makes
 `ppt_ionization_rate_vector` fail the whole vector, emitting a `@warn` and
 falling back to Julia for that call — i.e. the acceleration disappears (and
 warns repeatedly) in exactly the strong-field scenarios that need it. The

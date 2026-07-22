@@ -1382,7 +1382,7 @@ pub unsafe extern "C" fn init_blas_path(path_ptr: *const libc::c_char) -> c_int 
         match crate::blas::init_blas_api(std::path::Path::new(s)) {
             Ok(_) => 0,
             Err(e) => {
-                eprintln!("Luna-Rust BLAS loader error: {}", e);
+                eprintln!("Amalthea BLAS loader error: {}", e);
                 -1
             }
         }
@@ -1448,7 +1448,7 @@ pub unsafe extern "C" fn scan_write_point_ffi(
     match crate::io::scan_write_point(fpath, yname, y, dims, tname, z, lock_path) {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("Luna-Rust scan_write_point error: {}", e);
+            eprintln!("Amalthea scan_write_point error: {}", e);
             -2
         }
     }

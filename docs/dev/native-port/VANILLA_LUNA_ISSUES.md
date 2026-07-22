@@ -114,7 +114,7 @@ some faithfully reproduced (matching vanilla's own approximation), and some
 just recorded as future options.
 
 ### `Modes.dispersion`'s adaptive finite-difference β1(z)
-**Found:** Phase 7, `docs/native-port/BETA1_ANALYTIC.md`.
+**Found:** Phase 7, `docs/dev/native-port/BETA1_ANALYTIC.md`.
 **Problem:** `β1(z) = Modes.dispersion(mode, 1, ω0; z=z)` calls
 `Maths.derivative`, which uses `FiniteDifferences.central_fdm(7, 1, adapt=1)`
 — a 7-point adaptive-step central difference. This has a small, real, and
@@ -140,7 +140,7 @@ systematic β1 offset accumulates coherently over propagation length and
 bandwidth — a documented, understood widening, not slack from a bug.
 
 ### PPT ionisation rate is a spline LUT, not a direct evaluation
-**Found:** `docs/native-port/MATH.md` §8.2 (recorded 2026-07-08), `ionization.rs`.
+**Found:** `docs/dev/native-port/MATH.md` §8.2 (recorded 2026-07-08), `ionization.rs`.
 **Problem:** vanilla Luna's PPT ionisation rate (`IonRatePPTAccel`, and this
 port's `PptIonizationRate`) is evaluated via a 1-D cubic B-spline LUT fitted
 over `|E|`, not the closed-form PPT rate expression directly. This trades a
@@ -285,9 +285,9 @@ radial/modal/free-space too.
 **Problem:** `prop_capillary` defaults to `plasma = !envelope` — so every
 default field-resolved run includes plasma. But native's plasma wiring
 required `IonRatePPTAccel.rust_handle`, only built when
-`LUNA_USE_RUST_IONISATION=1` was explicitly set (default `"0"`). So the
-out-of-the-box configuration (`LUNA_USE_RUST_NATIVE=1` by default since
-Phase 8, `LUNA_USE_RUST_IONISATION=0` by default) threw `NativeIneligible`
+`AMALTHEA_USE_RUST_IONISATION=1` was explicitly set (default `"0"`). So the
+out-of-the-box configuration (`AMALTHEA_USE_RUST_NATIVE=1` by default since
+Phase 8, `AMALTHEA_USE_RUST_IONISATION=0` by default) threw `NativeIneligible`
 and silently fell back to the Julia stepper for the single most common
 use case — the native port's headline speedup never applied unless a user
 knew to flip a second, unrelated-looking environment variable.
@@ -366,7 +366,7 @@ native path toward parity with Julia's pre-existing behavior, at the cost of
 losing that accidental extra determinism — flagged as an open design
 question in `BACKLOG.md` (S1 item 1's "second risk" note). **Resolved
 2026-07-09:** native wisdom persistence is now opt-in, default OFF
-(`LUNA_NATIVE_FFTW_WISDOM=1`; see `docs/native-port/PLAN_FFTW_WISDOM_FIX.md`),
+(`AMALTHEA_NATIVE_FFTW_WISDOM=1`; see `docs/dev/native-port/PLANS.md §1`),
 restoring the native path's accidental extra determinism as the default —
 opting in trades it back away for whatever (likely near-zero, since native
 only ever plans with `ESTIMATE`) speed benefit accumulated wisdom provides.
@@ -425,8 +425,8 @@ failure, never crashes, but can cause different processes in a concurrent
 batch to get different plans purely from the race, not from anything
 physically different about their workloads).
 **Status: Fixed 2026-07-09.** On-disk wisdom persistence for the native path
-is now opt-in, default OFF (`LUNA_NATIVE_FFTW_WISDOM=1`; see
-`docs/native-port/PLAN_FFTW_WISDOM_FIX.md` and `BACKLOG.md` S1 item 1). By
+is now opt-in, default OFF (`AMALTHEA_NATIVE_FFTW_WISDOM=1`; see
+`docs/dev/native-port/PLANS.md §1` and `BACKLOG.md` S1 item 1). By
 default no process reads or writes the shared wisdom file, so this race is
 eliminated for the default configuration; it can still occur for anyone who
 opts in and runs concurrent processes, which is documented as an accepted

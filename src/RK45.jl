@@ -49,7 +49,7 @@ near-cancellation sensitivity (see the Phase 2 gotcha in CLAUDE.md) — vary
 with whatever the on-disk file happens to contain from a prior run. Set
 `AMALTHEA_NATIVE_FFTW_WISDOM=1` to restore persistence (import + export) for
 workloads where the accumulated wisdom is worth the tradeoff. See
-`docs/dev/native-port/PLAN_FFTW_WISDOM_FIX.md` for the full analysis.
+`docs/dev/native-port/PLANS.md §1` for the full analysis.
 """
 _native_wisdom_enabled() = Amalthea.Config.backend_config().native_wisdom
 

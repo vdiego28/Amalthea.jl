@@ -1,7 +1,7 @@
 # Native-Rust Backend Port — Architecture
 
 > Status: design doc for the phased port. Phases 0-8 are implemented and
-> passing (see `docs/native-port/PORT_LOG.md` for the latest entry) — the
+> passing (see `docs/dev/native-port/PORT_LOG.md` for the latest entry) — the
 > native-Rust backend port is complete.
 > Companion docs: [MATH.md](MATH.md), [TESTING.md](TESTING.md),
 > [PORT_LOG.md](PORT_LOG.md), [BETA1_ANALYTIC.md](BETA1_ANALYTIC.md). Agent
@@ -202,7 +202,7 @@ on-disk/in-process wisdom perturb plan selection, which — via the RK45
 controller's near-cancellation sensitivity (CLAUDE.md's Phase 2 gotcha) —
 can shift the adaptive step-size path run to run. Set
 `AMALTHEA_NATIVE_FFTW_WISDOM=1` to opt back in. See
-`docs/native-port/PLAN_FFTW_WISDOM_FIX.md` for the full analysis and
+`docs/dev/native-port/PLANS.md §1` for the full analysis and
 `BACKLOG.md` S1 item 1 for the resolution. The determinism boundary this
 leaves in place: exact bit-level step-path reproducibility across runs is
 only guaranteed with one fresh process per simulation (native shares

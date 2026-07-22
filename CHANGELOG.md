@@ -23,8 +23,8 @@ no Rust knowledge is required to use the package.
   configuration outside this scope (`NativeIneligible`).
 - **Runtime hardware dispatch**: automatic selection of CUDA → Vulkan →
   AVX-512/Apple AMX → AVX2/NEON → portable scalar, including an opt-in
-  GPU-resident backend (`LUNA_USE_RUST_CUDA_NATIVE=1`).
-- **Per-kernel Rust acceleration** (opt-in via `LUNA_USE_RUST_*` toggles,
+  GPU-resident backend (`AMALTHEA_USE_RUST_CUDA_NATIVE=1`).
+- **Per-kernel Rust acceleration** (opt-in via `AMALTHEA_USE_RUST_*` toggles,
   used independently of the resident stepper): PPT ionisation rate,
   time-domain Raman (ADE exponential integrator), Zeisberger/Marcatili
   dispersion, and QDHT batch transforms.

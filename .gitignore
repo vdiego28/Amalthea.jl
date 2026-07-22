@@ -13,7 +13,6 @@ docs/build
 .DS_Store
 deps/build.log
 .venv/
-luna-rust/target/
 __pycache__/
 *.pyc
 *.egg-info/

@@ -59,7 +59,7 @@ of `BACKLOG.md`. No source code changed.
   `Threads.@threads` caused a data race → every step rejected).
 - `prop_capillary` requires `λlims`; rejects `stepfun`/`rtol`/`atol` kwargs.
 - Use the **local dev** library
-  `luna-rust/target/release/libluna_rust.so`, not an installed package copy, when
+  `amalthea/target/release/libluna_rust.so`, not an installed package copy, when
   testing new FFI symbols (installed copy lacks them → `undefined symbol`).
 **Tests:** none run (documentation-only task).
 **Next:** Phase 0 — add the `NativeSim` opaque handle + FFTW binding + callback-
@@ -74,8 +74,8 @@ a no-op-RHS reproduction of the Julia stepper (`test/test_native_phase0.jl`).
 owns the resident spectral field plus all RK scratch (k1..k7, yerr, ystage) and a
 copy of the constant linear operator, sized once to `n` and never reallocated.
 **How:**
-- New file `luna-rust/src/native.rs`; registered `pub mod native;` in
-  `luna-rust/src/lib.rs:3`.
+- New file `amalthea/src/native.rs`; registered `pub mod native;` in
+  `amalthea/src/lib.rs:3`.
 - Exported four `#[unsafe(no_mangle)] pub unsafe extern "C"` symbols, following
   the QdhtFfiHandle pattern (`ffi.rs:175`): `init_native_sim(linop: *const f64,
   n) -> *mut NativeSim`, `free_native_sim`, `set_field(sim, data, n) -> i32`,
@@ -96,7 +96,7 @@ copy of the constant linear operator, sized once to `n` and never reallocated.
   (which already matches Julia `make_fbar!`/`make_prop!`/`evaluate!`). Do NOT
   base 0c on `stepper.rs`.
 **Gotchas:**
-- Build with `RUSTFLAGS="" cargo build --release` from **inside** `luna-rust/`
+- Build with `RUSTFLAGS="" cargo build --release` from **inside** `amalthea/`
   (the dir does not persist between Bash calls — pass it each time or the shell is
   already there). 41–42 pre-existing warnings are normal; look for `Finished`.
 - All FFI here is additive — it exports new symbols and touches no existing path,
@@ -107,7 +107,7 @@ copy of the constant linear operator, sized once to `n` and never reallocated.
 **Next (resume here):**
 1. **Phase 0b — FFTW binding.** dlopen the *same* libfftw3 Julia uses: have Julia
    pass `FFTW.FFTW_jll.libfftw3` path into an extended `init_native_sim` (or a new
-   `native_set_plans`). Mirror the runtime-dlopen pattern in `luna-rust/src/io.rs`
+   `native_set_plans`). Mirror the runtime-dlopen pattern in `amalthea/src/io.rs`
    (it dlopens libhdf5). Build forward/inverse plans matching `FFTW.jl` flags;
    apply the explicit `copy_scale!` normalization at the same point (MATH §4).
    Add a second plan pair for the oversampled `FTo` grid. Gate: a Rust FFT→IFFT
@@ -117,7 +117,7 @@ copy of the constant linear operator, sized once to `n` and never reallocated.
    resident `linop` for `prop!`). Export `native_step` / `native_solve`
    (ARCHITECTURE §3.2).
 3. **Julia wiring.** In `src/RK45.jl:19` `solve_precon`, add the
-   `LUNA_USE_RUST_NATIVE` branch building a `RustNativeSimHandle` (mutable struct
+   `AMALTHEA_USE_RUST_NATIVE` branch building a `RustNativeSimHandle` (mutable struct
    + finalizer calling `free_native_sim`, mirror `RustPreconStepHandle` at
    `RK45.jl:442`). Follow the `Ref{Ptr{Cvoid}}`-in-`__init__` rule if any new
    `@cfunction` is introduced (none expected — callback-free).
@@ -131,7 +131,7 @@ copy of the constant linear operator, sized once to `n` and never reallocated.
 **How:**
 - Phase 0b: Added `native_set_fftw_plans` which dlopens `FFTW.FFTW_jll.libfftw3` and creates `fft_r2c` and `fft_c2c` functions using `libloading`. FFT plans are created and stored on `NativeSim`. 
 - Phase 0c: Added `native_step` which perfectly reproduces `precon_step_inner` from `ffi.rs`, applying the RK stages and the linear operator. The RHS is hardcoded to 0 for Phase 0.
-- Wired into Julia: Added `RustNativeStepper` matching the fields needed to drive `native_step` and added FFI wrappers in `RK45.jl`. `solve_precon` uses `RustNativeStepper` when `LUNA_USE_RUST_NATIVE=1`.
+- Wired into Julia: Added `RustNativeStepper` matching the fields needed to drive `native_step` and added FFI wrappers in `RK45.jl`. `solve_precon` uses `RustNativeStepper` when `AMALTHEA_USE_RUST_NATIVE=1`.
 - Tests: Created `test/test_native_phase0.jl`. To avoid interpolation errors with no-op RHS, the full-run test skips `output=true` and checks `s.yn` instead.
 **Decisions:**
 - Because the RHS is 0 for Phase 0, `RK45.solve(s, tmax, output=true)` failed because it attempted to call `interpolate()` which requires `s.yi` stage variables. We bypassed this in the test by running the stepper in place with `output=false` and asserting against the final `s.yn` instead of intermediate states.
@@ -151,9 +151,9 @@ copy of the constant linear operator, sized once to `n` and never reallocated.
 **Status:** complete
 **Did:** Ported the `TransModeAvg` preconditioned RHS for RealGrid + scalar Kerr into Rust `NativeSim`. Wired parameters and initial stage evaluations correctly to bypass Julia callbacks entirely in the hot loop.
 **How:**
-- Implemented `rhs_mode_avg_real` private method in `luna-rust/src/native.rs:111`, evaluating the time-domain Kerr nonlinearity, applying windows, norm prefactors, and FFT transformations.
-- Updated `set_field` FFI in `luna-rust/src/native.rs:222` to evaluate the initial Runge-Kutta stage `ks[0]` if `beta` is initialized.
-- Added `get_ks_stage` FFI in `luna-rust/src/native.rs:264` to enable stage-by-stage `ks` introspection from Julia.
+- Implemented `rhs_mode_avg_real` private method in `amalthea/src/native.rs:111`, evaluating the time-domain Kerr nonlinearity, applying windows, norm prefactors, and FFT transformations.
+- Updated `set_field` FFI in `amalthea/src/native.rs:222` to evaluate the initial Runge-Kutta stage `ks[0]` if `beta` is initialized.
+- Added `get_ks_stage` FFI in `amalthea/src/native.rs:264` to enable stage-by-stage `ks` introspection from Julia.
 - Updated `test/test_native_phase1.jl` with single-step comparison and full capillary propagation solve tests.
 **Decisions:**
 - Initial evaluation of the first RK stage (`ks[0]`) was missing in the `RustNativeStepper` initialization, causing errors to be zeroed or incorrect at the start. Evaluated it in `set_field` if parameters are loaded.
@@ -186,10 +186,10 @@ updated all docs; recorded the Phase 2 plan.
   `use std::ffi::CString;` (unconditional) + `#[cfg(unix)] use std::ffi::CStr;`.
   Verified clean: `RUSTFLAGS="-D warnings" cargo build --release` → no warnings.
 - Fixed CI warning (all jobs): `Swatinem/rust-cache@v2` was given `workdir:`
-  (invalid key → silently ignored → cache not scoped to `luna-rust/`). Changed to
+  (invalid key → silently ignored → cache not scoped to `amalthea/`). Changed to
   `workspaces: "luna-rust"` per the action's actual API.
 - Removed 4 untracked scratch files left by prior agent: `list_prs.py`,
-  `merge_prs.py`, `plan.md`, `luna-rust/patch_native.rs`.
+  `merge_prs.py`, `plan.md`, `amalthea/patch_native.rs`.
 - Updated `BACKLOG.md`: Phase 0 ✅, Phase 1 ✅; corrected the stale
   `deps/build.jl` informational note (it forwards `ENV["RUSTFLAGS"]`, it does not
   force `""`).
@@ -209,7 +209,7 @@ updated all docs; recorded the Phase 2 plan.
   for any OS-gated items.
 - `Swatinem/rust-cache@v2`: valid key is `workspaces`, not `workdir`. Maps to
   `<path>` OR `<path> -> <target-dir>` — using just `"luna-rust"` is correct
-  (target defaults to `luna-rust/target`).
+  (target defaults to `amalthea/target`).
 **Tests:**
 - `RUSTFLAGS="-D warnings" cargo build --release` → clean (0 warnings, 0 errors).
 - `LUNA_TEST_GROUP=rust julia --project test/runtests.jl` → 41928/41928.
@@ -242,7 +242,7 @@ operation not yet ported.
    Mirror the `native_set_mode_avg_params` pattern.
 4. **Julia wiring in `RK45.jl`** — extend `RustNativeStepper`'s dispatch to
    choose `rhs_mode_avg_env` / `rhs_plasma_env` when `EnvGrid` is detected. The
-   toggle stays `LUNA_USE_RUST_NATIVE`.
+   toggle stays `AMALTHEA_USE_RUST_NATIVE`.
 5. **Gate test `test/test_native_plasma.jl`** (`@testitem tags=[:rust]`, same
    skip-guard pattern as `test_stepper_rust.jl`):
    - EnvGrid Kerr single-step: `rel < 1e-13`.
@@ -272,7 +272,7 @@ operation not yet ported.
 never updated `s.y` after a successful step, corrupting `interpolate()` at any
 non-endpoint `ti`.
 **How:**
-- SVEA fix: `rhs_mode_avg_env` (`luna-rust/src/native.rs`) was missing the 3/4
+- SVEA fix: `rhs_mode_avg_env` (`amalthea/src/native.rs`) was missing the 3/4
   envelope Kerr prefactor; Julia's `Kerr_env` includes it, the Rust port didn't.
   Added `let kf = Complex::new(0.75 * self.kerr_fac, 0.0);`.
 - Full-solve root cause: NOT a physics/kernel bug. Confirmed via a step-by-step
@@ -305,7 +305,7 @@ non-endpoint `ti`.
   not near-zero, so there's no cancellation noise to amplify.)
 - `s.y` bug: `step!(s::RustNativeStepper)` (`src/RK45.jl`) only ever updated
   `s.t/s.tn/s.dt/s.dtn/s.err/s.errlast/s.ok` — never `s.y`. Verified via
-  `native_step` (`luna-rust/src/native.rs:704-820`) that the passed-in `yn`
+  `native_step` (`amalthea/src/native.rs:704-820`) that the passed-in `yn`
   buffer always holds a valid field on return regardless of accept/reject
   outcome (`s.field` is Rust's source of truth; `yn_sl` is unconditionally
   reset from it at function entry, line 729), so snapshotting `s.yn` just
@@ -343,13 +343,13 @@ non-endpoint `ti`.
 - `RUSTFLAGS="-D warnings" cargo build --release` → clean.
 - `LUNA_TEST_GROUP=rust julia --project . test/runtests.jl` (no env override,
   matching CI) → 41930 passed, 1 broken (Phase 2b plasma sub-test, which
-  correctly `@test_skip`s itself when `LUNA_USE_RUST_IONISATION` isn't set —
+  correctly `@test_skip`s itself when `AMALTHEA_USE_RUST_IONISATION` isn't set —
   expected, not a regression).
-- With `LUNA_USE_RUST_IONISATION=1` set (to exercise the native plasma path):
+- With `AMALTHEA_USE_RUST_IONISATION=1` set (to exercise the native plasma path):
   Phase 1 full-solve `2.75e-16`; Phase 2a (EnvGrid Kerr) single-step `< 1e-13`,
   full-solve `3.19e-17`; Phase 2b (RealGrid + plasma) single-step `3.76e-17`,
   full-solve `2.73e-16`. All comfortably under the `1e-6` target.
-  (Setting `LUNA_USE_RUST_IONISATION=1` globally makes one unrelated
+  (Setting `AMALTHEA_USE_RUST_IONISATION=1` globally makes one unrelated
   `test_ionisation_rust.jl` assertion fail — it asserts the *default* env-var
   state is off, so it must be run without the global override. Not a
   regression; run that file separately from the Phase 2b plasma path.)
@@ -361,9 +361,9 @@ non-endpoint `ti`.
 `rhs_radial` in `native.rs`, reusing the existing `QdhtFfiHandle` directly
 (no FFI round-trip per RHS) instead of building new QDHT machinery.
 **How:**
-- Design written into `docs/native-port/MATH.md` §3.2 *before* touching code
+- Design written into `docs/dev/native-port/MATH.md` §3.2 *before* touching code
   (per `AGENTS.md`'s doc-first rule), then implemented exactly as designed.
-- `NativeSim` (`luna-rust/src/native.rs`) gained: `is_radial: bool`, `n_r`,
+- `NativeSim` (`amalthea/src/native.rs`) gained: `is_radial: bool`, `n_r`,
   `qdht: Option<crate::ffi::QdhtFfiHandle>` (+ `qdht_scale_fwd/inv`),
   `radial_m: Vec<Complex<f64>>` (precomputed normalization), and 2-D scratch
   buffers `radial_eto/pto` (time domain) + `radial_eoo/poo` (oversampled
@@ -452,22 +452,22 @@ into the resident RHS; replaces `RamanPolar`, `src/Nonlinear.jl:357`). See
 **Did:** Fixed `test/test_native_phase2.jl`'s Phase 2b (RealGrid + plasma)
 sub-test, which was `@test_skip`-ing itself on every plain `LUNA_TEST_GROUP=rust`
 CI run (no failure shown, just silently absent from the pass count) because it
-required the ambient env var `LUNA_USE_RUST_IONISATION=1` to be set externally,
+required the ambient env var `AMALTHEA_USE_RUST_IONISATION=1` to be set externally,
 which CI never did. Flagged by the user reviewing the "1 broken" in every test
 summary this session — a legitimate "is this phase actually verified
 continuously, or only when someone remembers to set a flag by hand?" question.
 **How:** The native plasma RHS needs a Rust-backed ionization-rate handle,
-which only gets wired up if `LUNA_USE_RUST_IONISATION=1` is set *before* the
+which only gets wired up if `AMALTHEA_USE_RUST_IONISATION=1` is set *before* the
 ionization LUT is constructed inside `Interface.prop_capillary_args` (deep in
 `Ionisation.IonRatePPTAccel`'s constructor) — not merely around the later
 `RustNativeStepper` construction, which was already (harmlessly) wrapped in
 its own local `withenv`. Fixed by wrapping the *entire* setup call
-(`Interface.prop_capillary_args(...)`) in `withenv("LUNA_USE_RUST_IONISATION" => "1") do ... end`
-and removing the `if get(ENV, "LUNA_USE_RUST_IONISATION", "0") != "1"; @test_skip; end`
+(`Interface.prop_capillary_args(...)`) in `withenv("AMALTHEA_USE_RUST_IONISATION" => "1") do ... end`
+and removing the `if get(ENV, "AMALTHEA_USE_RUST_IONISATION", "0") != "1"; @test_skip; end`
 guard that depended on ambient state.
 **Decisions:**
 - **Fixed in the test file, not in CI config.** The tempting alternative —
-  add `LUNA_USE_RUST_IONISATION: "1"` to `.github/workflows/run_tests.yml`'s
+  add `AMALTHEA_USE_RUST_IONISATION: "1"` to `.github/workflows/run_tests.yml`'s
   `rust` job env — would have fixed Phase 2b but broken
   `test_ionisation_rust.jl`'s "verify the default toggle state is off"
   assertion (`ir_julia.rust_handle === nothing`, built without any `withenv`,
@@ -500,7 +500,7 @@ additive term in `rhs_mode_avg_real`, reusing `raman.rs`'s existing
 `TimeDomainRamanSolver` ADE solver directly (no FFI round-trip per RHS,
 same reuse pattern as Phase 3's `QdhtFfiHandle`).
 **How:**
-- Design written into `docs/native-port/MATH.md` §5.3 before touching code
+- Design written into `docs/dev/native-port/MATH.md` §5.3 before touching code
   (per `AGENTS.md`'s doc-first rule).
 - `NativeSim` gained: `has_raman: bool`, `raman_solver: Option<TimeDomainRamanSolver>`,
   `raman_density: f64` (raw density, unscaled — unlike `kerr_fac` which folds
@@ -516,7 +516,7 @@ same reuse pattern as Phase 3's `QdhtFfiHandle`).
 - New FFI `native_set_raman_params(sim, omega, gamma, coupling, n_osc, dt, density)`
   builds the resident solver from the same `Ω`/`1/τ2ρ(1.0)`/`K` arrays
   `Interface._make_rust_raman_handle_from_response` already extracts for the
-  existing `LUNA_USE_RUST_RAMAN` FFI wiring; called after
+  existing `AMALTHEA_USE_RUST_RAMAN` FFI wiring; called after
   `native_set_mode_avg_params` (needs `n_time_over`), before `set_field`.
 - Julia side (`src/RK45.jl`): `RustNativeStepper`'s mode-avg block gains a
   Raman-detection loop mirroring the plasma-wiring loop above it — checks
@@ -530,7 +530,7 @@ same reuse pattern as Phase 3's `QdhtFfiHandle`).
 - **Scope: RealGrid, `thg=true` only.** `thg=false` needs a Hilbert transform
   (no Rust port exists); `RamanPolarEnv` (envelope) and intermediate-broadening
   (Gaussian-damped) responses stay Julia — deferred, matching the existing
-  `LUNA_USE_RUST_RAMAN` wiring's scope exactly (CLAUDE.md).
+  `AMALTHEA_USE_RUST_RAMAN` wiring's scope exactly (CLAUDE.md).
 - **Re-derive eligibility in `RK45.jl` rather than reusing `r.rust_handle`.**
   The existing handle only proves eligibility was checked *and* stores an
   opaque pointer to a Rust object the resident path doesn't want to share
@@ -592,7 +592,7 @@ already Rust). See `BACKLOG.md`.
 
 **Did:** Ported `TransModal`'s overlap-integral RHS for the common case —
 constant-radius Marcatili `kind=:HE, n=1` mode collections (the `HE1m`
-family) with `full=false` (the radial modal integral). New `luna-rust/src/
+family) with `full=false` (the radial modal integral). New `amalthea/src/
 cubature.rs` (dlopen binding for the C `libcubature`); `native.rs` gains
 `rhs_modal`/`rhs_modal_pointcalc`/`modal_integrand_v` + `native_set_modal_
 params`; `RK45.jl` gains an `is_modal` wiring block. Gate: two-mode
@@ -914,7 +914,7 @@ computed for the linop) on every call.
 
 ## Phase 8 — Default-flip + cleanup
 
-**Scope:** flip `LUNA_USE_RUST_NATIVE`'s default from `"0"` to `"1"`; keep
+**Scope:** flip `AMALTHEA_USE_RUST_NATIVE`'s default from `"0"` to `"1"`; keep
 per-kernel toggles for differential debugging; gate is the *entire* existing
 test suite green with native default, not just the `rust`/`sim-propagation`/
 `sim-interface` groups Phases 1-7 checked.
@@ -1062,7 +1062,7 @@ comparison to legitimately execute on different backends:**
 - `RUSTFLAGS="-D warnings" cargo build --release` → clean; `cargo test` →
   31/31 pass.
 - New `test/test_native_phase8.jl`: (a) default (env unset) picks native for
-  an eligible config — bit-identical to explicit `LUNA_USE_RUST_NATIVE=1`,
+  an eligible config — bit-identical to explicit `AMALTHEA_USE_RUST_NATIVE=1`,
   and agrees with explicit `=0` only to the Phase-1 method tolerance
   (`~1e-11`), confirming native actually ran rather than silently falling
   back; (b) a `NativeIneligible` config (`RamanPolarField` with `thg=false`)
@@ -1072,7 +1072,7 @@ comparison to legitimately execute on different backends:**
 - `LUNA_TEST_GROUP=All julia --project test/runtests.jl` (the actual Phase 8
   gate, not a subset): **46590 passed, 0 failed, 0 errored, 12 broken
   (pre-existing), 46602 total** — confirmed clean by first establishing that
-  every one of these tests is 100% green with `LUNA_USE_RUST_NATIVE=0`
+  every one of these tests is 100% green with `AMALTHEA_USE_RUST_NATIVE=0`
   forced (physics 1643/12-broken/0-fail, sim-propagation 18/18, sim-interface
   301/301, io 2302/2302, fields 334/334, sim-multimode 31/31), i.e. every
   failure found this phase was newly caused by the default flip exposing a
@@ -1082,30 +1082,30 @@ comparison to legitimately execute on different backends:**
 scan-queue `flock` no-op, GPU CI coverage) are pre-existing, unrelated items —
 see `BACKLOG.md`.
 
-## 2026-07-02 — Phase C: decouple ionisation LUT build from LUNA_USE_RUST_IONISATION
+## 2026-07-02 — Phase C: decouple ionisation LUT build from AMALTHEA_USE_RUST_IONISATION
 
 **Context:** the fork-vs-upstream review (`REVIEW.md` §3.2) found that Phase 8's
 default flip didn't actually make the fork's flagship default workload run
 natively. `prop_capillary` defaults to `plasma = !envelope`, so every default
 field-resolved run includes plasma — but `RustNativeStepper`'s plasma wiring
 requires `IonRatePPTAccel.rust_handle`, which `Ionisation._make_rust_ionization_handle`
-only built when `LUNA_USE_RUST_IONISATION=1` was set explicitly. That toggle
-defaults to `"0"`, so the out-of-the-box config (`LUNA_USE_RUST_NATIVE=1`,
-`LUNA_USE_RUST_IONISATION=0`) threw `NativeIneligible` from inside
+only built when `AMALTHEA_USE_RUST_IONISATION=1` was set explicitly. That toggle
+defaults to `"0"`, so the out-of-the-box config (`AMALTHEA_USE_RUST_NATIVE=1`,
+`AMALTHEA_USE_RUST_IONISATION=0`) threw `NativeIneligible` from inside
 `RustNativeStepper` and silently fell back to the Julia stepper for the
 fork's bread-and-butter use case — the native port's headline speedup never
 applied unless a user knew to flip a second, unrelated-looking toggle.
 
 **Fix:** `_make_rust_ionization_handle` now builds the handle whenever the
-Rust library is present and EITHER `LUNA_USE_RUST_IONISATION=1` OR
-`LUNA_USE_RUST_NATIVE` is enabled (default `"1"` since Phase 8). This was
+Rust library is present and EITHER `AMALTHEA_USE_RUST_IONISATION=1` OR
+`AMALTHEA_USE_RUST_NATIVE` is enabled (default `"1"` since Phase 8). This was
 only safe to do *after* Phase B.2 (Rust `PptIonizationRate::rate` clamping
 to `rate(e_max)` instead of erroring above the LUT bound, matching Julia) —
 before that fix, silently switching the default ionisation backend for every
 user could have changed strong-field behaviour they never opted into.
 
 **Gotcha:** the missing-library `@warn` in `_make_rust_ionization_handle` had
-to stay conditional on the *explicit* `LUNA_USE_RUST_IONISATION=1` opt-in,
+to stay conditional on the *explicit* `AMALTHEA_USE_RUST_IONISATION=1` opt-in,
 not the native-implied case — otherwise every ordinary user on a fresh
 clone without a built Rust library (the common case, since native defaulting
 on doesn't require Rust to exist) would get a warning spammed on every
@@ -1130,17 +1130,17 @@ JIT/FFTW-planning compile time from the timed run):
 
 | Path | Wall time (10 accepted steps) | Per-step |
 |---|---|---|
-| Julia stepper (`LUNA_USE_RUST_NATIVE=0`, pre-Phase-C default behaviour) | 0.305 s | ~30.5 ms |
+| Julia stepper (`AMALTHEA_USE_RUST_NATIVE=0`, pre-Phase-C default behaviour) | 0.305 s | ~30.5 ms |
 | Native stepper (post-Phase-C default) | 0.087 s | ~8.7 ms |
 
 **~3.5x wall-time speedup** on the exact configuration a new user gets by
 running `prop_capillary` with no environment variables set — previously
-0x (silent Julia fallback, no speedup at all despite `LUNA_USE_RUST_NATIVE`
+0x (silent Julia fallback, no speedup at all despite `AMALTHEA_USE_RUST_NATIVE`
 defaulting on since Phase 8).
 
 **Tests:** `rust` group green (41969 passed, 0 failed) including the new
 `test_native_default_workload.jl` and `test_ionisation_rust.jl`'s new
 Phase-C assertions (native-default-alone builds the handle; explicit
-`LUNA_USE_RUST_NATIVE=0` still yields `rust_handle === nothing`). Full
+`AMALTHEA_USE_RUST_NATIVE=0` still yields `rust_handle === nothing`). Full
 `LUNA_TEST_GROUP=All` gate result recorded once run (see BACKLOG.md).
 
