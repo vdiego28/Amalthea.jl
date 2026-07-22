@@ -307,21 +307,35 @@ pub struct CpuNativeSim {
     // (`Nonlinear.jl:395-417`) instead: precompute the padded impulse
     // response's spectrum once (`raman_fft_hw`, scaled by `dt/n_over` so no
     // further scaling is needed per step), then each step does
-    // `P = ifft(hw .* fft(E2_padded))` via a resident length-`2·n_time_over`
-    // c2c plan. Mutually exclusive with `has_raman` (only one Raman response
-    // is ever present in `f!.resp`).
+    // `P = irfft(hw .* rfft(E2_padded))` via a resident length-`2·n_time_over`
+    // r2c/c2r plan pair (Phase J.3, docs/dev/BACKLOG.md, MATH.md §8.4): both
+    // `E2_padded` and `h` are mathematically real (E² and a real impulse
+    // response), so a Hermitian r2c/c2r pair computes the identical
+    // convolution as the earlier full c2c plan at roughly half the FFT cost
+    // (measured 1.8-2.8x on the isolated forward+multiply+inverse step across
+    // n_time_over=1024..65536, `amalthea/benches/raman_fft_r2c_bench.rs`; the
+    // real `:SiO2` config lands at n_time_over=4096 -> ~2.2x) — see PORT_LOG
+    // for the full measurement. c2r also drops the c2c path's spurious
+    // imaginary-noise component of P (real inputs convolved via c2c still
+    // carry ~1e-16 imaginary garbage from FFT rounding; c2r forces it exactly
+    // zero), which is why the equivalence tolerance does not widen. Mutually
+    // exclusive with `has_raman` (only one Raman response is ever present in
+    // `f!.resp`).
     pub has_raman_fft: bool,
     /// Constant-medium density (unscaled, like `raman_density`).
     pub raman_fft_density: f64,
-    /// Precomputed `fft(h_padded) .* (dt / n_over)`, length `2·n_time_over`.
+    /// Precomputed `rfft(h_padded) .* (dt / n_over)`, length
+    /// `n_over/2+1` (`n_over = 2·n_time_over`).
     pub raman_fft_hw: Vec<Complex<f64>>,
-    /// Resident c2c plan, length `2·n_time_over` (zero-padded convolution).
-    pub raman_fft_plan: Option<ComplexFft1d>,
+    /// Resident r2c/c2r plan pair, real length `2·n_time_over` / spectral
+    /// length `n_time_over+1` (zero-padded convolution).
+    pub raman_fft_plan: Option<RealFft1d>,
     /// Zero-padded `E²` scratch (second half stays zero forever), length
-    /// `2·n_time_over`.
-    pub raman_fft_e2: Vec<Complex<f64>>,
-    /// Spectrum/output scratch, length `2·n_time_over` (distinct buffer from
-    /// `raman_fft_e2`, `ComplexFft1d` requires out-of-place in/out).
+    /// `2·n_time_over`. Real (not `Complex`) since `sqr!`'s `1/2·|E|²` is
+    /// real by construction.
+    pub raman_fft_e2: Vec<f64>,
+    /// Spectrum scratch, length `n_time_over+1` (distinct buffer from
+    /// `raman_fft_e2`, `RealFft1d` requires out-of-place in/out).
     pub raman_fft_ew: Vec<Complex<f64>>,
 
     // ── Phase 5: Modal (TransModal), narrow scope — see MATH.md §3.3 ────────────
@@ -594,6 +608,33 @@ pub struct CpuNativeSim {
     /// the one real lever today (no `NativeBackend` RHS code reads
     /// `n_threads` yet; S2 Phase 3, which would have, was reverted).
     pub deterministic: bool,
+}
+
+/// Envelope-Raman intensity `0.5·|E|²` (`sqr!(R::RamanPolarEnv, E)`,
+/// `Nonlinear.jl:387-390`). Shared by `rhs_mode_avg_env`'s Step 3b (ADE) and
+/// Step 3c (FFT-conv) — both fed the same formula from the same time-domain
+/// field into different destination buffers before this was pulled out
+/// (Phase J.5 dedup, docs/dev/BACKLOG.md). Writes exactly `out.len()`
+/// elements starting at index 0 of both slices; callers own any additional
+/// zero-padding (Step 3c's `raman_fft_e2` tail).
+#[inline]
+fn raman_intensity_half_env(eto: &[Complex<f64>], out: &mut [f64]) {
+    for i in 0..out.len() {
+        out[i] = 0.5 * eto[i].norm_sqr();
+    }
+}
+
+/// Envelope-Raman polarisation accumulation `pto[i] += eto[i] · (ρ · p[i])`
+/// (`Pout[i] = ρ*E[i]*R.P[i]`, `Nonlinear.jl:457-459`). Shared by Step 3b
+/// (`p` = ADE-integrated `raman_p`) and Step 3c (`p` = FFT-convolved
+/// `raman_fft_e2`, real since Phase J.3's r2c/c2r halving) — same formula,
+/// same accumulation target, different `p`/`ρ` source (Phase J.5 dedup,
+/// docs/dev/BACKLOG.md). All three slices must have equal length.
+#[inline]
+fn raman_accumulate_env(pto: &mut [Complex<f64>], eto: &[Complex<f64>], p: &[f64], rho: f64) {
+    for i in 0..pto.len() {
+        pto[i] += eto[i] * (rho * p[i]);
+    }
 }
 
 /// Analytic-signal intensity `1/2·|hilbert(field)|²`, matching
@@ -1475,16 +1516,16 @@ impl CpuNativeSim {
         // real field) and the final accumulation (complex × real, not
         // real × real) differ.
         if self.has_raman {
-            for i in 0..no {
-                self.raman_intensity[i] = 0.5 * self.eto_cplx[i].norm_sqr();
-            }
+            raman_intensity_half_env(&self.eto_cplx[..no], &mut self.raman_intensity[..no]);
             if let Some(ref mut solver) = self.raman_solver {
                 solver.solve(&self.raman_intensity[..no], &mut self.raman_p[..no]);
             }
-            let rho = self.raman_density;
-            for i in 0..no {
-                self.pto_cplx[i] += self.eto_cplx[i] * (rho * self.raman_p[i]);
-            }
+            raman_accumulate_env(
+                &mut self.pto_cplx[..no],
+                &self.eto_cplx[..no],
+                &self.raman_p[..no],
+                self.raman_density,
+            );
         }
 
         // ── Step 3c: Raman polarisation, intermediate-broadening (`:SiO2`) —
@@ -1492,10 +1533,12 @@ impl CpuNativeSim {
         // for `RamanRespIntermediateBroadening` (no finite-SDO form, see
         // `set_raman_fft_params`'s doc comment). `has_raman`/`has_raman_fft`
         // are mutually exclusive (only one Raman response ever present).
+        // r2c/c2r (Phase J.3, docs/dev/BACKLOG.md, MATH.md §8.4): `raman_fft_e2`
+        // is real (both the padded intensity and the convolution result `P`
+        // are mathematically real), so `raman_fft_plan` is a `RealFft1d` and
+        // `raman_fft_ew`'s spectrum is the shorter `n_over/2+1` Hermitian half.
         if self.has_raman_fft {
-            for i in 0..no {
-                self.raman_fft_e2[i] = Complex::new(0.5 * self.eto_cplx[i].norm_sqr(), 0.0);
-            }
+            raman_intensity_half_env(&self.eto_cplx[..no], &mut self.raman_fft_e2[..no]);
             // The upper half must be genuinely zero-padded every step:
             // `plan.inverse` below writes the full 2N-length P back into
             // this same buffer, so from the second RHS call onward
@@ -1506,7 +1549,7 @@ impl CpuNativeSim {
             // artefacts (Nonlinear.jl:406-411) — don't rely on h's tail
             // happening to be zero at the wrap distance.
             for i in no..self.raman_fft_e2.len() {
-                self.raman_fft_e2[i] = Complex::new(0.0, 0.0);
+                self.raman_fft_e2[i] = 0.0;
             }
             if let Some(ref plan) = self.raman_fft_plan {
                 plan.forward(&mut self.raman_fft_e2, &mut self.raman_fft_ew);
@@ -1515,13 +1558,17 @@ impl CpuNativeSim {
                 }
                 // ifft is unnormalized; `raman_fft_hw` already folds in the
                 // `1/n_over` factor (see `set_raman_fft_params`), so the
-                // result of `inverse` here is already the true `P`.
+                // result of `inverse` here is already the true `P`, and is
+                // exactly real (c2r admits no imaginary component, unlike
+                // the earlier c2c path's ~1e-16 imaginary rounding noise).
                 plan.inverse(&mut self.raman_fft_ew, &mut self.raman_fft_e2);
             }
-            let rho = self.raman_fft_density;
-            for i in 0..no {
-                self.pto_cplx[i] += self.eto_cplx[i] * (rho * self.raman_fft_e2[i]);
-            }
+            raman_accumulate_env(
+                &mut self.pto_cplx[..no],
+                &self.eto_cplx[..no],
+                &self.raman_fft_e2[..no],
+                self.raman_fft_density,
+            );
         }
 
         // ── Step 4: time-window apodization ─────────────────────────────────────
@@ -4083,8 +4130,11 @@ impl NativeBackend for CpuNativeSim {
         // (Raman.jl:97-105): a Gaussian-damped multi-line impulse response, zero
         // for t < 0 (causal, first half of the padded buffer) and zero-padded
         // in the second half (Nonlinear.jl:299's `h = zeros(length(t)*2)`).
+        // `h` is real (Phase J.3: r2c/c2r halving, docs/dev/BACKLOG.md, MATH.md
+        // §8.4) — previously packed into a `Complex<f64>` buffer for a c2c
+        // plan; a `RealFft1d` gives the identical spectrum at ~half the cost.
         let n_over = 2 * n_time;
-        let mut h = vec![Complex::new(0.0, 0.0); n_over];
+        let mut h = vec![0.0f64; n_over];
         for idx in 0..n_time {
             let t = idx as f64 * dt;
             let mut hv = 0.0;
@@ -4094,11 +4144,11 @@ impl NativeBackend for CpuNativeSim {
                     * (-gauss_sl[i] * gauss_sl[i] * t * t / 4.0).exp()
                     * (omega_sl[i] * t).sin();
             }
-            h[idx] = Complex::new(scale * hv, 0.0);
+            h[idx] = scale * hv;
         }
 
-        let plan = ComplexFft1d::new(api, n_over, 1 << 6);
-        let mut hw = vec![Complex::new(0.0, 0.0); n_over];
+        let plan = RealFft1d::new(api, n_over, 1 << 6);
+        let mut hw = vec![Complex::new(0.0, 0.0); plan.nspec()];
         plan.forward(&mut h, &mut hw);
         // Fold in Nonlinear.jl:415's `dt` and the ifft's `1/n_over` normalisation
         // once here, so the per-step convolution needs no further scaling.
@@ -4109,8 +4159,8 @@ impl NativeBackend for CpuNativeSim {
 
         s.raman_fft_plan = Some(plan);
         s.raman_fft_hw = hw;
-        s.raman_fft_e2 = vec![Complex::new(0.0, 0.0); n_over];
-        s.raman_fft_ew = vec![Complex::new(0.0, 0.0); n_over];
+        s.raman_fft_e2 = vec![0.0f64; n_over];
+        s.raman_fft_ew = vec![Complex::new(0.0, 0.0); n_over / 2 + 1];
         s.raman_fft_density = density;
         s.has_raman_fft = true;
 

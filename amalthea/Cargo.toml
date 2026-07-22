@@ -38,3 +38,7 @@ harness = false
 name = "exp_linop_layout_bench"
 harness = false
 
+[[bench]]
+name = "raman_fft_r2c_bench"
+harness = false
+

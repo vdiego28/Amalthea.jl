@@ -25,6 +25,16 @@ using TestItems
             # has no thg branch, so the resident real-valued ADE solver
             # applies unchanged; only the accumulation (complex field *
             # real polarisation) differs from RamanPolarField's real case.
+            #
+            # Phase J.3 (2026-07-22): the Julia oracle here goes through
+            # `RamanPolarEnv`'s FFT-convolution path (native uses ADE, this
+            # response is SDO-eligible), which now uses r2c/c2r instead of a
+            # full c2c FFT (`Nonlinear.jl:376-394`). This is an
+            # already-loose ADE-vs-FFT method-difference tier (~2e-5, not
+            # the ~1e-13 reassociation tier), so the r2c summation-order
+            # change is invisible here — re-run after the change to confirm
+            # (measured 1.499e-5, within the existing <2e-5 assertion, no
+            # regression from the pre-change ~1.5e-5).
             grid = Grid.EnvGrid(L, λ0, (400e-9, 2000e-9), 0.5e-12)
             mode = Capillary.MarcatiliMode(a, gas, pres; kind=:HE, n=1, m=1)
             rr = Raman.raman_response(grid.to, gas; rotation=false, vibration=true)

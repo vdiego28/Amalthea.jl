@@ -23,6 +23,15 @@ using TestItems
         # (Nonlinear.jl:395-417) exactly. Only reachable via `prop_gnlse`
         # (mode-averaged EnvGrid, `RamanPolarEnv`) — `:SiO2` is not wired for
         # `prop_capillary`.
+        #
+        # Phase J.3 (docs/dev/BACKLOG.md, MATH.md §8.4, 2026-07-22): both
+        # sides of this comparison switched from a full c2c FFT convolution
+        # to an r2c/c2r pair (native `raman_fft_plan`; Julia's
+        # `RamanPolarEnv` ctor, `Nonlinear.jl:376-394`) — E² and h are both
+        # real, so this halves the FFT cost with no tolerance change (kept
+        # r2c-vs-r2c rather than becoming a cross-method comparison; see
+        # `amalthea/benches/raman_fft_r2c_bench.rs` for the measured
+        # speedup). This test is this change's two-tier equivalence gate.
         γ = 0.1
         β2 = -1e-26
         N = 4.0
