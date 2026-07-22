@@ -93,7 +93,31 @@ if isdir(rust_dir)
                        "RUSTFLAGS" => get(ENV, "RUSTFLAGS", "")))
             @info "Successfully compiled Rust library amalthea."
         catch e
-            @error "Failed to compile Rust library amalthea: make sure Rust/Cargo (version >= 1.85) is installed on your system." e
+            # No prebuilt binary was available for this platform/package-version (see
+            # try_download_prebuilt above), so we fell back to `cargo build --release`
+            # from source — which needs an actual Rust toolchain. Give an actionable
+            # message instead of letting a raw cargo/process error surface, since a
+            # missing `cargo` on PATH is the most common cause here (docs/dev/BACKLOG.md
+            # "Distribution & example-code maintenance" item 1).
+            no_cargo = e isa Base.IOError
+            @error """
+            Failed to $(no_cargo ? "find" : "compile") the Rust library `amalthea` from source.
+
+            Amalthea.jl offloads its numerical kernels to a native Rust backend. A
+            prebuilt binary is downloaded automatically for common platforms
+            (Linux x86_64, macOS aarch64, Windows x86_64); this system either isn't
+            one of those, has no matching release asset for this package version, or
+            the download was skipped/failed, so `Pkg.build` fell back to compiling
+            from source — which requires a working Rust toolchain (cargo >= 1.85).
+
+            To fix this: install Rust via https://rustup.rs/ (or your system package
+            manager), make sure `cargo` is on your PATH in a NEW shell/Julia session,
+            then re-run `Pkg.build("Amalthea")`.
+
+            If you expected the prebuilt-binary download to work instead, check that
+            the `AMALTHEA_RUST_SKIP_DOWNLOAD` environment variable is not set to "1"
+            and that your network can reach github.com.
+            """ exception=e
             rethrow(e)
         end
     end
