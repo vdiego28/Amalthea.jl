@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784729798899,
+  "lastUpdate": 1784744685365,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -434,6 +434,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.950042,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "distinct": true,
+          "id": "dc467d431a5315d44e9268f1fb0214a4e0e3ef5b",
+          "message": "Docs: consolidate plan docs and archive completed backlog work\n\nThe dev docs had accumulated two problems that made them expensive to read\nand easy to get wrong.\n\nFirst, four single-purpose plan docs (PLAN_FFTW_WISDOM_FIX,\nPLAN_S1_6_SOA_CONVERSION, PLAN_S2_THREADING, PLAN_S6_3_CLI) each existed\nonly to hold one backlog item's design record. They are now sections 1-4 of\none docs/dev/native-port/PLANS.md, so a reader looking for \"the plan behind\nS<N>\" has one place to look instead of guessing a filename.\n\nSecond, BACKLOG.md had grown to ~2050 lines, the large majority of it\nfinished work — Phases A-J, tracks S1 and S4, and the rolling \"Done\n(recent)\" log. That narrative is worth keeping (source comments and tests\ndeep-link phase and item numbers), but it buried the ~20 items still open.\nIt moves to docs/dev/ARCHIVE.md with every section name unchanged, so a\ncomment citing \"Phase E.3\" or \"S1 item 6\" still resolves; BACKLOG.md keeps a\nstatus index pointing at it and is now 1021 lines of genuinely live work.\n\nTwo related cleanups in the same sweep:\n\n- SUGGESTIONS.md carried a second copy of the S1-S6 track plan that had\n  drifted from BACKLOG.md's. Replaced with a pointer table; BACKLOG.md is\n  the single owner of status, SUGGESTIONS.md of rationale. GEMINI_SUGGESTIONS.md\n  is deleted (superseded). REVIEW.md gains a header saying it is fully\n  executed provenance, not a queue — every §3 finding is fixed, and its\n  section numbers are deep-linked from source, so it cannot be renumbered.\n- Residual pre-rename naming: Luna-Rust -> Amalthea in the Rust eprintln\n  strings users actually see, LUNA_USE_RUST_* -> AMALTHEA_USE_RUST_* in\n  CHANGELOG.md and the docs, and docs/native-port/ -> docs/dev/native-port/\n  in stale relative paths. .gitignore's luna-rust/target/ line is dropped as\n  redundant: the generic target/ rule already covers amalthea/target/\n  (confirmed with git check-ignore).\n\nNo functional change — every non-doc edit is an eprintln string literal, a\ndocstring, or a comment, so no gate was run (cargo build --release clean).\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-07-22T14:21:33-04:00",
+          "tree_id": "9235a0e3e2cb4ceea51dbb3b7052aa2058169fcc",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/dc467d431a5315d44e9268f1fb0214a4e0e3ef5b"
+        },
+        "date": 1784744684599,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.916233,
             "unit": "ms/step"
           }
         ]
