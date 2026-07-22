@@ -1654,18 +1654,53 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         npol in (1, 2) || throw(NativeIneligible("native modal path only supports " *
                   "npol ∈ (1,2) (Modes.ToSpace.npol)."))
 
-        all(m -> m isa Amalthea.Capillary.MarcatiliMode, modes) ||
-            throw(NativeIneligible("native modal path only supports MarcatiliMode " *
-                  "(Phase 5 gate)"))
-        all(m -> m.kind in (:HE, :TE, :TM), modes) ||
+        # Phase I.5a: `ZeisbergerMode`/`VincettiMode` both wrap a
+        # `Capillary.MarcatiliMode` in a `.m` field and delegate `field`/`N`/
+        # `dimlimits` to it verbatim (Antiresonant.jl's `@eval` loops at
+        # lines ~126 and ~381) — the transverse mode profile the native RHS
+        # synthesizes (`mode_angle_xy` + the Bessel `unm`/`invsqrtn`
+        # parameterization below) is therefore bit-identical to plain
+        # Marcatili for both wrappers. Only `neff`/β differ between the
+        # three mode kinds, and that is baked into `linop` once by Julia
+        # (`LinearOps.make_linop`/`make_const_linop`, which dispatch through
+        # each mode's own `Modes.neff` method, not through this guard) before
+        # `native_set_modal_params` ever runs — so unwrapping to the inner
+        # `MarcatiliMode` here only recovers the accessor fields
+        # (`kind`/`a`/`unm`/`ϕ`/`n`) the guard and setup below read directly
+        # as struct fields (not generic functions, so they don't delegate).
+        # `VincettiMode.Aeff` is a genuine, non-delegated override (uses its
+        # own `neff_real`/`Rco_eff`/`Δneff`) — but `Aeff` never enters the
+        # modal RHS at all (only `field`/`N` do, via `Modes.Exy` →
+        # `Modes.to_space!`; `Aeff` is a `TransModeAvg`-only normalisation),
+        # so that divergence is inert for this path. See
+        # `docs/dev/native-port/portlog-inbox/modal-zv.md` for the full
+        # verification trail.
+        _modal_inner_marcatili(m) =
+            m isa Amalthea.Capillary.MarcatiliMode ? m :
+            m isa Amalthea.Antiresonant.ZeisbergerMode ? m.m :
+            m isa Amalthea.Antiresonant.VincettiMode ? m.m :
+            nothing
+
+        inner = _modal_inner_marcatili.(modes)
+        all(!isnothing, inner) ||
+            throw(NativeIneligible("native modal path only supports MarcatiliMode, " *
+                  "ZeisbergerMode, or VincettiMode (Phase 5 / I.5a gate) — " *
+                  "StepIndexMode remains ineligible (no closed-form neff)."))
+        all(m -> m.kind in (:HE, :TE, :TM), inner) ||
             throw(NativeIneligible("native modal path only supports kind ∈ " *
                   "(:HE, :TE, :TM) Marcatili modes"))
         # Phase E.2: tapered radius, via the dedicated `ZDepLinopModalTaper`
         # wrapper (`Capillary.make_linop`'s specialized method) — any other
         # Function-valued `a` (not wrapped, e.g. per-mode differing tapers)
-        # remains out of scope.
+        # remains out of scope. `ZDepLinopModalTaper` is only ever built from
+        # bare `MarcatiliMode`s (its constructor reads `.model`/`.coren`
+        # directly, fields ZeisbergerMode/VincettiMode don't delegate), so a
+        # wrapped-mode config can never legitimately reach `is_zdep_modal_taper
+        # == true` — tapered Zeisberger/Vincetti stays out of scope exactly as
+        # before this change, it just now falls back via the `m.a isa Number`
+        # check below like any other ineligible taper, not the type check.
         is_zdep_modal_taper = linop isa Amalthea.Capillary.ZDepLinopModalTaper
-        all(m -> m.a isa Number, modes) || is_zdep_modal_taper ||
+        all(m -> m.a isa Number, inner) || is_zdep_modal_taper ||
             throw(NativeIneligible("native modal path only supports constant-radius " *
                   "modes, or a shared tapered radius via Capillary.make_linop's " *
                   "ZDepLinopModalTaper wrapper (Phase E.2)"))
@@ -1674,23 +1709,23 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             isfinite(flength) || throw(NativeIneligible("z-dependent modal linop " *
                       "requires a finite `flength` to build the resident z-LUT — " *
                       "got flength=$flength."))
-            a = Float64(modes[1].a(0.0))
+            a = Float64(inner[1].a(0.0))
         else
-            a = Float64(modes[1].a)
-            all(m -> Float64(m.a) == a, modes) ||
+            a = Float64(inner[1].a)
+            all(m -> Float64(m.a) == a, inner) ||
                 throw(NativeIneligible("all modes must share the same core radius"))
         end
 
-        unm = Float64[m.unm for m in modes]
+        unm = Float64[m.unm for m in inner]
         invsqrtn = Float64[1.0 / sqrt(Amalthea.Modes.N(m, z=0.0)) for m in modes]
         # `field(m, (r,θ))` (Capillary.jl) factored as `J_order(x)·(ax,ay)`,
         # with `(ax,ay)` a per-kind function of `θ` (`mode_angle_xy` in
         # native.rs) — Phase E.1 generalized the Phase 5 `HE,n=1`-only `J0`
         # scope to any `:HE`/`:TE`/`:TM` mode order (fixed `θ=0`); Phase E.3
         # further generalizes to genuine `θ`-dependence (`full=true`).
-        order = Int32[m.kind == :HE ? m.n - 1 : 1 for m in modes]
-        kind_code = UInt8[m.kind == :HE ? 0 : (m.kind == :TE ? 1 : 2) for m in modes]
-        phi = Float64[m.ϕ for m in modes]
+        order = Int32[m.kind == :HE ? m.n - 1 : 1 for m in inner]
+        kind_code = UInt8[m.kind == :HE ? 0 : (m.kind == :TE ? 1 : 2) for m in inner]
+        phi = Float64[m.ϕ for m in inner]
 
         pol_select = npol == 2 ? UInt8[0, 1] : UInt8[f!.ts.indices == 1 ? 0 : 1]
 
