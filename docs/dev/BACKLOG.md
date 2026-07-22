@@ -623,13 +623,31 @@ this commit if plasma played a physically meaningful role.
    ONE mixture component's pressure, the result a "dropped the second
    species" bug would silently produce) and asserts the real mixture result
    differs from it by more than 1e-3 relative — modal ~1.45, free-space
-   ~0.165, both far from vacuous. Full `rust`-group gate was not re-run for
-   this follow-up (machine time constraint) — only the four affected test
-   files (two new, two pre-existing: `test_native_modal.jl`,
+   ~0.165, both far from vacuous. At the time of the follow-up commit the
+   full gate was not re-run (machine time constraint) — only the four
+   affected test files (two new, two pre-existing: `test_native_modal.jl`,
    `test_native_free.jl`, `test_native_mixture.jl`,
    `test_native_radial_mixture.jl`) were run directly via
    `test/run_group_bucket.jl`, confirming no regression in the shared gate
-   change; the full 7-group CI gate should still be run before merging.
+   change. **Gated 2026-07-22, on merge to main.** Full 7-group parallel
+   gate green on the merge commit: physics 1657/1657, rust 42168/42168,
+   sim-interface 314/314, sim-multimode 33/33, sim-propagation 18/18,
+   io 2302/2302, fields 334/334 — 46826/46826, no failures, no errors,
+   exit code 0. The `rust` figure is +8 on the 42160/42160 measured on
+   `main` immediately before the merge, exactly the eight assertions in the
+   two new files, so the gate demonstrably reaches the new path rather than
+   passing vacuously (cross-checked by running just those two files through
+   `run_group_bucket.jl`: 8/8). The wider-blast-radius part of this
+   change — the loosened shared density gate, which now accepts
+   `Vector{<:Real}` for all four geometries — is covered by the
+   pre-existing mode-averaged/radial mixture tests in the same green gate.
+   Two caveats on the numbers, both independent of this work: (a) the
+   `1645/1657 + 12 broken` physics baseline quoted by older entries is
+   stale — zero `@test_broken` remain in `test/`, so 1657/1657 is now the
+   correct figure; (b) the gate needed two harness fixes before it could
+   report anything at all (see `fe08fa9`: ANSI escapes defeating
+   `parse_summary`, and `.claude/worktrees/` copies being swept into
+   `@run_package_tests` discovery, which had been inflating counts 2-3x).
 5. 🟡 **High-level API reach done (2026-07-16); native Rust port still
    open.** `StepIndexMode`/`ZeisbergerMode`/`VincettiMode` were previously
    only reachable via the low-level API. Two-part fix:
