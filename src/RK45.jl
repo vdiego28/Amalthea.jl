@@ -1458,10 +1458,14 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     # in native.rs, dispatched on `sim.is_real` exactly like mode-averaged's
     # real/env split). Phase D.2 (docs/dev/BACKLOG.md) adds plasma alongside Kerr
     # (`apply_plasma_radial` in native.rs, RealGrid only — Julia has no
-    # EnvGrid plasma either). See docs/dev/native-port/MATH.md §3.2 for the
-    # design (precomputed normalization array M, resident QdhtFfiHandle reused
-    # directly); `M`'s length (`n_spec`) and the FFI's internal buffer sizing
-    # both already generalize to either grid type without further changes here.
+    # EnvGrid plasma either). Phase D.4 adds Raman (`RamanPolarField`,
+    # RealGrid); the radial-env-Raman follow-up adds `RamanPolarEnv`
+    # (EnvGrid, `apply_raman_radial_env` in native.rs) — closes
+    # NATIVE_SUPPORT_MATRIX.md's last radial-Raman gap. See
+    # docs/dev/native-port/MATH.md §3.2 for the design (precomputed
+    # normalization array M, resident QdhtFfiHandle reused directly); `M`'s
+    # length (`n_spec`) and the FFI's internal buffer sizing both already
+    # generalize to either grid type without further changes here.
     if is_radial
         HT = f!.QDHT
         n_r = HT.N
@@ -1505,16 +1509,26 @@ function RustNativeStepper(f!, linop, y0, t, dt;
             # adds Raman (`RamanPolarField`, RealGrid, either `thg` value since
             # Phase F.1 — same eligibility criteria as the mode-averaged Raman
             # wiring below: an all-SDO `CombinedRamanResponse` with
-            # density-independent τ2). Any other response type (e.g.
-            # `RamanPolarEnv`, EnvGrid's envelope Raman) remains out of scope.
+            # density-independent τ2). `RamanPolarEnv` (EnvGrid's envelope
+            # Raman) closes the last radial-Raman gap in
+            # NATIVE_SUPPORT_MATRIX.md's Radial table — `rhs_radial_env`
+            # (native.rs) now has an envelope Raman step (`apply_raman_radial_env`)
+            # mirroring `rhs_mode_avg_env`'s mode-averaged envelope Raman
+            # exactly (same `sqr!(R::RamanPolarEnv,E)=1/2·|E|²` formula, no
+            # `thg` concept — see that function's docstring). Intermediate-
+            # broadening (`:SiO2`) Raman is NOT covered here — that needs the
+            # separate FFT-convolution kernel (`native_set_raman_fft_params`),
+            # which is not wired for radial geometry; it is explicitly
+            # rejected below, not silently mishandled.
             is_kerr_resp_radial(r) = _is_plain_kerr_resp(r)
             for r in f!.resp
                 is_kerr_resp_radial(r) || r isa Amalthea.Nonlinear.PlasmaCumtrapz ||
                     r isa Amalthea.Nonlinear.RamanPolarField ||
+                    r isa Amalthea.Nonlinear.RamanPolarEnv ||
                     throw(NativeIneligible("radial: only Kerr, plasma, and/or Raman " *
-                          "(RealGrid) responses are supported by the native path " *
-                          "(Phase D.4 gate) — this also rejects Kerr_field_nothg/" *
-                          "Kerr_env_thg, see `_is_plain_kerr_resp`."))
+                          "(RealGrid or EnvGrid) responses are supported by the native path " *
+                          "(Phase D.4 / radial-env-Raman gate) — this also rejects " *
+                          "Kerr_field_nothg/Kerr_env_thg, see `_is_plain_kerr_resp`."))
             end
             γ3 != 0.0 ||
                 throw(NativeIneligible("radial: no Kerr response found (γ3=0) — the native " *
@@ -1606,10 +1620,29 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         # call as the mode-averaged wiring; `native_set_raman_params` sizes
         # its scratch buffers as `n_time_over*n_r` when `s.is_radial`
         # (already set by `native_set_radial_params`, called earlier in this
-        # block).
+        # block). `RamanPolarEnv` (EnvGrid) accepted alongside
+        # `RamanPolarField` (RealGrid) — closes the "Radial EnvGrid Raman"
+        # gap in NATIVE_SUPPORT_MATRIX.md's Radial table. Envelope Raman's
+        # intensity (`sqr!(R::RamanPolarEnv,E) = 1/2·|E|²`, Nonlinear.jl:387-389)
+        # has no `thg` concept, so `thg` is passed as always-true, exactly
+        # mirroring the mode-averaged wiring's `thg_flag` convention above
+        # (`native.rs` never builds the unused Hilbert plan for it —
+        # `apply_raman_radial_env` has no Hilbert path at all). Intermediate-
+        # broadening (`:SiO2`, `RamanRespIntermediateBroadening`) is NOT
+        # wired for radial geometry (unlike mode-averaged EnvGrid's
+        # `native_set_raman_fft_params` path) — rejected explicitly below
+        # rather than falling through to the generic "not a
+        # CombinedRamanResponse" message, so the failure reason is clear.
         for r in f!.resp
-            if r isa Amalthea.Nonlinear.RamanPolarField
+            if r isa Amalthea.Nonlinear.RamanPolarField || r isa Amalthea.Nonlinear.RamanPolarEnv
                 rr = r.r
+                if r isa Amalthea.Nonlinear.RamanPolarEnv &&
+                        rr isa Amalthea.Raman.RamanRespIntermediateBroadening
+                    throw(NativeIneligible("radial: RamanRespIntermediateBroadening " *
+                          "(:SiO2) is not wired for radial geometry — only " *
+                          "CombinedRamanResponse (SDO/rotational) Raman is supported " *
+                          "for the native radial path."))
+                end
                 Rs = rr isa Amalthea.Raman.CombinedRamanResponse ?
                     Amalthea.Raman.flatten_sdo_oscillators(rr) : nothing
                 isnothing(Rs) && throw(NativeIneligible("Raman response present but not " *
@@ -1620,10 +1653,11 @@ function RustNativeStepper(f!, linop, y0, t, dt;
                 omegas    = Float64[ri.Ω for ri in Rs]
                 gammas    = Float64[1.0 / ri.τ2ρ(raman_density) for ri in Rs]
                 couplings = Float64[ri.K for ri in Rs]
+                thg_flag = r isa Amalthea.Nonlinear.RamanPolarField ? Cint(r.thg) : Cint(1)
                 rc = ccall((:native_set_raman_params, _LIBAMALTHEA_RK45), Cint,
                     (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Ptr{Float64}, Csize_t, Float64, Float64, Cint),
                     handle.ptr, omegas, gammas, couplings, Csize_t(length(omegas)),
-                    r.dt, raman_density, Cint(r.thg))
+                    r.dt, raman_density, thg_flag)
                 check_ffi(rc, "native_set_raman_params"; ineligible=true)
                 break  # only one Raman response expected
             end
