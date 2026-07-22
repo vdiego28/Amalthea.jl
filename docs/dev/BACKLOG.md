@@ -2114,6 +2114,53 @@ findings below.
     along the way (this section's text above is left as historical record of the pre-hardware
     state).
 
+### 🟡 Distribution & example-code maintenance
+
+Salvaged 2026-07-22 from a retrospective architecture review
+(`ADR-001`, drafted 2026-07-20, not kept — see note at the end of this
+subsection). Only the two findings that survived verification against the
+tree are recorded here.
+
+1. 🟡 **Install-time Rust-toolchain dependency is an undocumented failure
+   mode.** `deps/build.jl` shells out to `cargo build --release`, so a user
+   who previously needed only Julia now needs a working `rustup`/`cargo` for
+   `Pkg.add`/`instantiate` to succeed — a new class of install failure
+   inherited from the fork, and one upstream Luna.jl users won't expect.
+   Two separable pieces of work: (a) document the requirement and the
+   failure signature where a user will actually hit it (README + the build
+   script's own error path); (b) consider shipping precompiled artifacts
+   (e.g. a JLL) for common platforms so the toolchain isn't required at all.
+   (b) is the larger call — it means owning a release matrix — so treat (a)
+   as independently shippable.
+2. 🟡 **`examples/low_level_interface/` is public but unexercised.** 11
+   `.jl` files plus `freespace/`, `full_modal/`, `gnlse/` subdirectories,
+   and nothing under `test/`, `.github/`, or `docs/` references any of them
+   (verified 2026-07-22 by grep) — so nothing catches an API drift that
+   breaks them, while they remain the documented entry point for the
+   low-level API. Either wire a smoke-run of the examples into a CI group
+   (cheapest: run each to completion at tiny grid sizes and assert only that
+   it doesn't throw), or mark the low-level examples explicitly unmaintained
+   so users stop treating them as a supported surface. Doing neither leaves
+   a latent support burden.
+
+*Three further items from the same review were dropped after checking them
+against the tree, recorded here so they aren't re-raised: (i) "confirm CI
+exercises the AVX2/AVX-512/CUDA/Vulkan dispatch paths" rests on a false
+premise — `dispatch.rs` is detection-only and unwired (`HardwarePath`/
+`SimulationEngine` appear nowhere outside that module and its own unit
+tests; Vulkan has no implementation at all), real vectorization comes from
+`target-cpu=native` + LLVM auto-vectorization, and the real GPU path is the
+opt-in `AMALTHEA_USE_RUST_CUDA_NATIVE=1` `CudaNativeSim`; (ii) "write a
+contributor guide splitting Julia-layer vs Rust-crate work" is already
+served by `CLAUDE.md`, `AGENTS.md`, and `docs/dev/native-port/`; (iii)
+"establish a process for tracking upstream Luna.jl changes" already exists
+as `.github/workflows/upstream_sync.yml`. The ADR itself was not committed:
+its central premise — automatic runtime hardware dispatch as a shipped
+design decision — describes an architecture this repo does not have, and
+that error propagated through its complexity assessment, risk analysis, and
+consequences, so correcting it would have meant rewriting rather than
+amending it.*
+
 ## Informational / no action planned
 
 - ⚪ `deps/build.jl` forwards `ENV["RUSTFLAGS"]` (defaulting to `""` if unset),
