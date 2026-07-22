@@ -572,21 +572,64 @@ this commit if plasma played a physically meaningful role.
    `PptIonizationRate`. Verified: single-step ~3.8e-17, full-solve
    ~2.7e-16 (bit-parity tier, as expected for an exact analytic port) —
    see `test/test_native_adk_ionisation.jl`.
-4. 🟢 **Done (2026-07-08, radial only): gas mixtures outside
-   mode-averaged geometry.** Discriminating check (per-item audit):
-   radial's normalization array `M` and QDHT are density-independent at
-   the point kerr_fac is computed (density only enters the *linear*
-   refractive index, already baked into `linop`/`normfun` before native
-   construction) — so, exactly like Phase F.4's mode-averaged case, Kerr's
-   linearity in density·γ3 collapses a per-species mixture to one scalar
-   `kerr_fac = Σᵢ densityᵢ·ε₀·γ3ᵢ`. Julia-only change (no Rust/FFI
-   changes), mirroring Phase F.4's mode-averaged mixture branch almost
-   exactly. Verified: single-step ~1.1e-17, full-solve ~1.3e-16 — see
-   `test/test_native_radial_mixture.jl`. **Modal and free-space mixtures
-   still fall back** (not checked in this slice — modal's per-mode
-   projection and free-space's 2-D Cartesian normalization may or may not
-   collapse the same way; needs its own discriminating check before
-   assuming it's equally trivial).
+4. 🟢 **Done (2026-07-08, radial; extended 2026-07-21 to modal and
+   free-space): gas mixtures outside mode-averaged geometry.** Discriminating
+   check (per-item audit): radial's normalization array `M` and QDHT are
+   density-independent at the point kerr_fac is computed (density only
+   enters the *linear* refractive index, already baked into `linop`/
+   `normfun` before native construction) — so, exactly like Phase F.4's
+   mode-averaged case, Kerr's linearity in density·γ3 collapses a
+   per-species mixture to one scalar `kerr_fac = Σᵢ densityᵢ·ε₀·γ3ᵢ`.
+   Julia-only change (no Rust/FFI changes), mirroring Phase F.4's
+   mode-averaged mixture branch almost exactly. Verified: single-step
+   ~1.1e-17, full-solve ~1.3e-16 — see `test/test_native_radial_mixture.jl`.
+   **2026-07-21 follow-up (modal and free-space, closing the item):** ran
+   the discriminating check the original entry deferred, separately for
+   each geometry, before writing any code. Modal: `TransModal`'s
+   `Erω_to_Prω!` calls `Et_to_Pt!(t.Pr, t.Er, t.resp, t.density)`
+   (NonlinearRHS.jl) at every quadrature node — the *same* generic
+   `Et_to_Pt!` (NonlinearRHS.jl:251-265) that mode-averaged/radial already
+   rely on, whose `density::AbstractVector` overload dispatches per-species
+   and sums into one `Pt` buffer. The two modal-specific quantities that
+   also feed the native RHS — `invsqrtn = 1/√N(m,z=0)` (`Modes.N`,
+   Capillary.jl:285-288, a pure function of `unm`/radius/kind) and `nlfac`
+   (probed from `norm_modal`, NonlinearRHS.jl:476-481, a pure function of
+   grid.ω/ω0) — carry no density argument at all. Free-space: `TransFree`'s
+   `(t::TransFree)(nl,Eωk,z)` calls the same `Et_to_Pt!` via its
+   5-arg/`idcs` overload (NonlinearRHS.jl:875-891), and the free-space
+   normalization array `M` (from `const_norm_free`/`norm_free`) is likewise
+   a pure function of the grid's (ω,kx,ky) and the *linear* refractive
+   index supplied at construction, no runtime density argument. **Verdict
+   for both: the same collapse applies, unmodified — one scalar
+   `kerr_fac = Σᵢ densityᵢ·ε₀·γ3ᵢ`, Kerr-only, plasma/Raman mixtures
+   rejected exactly as in the mode-averaged/radial branches.** Implemented
+   by (a) mirroring the radial mixture branch in `RK45.jl`'s `is_modal`/
+   `is_free` setup blocks, and (b) fixing an upstream gate
+   (`RK45.jl`, just after `is_mode_avg`/`is_radial`/`is_modal`/`is_free` are
+   determined) that pre-dated this item and unconditionally rejected any
+   modal/free-space `densityfun(z)` returning a non-scalar with a
+   "modal/free-space mixtures are not yet supported" `NativeIneligible` —
+   this gate ran *before* reaching either new branch and had to be
+   loosened to accept `Vector{<:Real}` for all four geometries, not just
+   mode-averaged/radial, or the new branches were dead code. Julia-only
+   change (no Rust/FFI changes). Verified (test/test_native_modal_mixture.jl,
+   test/test_native_free_mixture.jl): modal single-step ~7.8e-20, full-solve
+   ~4.0e-16; free-space single-step ~7.0e-18, full-solve ~5.0e-17 (all
+   tighter than the corresponding non-mixture Phase 5/6 tolerances, since
+   the mixture collapses to the identical scalar `kerr_fac` the FFI already
+   consumes — no new numerical operation, just a different Julia-side sum
+   feeding the same one `Float64`). Non-vacuousness guarded explicitly: each
+   test also runs a deliberately-wrong comparison (single species at only
+   ONE mixture component's pressure, the result a "dropped the second
+   species" bug would silently produce) and asserts the real mixture result
+   differs from it by more than 1e-3 relative — modal ~1.45, free-space
+   ~0.165, both far from vacuous. Full `rust`-group gate was not re-run for
+   this follow-up (machine time constraint) — only the four affected test
+   files (two new, two pre-existing: `test_native_modal.jl`,
+   `test_native_free.jl`, `test_native_mixture.jl`,
+   `test_native_radial_mixture.jl`) were run directly via
+   `test/run_group_bucket.jl`, confirming no regression in the shared gate
+   change; the full 7-group CI gate should still be run before merging.
 5. 🟡 **High-level API reach done (2026-07-16); native Rust port still
    open.** `StepIndexMode`/`ZeisbergerMode`/`VincettiMode` were previously
    only reachable via the low-level API. Two-part fix:
