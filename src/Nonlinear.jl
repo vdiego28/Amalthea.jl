@@ -307,19 +307,36 @@ struct RamanPolarField{TR, Tt, Thv, Tω, Tv, FTt, HTt, RH} <: RamanPolar
     rust_handle::RH # Nothing (Julia FFT path) or RustRamanHandle (Rust ADE path)
 end
 
-"Raman polarisation response type for an envelope"
-struct RamanPolarEnv{TR, Tt, Thv, Tω, Tv, FTt, RH} <: RamanPolar
+"""
+Raman polarisation response type for an envelope
+
+`h`/`E2`/`P` are real (`Tt`, same type as the padded response buffer) and
+`hω`/`Eω2`/`Pω` are their half-length complex spectra (`Tω`) — an r2c/c2r
+pair (`FT = plan_rfft`), not the full c2c this type used before (Phase J.3,
+docs/dev/BACKLOG.md, MATH.md §8.4): both the padded `0.5·|E|²` intensity and
+the impulse response `h` are mathematically real, so a Hermitian r2c/c2r
+transform computes the identical convolution at roughly half the FFT cost
+(measured 1.8-2.8x on the isolated forward+multiply+inverse step, see
+`amalthea/benches/raman_fft_r2c_bench.rs` and the native SiO2 kernel's
+PORT_LOG entry — this mirrors that change exactly, keeping both Raman
+FFT-conv paths on the same method so equivalence stays r2c-vs-r2c rather
+than becoming a cross-method comparison). `Pout` stays complex (`Tp`) since
+it is `ρ·E·P` with `E` the complex envelope field — the one place this type
+still differs from `RamanPolarField`, whose real carrier field keeps `Pout`
+real too.
+"""
+struct RamanPolarEnv{TR, Tt, Thv, Tω, Tv, Tp, FTt, RH} <: RamanPolar
     r::TR # Raman response
-    h::Tt # doubled buffer to hold response + padding
+    h::Tt # doubled buffer to hold response + padding (real)
     ht::Thv # buffer to hold time domain response
-    hω::Tω # the frequency domain Raman response function
-    Eω2::Tω # buffer to hold the Fourier transform of E^2
-    Pω::Tω # buffer to hold the frequency domain polarisation
-    E2::Tω # buffer to hold E^2
+    hω::Tω # the frequency domain Raman response function (half-spectrum, r2c)
+    Eω2::Tω # buffer to hold the Fourier transform of E^2 (half-spectrum, r2c)
+    Pω::Tω # buffer to hold the frequency domain polarisation (half-spectrum, r2c)
+    E2::Tt # buffer to hold E^2 (real)
     E2v::Tv # view into first half of E2
-    P::Tω # buffer to hold the time domain polarisation
-    Pout::Tω # buffer to hold the output portion of the time domain polarisation
-    FT::FTt # Fourier transform plan
+    P::Tt # buffer to hold the time domain polarisation (real)
+    Pout::Tp # buffer to hold the output portion of the time domain polarisation (complex)
+    FT::FTt # Fourier transform plan (r2c/c2r, plan_rfft)
     dt::Float64 # time step for scaling
     rust_handle::RH # always Nothing in this slice (envelope Rust path is a follow-up)
 end
@@ -360,14 +377,17 @@ function RamanPolarEnv(t, r)
     h = zeros(length(t)*2) # note double grid size, see explanation below
     ht = view(h, 1:length(t))
     Utils.loadFFTwisdom()
-    FT = FFTW.plan_fft(h, 1, flags=Amalthea.settings["fftw_flag"])
+    # r2c/c2r (Phase J.3): h is real, so plan_rfft/irfft compute the same
+    # convolution as the old full plan_fft at ~half the cost — see the
+    # struct docstring above.
+    FT = FFTW.plan_rfft(h, 1, flags=Amalthea.settings["fftw_flag"])
     inv(FT)
     Utils.saveFFTwisdom()
     hω = FT * h
     Eω2 = similar(hω)
     Pω = similar(hω)
-    E2 = similar(hω)
-    P = similar(hω)
+    E2 = similar(h)
+    P = similar(h)
     Pout = Array{ComplexF64,}(undef,size(t))
     E2v = view(E2, 1:length(t))
     fill!(E2, 0.0)
