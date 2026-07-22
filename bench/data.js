@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784585709575,
+  "lastUpdate": 1784729798899,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -405,6 +405,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.927187,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "distinct": true,
+          "id": "e0612a18854e9e61fb5451b69b05a31d5a6e7d35",
+          "message": "Merge worktree-agent-a29df789be3b26da4: S6.3 CLI plan docs\n\nDocs-only (`docs/dev/native-port/PLAN_S6_3_CLI.md` + BACKLOG S6.3 status),\nso no gate required.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-07-22T10:12:47-04:00",
+          "tree_id": "5f6afe59235cb9cb1c4c83d603ed5b7d168582d6",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/e0612a18854e9e61fb5451b69b05a31d5a6e7d35"
+        },
+        "date": 1784729798157,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.950042,
             "unit": "ms/step"
           }
         ]
