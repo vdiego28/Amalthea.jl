@@ -123,6 +123,14 @@ def run_bucket(group, bucket_id, files, log_path, n_workers=1):
     return bucket_id, proc.returncode
 
 
+# Julia honours FORCE_COLOR (and a tty) and will emit SGR escapes into the
+# piped worker logs, which breaks the plain `startswith("Test Summary")`
+# match below — every group then reports 0/0 FAIL even though every worker
+# passed. Strip escapes before parsing rather than relying on the caller's
+# environment being colour-free.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
 def parse_summary(log_path):
     """Reads the TestItemRunner "Test Summary: | <cols...>" header and the
     following "Package | <values...>" row. Column set varies (Pass/Fail/
@@ -131,7 +139,7 @@ def parse_summary(log_path):
     index. `ok` requires zero Fail/Error, not passed==total: Broken tests
     are intentional expected-failures (see BACKLOG/CLAUDE.md's documented
     "1645/1657+12 broken" physics baseline), not a real gate failure."""
-    lines = log_path.read_text().splitlines()
+    lines = [_ANSI_RE.sub("", l) for l in log_path.read_text().splitlines()]
     for i, line in enumerate(lines):
         if line.strip().startswith("Test Summary") and "|" in line:
             cols = line.split("|", 1)[1].split()
