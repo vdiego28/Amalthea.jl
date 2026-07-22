@@ -136,9 +136,12 @@ def parse_summary(log_path):
     following "Package | <values...>" row. Column set varies (Pass/Fail/
     Error/Broken/Total/Time, only the ones that occurred appear) — parse by
     column name, not position, since e.g. a Broken column shifts Total's
-    index. `ok` requires zero Fail/Error, not passed==total: Broken tests
-    are intentional expected-failures (see BACKLOG/CLAUDE.md's documented
-    "1645/1657+12 broken" physics baseline), not a real gate failure."""
+    index. `ok` requires zero Fail/Error, not passed==total: `@test_broken`
+    items are intentional expected-failures, not a real gate failure. No
+    such items remain in `test/` as of 2026-07-22 (so every group currently
+    reports passed==total, physics included — the "1645/1657 + 12 broken"
+    baseline quoted by older BACKLOG entries is historical, not current),
+    but the tolerance is kept so reintroducing one doesn't fail the gate."""
     lines = [_ANSI_RE.sub("", l) for l in log_path.read_text().splitlines()]
     for i, line in enumerate(lines):
         if line.strip().startswith("Test Summary") and "|" in line:
