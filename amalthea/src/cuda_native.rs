@@ -616,6 +616,22 @@ impl NativeBackend for CudaNativeSim {
                 let mut dt = _dtn;
                 let t = _t_new;
 
+                // 0. FSAL carry k7→k1, deferred from the end of the previous
+                // accepted step to here so `ks_d[0]` keeps holding that step's
+                // genuine k1 for as long as `RK45.jl`'s
+                // `interpolate(s::RustNativeStepper, ti)` might ask for dense
+                // output inside it (this backend has no `compute_extra_stages`,
+                // so it uses the order-4 `interpC` branch — which the eager
+                // copy collapsed to first order all the same). Mirrors
+                // `CpuNativeSim::step`'s `fsal_pending` deferral;
+                // docs/dev/BACKLOG.md S5 item 3. `_t_new > _t_old` is exactly
+                // "the previous step was accepted" — Julia leaves `s.tn == s.t`
+                // on a rejected step and on the not-yet-stepped initial state.
+                if _t_new > _t_old {
+                    let (left, right) = self.ks_d.split_at_mut(6);
+                    left[0].copy_from_device(&right[0])?;
+                }
+
                 // 1. apply_prop(ks[0], dt_prev) - shifts ks[0] to t_new
                 //
                 // `dt0`/`b6`/`dt_fin` below are bound to named locals rather than
@@ -1025,8 +1041,7 @@ impl NativeBackend for CudaNativeSim {
 
                 if ok_final {
                     tn_new = t + dt;
-                    let (left, right) = self.ks_d.split_at_mut(6);
-                    left[0].copy_from_device(&right[0])?; // FSAL
+                    // FSAL k7→k1 is NOT done here — see step 0 above.
 
                     // Final 5th-order solution: field_d += dt * Σ DP_B5[i] * ks_d[i] (in place —
                     // safe: each thread reads its own field_d[idx] into a local before writing it

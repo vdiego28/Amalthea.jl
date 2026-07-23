@@ -294,7 +294,13 @@ function step!(s)
     stepcontrolPI!(s)
     if s.ok
         s.tn = s.t + s.dt
-        s.ks[1] .= s.ks[end]
+        # NOTE: the FSAL carry `s.ks[1] .= s.ks[end]` deliberately does *not*
+        # happen here — it is deferred to the top of the next `evaluate!`.
+        # Doing it eagerly (as upstream Luna does, and as this did before
+        # docs/dev/BACKLOG.md S5 item 3) destroys the k1 that `interpolate`
+        # needs for the interval that just finished, silently collapsing the
+        # dense-output continuous extension from order 4 (or 5) to order 1.
+        # See `evaluate!` below and `test/test_native_dense_order5.jl`.
     else
         s.yn .= s.y
     end
@@ -305,6 +311,9 @@ end
 function evaluate!(s::Stepper)
     # Set new time and stepsize values -- this happens at the beginning because
     # the interpolant still requires the old values after the step has finished
+    # (`s.ks[1]` included: the FSAL carry k7→k1 is done here, not at accept
+    # time, for exactly that reason — see `step!`).
+    s.ok && (s.ks[1] .= s.ks[end])
     s.dt = s.dtn
     s.t = s.tn
     s.y .= s.yn
@@ -320,6 +329,11 @@ end
 function evaluate!(s::PreconStepper)
     # Set new time and stepsize values -- this happens at the beginning because
     # the interpolant still requires the old values after the step has finished
+    # (`s.ks[1]` included: the FSAL carry k7→k1 is done here, not at accept
+    # time, for exactly that reason — see `step!`). It must precede the
+    # `prop!` below, which re-expresses the carried stage in the new
+    # interaction-picture frame; that ordering is unchanged.
+    s.ok && (s.ks[1] .= s.ks[end])
     s.y .= s.yn
     s.prop!(s.ks[1], s.t, s.tn)
     s.dt = s.dtn

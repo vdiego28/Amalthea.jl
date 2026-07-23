@@ -145,6 +145,13 @@ pub struct CpuNativeSim {
     /// `get_extra_stage` FFI (kept separate from `get_ks_stage`, whose
     /// `idx<7` contract is unchanged).
     pub ks: [Vec<Complex<f64>>; 9],
+    /// Set when an accepted step leaves a k7 in `ks[6]` that the *next* step
+    /// must carry into `ks[0]` (FSAL). The carry is deliberately deferred to
+    /// the top of the next `step` rather than done at accept time, so that
+    /// `ks[0]` keeps holding the just-finished interval's genuine k1 while
+    /// Julia may still ask for dense output inside it — see the comment at
+    /// the head of `step`.
+    pub fsal_pending: bool,
     /// Embedded-pair error estimate buffer.
     pub yerr: Vec<Complex<f64>>,
     /// Stage / accumulation scratch (`y + dt·Σ b_i k_i`).
@@ -715,6 +722,7 @@ impl CpuNativeSim {
             linop_version: 0,
             exp_cache: ExpCache::new(),
             ks: [z(), z(), z(), z(), z(), z(), z(), z(), z()],
+            fsal_pending: false,
             yerr: z(),
             ystage: z(),
             fftw_api: None,
@@ -3702,6 +3710,10 @@ impl NativeBackend for CpuNativeSim {
                 sim.rhs_mode_avg_env(0, &field);
             }
         }
+        // `ks[0]` was just recomputed from scratch for the new initial
+        // condition, so any FSAL carry still owed from a previous accepted
+        // step is stale and must not overwrite it at the next `step`.
+        sim.fsal_pending = false;
         0
     }
     unsafe fn resync_field(&mut self, data: *const c_double, n: size_t) -> i32 {
@@ -4846,6 +4858,25 @@ impl NativeBackend for CpuNativeSim {
         // s.yn .= s.y -> but wait, `s.field` is `y`.
         yn_sl.copy_from_slice(&s.field);
 
+        // FSAL carry k7→k1, deferred from the end of the previous accepted
+        // step to here so that `ks[0]` still holds *that* step's genuine k1
+        // for as long as Julia might ask for dense output inside it
+        // (`get_ks_stage(0)` ← `RK45.jl`'s `interpolate`). Doing the copy
+        // eagerly at accept time — as this did until docs/dev/BACKLOG.md S5
+        // item 3 — silently handed `interpolate` k7 in place of k1, which
+        // collapses the quartic/quintic continuous extension to first order
+        // (measured: local defect O(h²) instead of O(h⁵)/O(h⁶); see
+        // `test/test_native_dense_order5.jl`). The arithmetic is unchanged:
+        // the copy still happens before the reframe below, just on the far
+        // side of the FFI boundary. Skipped on a rejected-step retry
+        // (`fsal_pending` is only armed on accept), where `ks[0]` is already
+        // the correct k1 for the interval being retried.
+        if s.fsal_pending {
+            let (left, right) = s.ks.split_at_mut(6);
+            left[0].copy_from_slice(&right[0]);
+            s.fsal_pending = false;
+        }
+
         // prop!(s.ks[1], s.t, s.tn)  — linop evaluated at the later time, t_new
         s.ensure_linop_at(t_new);
         s.ensure_free_norm_at(t_new);
@@ -5086,8 +5117,7 @@ impl NativeBackend for CpuNativeSim {
         let tn_new;
         if ok_final {
             tn_new = t + dt;
-            let (left, right) = s.ks.split_at_mut(6);
-            left[0].copy_from_slice(&right[0]); // FSAL
+            s.fsal_pending = true; // FSAL k7→k1, performed at the next `step`
             s.ensure_linop_at(tn_new);
             s.ensure_free_norm_at(tn_new);
             s.ensure_modal_linop_at(tn_new);

@@ -52,10 +52,20 @@ using TestItems
             return interpolate(s, ti)
         end
 
-        # Base step and a few halvings, well above the FP noise floor but
-        # small enough that a handful of fine sub-steps per reference query
-        # keeps this test fast.
-        h0 = 2e-3
+        # Base step and a few halvings. `h0` is deliberately coarse — a
+        # sizeable fraction of `flength` — because the *interpolation* defect
+        # is what is being measured, and this propagator handles the linear
+        # (dispersive) part exactly via the integrating factor, so the defect
+        # comes only from the comparatively weak Kerr nonlinearity. At the
+        # obvious "physically sensible" step sizes (h ~ 2e-3) the order-5
+        # defect is already ~6e-15 relative, i.e. at the double-precision
+        # noise floor, and every measured ratio degenerates to ~1 for both
+        # interpolants — a regime in which this test proves nothing. See
+        # `docs/dev/native-port/portlog-inbox/dense-order5.md`. Steps are
+        # accepted regardless of the error estimate because `min_dt == max_dt`
+        # forces `stepcontrol_pi` to accept (native.rs), which is what makes
+        # such a coarse fixed step usable here at all.
+        h0 = 4e-2
         hs = [h0, h0/2, h0/4, h0/8]
         θs = [0.15, 0.35, 0.55, 0.75, 0.9]  # avoid the (trivially exact) endpoints
 
@@ -149,6 +159,64 @@ using TestItems
             println("order-4 ratios (expect ~2^5=32): ", ratios4)
             for r in ratios4
                 @test 16 < r < 64
+            end
+        end
+
+        @testset "Julia PreconStepper order-5 interpolant: local defect scales ~h^6" begin
+            # The pure-Julia fallback stepper gained the same order-5
+            # continuous extension (`_dp5_extra_stages!` + `interpC5_weights`
+            # in RK45.jl), computing its 2 extra stages through `s.fbar!`
+            # instead of the `native_compute_extra_stages` FFI. Exercised here
+            # because it is the *oracle* the native path is validated against
+            # everywhere else in this suite — if only the native side were
+            # order-5 the two would silently disagree on every dense-output
+            # point. Also the only coverage `_dp5_extra_stages!` has.
+            errsjl = Float64[]
+            for h in hs
+                s = PreconStepper(transform, linop, copy(Eω), t0, h;
+                                  rtol=1e-6, atol=1e-10, max_dt=h, min_dt=h)
+                ok = step!(s)
+                @assert ok "Julia test stepper rejected a fixed-size step"
+
+                dt_fine = h / 32
+                max_err = 0.0
+                for θ in θs
+                    ti = t0 + θ*h
+                    yi = interpolate(s, ti)
+                    yref = reference_at(ti, dt_fine)
+                    max_err = max(max_err, norm(yi .- yref) / norm(yref))
+                end
+                push!(errsjl, max_err)
+                println("Julia order-5 dense output: h=$h  max local err=$max_err")
+            end
+
+            ratiosjl = [errsjl[i-1]/errsjl[i] for i in 2:length(errsjl)]
+            println("Julia order-5 ratios (expect ~2^6=64): ", ratiosjl)
+            for r in ratiosjl
+                @test 40 < r < 100
+            end
+        end
+
+        @testset "Native and Julia dense output agree (two-tier §4 single-step check)" begin
+            # Both steppers now build the *same* order-5 polynomial from the
+            # same 9 stages, so their dense output must agree far more tightly
+            # than either agrees with the true solution — this is what pins
+            # the Rust `DP5_EXTRA_*`/`eval_extra_stage` implementation to
+            # Julia's `dp5_extra_*`/`_dp5_extra_stages!`, independently of how
+            # accurate the interpolant itself is.
+            h = hs[end]
+            s_rs = RustNativeStepper(transform, linop, copy(Eω), t0, h;
+                                     rtol=1e-6, atol=1e-10, max_dt=h, min_dt=h)
+            s_jl = PreconStepper(transform, linop, copy(Eω), t0, h;
+                                 rtol=1e-6, atol=1e-10, max_dt=h, min_dt=h)
+            @assert step!(s_rs) && step!(s_jl)
+            for θ in θs
+                ti = t0 + θ*h
+                a = interpolate(s_rs, ti)
+                b = interpolate(s_jl, ti)
+                rel = norm(a .- b) / norm(b)
+                println("native-vs-Julia dense output at θ=$θ: rel=$rel")
+                @test rel < 1e-12
             end
         end
     end
