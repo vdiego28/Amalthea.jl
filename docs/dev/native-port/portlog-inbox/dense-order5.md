@@ -162,6 +162,34 @@ two steppers' dense output agrees with each other to **~1e-17** relative
 `DP5_EXTRA_*` to Julia's `_dp5_extra_stages!`/`dp5_extra_*` independently of
 how accurate either is in absolute terms.
 
+### Check D — every geometry, not just mode-averaged
+
+Checks A–C exercise only the mode-averaged branch of
+`eval_extra_stage`'s per-geometry dispatch. The other three branches run in
+production dense output but would be invisible to the tests above **and** to
+each geometry's own existing equivalence test, which compares accepted-step
+values (`s.yn`) and never calls `interpolate`. The second `@testitem` in
+`test/test_native_dense_order5.jl` closes that hole by asserting
+native-vs-Julia dense-output agreement in each geometry — cheaper and more
+targeted than re-measuring convergence order, since the order is a property
+of the shared tableau already established above, while a wiring slip (wrong
+`rhs_*`, missing `ensure_*_at`, dropped propagate/unpropagate pair) shows up
+immediately as disagreement:
+
+| geometry | native-vs-Julia relative difference |
+|---|---|
+| mode-averaged | 3e-19 … 3.9e-17 |
+| radial (resident QDHT) | 6.8e-18 … 2.1e-17 |
+| modal (resident libcubature) | 2.6e-17 … 3.9e-17 |
+| free-space (joint 3-D FFT) | 2.5e-18 … 7.0e-18 |
+
+All essentially bitwise. **Not covered:** the CUDA-resident backend, which
+has no GPU available on the development machine — it does not implement
+`compute_extra_stages` (returns -1 → order-4 fallback), but it *did* carry
+the eager FSAL copy and has been fixed the same way, using `_t_new > _t_old`
+as the "previous step was accepted" predicate. That fix compiles but is
+unverified; it needs a run on GPU CI.
+
 ---
 
 ## 5. Why the WIP's convergence test appeared to fail — and the two traps in it

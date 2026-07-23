@@ -221,3 +221,114 @@ using TestItems
         end
     end
 end
+
+@testitem "Native-Rust dense output: order-5 extra stages in every geometry (BACKLOG S5 item 3)" tags=[:rust] begin
+    import Test: @test, @test_skip, @testset
+    using Amalthea
+    import Amalthea: Grid, NonlinearRHS, Fields, LinearOps, PhysData, Nonlinear, Capillary, Modes
+    using Amalthea.RK45: PreconStepper, RustNativeStepper, step!, interpolate
+    import Hankel
+    import Logging: with_logger, NullLogger
+    import LinearAlgebra: norm
+
+    libpath = RK45._LIBAMALTHEA_RK45
+    if !isfile(libpath)
+        @test_skip "Rust library not found"
+    else
+        # `CpuNativeSim::eval_extra_stage` reproduces `step`'s per-geometry
+        # dispatch (free / modal / radial / mode-averaged) for the 2 extra
+        # order-5 stages. The testsets above pin only the mode-averaged
+        # branch; a wiring slip in any of the other three — wrong `rhs_*`,
+        # a missing `ensure_*_at`, a dropped propagate/unpropagate pair —
+        # would be invisible there, and *also* invisible to the existing
+        # per-geometry equivalence tests, which compare accepted-step values
+        # (`s.yn`) and never call `interpolate`. Rather than re-measure
+        # convergence order in each geometry (expensive, and the order is a
+        # property of the shared tableau, already established above), this
+        # asserts the cheaper and more targeted thing: the native and Julia
+        # dense output must agree, which they can only do if Rust's extra
+        # stages match Julia's `_dp5_extra_stages!` for that geometry.
+        θs = (0.25, 0.6, 0.85)
+
+        cases = Tuple{String, Any, Any, Any, Float64}[]
+
+        # ── Radial (TransRadial + resident QDHT) ─────────────────────────
+        let gas = :Ar, pres = 1.2, τ = 20e-15, λ0 = 800e-9,
+            w0 = 40e-6, energy = 1e-12, L = 0.05, R = 4e-3, N = 32
+            grid = Grid.RealGrid(L, λ0, (400e-9, 2000e-9), 0.2e-12)
+            q = Hankel.QDHT(R, N, dim=2)
+            dens0 = PhysData.density(gas, pres)
+            linop = LinearOps.make_const_linop(grid, q, PhysData.ref_index_fun(gas, pres))
+            normfun = NonlinearRHS.const_norm_radial(grid, q, PhysData.ref_index_fun(gas, pres))
+            Eω, transform, _ = with_logger(NullLogger()) do
+                Amalthea.setup(grid, q, z -> dens0, normfun,
+                               (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),),
+                               Fields.GaussGaussField(λ0=λ0, τfwhm=τ, energy=energy,
+                                                      w0=w0, propz=-0.15))
+            end
+            @assert transform isa NonlinearRHS.TransRadial
+            push!(cases, ("radial", Eω, linop, transform, 0.01))
+        end
+
+        # ── Modal (TransModal + resident libcubature) ────────────────────
+        let gas = :Ar, pres = 1.0, τ = 20e-15, λ0 = 800e-9,
+            a = 125e-6, energy = 5e-6, L = 0.1
+            grid = Grid.RealGrid(L, λ0, (400e-9, 2000e-9), 0.5e-12)
+            modes = (Capillary.MarcatiliMode(a, gas, pres; m=1),
+                     Capillary.MarcatiliMode(a, gas, pres; m=2))
+            dens0 = PhysData.density(gas, pres)
+            linop = LinearOps.make_const_linop(grid, modes, grid.referenceλ)
+            Eω, transform, _ = with_logger(NullLogger()) do
+                Amalthea.setup(grid, z -> dens0,
+                               (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),),
+                               Fields.GaussField(λ0=λ0, τfwhm=τ, energy=energy), modes, :y)
+            end
+            @assert transform isa NonlinearRHS.TransModal
+            push!(cases, ("modal", Eω, linop, transform, 0.02))
+        end
+
+        # ── Free-space (TransFree + joint 3-D FFT) ───────────────────────
+        let gas = :Ar, pres = 1.0, τ = 20e-15, λ0 = 800e-9,
+            w0 = 60e-6, energy = 1e-9, L = 0.01, R = 300e-6, Nx = 8, Ny = 6
+            grid = Grid.RealGrid(L, λ0, (400e-9, 2000e-9), 0.5e-12)
+            xygrid = Grid.FreeGrid(R, Nx, R, Ny)
+            dens0 = PhysData.density(gas, pres)
+            linop = LinearOps.make_const_linop(grid, xygrid, PhysData.ref_index_fun(gas, pres))
+            normfun = NonlinearRHS.const_norm_free(grid, xygrid, PhysData.ref_index_fun(gas, pres))
+            Eω, transform, _ = with_logger(NullLogger()) do
+                Amalthea.setup(grid, xygrid, z -> dens0, normfun,
+                               (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),),
+                               Fields.GaussGaussField(λ0=λ0, τfwhm=τ, energy=energy, w0=w0))
+            end
+            @assert transform isa NonlinearRHS.TransFree
+            push!(cases, ("free-space", Eω, linop, transform, 0.002))
+        end
+
+        for (name, Eω, linop, transform, dt) in cases
+            @testset "$name: native and Julia dense output agree" begin
+                t0 = 0.0
+                s_ru = RustNativeStepper(transform, linop, copy(Eω), t0, dt;
+                                         rtol=1e-6, atol=1e-10, max_dt=dt, min_dt=dt)
+                s_jl = PreconStepper(transform, linop, copy(Eω), t0, dt;
+                                     rtol=1e-6, atol=1e-10, max_dt=dt, min_dt=dt)
+                @assert step!(s_ru) && step!(s_jl)
+                # Confirm the native stepper really is resident here rather
+                # than having silently fallen back — otherwise this testset
+                # would compare Julia against Julia and prove nothing.
+                @test s_ru isa RustNativeStepper
+                for θ in θs
+                    ti = t0 + θ*dt
+                    rel = norm(interpolate(s_ru, ti) .- interpolate(s_jl, ti)) /
+                          norm(interpolate(s_jl, ti))
+                    println("$name dense output native-vs-Julia at θ=$θ: rel=$rel")
+                    # Same tier as each geometry's own single-step
+                    # equivalence test (~1e-13 documented QDHT/cubature
+                    # floor), loosened one decade because the order-5
+                    # interpolant sums 9 stages instead of comparing one
+                    # accepted-step value.
+                    @test rel < 1e-12
+                end
+            end
+        end
+    end
+end
