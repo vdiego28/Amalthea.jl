@@ -39,8 +39,10 @@ fully executed, kept as provenance). Gate for every phase: full
 |---|---|---|
 | S1 | Hot-loop CPU performance (FFTW wisdom, fused RK45 accumulation, de-branched Kerr, BLAS-3 QDHT, SoA spike) | ✅ all 6 items resolved or deliberately parked |
 | S4 | Architecture cleanups (`BackendConfig`, `RK45.check_ffi`, explicit accessor seams) | ✅ gate closed 2026-07-11 |
+| S5 | Numerics options (mixed precision, deterministic mode, order-5 dense output) | ✅ all 3 items resolved, closed 2026-07-23 |
 
-S2, S3, S5 and S6 still carry open items and stay live below.
+S3 and S6 still carry open items and stay live below; S2 closed 2026-07-22
+and S5 on 2026-07-23.
 
 ### Open remainders lifted out of the archived phases
 
@@ -83,16 +85,19 @@ S2, S3, S5 and S6 still carry open items and stay live below.
    (c) short-kernel Raman pad-shortening — **recommend**, ~2× that multiplies
    with J.3's r2c gain and need not diverge from the oracle. Only (c) remains
    open.
-5. 🟡 **Phase S5.3 — order-5 dense-output continuous extension: attempted
-   2026-07-22, INCOMPLETE, not merged.** Calvo-Montijano-Rández (1990)
-   order-5 tableau added and wired (extra-stage FFI + shared `interpC5`
-   helpers for both steppers), but the agent hit the account spend limit
-   before resolving a convergence-test artifact: both the order-4 and the
-   new order-5 interpolant — *and the accepted-step endpoint, which uses no
-   interpolation* — degrade as O(h²) against the fine reference, pointing at
-   the test harness rather than the interpolant. Partial work preserved on
-   branch `worktree-agent-ada2bad7efb980155` (commit `63b6003`). Resume by
-   explaining the endpoint-vs-fine-reference discrepancy first.
+5. 🟢 **Phase S5.3 — order-5 dense-output continuous extension: done
+   2026-07-23.** The Calvo-Montijano-Rández (1990) order-5 tableau, wired
+   into both steppers (extra-stage FFI + shared `interpC5`/
+   `_dp5_extra_stages!` helpers). The 2026-07-22 attempt's blocker — order-4
+   *and* order-5 interpolants both degrading as O(h²) — was **not** a test
+   artifact: `step!` performed the FSAL carry k7→k1 at accept time, so
+   `interpolate` was handed k7 in place of the finished interval's k1 and
+   the continuous extension collapsed to first order. Inherited from
+   upstream Luna and re-ported into all three Rust steppers; fixed in all
+   four by deferring the carry to the top of the next step. The WIP's test
+   additionally ran at h=2e-3, where the order-5 defect is already at the FP
+   floor and no ratio means anything. Full postmortem, tableau provenance
+   and measured orders: `native-port/portlog-inbox/dense-order5.md`.
 
 ---
 
@@ -469,11 +474,14 @@ implemented), verified on real hardware, wired behind
    itself (GPU.md §8) — not fixed by item 2 above, which worked within the
    existing buffer sizing rather than changing it.
 
-### 🟡 S5 — Numerics options (suggestions 10, 11, 12)
+### 🟢 S5 — Numerics options (suggestions 10, 11, 12) — COMPLETE (all 3 items, closed 2026-07-23)
 *Item 2 done 2026-07-11 (re-scoped). Items 1 and 3 investigated 2026-07-19
-— both re-scoped after measurement, see below (item 1: bar not cleared,
-reverted; item 3: backlog premise wrong, DP5 5th-order continuous extension
-is not the coefficient swap the entry implied — deferred as a larger item).*
+— both re-scoped after measurement (item 1: bar not cleared, reverted;
+item 3: backlog premise wrong, the DP5 5th-order continuous extension is
+not the coefficient swap the entry implied — deferred as a larger item).
+Item 3 then landed 2026-07-23, together with a fix for the FSAL/k1 bug that
+had been holding *every* stepper's dense output at first order; see the
+"Open remainders" list above and `native-port/portlog-inbox/dense-order5.md`.*
 1. 🟢 **Done 2026-07-19 — measured, bar not cleared, reverted (S1.6
    discipline).** Mixed-precision spike (item 10). Added a timeboxed
    Criterion bench (`amalthea/benches/mixed_precision_bench.rs`, since
@@ -699,7 +707,7 @@ started.*
 
 **Suggested execution order** (per `SUGGESTIONS.md`, adjusted for what's
 already partially done): S1 → S4 → S2 → S5.2/S5.3 → S6.1 → finish S3 →
-remaining S5/S6.
+remaining S6. (S1, S2, S4 and S5 are now all closed; only S3 and S6 remain.)
 
 ## Open items
 
