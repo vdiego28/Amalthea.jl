@@ -336,6 +336,56 @@ end
 prop!_maybe(s::PreconStepper) = s.prop!(s.yn, s.t, s.tn)
 prop!_maybe(s) = nothing
 
+"""
+    interpC5_weights(σ)
+
+Order-5 continuous-extension basis weights at fractional step position
+σ∈[0,1] (`dopri.jl`'s `interpC5`/`dp5_extra_*` — see that file for
+provenance/verification, and `docs/dev/native-port/portlog-inbox/dense-order5.md`
+for the design record). Shared by both `interpolate(s::PreconStepper, ti)`
+and `interpolate(s::RustNativeStepper, ti)` (BACKLOG.md S5 item 3) so the two
+steppers cannot silently diverge on interpolant math, matching how `interpC`
+is already shared for the order-4 path.
+"""
+function interpC5_weights(σ)
+    σ2 = σ^2; σ3 = σ2*σ; σ4 = σ3*σ; σ5 = σ4*σ
+    ntuple(ii -> σ*interpC5[1,ii] + σ2*interpC5[2,ii] + σ3*interpC5[3,ii] +
+                 σ4*interpC5[4,ii] + σ5*interpC5[5,ii], Val(9))
+end
+
+"""
+    _dp5_extra_stages!(k8, k9, fbar!, y0, ks7, t0, dt)
+
+Computes the two Calvo-Montijano-Rández extra RK stages needed for the
+order-5 continuous extension, via the (already interaction-picture-wrapped)
+Julia RHS callable `fbar!` — the same one `evaluate!(s::PreconStepper)` uses
+for the base 7 stages, so no nonlinear-physics code is duplicated here, only
+the extra Butcher combination. `ks7` is the 7-tuple of already-computed base
+stages (`s.ks`), all expressed in the `t0`-referenced interaction-picture
+frame that `fbar!` produces (see `make_fbar!`).
+
+Lazy by construction: called only from `interpolate`, never from the hot
+`step!` path, so an accepted step that nobody asks for dense output on pays
+nothing extra (see the portlog-inbox entry for the measured added cost of
+each call this *does* make: 2 extra nonlinear RHS evaluations, comparable to
+~2/7 of one accepted step).
+"""
+function _dp5_extra_stages!(k8, k9, fbar!, y0, ks7, t0, dt)
+    ystage = copy(y0)
+    for jj = 1:7
+        dp5_extra_a7[jj] == 0 || (ystage .+= dt .* dp5_extra_a7[jj] .* ks7[jj])
+    end
+    fbar!(k8, ystage, t0, t0 + dp5_extra_c*dt)
+
+    ystage2 = copy(y0)
+    for jj = 1:7
+        dp5_extra_a8[jj] == 0 || (ystage2 .+= dt .* dp5_extra_a8[jj] .* ks7[jj])
+    end
+    dp5_extra_a8[8] == 0 || (ystage2 .+= dt .* dp5_extra_a8[8] .* k8)
+    fbar!(k9, ystage2, t0, t0 + dp5_extra_c*dt)
+    return nothing
+end
+
 "Interpolate solution, aka dense output."
 function interpolate(s::Stepper, ti::Float64)
     if ti > s.tn
@@ -358,7 +408,15 @@ function interpolate(s::Stepper, ti::Float64)
     return @. s.y + s.dt.*s.yi
 end
 
-"Interpolate solution, aka dense output."
+"""
+Interpolate solution, aka dense output. Order-5 continuous extension
+(BACKLOG.md S5 item 3): computes the 2 extra Calvo-Montijano-Rández stages
+lazily (only for this call, via `_dp5_extra_stages!`/`s.fbar!`) and combines
+all 9 stages with `interpC5_weights`, replacing the old order-4-only
+`interpC` combination. `s.fbar!` is always callable here (no backend
+eligibility question, unlike `RustNativeStepper`), so there is no fallback
+path to maintain.
+"""
 function interpolate(s::PreconStepper, ti::Float64)
     if ti > s.tn
         error("Attempting to extrapolate!")
@@ -369,14 +427,15 @@ function interpolate(s::PreconStepper, ti::Float64)
         return s.yn
     end
     σ = (ti - s.t)/s.dt
-    σ2 = σ^2
-    σ3 = σ2*σ
-    σ4 = σ3*σ
-    b = ntuple(ii -> σ*interpC[1,ii] + σ2*interpC[2,ii] + σ3*interpC[3,ii] + σ4*interpC[4,ii], Val(7))
+    k8 = similar(s.y)
+    k9 = similar(s.y)
+    _dp5_extra_stages!(k8, k9, s.fbar!, s.y, s.ks, s.t, s.dt)
+    b = interpC5_weights(σ)
     fill!(s.yi, 0)
     for ii = 1:7
          s.yi .+= s.ks[ii].*b[ii]
     end
+    s.yi .+= k8.*b[8] .+ k9.*b[9]
     out =  @. s.y + s.dt.*s.yi
     s.prop!(out, s.t, ti)
     return out
@@ -2227,7 +2286,7 @@ function interpolate(s::RustNativeStepper, ti::Float64)
     elseif ti == s.tn
         return s.yn
     end
-    # Same quartic dense output as PreconStepper/RustPreconStepper (interpC,
+    # Dense output between accepted steps. Historically a quartic (interpC,
     # all 7 RK stages), not linear — the propagation itself already matches
     # Julia to ~1e-15, but the earlier linear-only interpolation between
     # accepted steps was measurably lower-order than Julia's, which showed
@@ -2238,23 +2297,59 @@ function interpolate(s::RustNativeStepper, ti::Float64)
     # PreconStepper where Julia owns them already) — fetched here via
     # `get_ks_stage`, one call per stage, only on the (rare, relative to
     # step!) dense-output path.
+    #
+    # Order-5 continuous extension (BACKLOG.md S5 item 3): try the 2 extra
+    # Calvo-Montijano-Rández stages first (`native_compute_extra_stages`,
+    # lazy — only this call pays for them, mirroring `_dp5_extra_stages!`'s
+    # role for `PreconStepper`). Not every native backend implements the
+    # extra-stage FFI — the CPU backend does; anything else (e.g. the opt-in
+    # CUDA-resident backend) inherits a `NativeBackend` default that returns
+    # -1 — so a nonzero `rc5` here is an expected "not supported by this
+    # backend" signal, not a bug, and falls back to the original order-4
+    # `interpC` dense output rather than erroring. This keeps every existing
+    # backend's dense output working exactly as before while CPU sims (the
+    # default) get the accuracy upgrade.
     n = length(s.yn)
     σ = (ti - s.t) / s.dt
-    σ2 = σ^2; σ3 = σ2*σ; σ4 = σ3*σ
-    b = ntuple(ii -> σ*interpC[1,ii] + σ2*interpC[2,ii] + σ3*interpC[3,ii] + σ4*interpC[4,ii], Val(7))
     # `similar`/`zero`, not `zeros(ComplexF64, n)` — `RustNativeStepper{T}` is
     # generic over `T<:AbstractArray`, and modal/multi-mode geometries use a
     # `Matrix{ComplexF64}` field (n_ω x n_modes), not a flat vector; a flat
     # `Vector` buffer here would silently broadcast-mismatch against `s.y`.
     yi = zero(s.yn)
     kbuf = similar(s.yn)
-    for ii = 1:7
-        rc = ccall((:get_ks_stage, _LIBAMALTHEA_RK45), Cint,
-              (Ptr{Cvoid}, Csize_t, Ptr{ComplexF64}, Csize_t),
-              s._handle.ptr, Csize_t(ii - 1), kbuf, Csize_t(n))
-        check_ffi(rc, "get_ks_stage")
-        yi .+= kbuf .* b[ii]
+
+    rc5 = ccall((:native_compute_extra_stages, _LIBAMALTHEA_RK45), Cint,
+          (Ptr{Cvoid}, Ptr{ComplexF64}, Csize_t, Float64, Float64),
+          s._handle.ptr, s.y, Csize_t(n), s.t, s.dt)
+
+    if rc5 == 0
+        b = interpC5_weights(σ)
+        for ii = 1:7
+            rc = ccall((:get_ks_stage, _LIBAMALTHEA_RK45), Cint,
+                  (Ptr{Cvoid}, Csize_t, Ptr{ComplexF64}, Csize_t),
+                  s._handle.ptr, Csize_t(ii - 1), kbuf, Csize_t(n))
+            check_ffi(rc, "get_ks_stage")
+            yi .+= kbuf .* b[ii]
+        end
+        for jj = 1:2
+            rc = ccall((:get_extra_stage, _LIBAMALTHEA_RK45), Cint,
+                  (Ptr{Cvoid}, Csize_t, Ptr{ComplexF64}, Csize_t),
+                  s._handle.ptr, Csize_t(jj - 1), kbuf, Csize_t(n))
+            check_ffi(rc, "get_extra_stage")
+            yi .+= kbuf .* b[7 + jj]
+        end
+    else
+        σ2 = σ^2; σ3 = σ2*σ; σ4 = σ3*σ
+        b4 = ntuple(ii -> σ*interpC[1,ii] + σ2*interpC[2,ii] + σ3*interpC[3,ii] + σ4*interpC[4,ii], Val(7))
+        for ii = 1:7
+            rc = ccall((:get_ks_stage, _LIBAMALTHEA_RK45), Cint,
+                  (Ptr{Cvoid}, Csize_t, Ptr{ComplexF64}, Csize_t),
+                  s._handle.ptr, Csize_t(ii - 1), kbuf, Csize_t(n))
+            check_ffi(rc, "get_ks_stage")
+            yi .+= kbuf .* b4[ii]
+        end
     end
+
     out = @. s.y + s.dt * yi
     rc = ccall((:native_apply_prop, _LIBAMALTHEA_RK45), Cint,
           (Ptr{Cvoid}, Ptr{ComplexF64}, Csize_t, Float64, Float64),
