@@ -4415,9 +4415,24 @@ impl NativeBackend for CpuNativeSim {
         // Phase D.3: EnvGrid free-space uses a c2c 3-D plan (ComplexFft3d) and
         // complex time-domain buffers; RealGrid (Phase 6) keeps the r2c plan and
         // real time-domain buffers — same split as native_set_radial_params.
+        //
+        // docs/dev/BACKLOG.md S2 item 4: `s.n_threads` (set by
+        // `native_set_threads`, always called before `native_set_free_params`
+        // — see RK45.jl's construction order) becomes FFTW's own internal
+        // thread count for this joint 3-D plan, via `RealFft3d`/
+        // `ComplexFft3d`'s `nthreads` argument (`fftw.rs::with_nthreads_plan`).
+        // Unlike the radial/modal per-column threading, `rhs_free`/
+        // `rhs_free_env` never call `forward`/`inverse` on this plan
+        // concurrently from multiple rayon workers — there is no per-column
+        // loop over independent transforms here, only one joint transform
+        // per stage — so the parallelism lives *inside* a single
+        // `fftw_execute_dft_r2c`/`_c2r` call (FFTW's own worker pool),
+        // not across Rust threads. That is also why `RealFft3d`/
+        // `ComplexFft3d` deliberately do not implement `Sync` (see
+        // `fftw.rs`'s doc on both structs and on `with_nthreads_plan`).
         if s.is_real {
             let fft3d = match s.fftw_api.as_ref() {
-                Some(api) => RealFft3d::new(api, n_time_over, n_y, n_x, flags),
+                Some(api) => RealFft3d::new(api, n_time_over, n_y, n_x, flags, s.n_threads),
                 None => return -2,
             };
             s.fft_r2c_3d = Some(fft3d);
@@ -4428,7 +4443,7 @@ impl NativeBackend for CpuNativeSim {
             s.free_pto_c = Vec::new();
         } else {
             let fft3d = match s.fftw_api.as_ref() {
-                Some(api) => ComplexFft3d::new(api, n_time_over, n_y, n_x, flags),
+                Some(api) => ComplexFft3d::new(api, n_time_over, n_y, n_x, flags, s.n_threads),
                 None => return -2,
             };
             s.fft_c2c_3d = Some(fft3d);

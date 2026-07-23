@@ -27,7 +27,7 @@ use num_complex::Complex;
 use std::ffi::CStr;
 use std::ffi::CString;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 /// FFTW plan **creation** is not thread-safe (only `fftw_execute*` is); concurrent
 /// `fftw_plan_*` calls race and crash. We serialize all planning behind this lock,
@@ -235,6 +235,19 @@ type ExportWisdom = unsafe extern "C" fn(*const libc::c_char) -> c_int;
 // deadlock (see docs/dev/BACKLOG.md's native-radial-threading hang postmortem).
 type PlanWithNthreads = unsafe extern "C" fn(c_int);
 type PlannerNthreads = unsafe extern "C" fn() -> c_int;
+// `int fftw_init_threads(void)` — FFTW's own precondition for using
+// `fftw_plan_with_nthreads` at all: must be called (successfully, nonzero
+// return) exactly once per process before planning the first
+// multi-threaded plan (docs/dev/BACKLOG.md S2 item 4, `RealFft3d`/
+// `ComplexFft3d` threading). On the FFTW_jll build this crate targets, the
+// symbol lives directly in the combined `libfftw3.so` (no separate
+// `libfftw3_threads`/`libfftw3_omp` to `dlopen` — verified via `nm -D` on
+// the artifact Julia's `FFTW.jl` resolves); if a future build ships it
+// split out, `Library::sym` simply won't find it here and every 3-D plan
+// silently falls back to single-threaded planning (see `with_nthreads_plan`) —
+// never a hard error, matching this file's existing best-effort convention
+// for `import_wisdom`/`export_wisdom`/`plan_with_nthreads` above.
+type InitThreads = unsafe extern "C" fn() -> c_int;
 
 /// Loaded FFTW API + the live library handle (kept alive while the API exists).
 pub struct FftwApi {
@@ -253,6 +266,7 @@ pub struct FftwApi {
     export_wisdom: Option<ExportWisdom>,
     plan_with_nthreads: Option<PlanWithNthreads>,
     planner_nthreads: Option<PlannerNthreads>,
+    init_threads: Option<InitThreads>,
     plan_guru_split_dft_1d: PlanGuruSplitDft1d,
     plan_guru_split_dft_r2c_1d: PlanGuruSplitDftR2c1d,
     plan_guru_split_dft_c2r_1d: PlanGuruSplitDftC2r1d,
@@ -320,6 +334,12 @@ impl FftwApi {
             .map(|p| unsafe { std::mem::transmute::<*mut c_void, PlanWithNthreads>(p) });
         let planner_nthreads = unsafe { lib.sym("fftw_planner_nthreads") }
             .map(|p| unsafe { std::mem::transmute::<*mut c_void, PlannerNthreads>(p) });
+        // Optional, same best-effort convention: absence just means the 3-D
+        // free-space plan (docs/dev/BACKLOG.md S2 item 4) can never be
+        // multi-threaded on this build — `with_nthreads_plan` below falls
+        // back to `with_single_threaded_plan` in that case.
+        let init_threads = unsafe { lib.sym("fftw_init_threads") }
+            .map(|p| unsafe { std::mem::transmute::<*mut c_void, InitThreads>(p) });
 
         let plan_guru_split_dft_1d = sym!("fftw_plan_guru_split_dft", PlanGuruSplitDft1d);
         let plan_guru_split_dft_r2c_1d =
@@ -352,6 +372,7 @@ impl FftwApi {
             exec_split_dft_c2r,
             plan_with_nthreads,
             planner_nthreads,
+            init_threads,
         })
     }
 
@@ -368,6 +389,67 @@ impl FftwApi {
         };
         let prev = unsafe { get() };
         unsafe { set(1) };
+        let result = f();
+        unsafe { set(if prev > 0 { prev } else { 1 }) };
+        result
+    }
+
+    /// Best-effort, process-wide, call-exactly-once wrapper around
+    /// `fftw_init_threads()` — docs/dev/BACKLOG.md S2 item 4. FFTW requires this
+    /// to be called (and to succeed, nonzero return) before any
+    /// multi-threaded plan is created; calling it more than once per
+    /// process is not part of FFTW's documented contract, so a process-global
+    /// `OnceLock` makes repeated `RealFft3d`/`ComplexFft3d` construction
+    /// (one `NativeSim` per `solve`) call the real symbol at most once.
+    /// Returns `false` (never panics) if the symbol is missing or the call
+    /// itself fails — both are silent-fallback conditions, not errors: the
+    /// caller (`with_nthreads_plan`) treats either as "plan single-threaded
+    /// instead."
+    fn ensure_threads_initialized(&self) -> bool {
+        static INIT_THREADS_OK: OnceLock<bool> = OnceLock::new();
+        *INIT_THREADS_OK.get_or_init(|| match self.init_threads {
+            Some(f) => unsafe { f() != 0 },
+            None => false,
+        })
+    }
+
+    /// Run `f` (a plan-creation closure) with FFTW's process-global thread
+    /// count forced to `n`, restoring whatever it was before on the way out.
+    /// Symmetric counterpart to `with_single_threaded_plan` above (same
+    /// `PLANNER_LOCK`-held precondition, same restore-previous-value
+    /// discipline) — the `n<=1` and "no threading support on this build"
+    /// cases both degrade to exactly `with_single_threaded_plan`'s behavior,
+    /// so callers never need to branch themselves.
+    ///
+    /// **Only for the 3-D free-space plans** (`RealFft3d`/`ComplexFft3d`,
+    /// docs/dev/BACKLOG.md S2 item 4). Do **not** use this for the 1-D
+    /// per-column plan types (`ComplexFft1d`/`RealFft1d`/`SplitComplexFft1d`/
+    /// `SplitRealFft1d`) — those are `Sync` and executed concurrently from
+    /// multiple rayon workers against **one shared plan**; a plan baked with
+    /// FFTW's own nthreads>1 dispatches internally to FFTW's worker pool on
+    /// every `fftw_execute*` call, and concurrent `fftw_execute*` calls
+    /// against such a plan from separate Rust threads deadlock (see this
+    /// module's `ComplexFft1d`/`RealFft1d` `Sync` doc, and the
+    /// native-radial-threading hang this repo already hit once). The 3-D
+    /// free-space plans are safe to build this way for the opposite reason:
+    /// `rhs_free`/`rhs_free_env` (`native.rs`) call `forward`/`inverse` on
+    /// them from exactly one thread, never concurrently from rayon workers —
+    /// so `RealFft3d`/`ComplexFft3d` deliberately do **not** implement `Sync`
+    /// (contrast `ComplexFft1d`/`RealFft1d` just above), and a single
+    /// `fftw_execute_dft_r2c`/`_c2r` call on an nthreads>1 plan fans out to
+    /// FFTW's own worker pool internally and blocks the *one* calling thread
+    /// until they finish — there is no concurrent Rust-side access to race
+    /// or deadlock against.
+    fn with_nthreads_plan<T>(&self, n: usize, f: impl FnOnce() -> T) -> T {
+        if n <= 1 || !self.ensure_threads_initialized() {
+            return self.with_single_threaded_plan(f);
+        }
+        let (set, get) = match (self.plan_with_nthreads, self.planner_nthreads) {
+            (Some(s), Some(g)) => (s, g),
+            _ => return f(),
+        };
+        let prev = unsafe { get() };
+        unsafe { set(n as c_int) };
         let result = f();
         unsafe { set(if prev > 0 { prev } else { 1 }) };
         result
@@ -603,6 +685,14 @@ unsafe impl Sync for RealFft1d {}
 /// not supported for rank>1 c2r in FFTW) — callers must copy the spectrum
 /// into scratch before calling `inverse`, exactly like every other native
 /// RHS in this port already does before its inverse transform.
+///
+/// **Threading (docs/dev/BACKLOG.md S2 item 4):** `new`'s `nthreads` argument
+/// bakes FFTW's own internal thread count into this plan (via
+/// `with_nthreads_plan`, isolated from every 1-D plan type in this file —
+/// see that method's doc). Deliberately **not** `Sync` — see the struct-level
+/// note above `with_nthreads_plan`; the threading here is internal to a
+/// single `fftw_execute_dft_r2c`/`_c2r` call, not exposed as concurrent
+/// Rust-side access.
 pub struct RealFft3d {
     n_t: usize,
     n_y: usize,
@@ -616,32 +706,43 @@ pub struct RealFft3d {
 }
 
 impl RealFft3d {
-    pub fn new(api: &FftwApi, n_t: usize, n_y: usize, n_x: usize, flags: c_uint) -> Self {
+    /// `nthreads` — FFTW's own internal thread count for this plan (`<=1`
+    /// or no threaded-FFTW support on this build both mean "plan
+    /// single-threaded", see `with_nthreads_plan`). Pass the native sim's
+    /// `n_threads` (docs/dev/BACKLOG.md S2 item 4); pass `1` for every other
+    /// caller (e.g. this file's own unit tests) to keep prior behavior.
+    pub fn new(
+        api: &FftwApi,
+        n_t: usize,
+        n_y: usize,
+        n_x: usize,
+        flags: c_uint,
+        nthreads: usize,
+    ) -> Self {
         let nspec = n_t / 2 + 1;
         let mut tbuf = vec![0.0f64; n_t * n_y * n_x];
         let mut sbuf = vec![[0.0f64; 2]; nspec * n_y * n_x];
         let f = flags | FFTW_UNALIGNED;
         let _guard = PLANNER_LOCK.lock().unwrap();
-        let r2c = unsafe {
-            (api.plan_r2c_3d)(
+        let (r2c, c2r) = api.with_nthreads_plan(nthreads, || unsafe {
+            let r2c = (api.plan_r2c_3d)(
                 n_x as c_int,
                 n_y as c_int,
                 n_t as c_int,
                 tbuf.as_mut_ptr(),
                 sbuf.as_mut_ptr(),
                 f,
-            )
-        };
-        let c2r = unsafe {
-            (api.plan_c2r_3d)(
+            );
+            let c2r = (api.plan_c2r_3d)(
                 n_x as c_int,
                 n_y as c_int,
                 n_t as c_int,
                 sbuf.as_mut_ptr(),
                 tbuf.as_mut_ptr(),
                 f,
-            )
-        };
+            );
+            (r2c, c2r)
+        });
         RealFft3d {
             n_t,
             n_y,
@@ -708,6 +809,9 @@ impl Drop for RealFft3d {
 /// `FFTW_ESTIMATE`/`FFTW_MEASURE` (unlike c2r), but callers still treat the
 /// input as scratch to match every other native RHS's copy-before-inverse
 /// convention in this port.
+///
+/// **Threading:** same `nthreads`/`with_nthreads_plan`/non-`Sync` design as
+/// [`RealFft3d`] — see that struct's threading note.
 pub struct ComplexFft3d {
     n_t: usize,
     n_y: usize,
@@ -719,14 +823,24 @@ pub struct ComplexFft3d {
 }
 
 impl ComplexFft3d {
-    pub fn new(api: &FftwApi, n_t: usize, n_y: usize, n_x: usize, flags: c_uint) -> Self {
+    /// `nthreads` — see [`RealFft3d::new`]'s doc for the argument's meaning
+    /// and the caller convention (native sim's `n_threads`, or `1` to keep
+    /// prior single-threaded behavior).
+    pub fn new(
+        api: &FftwApi,
+        n_t: usize,
+        n_y: usize,
+        n_x: usize,
+        flags: c_uint,
+        nthreads: usize,
+    ) -> Self {
         let ntot = n_t * n_y * n_x;
         let mut a = vec![[0.0f64; 2]; ntot];
         let mut b = vec![[0.0f64; 2]; ntot];
         let f = flags | FFTW_UNALIGNED;
         let _guard = PLANNER_LOCK.lock().unwrap();
-        let fwd = unsafe {
-            (api.plan_dft_3d)(
+        let (fwd, inv) = api.with_nthreads_plan(nthreads, || unsafe {
+            let fwd = (api.plan_dft_3d)(
                 n_x as c_int,
                 n_y as c_int,
                 n_t as c_int,
@@ -734,10 +848,8 @@ impl ComplexFft3d {
                 b.as_mut_ptr(),
                 FFTW_FORWARD,
                 f,
-            )
-        };
-        let inv = unsafe {
-            (api.plan_dft_3d)(
+            );
+            let inv = (api.plan_dft_3d)(
                 n_x as c_int,
                 n_y as c_int,
                 n_t as c_int,
@@ -745,8 +857,9 @@ impl ComplexFft3d {
                 b.as_mut_ptr(),
                 FFTW_BACKWARD,
                 f,
-            )
-        };
+            );
+            (fwd, inv)
+        });
         ComplexFft3d {
             n_t,
             n_y,
@@ -1122,7 +1235,7 @@ mod tests {
             }
         };
         let (n_t, n_y, n_x) = (4usize, 3usize, 2usize);
-        let plan = RealFft3d::new(&api, n_t, n_y, n_x, FFTW_ESTIMATE);
+        let plan = RealFft3d::new(&api, n_t, n_y, n_x, FFTW_ESTIMATE, 1);
 
         // Column-major (n_t,n_y,n_x): reshape(Float64.(1:24), 4,3,2) in Julia.
         let mut x: Vec<f64> = (1..=24).map(|v| v as f64).collect();
@@ -1195,7 +1308,7 @@ mod tests {
             }
         };
         let (n_t, n_y, n_x) = (4usize, 3usize, 2usize);
-        let plan = ComplexFft3d::new(&api, n_t, n_y, n_x, FFTW_ESTIMATE);
+        let plan = ComplexFft3d::new(&api, n_t, n_y, n_x, FFTW_ESTIMATE, 1);
 
         let mut x: Vec<Complex<f64>> = (1..=24).map(|v| Complex::new(v as f64, 0.0)).collect();
         let orig = x.clone();
@@ -1334,6 +1447,174 @@ mod tests {
         split_plan.inverse(&mut spec_re2, &mut spec_im2, &mut back);
         for i in 0..n {
             assert_eq!(back[i], aos_back[i], "split c2r inverse mismatch at {i}");
+        }
+    }
+
+    /// docs/dev/BACKLOG.md S2 item 4: the load-bearing empirical check for the
+    /// whole threading design, run **before** wiring `n_threads` into
+    /// `native.rs` (see PLANS.md's own warning that this is an assumption,
+    /// not a guarantee, of FFTW's threaded decomposition). Plans the same
+    /// `RealFft3d` transform at `nthreads=1` and `nthreads=4` at a
+    /// realistically large size (not the 4×3×2 dimension-order fixture above
+    /// — a transform that small can silently execute single-threaded inside
+    /// FFTW regardless of the requested thread count, which would make this
+    /// test pass vacuously) and asserts the two plans' `forward`/`inverse`
+    /// outputs are **bit-identical**, not merely close — this is the S2 gate
+    /// itself (docs/dev/BACKLOG.md), applied one level lower than the
+    /// Julia-visible `s.yn` comparison. Also prints execute-only wall-clock
+    /// timings (min-of-5, plan creation excluded) as engagement evidence: a
+    /// nthreads=4 plan that silently ran single-threaded would still pass
+    /// the bit-identical assertion, so timing is the only signal that the
+    /// parallel path actually engaged (not asserted here — see
+    /// docs/dev/native-port/portlog-inbox/free-threads.md for the
+    /// measured numbers and the host-contention caveat).
+    #[test]
+    fn r2c_3d_threaded_matches_single_threaded() {
+        let api = match try_api() {
+            Some(a) => a,
+            None => {
+                eprintln!("skip r2c_3d_threaded_matches_single_threaded: no FFTW found");
+                return;
+            }
+        };
+        let (n_t, n_y, n_x) = (2048usize, 64usize, 64usize);
+        let ntot = n_t * n_y * n_x;
+
+        let x: Vec<f64> = (0..ntot)
+            .map(|i| ((i as f64) * 0.0003125).sin() + 0.5 * ((i as f64) * 0.00021).cos())
+            .collect();
+
+        let plan1 = RealFft3d::new(&api, n_t, n_y, n_x, FFTW_ESTIMATE, 1);
+        let plan4 = RealFft3d::new(&api, n_t, n_y, n_x, FFTW_ESTIMATE, 4);
+        let nspec = plan1.nspec();
+        assert_eq!(nspec, plan4.nspec());
+
+        let mut x1 = x.clone();
+        let mut x4 = x.clone();
+        let mut spec1 = vec![Complex::new(0.0, 0.0); nspec * n_y * n_x];
+        let mut spec4 = vec![Complex::new(0.0, 0.0); nspec * n_y * n_x];
+
+        // Timed forward execute, min-of-5 (plan creation already done above).
+        let mut t1_best = std::time::Duration::MAX;
+        let mut t4_best = std::time::Duration::MAX;
+        for _ in 0..5 {
+            let t0 = std::time::Instant::now();
+            plan1.forward(&mut x1, &mut spec1);
+            t1_best = t1_best.min(t0.elapsed());
+            let t0 = std::time::Instant::now();
+            plan4.forward(&mut x4, &mut spec4);
+            t4_best = t4_best.min(t0.elapsed());
+        }
+        eprintln!(
+            "r2c_3d_threaded forward min-of-5: nthreads=1 {t1_best:?}, nthreads=4 {t4_best:?}"
+        );
+
+        assert_eq!(
+            spec1.len(),
+            spec4.len(),
+            "spectrum length mismatch between thread counts"
+        );
+        for i in 0..spec1.len() {
+            assert_eq!(
+                spec1[i], spec4[i],
+                "nthreads=1 vs nthreads=4 forward mismatch at {i}"
+            );
+        }
+
+        // Round-trip both and cross-check the inverse too (spec is consumed —
+        // reforward first).
+        plan1.forward(&mut x1, &mut spec1);
+        plan4.forward(&mut x4, &mut spec4);
+        let mut spec1_copy = spec1.clone();
+        let mut spec4_copy = spec4.clone();
+        let mut back1 = vec![0.0f64; ntot];
+        let mut back4 = vec![0.0f64; ntot];
+        plan1.inverse(&mut spec1_copy, &mut back1);
+        plan4.inverse(&mut spec4_copy, &mut back4);
+        for i in 0..ntot {
+            assert_eq!(
+                back1[i], back4[i],
+                "nthreads=1 vs nthreads=4 inverse mismatch at {i}"
+            );
+        }
+        // Sanity: both round-trip to the (unnormalized) original input.
+        let norm = ntot as f64;
+        for i in 0..ntot {
+            assert!(
+                (back1[i] / norm - x[i]).abs() < 1e-8,
+                "nthreads=1 roundtrip drifted from input at {i}"
+            );
+        }
+    }
+
+    /// `ComplexFft3d` counterpart of `r2c_3d_threaded_matches_single_threaded`
+    /// — same rationale, EnvGrid free-space's c2c plan.
+    #[test]
+    fn c2c_3d_threaded_matches_single_threaded() {
+        let api = match try_api() {
+            Some(a) => a,
+            None => {
+                eprintln!("skip c2c_3d_threaded_matches_single_threaded: no FFTW found");
+                return;
+            }
+        };
+        let (n_t, n_y, n_x) = (2048usize, 64usize, 64usize);
+        let ntot = n_t * n_y * n_x;
+
+        let x: Vec<Complex<f64>> = (0..ntot)
+            .map(|i| {
+                Complex::new(
+                    ((i as f64) * 0.0003125).sin(),
+                    0.5 * ((i as f64) * 0.00021).cos(),
+                )
+            })
+            .collect();
+
+        let plan1 = ComplexFft3d::new(&api, n_t, n_y, n_x, FFTW_ESTIMATE, 1);
+        let plan4 = ComplexFft3d::new(&api, n_t, n_y, n_x, FFTW_ESTIMATE, 4);
+
+        let mut x1 = x.clone();
+        let mut x4 = x.clone();
+        let mut spec1 = vec![Complex::new(0.0, 0.0); ntot];
+        let mut spec4 = vec![Complex::new(0.0, 0.0); ntot];
+
+        let mut t1_best = std::time::Duration::MAX;
+        let mut t4_best = std::time::Duration::MAX;
+        for _ in 0..5 {
+            let t0 = std::time::Instant::now();
+            plan1.forward(&mut x1, &mut spec1);
+            t1_best = t1_best.min(t0.elapsed());
+            let t0 = std::time::Instant::now();
+            plan4.forward(&mut x4, &mut spec4);
+            t4_best = t4_best.min(t0.elapsed());
+        }
+        eprintln!(
+            "c2c_3d_threaded forward min-of-5: nthreads=1 {t1_best:?}, nthreads=4 {t4_best:?}"
+        );
+
+        for i in 0..ntot {
+            assert_eq!(
+                spec1[i], spec4[i],
+                "nthreads=1 vs nthreads=4 forward mismatch at {i}"
+            );
+        }
+
+        let mut back1 = vec![Complex::new(0.0, 0.0); ntot];
+        let mut back4 = vec![Complex::new(0.0, 0.0); ntot];
+        plan1.inverse(&mut spec1, &mut back1);
+        plan4.inverse(&mut spec4, &mut back4);
+        for i in 0..ntot {
+            assert_eq!(
+                back1[i], back4[i],
+                "nthreads=1 vs nthreads=4 inverse mismatch at {i}"
+            );
+        }
+        let norm = ntot as f64;
+        for i in 0..ntot {
+            assert!(
+                (back1[i] / norm - x[i]).norm() < 1e-8,
+                "nthreads=1 roundtrip drifted from input at {i}"
+            );
         }
     }
 }

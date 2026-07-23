@@ -2050,6 +2050,18 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         M = (ωwin .* (-im .* ω)) ./ (2 .* normarr)
 
         # FFTW_ESTIMATE = 1 << 6 = 64 — must match native_set_fftw_plans' flag.
+        #
+        # docs/dev/BACKLOG.md S2 item 4: no new argument needed here for
+        # threading — `native_set_free_params` (Rust side, `native.rs`'s
+        # `set_free_params`) reads `sim.n_threads` (already set above by
+        # `native_set_threads`, called unconditionally before this
+        # geometry-specific block runs) and bakes it into the joint 3-D
+        # FFTW plan as FFTW's own internal thread count
+        # (`fftw.rs::RealFft3d`/`ComplexFft3d`'s `nthreads` argument, via the
+        # new `with_nthreads_plan` helper). Verified bit-identical
+        # `n_threads=1`-vs-`4` output (`test/test_native_free_threading.jl`)
+        # — safe to leave on the same `native_threads` default
+        # (`Threads.nthreads()`) every other geometry already uses.
         rc = ccall((:native_set_free_params, _LIBAMALTHEA_RK45), Cint,
             (Ptr{Cvoid}, Csize_t, Csize_t, Csize_t, Csize_t, Cuint,
              Ptr{Float64}, Float64,
