@@ -1262,6 +1262,20 @@ unsafe fn precon_step_inner(
         // s.y .= s.yn
         std::ptr::copy_nonoverlapping(yn, y, n);
 
+        // FSAL carry k7→k1, deferred from the end of the previous accepted
+        // step to here so `ks[0]` keeps holding that step's genuine k1 for as
+        // long as `RK45.jl`'s `interpolate(s::RustPreconStepper, ti)` might
+        // ask for dense output inside it — doing it eagerly collapses the
+        // quartic continuous extension to first order (docs/dev/BACKLOG.md S5
+        // item 3; `RK45.jl`'s `evaluate!` carries the same deferral for the
+        // pure-Julia `PreconStepper`). `t_new > t_old` is exactly "the
+        // previous step was accepted": Julia leaves `s.tn == s.t` on a
+        // rejected step and on the not-yet-stepped initial state, in both of
+        // which `ks[0]` is already the correct k1 and must not be clobbered.
+        if t_new > t_old {
+            std::ptr::copy_nonoverlapping(ks[6], ks[0], n);
+        }
+
         // s.prop!(s.ks[1], s.t, s.tn)  — FSAL: propagate k1 from t_old to t_new
         prop_fn(t_old, t_new, ks[0], n, userdata);
 
@@ -1343,7 +1357,8 @@ unsafe fn precon_step_inner(
         let tn_new;
         if ok_final {
             tn_new = t + dt;
-            std::ptr::copy_nonoverlapping(ks[6], ks[0], n); // k1 ← k7 (FSAL)
+            // FSAL k1 ← k7 is NOT done here — see the deferral at the top of
+            // this function.
             prop_fn(t, tn_new, yn, n, userdata); // propagate yn forward
         } else {
             std::ptr::copy_nonoverlapping(y, yn, n); // restore yn = y

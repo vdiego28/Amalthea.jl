@@ -87,7 +87,10 @@ see the Modal table below).
 - **GPU (`CudaNativeSim`, `AMALTHEA_USE_RUST_CUDA_NATIVE=1`)** is a much
   narrower slice layered on top of all of the above: mode-averaged RealGrid
   only, Kerr + PPT plasma only (no Raman, no ADK, no radial/modal/free-space).
-  See `GPU.md` and `BACKLOG.md` S3.
+  See `GPU.md` and `BACKLOG.md` S3. **🔴 Do not rely on it (2026-07-23):**
+  its resident RHS is currently measured to contribute *no nonlinearity at
+  all* — the accepted step is pure linear propagation — so this row describes
+  intended scope, not working scope. `BACKLOG.md` S3 item 0.
 - **Arbitrary low-level closures** (a bare `f!` that isn't
   `TransModeAvg`/`TransRadial`/`TransModal`/`TransFree`, or a `densityfun`/
   mode-field that isn't one of the recognized transferable shapes — splines,

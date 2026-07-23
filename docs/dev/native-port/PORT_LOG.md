@@ -1182,12 +1182,72 @@ index.
   `PLANS.md` §5 and §6. I.5b: bounded but no consumer, parked. J.6: two
   recommend-against (premises didn't survive verification), one narrow
   recommend (Raman pad-shortening).
-- **S5.3 — order-5 dense output**: INCOMPLETE, not merged. Agent hit the
-  account spend limit mid-investigation, stuck on a convergence-test
-  artifact (order-4, order-5, *and the no-interpolation endpoint* all show
-  O(h²) vs the fine reference → harness, not interpolant). Calvo-Montijano-
-  Rández tableau + wiring preserved on `worktree-agent-ada2bad7efb980155`
-  (`63b6003`). Resume: explain the endpoint discrepancy first.
+- **S5.3 — order-5 dense output**: INCOMPLETE at the time of this wave, not
+  merged; **completed 2026-07-23** — see the entry below.
 
 **Gate:** partial verification done inline (modal 394/394; raman/gnlse/radial
 3250/3250; free 197/197 per agent). Full `LUNA_TEST_GROUP=All` gate pending.
+
+
+## 2026-07-23 — S5 item 3 — order-5 dense output, and the FSAL/k1 bug that had it at order 1 — Claude (opus-4.8, finishing sonnet-5's WIP `63b6003`)
+
+**Status:** complete. Branch `s53-dense-order5` (rebased onto `main`),
+commits `971987d` + `ef71f00`.
+
+**Did:** Replaced the quartic ("free", 7-stage) continuous extension used
+for dense output between accepted steps with the Calvo–Montijano–Rández
+order-5 interpolant, on both the resident-native and the pure-Julia
+steppers. In the process found and fixed a pre-existing correctness bug —
+inherited verbatim from upstream Luna and faithfully re-ported into all
+three of Amalthea's own steppers — that had been silently collapsing dense
+output to **first order** everywhere.
+
+**The bug.** `RK45.jl`'s `step!` performed the FSAL carry
+`s.ks[1] .= s.ks[end]` (k7→k1) the moment a step was accepted. But
+`interpolate(s, ti)` runs *after* that, for output points inside the
+interval that just finished, and it needs that interval's genuine k1 — it
+was handed k7, which differs by O(h). The continuous extension therefore
+reproduced only `y0 + σ·h·y′(t0)` correctly and its local defect degraded
+from O(h⁵) to O(h²). Measured on a real `prop_capillary` config: order-4
+defect ratios of 3.996 / 3.999 / 4.000 per halving instead of 32.
+Identical eager copies were present in `native.rs::step`,
+`ffi.rs::precon_step_ffi` and `cuda_native.rs`.
+
+**The fix.** Defer the carry to the top of the *next* step, immediately
+before the pre-existing re-framing of `ks[0]` into the new
+interaction-picture frame. Copy still precedes reframe, so accepted-step
+values are bit-identical; only dense output moves. Guarded against
+rejected-step retries via `s.ok` (Julia), a new `CpuNativeSim::fsal_pending`
+flag (also cleared by `set_field`), and `t_new > t_old` (`ffi.rs`,
+`cuda_native.rs`).
+
+**Verified:** tableau checked in exact rational arithmetic against the DP5
+Butcher tableau (node sums, `bᵢ(1)=b5ᵢ`, `bᵢ′(0)=δᵢ₁`, `bᵢ′(1)=δᵢ₇` — all
+exact) and numerically on a scalar ODE (ratios → 64) before use. On the real
+propagator: order-5 ratios 60.2/63.0/63.7, order-4 29.8/31.4/31.9. Native
+and Julia dense output agree to ~1e-17 in all four geometries. Full 7-group
+gate green (895.9s), every group's count unchanged except `rust`
+(42186 → 42212, entirely the new tests).
+
+**Two traps worth remembering.** (1) The WIP's own blocker note inferred
+"the endpoint uses no interpolation, so suspect the harness" — that was the
+one wrong step; the O(h²) was real. (2) Its test ran at h=2e-3, the
+physically sensible step, where the order-5 defect is already 5.7e-15 (the
+FP floor) and every ratio degenerates to ~1. This is structural: the
+integrating factor handles the linear part exactly, so only the weak Kerr
+nonlinearity contributes to the interpolation defect. Any future
+dense-output order test here needs a very coarse step or a far more
+nonlinear config.
+
+**Not covered:** the CUDA-resident backend (no GPU on this host). It does
+not implement `compute_extra_stages` (returns -1 → order-4 fallback) but it
+*did* carry the eager FSAL copy and is fixed the same way; compiles,
+unverified, needs GPU CI.
+
+**Impact beyond the item:** every saved output point not landing exactly on
+an accepted-step boundary was previously interpolated at first order, on
+every stepper. Also retroactively explains the Phase 8 note that switching
+native dense output from linear to "quartic" fixed a batch of failures — the
+quartic was never better than O(h²); the win came from applying the
+interaction-picture propagator at all. Worth reporting upstream to Luna.jl.
+Full record: `portlog-inbox/dense-order5.md`.

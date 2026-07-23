@@ -39,8 +39,10 @@ fully executed, kept as provenance). Gate for every phase: full
 |---|---|---|
 | S1 | Hot-loop CPU performance (FFTW wisdom, fused RK45 accumulation, de-branched Kerr, BLAS-3 QDHT, SoA spike) | ✅ all 6 items resolved or deliberately parked |
 | S4 | Architecture cleanups (`BackendConfig`, `RK45.check_ffi`, explicit accessor seams) | ✅ gate closed 2026-07-11 |
+| S5 | Numerics options (mixed precision, deterministic mode, order-5 dense output) | ✅ all 3 items resolved, closed 2026-07-23 |
 
-S2, S3, S5 and S6 still carry open items and stay live below.
+S3 and S6 still carry open items and stay live below; S2 closed 2026-07-22
+and S5 on 2026-07-23.
 
 ### Open remainders lifted out of the archived phases
 
@@ -83,16 +85,19 @@ S2, S3, S5 and S6 still carry open items and stay live below.
    (c) short-kernel Raman pad-shortening — **recommend**, ~2× that multiplies
    with J.3's r2c gain and need not diverge from the oracle. Only (c) remains
    open.
-5. 🟡 **Phase S5.3 — order-5 dense-output continuous extension: attempted
-   2026-07-22, INCOMPLETE, not merged.** Calvo-Montijano-Rández (1990)
-   order-5 tableau added and wired (extra-stage FFI + shared `interpC5`
-   helpers for both steppers), but the agent hit the account spend limit
-   before resolving a convergence-test artifact: both the order-4 and the
-   new order-5 interpolant — *and the accepted-step endpoint, which uses no
-   interpolation* — degrade as O(h²) against the fine reference, pointing at
-   the test harness rather than the interpolant. Partial work preserved on
-   branch `worktree-agent-ada2bad7efb980155` (commit `63b6003`). Resume by
-   explaining the endpoint-vs-fine-reference discrepancy first.
+5. 🟢 **Phase S5.3 — order-5 dense-output continuous extension: done
+   2026-07-23.** The Calvo-Montijano-Rández (1990) order-5 tableau, wired
+   into both steppers (extra-stage FFI + shared `interpC5`/
+   `_dp5_extra_stages!` helpers). The 2026-07-22 attempt's blocker — order-4
+   *and* order-5 interpolants both degrading as O(h²) — was **not** a test
+   artifact: `step!` performed the FSAL carry k7→k1 at accept time, so
+   `interpolate` was handed k7 in place of the finished interval's k1 and
+   the continuous extension collapsed to first order. Inherited from
+   upstream Luna and re-ported into all three Rust steppers; fixed in all
+   four by deferring the carry to the top of the next step. The WIP's test
+   additionally ran at h=2e-3, where the order-5 defect is already at the FP
+   floor and no ratio means anything. Full postmortem, tableau provenance
+   and measured orders: `native-port/portlog-inbox/dense-order5.md`.
 
 ---
 
@@ -100,9 +105,11 @@ S2, S3, S5 and S6 still carry open items and stay live below.
 
 Full detail (equations, rationale, per-item code sketches) stays in
 `SUGGESTIONS.md` — this is the tracking summary, synced so status lives in
-one place. None of S2/S4/S5/S6 has started; **S1.5 was attempted
+one place. S1, S2, S4 and S5 are now closed (S2 on 2026-07-22, S5 on
+2026-07-23); S6 has not started; **S1.5 was attempted
 2026-07-07 and found broken** (see S1.5 below — disabled by default, real
-fix still open). **S3 is partially started**:
+fix still open). **S3 is partially started, and what landed does not work**
+(item 0 below):
 the GPU-resident stepper work landed 2026-07-05/07 (see Phase G's "Open
 items" entry and ARCHIVE.md's "Done (recent)") implements a narrow slice of S3
 (mode-averaged RealGrid Kerr-only, no threading/dispatch-threshold/design
@@ -112,7 +119,11 @@ rot"), which is exactly what happened once already (uncommitted 2 days,
 found broken until manually re-verified). GPU CI is still open (see "GPU
 CI coverage" below) — treat S3's remaining scope (design doc, full
 `NativeBackend` parity, threading, dispatch threshold, `test_native_gpu.jl`)
-as still gated on it.
+as still gated on it. **Update 2026-07-23:** the slice that did land is
+now known not to compute any nonlinearity at all (item 0), which is exactly
+the rot that entry predicted — it went unnoticed for over two weeks because
+the only test guarding it asserts a tolerance larger than the physics it
+tests.
 
 **ISA / hardware dispatch — synced to actual code state (2026-07-07):**
 `dispatch.rs`'s hardware cascade (CUDA → Vulkan → AVX-512 → AVX2 → NEON →
@@ -326,18 +337,49 @@ then reproducing the crash directly:**
   must be **bit-identical**, not merely within tolerance — a stronger,
   more testable guarantee than typical parallel-code equivalence.
 
-### 🟠 S3 — GPU-resident propagation (suggestion 1) — partially started, see note above
+### 🔴 S3 — GPU-resident propagation (suggestion 1) — partially started, and the landed slice is broken (item 0)
 *Large (5+ sessions). Plan's own stated dependency (GPU CI) is not yet
 met — see "GPU CI coverage" below. This machine has real GPU hardware
-(RTX 5060 Ti, CUDA 13.3) usable for manual verification of future slices,
-confirmed 2026-07-11 (`nvidia-smi` needs the sandbox disabled to reach the
-driver — a standing requirement for any GPU work in this repo, not a
-one-off).*
+(RTX 5060 Ti, driver 610.43.02, CUDA 13.3) usable for manual verification of
+future slices, confirmed 2026-07-11 and again 2026-07-23 (`nvidia-smi` needs
+the sandbox disabled to reach the driver — a standing requirement for any GPU
+work in this repo, not a one-off). **Read item 0 before treating any other
+item in this track, or any "verified on real hardware" claim elsewhere in the
+docs, as load-bearing.**
 Already landed (2026-07-05/07, ahead of the plan's own sequencing): the
 `NativeBackend` trait extraction, `CudaNativeSim` scoped to mode-averaged
 RealGrid Kerr-only (not "+plasma" — see item 1 below, plasma was never
 implemented), verified on real hardware, wired behind
 `AMALTHEA_USE_RUST_CUDA_NATIVE=1`. Still open, per the original design:
+
+0. 🔴🔴 **The GPU-resident RHS contributes no nonlinearity at all — found
+   2026-07-23, blocks everything else in this track.** For the exact config
+   `test_native_cuda.jl`'s Kerr-only testitem uses (125µm He capillary,
+   1 bar, 800nm, 1µJ, 30fs), the GPU backend's stage derivatives measure
+   `max|kᵢ| = 3.5e-13` against the CPU backend's **12225**, and its accepted
+   step equals pure linear propagation `exp(L·h)·y₀` to 15 digits — i.e. the
+   nonlinear term is absent, not merely inaccurate. Reproduced on real
+   hardware (RTX 5060 Ti, driver 610.43.02), and confirmed **pre-existing**
+   by re-measuring against a build with the 2026-07-23 `cuda_native.rs`
+   changes reverted (identical numbers to the last digit).
+   - **Why every GPU test passes anyway:** `test_native_cuda.jl` asserts
+     `rel_solve < 1e-3`, but the *entire* nonlinear effect for that config is
+     ~4.5e-4 over the solve (1.3e-4 per step). The tolerance is looser than
+     the physics being tested, so "GPU matches Julia" is vacuously true —
+     the same failure mode as the Phase I plasma-density bug
+     (`VANILLA_LUNA_ISSUES.md` §1), where every equivalence test ran in a
+     regime where the missing term was negligible.
+   - **Not yet diagnosed.** Prime suspects, in order: `set_mode_avg_params`
+     discards `pre_re`/`pre_im`/`beta`/`sidx`/`nlscale`/`sqrt_aeff`
+     (all `_`-prefixed there) which the mode-averaged RHS needs; the
+     `n_time > 0 && fft_r2c != 0 && fft_c2r != 0` guard around the whole
+     nonlinear block, which fails *silently* if `cufftPlan1d` fails (its
+     return code is discarded); and the `n_time`-vs-`n_time_over` sizing
+     mismatch (item 6) feeding the cuFFT plans.
+   - **First step when resuming:** assert every `cufftPlan1d`/`cufftExec`
+     return code instead of discarding it, and tighten
+     `test_native_cuda.jl`'s tolerance below the config's own nonlinear
+     share so the test can fail.
 1. 🟢 **Done 2026-07-11.** Design doc reconciliation
    (`docs/dev/native-port/GPU.md`). Rewrote §8 (was still the stale
    2026-07-05, pre-hardware "untested" text — the 2026-07-07 verification
@@ -469,11 +511,14 @@ implemented), verified on real hardware, wired behind
    itself (GPU.md §8) — not fixed by item 2 above, which worked within the
    existing buffer sizing rather than changing it.
 
-### 🟡 S5 — Numerics options (suggestions 10, 11, 12)
+### 🟢 S5 — Numerics options (suggestions 10, 11, 12) — COMPLETE (all 3 items, closed 2026-07-23)
 *Item 2 done 2026-07-11 (re-scoped). Items 1 and 3 investigated 2026-07-19
-— both re-scoped after measurement, see below (item 1: bar not cleared,
-reverted; item 3: backlog premise wrong, DP5 5th-order continuous extension
-is not the coefficient swap the entry implied — deferred as a larger item).*
+— both re-scoped after measurement (item 1: bar not cleared, reverted;
+item 3: backlog premise wrong, the DP5 5th-order continuous extension is
+not the coefficient swap the entry implied — deferred as a larger item).
+Item 3 then landed 2026-07-23, together with a fix for the FSAL/k1 bug that
+had been holding *every* stepper's dense output at first order; see the
+"Open remainders" list above and `native-port/portlog-inbox/dense-order5.md`.*
 1. 🟢 **Done 2026-07-19 — measured, bar not cleared, reverted (S1.6
    discipline).** Mixed-precision spike (item 10). Added a timeboxed
    Criterion bench (`amalthea/benches/mixed_precision_bench.rs`, since
@@ -699,7 +744,7 @@ started.*
 
 **Suggested execution order** (per `SUGGESTIONS.md`, adjusted for what's
 already partially done): S1 → S4 → S2 → S5.2/S5.3 → S6.1 → finish S3 →
-remaining S5/S6.
+remaining S6. (S1, S2, S4 and S5 are now all closed; only S3 and S6 remain.)
 
 ## Open items
 

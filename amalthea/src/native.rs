@@ -137,8 +137,21 @@ pub struct CpuNativeSim {
     /// case once a propagation settles) or under fixed-step testing. See
     /// `apply_prop_cached`.
     pub exp_cache: ExpCache,
-    /// RK stage derivatives k1..k7 (FSAL reuses k7→k1 across steps).
-    pub ks: [Vec<Complex<f64>>; 7],
+    /// RK stage derivatives k1..k7 (FSAL reuses k7→k1 across steps), plus 2
+    /// trailing slots (indices 7,8) for the lazily-computed order-5
+    /// continuous-extension extra stages (`DP5_EXTRA_*`, docs/dev/BACKLOG.md
+    /// S5 item 3) — populated only by `compute_extra_stages`, never by
+    /// `step()`'s hot accepted-step loop, and read back only via the new
+    /// `get_extra_stage` FFI (kept separate from `get_ks_stage`, whose
+    /// `idx<7` contract is unchanged).
+    pub ks: [Vec<Complex<f64>>; 9],
+    /// Set when an accepted step leaves a k7 in `ks[6]` that the *next* step
+    /// must carry into `ks[0]` (FSAL). The carry is deliberately deferred to
+    /// the top of the next `step` rather than done at accept time, so that
+    /// `ks[0]` keeps holding the just-finished interval's genuine k1 while
+    /// Julia may still ask for dense output inside it — see the comment at
+    /// the head of `step`.
+    pub fsal_pending: bool,
     /// Embedded-pair error estimate buffer.
     pub yerr: Vec<Complex<f64>>,
     /// Stage / accumulation scratch (`y + dt·Σ b_i k_i`).
@@ -708,7 +721,8 @@ impl CpuNativeSim {
             linop: linop.to_vec(),
             linop_version: 0,
             exp_cache: ExpCache::new(),
-            ks: [z(), z(), z(), z(), z(), z(), z()],
+            ks: [z(), z(), z(), z(), z(), z(), z(), z(), z()],
+            fsal_pending: false,
             yerr: z(),
             ystage: z(),
             fftw_api: None,
@@ -2689,6 +2703,117 @@ impl CpuNativeSim {
         }
     }
 
+    /// Evaluates one lazily-requested extra RK stage (order-5 continuous
+    /// extension, docs/dev/BACKLOG.md S5 item 3) at interior node
+    /// `t0 + c_node*dt`, storing the result (t0-referenced, like `ks[0..6]`)
+    /// in `self.ks[stage_idx]`. `self.ystage` must already hold the
+    /// un-propagated stage combination (`y0 + dt·Σ aⱼ·ks[j]`) — set by
+    /// `compute_extra_stages` just before calling this.
+    ///
+    /// Mirrors `step`'s own per-geometry dispatch (`is_free`/`is_modal`/
+    /// `is_radial`/mode-averaged branches) exactly, generalized to take an
+    /// arbitrary `(c_node, stage_idx)` pair instead of the fixed `DP_NODES`/
+    /// `ii+1` of the base 7 stages — reuses the *unmodified* `rhs_*`
+    /// dispatch functions and the *unmodified* `apply_prop_cached`/
+    /// `ensure_*_at` propagator utilities; no nonlinear-physics code is
+    /// duplicated here, only the stage-combination bookkeeping.
+    fn eval_extra_stage(&mut self, t0: f64, dt: f64, c_node: f64, stage_idx: usize) {
+        let s = self;
+        let dt_prop = c_node * dt;
+        let t_eval = t0 + dt_prop;
+        if s.is_free {
+            s.ensure_linop_at(t_eval);
+            s.ensure_free_norm_at(t_eval);
+            let mut ystage_prop = s.ystage.clone();
+            apply_prop_cached(
+                &mut ystage_prop,
+                &s.linop,
+                dt_prop,
+                &mut s.exp_cache,
+                s.linop_version,
+            );
+            if s.is_real {
+                s.rhs_free(stage_idx, &ystage_prop);
+            } else {
+                s.rhs_free_env(stage_idx, &ystage_prop);
+            }
+            apply_prop_cached(
+                &mut s.ks[stage_idx],
+                &s.linop,
+                -dt_prop,
+                &mut s.exp_cache,
+                s.linop_version,
+            );
+        } else if s.is_modal {
+            s.ensure_linop_at(t_eval);
+            s.ensure_modal_linop_at(t_eval);
+            let mut ystage_prop = s.ystage.clone();
+            apply_prop_cached(
+                &mut ystage_prop,
+                &s.linop,
+                dt_prop,
+                &mut s.exp_cache,
+                s.linop_version,
+            );
+            s.rhs_modal(stage_idx, &ystage_prop);
+            apply_prop_cached(
+                &mut s.ks[stage_idx],
+                &s.linop,
+                -dt_prop,
+                &mut s.exp_cache,
+                s.linop_version,
+            );
+        } else if s.is_radial {
+            s.ensure_linop_at(t_eval);
+            let mut ystage_prop = s.ystage.clone();
+            apply_prop_cached(
+                &mut ystage_prop,
+                &s.linop,
+                dt_prop,
+                &mut s.exp_cache,
+                s.linop_version,
+            );
+            if s.is_real {
+                s.rhs_radial(stage_idx, &ystage_prop);
+            } else {
+                s.rhs_radial_env(stage_idx, &ystage_prop);
+            }
+            apply_prop_cached(
+                &mut s.ks[stage_idx],
+                &s.linop,
+                -dt_prop,
+                &mut s.exp_cache,
+                s.linop_version,
+            );
+        } else if s.n_time_over > 0 && (s.fft_r2c_over.is_some() || s.fft_c2c_over.is_some()) {
+            s.ensure_linop_at(t_eval);
+            let mut ystage_prop = s.ystage.clone();
+            apply_prop_cached(
+                &mut ystage_prop,
+                &s.linop,
+                dt_prop,
+                &mut s.exp_cache,
+                s.linop_version,
+            );
+            if s.is_real {
+                s.rhs_mode_avg_real(stage_idx, &ystage_prop);
+            } else {
+                s.rhs_mode_avg_env(stage_idx, &ystage_prop);
+            }
+            apply_prop_cached(
+                &mut s.ks[stage_idx],
+                &s.linop,
+                -dt_prop,
+                &mut s.exp_cache,
+                s.linop_version,
+            );
+        } else {
+            for k in 0..s.n {
+                s.ks[stage_idx][k] = Complex::new(0.0, 0.0);
+            }
+        }
+    }
+
     /// Recompute `self.linop` in place for propagation position `z`, for the
     /// z-dependent mode-averaged (Phase 7) case. No-op for Phases 1-6 (the
     /// constant-linop geometries) and a no-op if `z` matches the last call
@@ -3256,6 +3381,36 @@ pub trait NativeBackend {
     unsafe fn resync_field(&mut self, data: *const c_double, n: size_t) -> i32;
     unsafe fn get_field(&self, data: *mut c_double, n: size_t) -> i32;
     unsafe fn get_ks_stage(&self, idx: size_t, data: *mut c_double, n: size_t) -> i32;
+    /// Order-5 continuous extension (docs/dev/BACKLOG.md S5 item 3): lazily
+    /// computes the 2 extra Calvo-Montijano-Rández stages for the
+    /// just-completed step and stores them in `self`'s stage slots 7,8 (read
+    /// back via `get_extra_stage`). `y0`/`t0`/`dt` are the field/time/step-
+    /// size at the *start* of that interval — Julia's `s.y`/`s.t`/`s.dt` —
+    /// because by the time this is called (from `interpolate`, after `step`
+    /// has already returned) the resident field has moved on to the
+    /// interval's end state.
+    ///
+    /// Default: not supported (`-1`). Only `CpuNativeSim` overrides this —
+    /// backends that don't (e.g. the opt-in CUDA-resident path) fall back to
+    /// the order-4 interpolant at the Julia call site (`RK45.jl`'s
+    /// `interpolate(s::RustNativeStepper, ti)`), which treats a nonzero
+    /// return here as "not implemented", not a bug.
+    unsafe fn compute_extra_stages(
+        &mut self,
+        _y0: *const c_double,
+        _n: size_t,
+        _t0: c_double,
+        _dt: c_double,
+    ) -> i32 {
+        -1
+    }
+    /// Copy out extra stage `idx` (0 or 1) computed by the most recent
+    /// `compute_extra_stages` call — mirrors `get_ks_stage`'s contract but
+    /// kept as a separate method/FFI so `get_ks_stage`'s existing `idx<7`
+    /// bound never changes meaning. Default: not supported (`-1`).
+    unsafe fn get_extra_stage(&self, _idx: size_t, _data: *mut c_double, _n: size_t) -> i32 {
+        -1
+    }
     unsafe fn apply_prop(&mut self, y: *mut c_double, n: size_t, t1: f64, t2: f64) -> i32;
     unsafe fn debug_linop_at(&mut self, z: c_double, data: *mut c_double, n: size_t) -> i32;
     unsafe fn debug_beta1_at(
@@ -3555,6 +3710,10 @@ impl NativeBackend for CpuNativeSim {
                 sim.rhs_mode_avg_env(0, &field);
             }
         }
+        // `ks[0]` was just recomputed from scratch for the new initial
+        // condition, so any FSAL carry still owed from a previous accepted
+        // step is stale and must not overwrite it at the next `step`.
+        sim.fsal_pending = false;
         0
     }
     unsafe fn resync_field(&mut self, data: *const c_double, n: size_t) -> i32 {
@@ -3585,6 +3744,63 @@ impl NativeBackend for CpuNativeSim {
         }
         let dst = unsafe { std::slice::from_raw_parts_mut(data as *mut Complex<f64>, n) };
         dst.copy_from_slice(&sim.ks[idx]);
+        0
+    }
+    unsafe fn compute_extra_stages(
+        &mut self,
+        y0: *const c_double,
+        n: size_t,
+        t0: c_double,
+        dt: c_double,
+    ) -> i32 {
+        let sim = self;
+        if y0.is_null() || n != sim.n {
+            return -1;
+        }
+        let y0_sl = unsafe { std::slice::from_raw_parts(y0 as *const Complex<f64>, n) };
+
+        // Stage 8 (0-indexed 7): θ=2/5 node, combination of the 7 base
+        // stages (already resident in `sim.ks[0..6]`, t0-referenced — see
+        // `step`'s FSAL handling, which finishes reframing them to the
+        // current interval's t0 before this is ever called).
+        for idx in 0..n {
+            let mut re = y0_sl[idx].re;
+            let mut im = y0_sl[idx].im;
+            for j in 0..7 {
+                let a = DP5_EXTRA_A7[j];
+                if a != 0.0 {
+                    re += dt * a * sim.ks[j][idx].re;
+                    im += dt * a * sim.ks[j][idx].im;
+                }
+            }
+            sim.ystage[idx] = Complex::new(re, im);
+        }
+        sim.eval_extra_stage(t0, dt, DP5_EXTRA_C, 7);
+
+        // Stage 9 (0-indexed 8): same node, now also weighted by stage 8.
+        for idx in 0..n {
+            let mut re = y0_sl[idx].re;
+            let mut im = y0_sl[idx].im;
+            for j in 0..8 {
+                let a = DP5_EXTRA_A8[j];
+                if a != 0.0 {
+                    re += dt * a * sim.ks[j][idx].re;
+                    im += dt * a * sim.ks[j][idx].im;
+                }
+            }
+            sim.ystage[idx] = Complex::new(re, im);
+        }
+        sim.eval_extra_stage(t0, dt, DP5_EXTRA_C, 8);
+
+        0
+    }
+    unsafe fn get_extra_stage(&self, idx: size_t, data: *mut c_double, n: size_t) -> i32 {
+        let sim = self;
+        if data.is_null() || idx >= 2 || n != sim.n {
+            return -1;
+        }
+        let dst = unsafe { std::slice::from_raw_parts_mut(data as *mut Complex<f64>, n) };
+        dst.copy_from_slice(&sim.ks[7 + idx]);
         0
     }
     unsafe fn apply_prop(&mut self, y: *mut c_double, n: size_t, t1: f64, t2: f64) -> i32 {
@@ -4642,6 +4858,25 @@ impl NativeBackend for CpuNativeSim {
         // s.yn .= s.y -> but wait, `s.field` is `y`.
         yn_sl.copy_from_slice(&s.field);
 
+        // FSAL carry k7→k1, deferred from the end of the previous accepted
+        // step to here so that `ks[0]` still holds *that* step's genuine k1
+        // for as long as Julia might ask for dense output inside it
+        // (`get_ks_stage(0)` ← `RK45.jl`'s `interpolate`). Doing the copy
+        // eagerly at accept time — as this did until docs/dev/BACKLOG.md S5
+        // item 3 — silently handed `interpolate` k7 in place of k1, which
+        // collapses the quartic/quintic continuous extension to first order
+        // (measured: local defect O(h²) instead of O(h⁵)/O(h⁶); see
+        // `test/test_native_dense_order5.jl`). The arithmetic is unchanged:
+        // the copy still happens before the reframe below, just on the far
+        // side of the FFI boundary. Skipped on a rejected-step retry
+        // (`fsal_pending` is only armed on accept), where `ks[0]` is already
+        // the correct k1 for the interval being retried.
+        if s.fsal_pending {
+            let (left, right) = s.ks.split_at_mut(6);
+            left[0].copy_from_slice(&right[0]);
+            s.fsal_pending = false;
+        }
+
         // prop!(s.ks[1], s.t, s.tn)  — linop evaluated at the later time, t_new
         s.ensure_linop_at(t_new);
         s.ensure_free_norm_at(t_new);
@@ -4882,8 +5117,7 @@ impl NativeBackend for CpuNativeSim {
         let tn_new;
         if ok_final {
             tn_new = t + dt;
-            let (left, right) = s.ks.split_at_mut(6);
-            left[0].copy_from_slice(&right[0]); // FSAL
+            s.fsal_pending = true; // FSAL k7→k1, performed at the next `step`
             s.ensure_linop_at(tn_new);
             s.ensure_free_norm_at(tn_new);
             s.ensure_modal_linop_at(tn_new);
@@ -5106,6 +5340,64 @@ pub unsafe extern "C" fn get_ks_stage(
     }
     let s = unsafe { &*sim };
     unsafe { s.backend.get_ks_stage(idx, data, n) }
+}
+
+/// Order-5 continuous extension (docs/dev/BACKLOG.md S5 item 3): lazily
+/// computes the 2 extra Calvo-Montijano-Rández stages for the just-completed
+/// step, so `RK45.jl::interpolate(s::RustNativeStepper, ti)` can build a
+/// genuinely order-5 (not order-4) dense-output polynomial — see
+/// `NativeBackend::compute_extra_stages`'s doc for the full design and
+/// `docs/dev/native-port/portlog-inbox/dense-order5.md` for the coefficient
+/// source and verification. `y0` is the field at the *start* of the interval
+/// (Julia's `s.y`) — the resident `field` has already moved on to the
+/// interval's end state by the time dense output is requested, unlike
+/// `ks[0..6]`, which stay valid (see `get_ks_stage`'s doc). Only
+/// `CpuNativeSim` implements this; other backends return -1, which the
+/// Julia call site treats as "fall back to the order-4 interpolant", not an
+/// error.
+///
+/// Returns 0 on success, -1 on null/length mismatch or an unsupported
+/// backend.
+///
+/// # Safety
+/// `sim` must be valid; `y0` must be valid for `n` `ComplexF64` reads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn native_compute_extra_stages(
+    sim: *mut NativeSim,
+    y0: *const c_double,
+    n: size_t,
+    t0: c_double,
+    dt: c_double,
+) -> i32 {
+    if sim.is_null() {
+        return -1;
+    }
+    let s = unsafe { &mut *sim };
+    unsafe { s.backend.compute_extra_stages(y0, n, t0, dt) }
+}
+
+/// Copy out extra stage `idx` (0 or 1, `n` `ComplexF64`) computed by the most
+/// recent `native_compute_extra_stages` call — mirrors `get_ks_stage` but
+/// kept as a separate symbol so `get_ks_stage`'s existing `idx<7` contract
+/// never changes meaning (docs/dev/BACKLOG.md S5 item 3).
+///
+/// Returns 0 on success, -1 on null/length/index mismatch or an unsupported
+/// backend.
+///
+/// # Safety
+/// `sim` must be valid; `data` must be valid for `n` `ComplexF64` writes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn get_extra_stage(
+    sim: *const NativeSim,
+    idx: size_t,
+    data: *mut c_double,
+    n: size_t,
+) -> i32 {
+    if sim.is_null() {
+        return -1;
+    }
+    let s = unsafe { &*sim };
+    unsafe { s.backend.get_extra_stage(idx, data, n) }
 }
 
 /// Apply the interaction-picture linear propagator `exp(linop(t2)*(t2-t1))`
@@ -6060,6 +6352,46 @@ pub const DP_ERREST: [f64; 7] = [
     1.0 / 40.0,
 ];
 pub const DP_NODES: [f64; 6] = [1.0 / 5.0, 3.0 / 10.0, 4.0 / 5.0, 8.0 / 9.0, 1.0, 1.0];
+
+// ── Order-5 continuous extension (docs/dev/BACKLOG.md S5 item 3) ───────────
+// `interpC`/dopri.jl's quartic (Julia-side, both `PreconStepper` and
+// `RustNativeStepper` interpolation) is provably order 4 (Hairer & Wanner,
+// Solving ODEs I, II.6 — the "free" 7-stage interpolant, no extra
+// evaluations). Reaching order 5 needs 2 extra function evaluations per
+// interpolated step (Shampine 1986); the tableau below is the Calvo,
+// Montijano & Rández construction ("A fifth-order interpolant for the
+// Dormand and Prince Runge-Kutta method", J. Comput. Appl. Math. 29 (1990)
+// 91-100), transcribed from the PyNumAl/Python-Numerical-Analysis public
+// tableau collection ("Dormand-Prince RK5(4) Pair.txt",
+// https://github.com/PyNumAl/Python-Numerical-Analysis, which cites the same
+// paper and PDF at https://core.ac.uk/download/pdf/81164751.pdf — that PDF
+// itself was not independently fetchable at the time of writing, see
+// docs/dev/native-port/portlog-inbox/dense-order5.md for the sourcing dead-ends
+// and the verification done before trusting this transcription). The
+// polynomial-in-θ basis coefficients this tableau feeds (`interpC5` in
+// `dopri.jl`) live Julia-side only — both extra stages here just need to be
+// computed and exposed, same division of labor as the base 7 stages
+// (Rust computes, Julia interpolates).
+pub const DP5_EXTRA_C: f64 = 2.0 / 5.0; // both extra stages sit at this node
+pub const DP5_EXTRA_A7: [f64; 7] = [
+    -24018683.0 / 8152320000.0,
+    25144.0 / 43425.0,
+    -76360723.0 / 337557000.0,
+    349808429.0 / 2445696000.0,
+    -13643731773.0 / 144024320000.0,
+    1.0 / 20.0,
+    -12268567.0 / 254760000.0,
+];
+pub const DP5_EXTRA_A8: [f64; 8] = [
+    2104901.0 / 23010000.0,
+    0.0,
+    54324224.0 / 106708875.0,
+    134233.0 / 2301000.0,
+    -13268529.0 / 406510000.0,
+    26972.0 / 2013375.0,
+    -6324.0 / 479375.0,
+    -1737.0 / 7670.0,
+];
 
 #[repr(C)]
 pub struct NativeStepResult {

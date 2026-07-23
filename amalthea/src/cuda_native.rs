@@ -242,9 +242,72 @@ impl NativeBackend for CudaNativeSim {
         }
     }
 
-    unsafe fn apply_prop(&mut self, _y: *mut c_double, _n: size_t, _t1: f64, _t2: f64) -> i32 {
-        // Not used manually in CudaNativeSim (managed internally via cuLaunchKernel)
-        -1
+    unsafe fn apply_prop(&mut self, y: *mut c_double, n: size_t, t1: f64, t2: f64) -> i32 {
+        // Applies `exp(linop*(t2-t1))` to a *host* buffer in place, matching
+        // `CpuNativeSim::apply_prop`'s contract. `step` never needs this (it
+        // propagates device-resident buffers directly via `cuLaunchKernel`),
+        // which is why this returned a bare -1 until 2026-07-23 — but
+        // `RK45.jl`'s `interpolate(s::RustNativeStepper, ti)` calls the
+        // `native_apply_prop` FFI unconditionally to re-express the
+        // dense-output polynomial at the query time, so returning -1 made
+        // `check_ffi` throw and **every** dense-output query on the
+        // GPU-resident backend a hard error. That was invisible because every
+        // GPU test drives the stepper through raw `solve()`, never through
+        // `Luna.run`/`saveN` — the same class of blind spot as the Phase 8
+        // windowing bug (VANILLA_LUNA_ISSUES.md §3).
+        //
+        // The linop is read as-is rather than re-evaluated at `t2`:
+        // `CudaNativeSim` supports only the constant-linop mode-averaged
+        // scope (no `ensure_linop_at` equivalent exists here), so there is
+        // nothing to re-evaluate. `ystage_d` is borrowed as staging space —
+        // it is live only inside `step`, which reseeds it from `field_d` at
+        // the top of every stage, so clobbering it between steps is safe.
+        if y.is_null() || n != self.n {
+            return -1;
+        }
+        let host = unsafe { std::slice::from_raw_parts_mut(y as *mut Complex<f64>, n) };
+        let ctx = match get_gpu_context() {
+            Some(c) => c,
+            None => return -1,
+        };
+        let driver = match get_driver_api() {
+            Ok(d) => d,
+            Err(_) => return -1,
+        };
+        if crate::cuda::activate_context().is_err() {
+            return -1;
+        }
+        if self.ystage_d.copy_to_device(host).is_err() {
+            return -1;
+        }
+        let block_size = 256u32;
+        let grid_size = (self.n as u32).div_ceil(block_size);
+        let mut dt = t2 - t1;
+        let mut apply_args: [*mut libc::c_void; 4] = [
+            &mut self.ystage_d.dptr as *mut _ as *mut _,
+            &mut self.linop_d.dptr as *mut _ as *mut _,
+            &mut self.n as *mut _ as *mut _,
+            &mut dt as *mut _ as *mut _,
+        ];
+        if unsafe {
+            launch_checked(
+                driver,
+                ctx.apply_prop_fn,
+                grid_size,
+                block_size,
+                0,
+                &mut apply_args,
+                "apply_prop(host buffer, dense output)",
+            )
+        }
+        .is_err()
+        {
+            return -1;
+        }
+        if self.ystage_d.copy_to_host(host).is_err() {
+            return -1;
+        }
+        0
     }
 
     unsafe fn debug_linop_at(&mut self, _z: c_double, _data: *mut c_double, _n: size_t) -> i32 {
@@ -615,6 +678,22 @@ impl NativeBackend for CudaNativeSim {
 
                 let mut dt = _dtn;
                 let t = _t_new;
+
+                // 0. FSAL carry k7→k1, deferred from the end of the previous
+                // accepted step to here so `ks_d[0]` keeps holding that step's
+                // genuine k1 for as long as `RK45.jl`'s
+                // `interpolate(s::RustNativeStepper, ti)` might ask for dense
+                // output inside it (this backend has no `compute_extra_stages`,
+                // so it uses the order-4 `interpC` branch — which the eager
+                // copy collapsed to first order all the same). Mirrors
+                // `CpuNativeSim::step`'s `fsal_pending` deferral;
+                // docs/dev/BACKLOG.md S5 item 3. `_t_new > _t_old` is exactly
+                // "the previous step was accepted" — Julia leaves `s.tn == s.t`
+                // on a rejected step and on the not-yet-stepped initial state.
+                if _t_new > _t_old {
+                    let (left, right) = self.ks_d.split_at_mut(6);
+                    left[0].copy_from_device(&right[0])?;
+                }
 
                 // 1. apply_prop(ks[0], dt_prev) - shifts ks[0] to t_new
                 //
@@ -1025,8 +1104,7 @@ impl NativeBackend for CudaNativeSim {
 
                 if ok_final {
                     tn_new = t + dt;
-                    let (left, right) = self.ks_d.split_at_mut(6);
-                    left[0].copy_from_device(&right[0])?; // FSAL
+                    // FSAL k7→k1 is NOT done here — see step 0 above.
 
                     // Final 5th-order solution: field_d += dt * Σ DP_B5[i] * ks_d[i] (in place —
                     // safe: each thread reads its own field_d[idx] into a local before writing it
