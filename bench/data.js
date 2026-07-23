@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784744685365,
+  "lastUpdate": 1784824757039,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -463,6 +463,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.916233,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "distinct": true,
+          "id": "2c5bac55168eb6c164d874f268ec4329762b48d1",
+          "message": "Merge s53-dense-order5: order-5 dense output + the FSAL/k1 bug fix\n\nCompletes BACKLOG S5 item 3, closing track S5. The interrupted agent's\nblocker was not a test artifact: the FSAL carry k7->k1 ran at accept time,\nso `interpolate` was handed k7 in place of the finished interval's k1 and\nevery stepper's dense output was first-order. Fixed in all four; recorded in\nVANILLA_LUNA_ISSUES.md as an upstream Luna bug.\n\nAlso fixes GPU dense output throwing on every query, and files the GPU\nmissing-nonlinearity finding as BACKLOG S3 item 0.\n\nFull 7-group gate green (794.8s, exit 0).\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-07-23T12:33:40-04:00",
+          "tree_id": "5b6e613d19ca7f3a6a5ac146ea22ea753c0cbfca",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/2c5bac55168eb6c164d874f268ec4329762b48d1"
+        },
+        "date": 1784824756261,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.633691,
             "unit": "ms/step"
           }
         ]
