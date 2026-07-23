@@ -44,8 +44,10 @@ reachable via `prop_capillary(...; modes=<mode>)`/`prop_stepindex`, see the
 Modal table below) already gets full native mode-averaged support with no
 extra work — verified directly (not assumed) via
 `RK45._LAST_STEPPER_TYPE[]`/`Amalthea.backend_report()`, see
-`test/test_interface.jl`. Only *multi-mode* configurations of these three
-types (`TransModal`) are still native-ineligible.
+`test/test_interface.jl`. Only *multi-mode* `StepIndexMode` configurations
+(`TransModal`) are still native-ineligible; multi-mode
+`ZeisbergerMode`/`VincettiMode` became native as of Phase I.5a (2026-07-22,
+see the Modal table below).
 
 ## Radial (`TransRadial`)
 
@@ -53,7 +55,7 @@ types (`TransModal`) are still native-ineligible.
 |---|---|---|
 | Kerr | ✅ | ✅ |
 | Plasma (PPT/ADK) | ✅ | — (Julia has no EnvGrid `PlasmaCumtrapz`) |
-| Raman (SDO, `CombinedRamanResponse`) | ✅ | ❌ (`RamanPolarField` only; no radial `RamanPolarEnv` wiring) |
+| Raman (SDO, `CombinedRamanResponse`) | ✅ | ✅ (`RamanPolarEnv` wired 2026-07-22 via `apply_raman_radial_env`; `:SiO2` intermediate-broadening still ❌ — FFT-conv kernel is mode-averaged-only) |
 | Shot noise | ✅ | ✅ |
 | Gas mixtures | ⚠️ Kerr-only | ❌ (mixture densityfun rejected for radial EnvGrid — see RK45.jl mixture guard) |
 | z-dependent linop/normfun | ❌ (not ported for radial geometry) | ❌ |
@@ -67,7 +69,8 @@ types (`TransModal`) are still native-ineligible.
 | Plasma | ❌ (not ported for modal) | ❌ |
 | Shot noise (`Emω_noise`) | ❌ (explicitly rejected — `NativeIneligible`) | ❌ |
 | Gas mixtures | ❌ (rejected — non-scalar densityfun) | ❌ |
-| Multi-mode `StepIndexMode`/`ZeisbergerMode`/`VincettiMode` (i.e. several such modes propagating together via `TransModal`) | ❌ (`RK45.jl`'s native modal guard requires `Capillary.MarcatiliMode` — `native.rs`'s mode-field synthesis is Marcatili-parameterized. High-level-reachable as of 2026-07-16 via `prop_capillary(...; modes=[m1,m2])`/`prop_stepindex`, but this specific multi-mode case still falls back to `PreconStepper`. Native port tracked as a follow-up, see Phase I item 5) | ❌ |
+| Multi-mode `ZeisbergerMode`/`VincettiMode` (several such modes via `TransModal`) | ✅ (2026-07-22, Phase I.5a: `RK45.jl`'s modal guard unwraps to the inner `Capillary.MarcatiliMode` for the field-synthesis accessors — both wrappers delegate `field`/`N` verbatim, and dispersion is baked into `linop` by Julia before the native RHS runs. `test/test_native_modal_zv.jl`) | ✅ (same) |
+| Multi-mode `StepIndexMode` (several such modes via `TransModal`) | ❌ (no closed-form `neff` — numerical root-finding only, doesn't fit the "bake dispersion into `linop`, unwrap for accessors" pattern above without further design work. High-level-reachable via `prop_stepindex`. Phase I.5b — feasibility studied, `native-port/PLANS.md` §5) | ❌ |
 
 ## Free-space (`TransFree`)
 

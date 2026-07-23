@@ -44,24 +44,55 @@ S2, S3, S5 and S6 still carry open items and stay live below.
 
 ### Open remainders lifted out of the archived phases
 
-1. 🟡 **Phase I.5 — `StepIndexMode`/`ZeisbergerMode`/`VincettiMode`: native
-   Rust port still open.** High-level API reach landed 2026-07-16 (these are
-   now reachable via `modes=` in `prop_capillary`), but the native stepper
-   still falls back for them. See ARCHIVE.md Phase I item 5.
-2. ⚪ **Phase J.3 — r2c/c2r halving for both FFT-conv Raman convolutions.**
-   Padded E² and h are real in both carrier and envelope paths, but
-   `RamanPolarEnv` (`Nonlinear.jl:327`) and the native SiO2 kernel both use
-   full c2c. Summation-order change → validate under the fixed-step
-   discipline (`native-port/TESTING.md` §3); benchmark first.
-3. ⚪ **Phase J.5 — consolidate the two resident Raman kernels' plumbing.**
-   Steps 3b (ADE) and 3c (FFT-conv) in `rhs_mode_avg_env` duplicate the
-   `0.5·|E|²` loop and the `pto += E·(ρ·P)` accumulation. Worth doing when
-   either is next touched — not before.
-4. ⚪ **Phase J.6 — beyond-Luna math options.** `native-port/MATH.md` §8 +
-   `SUGGESTIONS.md` items 15-17: direct DP5(4) embedded-error coefficients,
-   direct PPT evaluation replacing the spline LUT, short-kernel overlap-save
-   Raman convolution. Each deliberately breaks oracle bit-parity → each needs
-   β1-style justification.
+1. 🟢 **Phase I.5a — `ZeisbergerMode`/`VincettiMode` multi-mode: native Rust
+   port done (2026-07-22).** `RK45.jl`'s native modal guard now accepts both
+   wrapper types — it unwraps to the inner `Capillary.MarcatiliMode` for the
+   accessor fields the guard/setup read as raw struct fields (`kind`/`a`/
+   `unm`/`ϕ`/`n`); `field`/`N` already delegate through generic dispatch. No
+   `native.rs` change was needed: the native modal RHS never reads
+   `neff`/dispersion, only the pre-baked `linop` (built by Julia before the
+   RHS runs) and Marcatili field-synthesis parameters. `test/test_native_modal_zv.jl`
+   (single-step 6e-18/exact, full-solve 3.5e-16/2.6e-15). See ARCHIVE.md
+   Phase I item 5.
+1b. 🟡 **Phase I.5b — `StepIndexMode` multi-mode: still native-ineligible.**
+   No closed-form `neff` (numerical root-finding only), so it can't cheaply
+   join the "bake dispersion into `linop`, unwrap for the field-synthesis
+   accessors" pattern I.5a uses. Feasibility studied 2026-07-22 and found
+   bounded but not currently worth building (no consumer constructs this
+   config) — full design record and the exact narrow scope for a future
+   implementer in [`native-port/PLANS.md`](native-port/PLANS.md) §5.
+2. 🟢 **Phase J.3 — r2c/c2r halving for both FFT-conv Raman convolutions:
+   done 2026-07-22, measured, bar cleared, kept.** Criterion spike
+   (`amalthea/benches/raman_fft_r2c_bench.rs`) measured 1.8–2.8× across
+   n_time_over=1024..65536 (~2.2× at the real `:SiO2` config's grid size).
+   Implemented in both the native `:SiO2` kernel and Julia's `RamanPolarEnv`
+   together, keeping the equivalence tier r2c-vs-r2c. `test/test_native_raman_sio2.jl`
+   40/40 (native-vs-Julia 1.8e-13–3.6e-13).
+3. 🟢 **Phase J.5 — consolidate the two resident Raman kernels' plumbing:
+   done 2026-07-22, alongside J.3.** Extracted the duplicated `0.5·|E|²`
+   intensity and `pto += E·(ρ·P)` accumulation loops (Steps 3b/3c in
+   `rhs_mode_avg_env`) into shared free functions — pure code motion, no
+   numerical change.
+4. ⚪ **Phase J.6 — beyond-Luna math options.** Feasibility studied
+   2026-07-22 (full write-up in [`native-port/PLANS.md`](native-port/PLANS.md)
+   §6): (a) direct DP5(4) error coefficients — **recommend against**, both
+   backends already precompute `errest = b5.-b4` at load, so the premise's
+   runtime cancellation doesn't exist; (b) direct PPT evaluation — **recommend
+   against**, the true series has a BigFloat-quadrature tail that can't live
+   in a hot loop and the LUT error is already below physical significance;
+   (c) short-kernel Raman pad-shortening — **recommend**, ~2× that multiplies
+   with J.3's r2c gain and need not diverge from the oracle. Only (c) remains
+   open.
+5. 🟡 **Phase S5.3 — order-5 dense-output continuous extension: attempted
+   2026-07-22, INCOMPLETE, not merged.** Calvo-Montijano-Rández (1990)
+   order-5 tableau added and wired (extra-stage FFI + shared `interpC5`
+   helpers for both steppers), but the agent hit the account spend limit
+   before resolving a convergence-test artifact: both the order-4 and the
+   new order-5 interpolant — *and the accepted-step endpoint, which uses no
+   interpolation* — degrade as O(h²) against the fine reference, pointing at
+   the test harness rather than the interpolant. Partial work preserved on
+   branch `worktree-agent-ada2bad7efb980155` (commit `63b6003`). Resume by
+   explaining the endpoint-vs-fine-reference discrepancy first.
 
 ---
 
@@ -97,10 +128,10 @@ selects — so today the dispatcher's choice of AVX-512/AVX2/NEON is
 tracked as S1.4; until it lands, "AVX-512 path selected" does not mean
 "AVX-512 code ran."
 
-### 🟢 S2 — Threading the native RHS (suggestion 2) — re-landed 2026-07-11, root cause fixed
+### 🟢 S2 — Threading the native RHS (suggestion 2) — COMPLETE (all 4 items, closed 2026-07-22)
 *Started 2026-07-10, reverted same day, root-caused and re-landed
-2026-07-11. Radial geometry only this pass (items 1-2); modal (item 3)
-and free-space (item 4) left as separate, not-started follow-ups — see
+2026-07-11 (radial, items 1-2). Modal (item 3) landed 2026-07-20;
+free-space (item 4) landed 2026-07-22 — the whole track is now done. See
 `docs/dev/native-port/PLANS.md §3` for the full phased plan.*
 
 **Phase 3 REVERTED 2026-07-10, RE-LANDED 2026-07-11 — root cause was a
@@ -272,12 +303,20 @@ then reproducing the crash directly:**
    npol=2, Raman :N2, + forced-`GC.gc()` stress loop): all bit-identical
    1-vs-4, native-vs-Julia unchanged at ~2e-16 (Kerr) / ~1e-6 (Raman ADE-vs-
    FFT floor). 70/70 Rust unit tests; clean `-D warnings` build.
-4. 3-D free-space FFT: `fftw_plan_with_nthreads`/`fftw_init_threads`
-   (dlopened `libfftw3_threads`, silent fallback if absent). *Not started —
-   the last open S2 item.* Blocked on `fftw.rs`'s `unsafe impl Sync` holding
-   only for single-threaded plans: an `nthreads>1` plan would deadlock under
-   the existing concurrent `fftw_execute_dft` path, so it needs an isolated
-   multi-threaded plan under `PLANNER_LOCK` first.
+4. 🟢 **3-D free-space FFT: DONE 2026-07-22 — S2 track now fully closed.**
+   `fftw_plan_with_nthreads`/`fftw_init_threads` resolved from the *same*
+   combined `libfftw3.so` FFTW_jll already ships (no separate
+   `libfftw3_threads` needed on this build; silent fallback if a future build
+   splits it out). The stated `unsafe impl Sync` blocker dissolved rather
+   than needing a workaround: free-space has no per-column loop — the joint
+   3-D transform runs once per RK stage from one thread — so `RealFft3d`/
+   `ComplexFft3d` never need `Sync` and deliberately don't implement it
+   (unlike the 1-D types rayon workers share). Threading is baked into the
+   plan via a new `with_nthreads_plan` (symmetric to `with_single_threaded_plan`,
+   under `PLANNER_LOCK`, restoring the global planner thread count on exit so
+   the 1-D per-column plans stay single-threaded). Measured 2.46–2.51× on the
+   isolated transform, 1.43–1.51× end-to-end at every size. `n_threads=1`-vs-`4`
+   bit-identical, `test/test_native_free_threading.jl`; `free` group 197/197.
 5. 🟢 Error-norm reduction stays sequential (determinism, ties to S5.2) —
    confirmed already sequential (`weaknorm_c64`), untouched by this item.
 - Gate: universal + fixed-step equivalence under `JULIA_NUM_THREADS=4` +

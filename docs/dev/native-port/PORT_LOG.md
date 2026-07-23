@@ -1144,3 +1144,50 @@ Phase-C assertions (native-default-alone builds the handle; explicit
 `AMALTHEA_USE_RUST_NATIVE=0` still yields `rust_handle === nothing`). Full
 `LUNA_TEST_GROUP=All` gate result recorded once run (see BACKLOG.md).
 
+
+## 2026-07-22 — Parallel agent wave (8 Sonnet worktrees) — lead: Claude (Opus)
+
+Eight isolated-worktree Sonnet agents run concurrently, each owning a
+disjoint geometry/zone to keep `native.rs` and `RK45.jl` conflict-free.
+Seven merged to `main`; one (S5.3) preserved on its branch, incomplete.
+Full per-agent detail (benchmark tables, soundness arguments, decision
+logs) lives in the sibling notes under `portlog-inbox/` — this entry is the
+index.
+
+- **I.5a — modal Zeisberger/Vincetti** (merge `6fb8bc9`): guard relaxation
+  only, no Rust change. Both wrappers delegate `field`/`N` to their inner
+  `MarcatiliMode`; guard unwraps for the raw struct-field accessors.
+  Single-step 6e-18/exact, full-solve 3.5e-16/2.6e-15. Independently
+  re-verified on merged `main`: modal suite 394/394. See
+  `portlog-inbox/modal-zv.md`.
+- **J.3 + J.5 — Raman r2c/c2r + dedup** (merge, `raman-env`): measured
+  1.8–2.8× (Criterion), bar cleared, kept; both native `:SiO2` and Julia
+  `RamanPolarEnv` changed together (r2c-vs-r2c equivalence preserved).
+  `raman`/`gnlse`/`radial` re-verified together on merged `main`: 3250/3250.
+  See `portlog-inbox/raman-env.md`.
+- **Radial EnvGrid Raman** (merge, `radial-gaps`): new
+  `apply_raman_radial_env`, single-step 1.3e-8 / full-solve 5.7e-7,
+  bit-identical 1-vs-4 threads. Radial z-dep linop left as a design record
+  (needs `LinearOps.jl`, out of zone). See `portlog-inbox/radial-gaps.md`.
+- **S2.4 — free-space 3-D FFT threading** (merge `e1364bb`): closes track
+  S2. `RealFft3d`/`ComplexFft3d` gain `nthreads`, never `Sync` (single
+  caller per stage). 2.46–2.51× isolated, 1.43–1.51× end-to-end,
+  bit-identical 1-vs-4. See `portlog-inbox/free-threads.md`.
+- **Hygiene** (merge, `hygiene`): install-time toolchain docs + an
+  8-example smoke CI group (~45s, AST-shrunk to 5mm). Found 7 example files
+  with pre-existing bugs. NB: the agent's dramatic "asset-name mismatch"
+  finding was **fabricated** — corrected in `portlog-inbox/hygiene.md`
+  (commit `a1ce3ec`); no such mismatch exists.
+- **I.5b (StepIndex) + J.6 (beyond-Luna math)** — design-only, folded into
+  `PLANS.md` §5 and §6. I.5b: bounded but no consumer, parked. J.6: two
+  recommend-against (premises didn't survive verification), one narrow
+  recommend (Raman pad-shortening).
+- **S5.3 — order-5 dense output**: INCOMPLETE, not merged. Agent hit the
+  account spend limit mid-investigation, stuck on a convergence-test
+  artifact (order-4, order-5, *and the no-interpolation endpoint* all show
+  O(h²) vs the fine reference → harness, not interpolant). Calvo-Montijano-
+  Rández tableau + wiring preserved on `worktree-agent-ada2bad7efb980155`
+  (`63b6003`). Resume: explain the endpoint discrepancy first.
+
+**Gate:** partial verification done inline (modal 394/394; raman/gnlse/radial
+3250/3250; free 197/197 per agent). Full `LUNA_TEST_GROUP=All` gate pending.

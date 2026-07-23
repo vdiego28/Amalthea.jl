@@ -1189,3 +1189,788 @@ investigation.
 
 ---
 
+
+## 5. Native multi-mode `StepIndexMode` (BACKLOG Phase I item 5)
+
+Status: **Feasibility studied, not built. Recommend against building now — a
+value/priority call, not a difficulty finding.** Unlike §4's CLI item, there
+is no hard external dependency blocking this: no root-finder needs porting
+(the crux fact below), the crate already binds the same `libcubature`/FFTW
+this would reuse, and the net new surface is one special function plus a
+parameter-shape widening — roughly a Phase-5-sized, 1-2 day slice, not a
+multi-week project. It stays parked because (a) nothing in the repo
+currently constructs this specific configuration (`prop_stepindex` is
+single-mode only; multi-mode `StepIndexMode` only reaches `TransModal`
+through `prop_capillary(...; modes=[m1,m2,...])`, an unusual combination —
+solid-fibre modes inside a gas-capillary high-level entry point — that no
+example or test exercises today), and (b)
+`docs/dev/native-port/ARCHITECTURE.md` §6b already classifies exactly this
+row of the support matrix as "ordinary numerics that could be ported... but
+effort/value rules them out, not feasibility" — this write-up confirms that
+classification rather than overturning it. **If a concrete consumer shows
+up, this is a clean, boundable yes** — see "If someone picks this up" below
+for the exact narrow scope and first steps.
+
+### 1. What the native modal RHS actually needs from a mode (traced, not assumed)
+
+`native_set_modal_params` (`amalthea/src/native.rs:5613`) takes, per mode:
+`a` (one shared scalar radius), `unm`, `inv_sqrt_n` (`= 1/√N(m,z=0)`,
+precomputed in Julia), `order` (`Int32`), `kind` (`u8` code 0/1/2 for
+HE/TE/TM), `phi`, plus one shared `towin`/`kerr_fac`/`nlfac` array — see
+`src/RK45.jl:1684-1791`. No Bessel-zero, root-find, or normalization math
+crosses the boundary; only the already-solved scalars do.
+
+The per-node hot loop (`modal_pointcalc`, `native.rs:1942`) confirms my
+reading exactly: the mode field is synthesized as
+
+```rust
+let x = r * ro.modal_unm[m] / ro.modal_a;
+let base = jn(ro.modal_order[m], x) * ro.modal_inv_sqrt_n[m];
+let (ax, ay) = mode_angle_xy(ro.modal_kind[m], ro.modal_order[m], ro.modal_phi[m], theta);
+// Ex = base*ax, Ey = base*ay
+```
+
+i.e. **exactly the factored form the task description predicted**:
+`J_order(x)·(ax,ay)`, with `(ax,ay)` a closed-form trig function of `θ`
+computed in Rust (`mode_angle_xy`, `native.rs:2988`) and `x` a linear
+rescale of `r` by two precomputed-in-Julia scalars (`unm`, `a`). `modal_a`
+does double duty here: it is *both* the cubature integration bound
+(`pcubature_v(fdim, ..., 0.0, self.modal_a, ...)`, `native.rs:1909-1921`)
+*and* the mode's own field-argument scale (`r * unm / a` above, and the
+`r <= 0 || r >= modal_a → 0` early-out at `native.rs:1949`). For Marcatili
+those two roles coincide (the mode is genuinely zero outside the capillary
+core, `radius(m,z)`) — this coincidence is Marcatili-specific, not a
+general property of `modal_a`, and it is exactly where §2 below breaks.
+
+Normalization (`N(m)`) never calls a Bessel function inside Rust at all —
+`MarcatiliMode` overrides the generic `Modes.N` with a closed form
+(`Capillary.jl:285-288`), and Julia precomputes `1/√N` once, per mode, at
+setup. This is why Phase 5's stated tolerance ceiling is set by `jn`'s
+agreement with `SpecialFunctions.besselj`, not by any normalization
+integral (MATH.md §3.3, TESTING.md §4).
+
+### 2. How different `StepIndexMode`'s field actually is
+
+`field(m::StepIndexMode, xs; z=0, ω=wlfreq(1030e-9))`
+(`src/StepIndexFibre.jl:265-276`) is Snyder & Love 1983 Table 12-3, not a
+Marcatili-shaped formula at all:
+
+```julia
+f1, f2, u, w, v = f1f2(radius(m,z), ω/c, m.coren(ω,z=z), m.cladn(ω,z=z), neff(m,ω;z=z), m.n)
+a1 = (f2 - 1)/2 ; a2 = (f2 + 1)/2
+fv = m.parity == :even ? cos(m.n*θ) : sin(m.n*theta)   # NB: `theta`, not `θ` — see below
+gv = m.parity == :even ? -sin(m.n*θ) : cos(m.n*θ)
+R = r/radius(m,z)
+Er, Et = abs(R) <= 1.0 ? corefields(m.n,u,R,a1,a2,fv,gv) : cladfields(m.n,u,w,R,a1,a2,fv,gv)
+SVector(Er*cos(θ) - Et*sin(θ), Er*sin(θ) + Et*cos(θ))
+```
+
+Contrast with Marcatili (`Capillary.jl:271-283`), which returns `(Ex,Ey)`
+directly from one closed-form trig expression with no radial branch and no
+polar-to-Cartesian rotation step. `StepIndexMode` differs in every
+structural respect that matters for a port:
+
+- **Two radial branches, not one.** `corefields` (Bessel **J**, orders
+  `n-1`/`n+1`, evaluated at `u·R`) for `R ≤ 1`; `cladfields` (modified
+  Bessel **K**, same orders, at `w·R`) for `R > 1`. Marcatili has no
+  cladding branch — the mode is defined (and zero) only inside the core.
+- **Wider domain.** `dimlimits(m::StepIndexMode) = (:polar, (0,0),
+  (10*radius(m,z), 2π))` (`StepIndexFibre.jl:211`) vs. Marcatili's
+  `(radius(m,z), 2π)` (`Capillary.jl:268`) — the field is genuinely
+  evaluated (and integrated, for `N`/`Aeff`) out to 10 core radii into the
+  cladding, not cut off at the core wall.
+- **A real (Er,Eθ)→(Ex,Ey) rotation**, not a single closed-form Cartesian
+  expression — `mode_angle_xy` has no equivalent step because Marcatili's
+  formula is already Cartesian by construction.
+- **A pre-existing bug in the `:odd`-parity branch**, found while reading
+  this: line 271 above reads `sin(m.n*theta)` — lowercase `theta`, not the
+  destructured `θ` (line 267 binds `θ`, never `theta`) — so `parity=:odd`
+  throws `UndefVarError` today, on the Julia oracle, independent of any
+  native work. No test in the repo exercises `parity=:odd` (confirmed:
+  `test_interface.jl`'s only `StepIndexMode` test and `prop_stepindex`'s
+  default both use `parity=:even`). This is a reason to scope any port to
+  `:even` only, not a native-specific finding — `:odd` has no working
+  oracle to validate against until this upstream bug is fixed.
+
+### 3. The ω-dependence question — traced, and it is the single biggest simplification
+
+`field`'s `ω=wlfreq(1030e-9)` default keyword, plus its own
+`# TODO: how do we handle wavelength dependence?` comment, look like an open
+design question. Tracing the actual call chain shows **Julia's own modal
+pipeline never resolves it** — every caller invokes `field`/`Exy` without
+an `ω` argument, so the keyword default is silently load-bearing everywhere,
+for every mode type, not just `StepIndexMode`:
+
+- `Modes.field(m::AbstractMode; z=0) = (xs) -> field(m, xs, z=z)`
+  (`Modes.jl:48`) — no `ω`.
+- `Modes.N` (`Modes.jl:55-66`) calls `field(m, z=z)` → the closure above.
+- `Modes.Exy(m, xs; z=0.0) = field(m, xs, z=z) ./ sqrt(N(m, z=z))`
+  (`Modes.jl:73`) — no `ω`.
+- `Modes.ToSpace.to_space!` (`Modes.jl:491`), the function that actually
+  drives `TransModal`'s per-node mode synthesis, calls
+  `Exy(ts.ms[i], xs, z=z)` — no `ω`.
+- `Modes.Aeff` (`Modes.jl:102-120`) uses `absE(m,z=z)` → `Exy(...)` → same
+  chain, no `ω`.
+
+So for **every** mode type reachable through `TransModal` (not a
+`StepIndexMode`-specific carve-out), the *field profile itself* is always
+evaluated at the fixed reference `ω = wlfreq(1030nm)`. For `MarcatiliMode`
+this is invisible because its `field` has no `ω` parameter at all — the
+weakly-guided capillary mode shape genuinely doesn't depend on frequency in
+that model, only `neff(ω)`/`β(ω)` (evaluated separately, correctly,
+per-frequency-bin, in `norm_modal`/the linop) do. `StepIndexMode`'s exact
+Snyder & Love solution *does* have a real per-frequency mode shape (`u`,
+`w` depend on `ω` through the dispersion relation) — but Julia's own
+`TransModal` machinery never asks for it at any `ω` but the hardcoded
+default, for every wavelength bin in the grid alike.
+
+**Consequence for the port:** the native side only has to reproduce one
+fixed `(u, w, a1, a2)` per mode — solved once, at one frequency, at setup —
+not an `ω`-dependent field synthesized per grid bin. This collapses what
+looked like "port a dispersion-relation root-finder into the RHS hot loop"
+into "pass 4-6 more setup-time scalars per mode," exactly the same shape as
+`unm`/`inv_sqrt_n` already are for Marcatili. **This is also a trap, not
+just a simplification**: an implementer must reproduce this fixed-`ω`
+behavior faithfully, including its physical inexactness, rather than
+"fixing" it by making the native path genuinely `ω`-dependent. Native-only
+`ω`-dependence would silently diverge from the Julia oracle with no
+independent ground truth to justify the change (contrast Phase 7's β1,
+which deliberately diverges from Julia but only after validating the new
+value against an independent BigFloat truth — MATH.md §3.5, TESTING.md's
+"deliberate divergence" tier). If the `# TODO` is ever resolved, it must be
+resolved in Julia first — the oracle changes, then the port follows it,
+never the other way round.
+
+`Modes.N`/`Modes.Aeff` reach `field` the same no-`ω` way (confirmed above)
+— no other call site in the low-level pipeline passes an explicit `ω`.
+
+### 4. What new numerics Rust would actually need
+
+**Reused, not new:** general-order Bessel **J** (`jn`, `diffraction.rs:102`,
+Miller downward recurrence, already generalized past `n=1` for Phase E's
+`TE`/`TM`/`HE_{n>1}` Marcatili support) covers the core-field Bessel J
+evaluations (`besselj(n±1, u·R)`) directly — no new J-side code.
+
+**Genuinely new: modified Bessel K, general integer order.** Confirmed
+absent — `grep`ing the whole crate for `besselk`/`BesselK` returns nothing.
+The cladding field needs `K_{n-1}`/`K_{n+1}` evaluated at `w·R` for
+arbitrary `R ∈ (1, 10]` in the per-node hot loop (this cannot be
+precomputed at setup — it varies with the cubature node's `r`, unlike
+`u`/`w` themselves). Unlike `J_n` (which needs a *downward*-stable
+recurrence because it decays), `K_n` is the numerically easier direction —
+it is stably computed via the standard *upward* three-term recurrence
+seeded from `K_0`/`K_1` (rational/Chebyshev approximations, e.g.
+Abramowitz & Stegun 9.8.5-9.8.8 or Numerical Recipes' `bessk0`/`bessk1`),
+since `K_n` grows (not decays) with order and the recurrence amplifies
+error in the numerically safe direction. This is precedented work for this
+crate — `j0`/`j1` (`diffraction.rs:36-84`) are already from-scratch
+rational/power-series approximations of exactly this kind — but it is a
+genuinely new special function, not a reuse.
+
+**Can `u`/`w`/`v` (and more) be precomputed in Julia and passed as
+constants?** Yes, and further than just `u`/`w`/`v`. Tracing exactly what
+`field` computes and which pieces are `r`/`θ`-dependent (must run per
+cubature node, in Rust) versus not (fixed once `ω`, `a`, `n`, `z` are fixed
+— i.e. everything, given §3's finding that `ω` never varies):
+
+| Quantity | Depends on `(r,θ)`? | Where it can live |
+|---|---|---|
+| `u`, `w` (dispersion-relation solve, `Roots.find_zeros` inside `findneff`) | no | Julia, precomputed once per mode |
+| `v` | no — and unused after `f1f2` returns it (`field` never reads it) | dead value, doesn't need to cross FFI at all |
+| `a1 = (f2-1)/2`, `a2 = (f2+1)/2` | no | Julia, precomputed once per mode |
+| `j_u = besselj(n, u)`, `k_w = besselk(n, w)` (the *normalizing* denominators in `corefields`/`cladfields`) | no — `u`,`w` are fixed scalars | Julia, precomputed once per mode (Julia already has `SpecialFunctions.besselk` for this — no new Julia-side code needed either) |
+| `besselj(n∓1, u·R)`, `besselk(n∓1, w·R)` | **yes** | must run in Rust, per node |
+| `fv`, `gv` (parity-dependent `cos`/`sin` of `n·θ`) | yes | Rust, per node (cheap trig, same shape as `mode_angle_xy` already does) |
+| the final `(Er,Eθ)→(Ex,Ey)` rotation | yes | Rust, per node |
+
+So **no root-finder ports to Rust at all** — `find_zeros`/`findneff` stays
+exactly where the accel-spline machinery already keeps it, in Julia, run
+once per mode at setup (this is also why `test_interface.jl`'s
+`StepIndexMode` test warns to always pass `accellims` for a real
+propagation — that machinery exists for the `neff(ω)` sweep used
+elsewhere, e.g. dispersion/`Stats.default`, not for this single-`ω` field
+evaluation, but confirms the root-find is a known, already-mitigated setup
+cost independent of this design). Per mode, Julia would hand Rust roughly
+7 new scalars (`a_core`, `u`, `w`, `a1`, `a2`, `j_u`, `k_w`, a `parity` flag,
+`n`) alongside the existing `inv_sqrt_n`/`order`/`kind`/`phi` — the same
+shape of addition Marcatili's own `unm`/`inv_sqrt_n` already are, not a
+new category of FFI payload.
+
+**The one real structural (not just numerical) change: `modal_a` must
+split into two radii.** Per §1, `modal_a` today is simultaneously the
+cubature upper bound *and* the mode's field-argument radius
+(`x = r·unm/a`) *and* the "return zero beyond here" cutoff — a coincidence
+that only holds because Marcatili's mode is exactly zero outside its core.
+`StepIndexMode` needs **two** distinct radii: `a_core` (core/clad branch
+selector, `R = r/a_core`) and `a_outer = 10·a_core` (the actual cubature
+bound, from `dimlimits`). `native_set_modal_params`'s signature and
+`modal_pointcalc`'s cutoff/scaling logic both need widening for this — a
+real (if small) change to the function's parameter shape and its hot-loop
+branch structure, not a guard-only relaxation. Confirmed by grepping every
+use of `self.modal_a`/`ro.modal_a` in `native.rs`: exactly the two roles
+above, both currently assuming they're the same number.
+
+### 5. Contrast with the sibling task (why this is not the same easy category)
+
+`ZeisbergerMode`/`VincettiMode` (`src/Antiresonant.jl` `@eval` loops at
+`:126` and `:381`) **delegate** `field`/`N`/`dimlimits` straight through to
+a real, wrapped inner `MarcatiliMode` — their mode profile *is*
+Marcatili's, bit-for-bit, by construction, not merely "similar." The
+concurrent guard-relaxation for that case is exactly that: relax
+`RK45.jl`'s `isa MarcatiliMode` check to also accept the wrapper types
+(and unwrap `.m` before extracting `unm`/`kind`/`n`/`ϕ`) — the *existing*
+`modal_pointcalc`/`mode_angle_xy`/`x = r·unm/a` Rust code runs completely
+unmodified, because the underlying math genuinely is Marcatili's math.
+
+`StepIndexMode` has no such inner `MarcatiliMode` and no delegation — §2
+above shows its field formula is structurally unrelated (two radial
+branches vs. one, Bessel K vs. no Bessel K at all, a genuine polar-to-
+Cartesian rotation vs. a single closed-form Cartesian expression, a
+different — and wider — integration domain). **The same guard line cannot
+be widened to cover it**; supporting `StepIndexMode` needs a second,
+parallel field-synthesis code path in Rust (new params, new per-node
+branch, one new special function), not a relaxation of the existing one.
+This is the single most useful fact this document settles: do not assume
+the Zeisberger/Vincetti guard relaxation (landing concurrently with this
+research) incidentally covers `StepIndexMode` too — it does not, and
+cannot, by construction.
+
+### 6. Verification strategy, if built
+
+Two-tier equivalence per TESTING.md §4:
+
+- **Single-step tier: expect ~1e-10, Phase-5-shaped.** Node placement is
+  bit-identical (same `libcubature` binary, unchanged). The floor is set by
+  Rust's new `besselk` agreeing with `SpecialFunctions.besselk` — verify
+  this **standalone, before writing any native.rs code**, exactly like
+  Phase 5 verified `j0` against `SpecialFunctions.besselj` first
+  (MATH.md §3.3: "~1.5e-15 max absolute error... verified... not
+  assumed"). Range to check: `w·R` for `R ∈ (1, 10]` at realistic `w`
+  (order ~1-10 for typical step-index geometries) — this is the number
+  that sets the honest tier to assert, not a guessed 1e-10.
+- **Full-solve tier: ~1e-6 floor (fixed `max_dt=min_dt=dt`), per the
+  standard discipline** (TESTING.md §3) — sidesteps adaptive-path
+  divergence, isolates state accumulation.
+- **Non-vacuousness, mirroring Phase 5's own lesson (MATH.md §3.3, "not
+  skipped"):** use **two** co-eligible `StepIndexMode`s (different `n`/`m`,
+  e.g. `HE11`+`HE12`-analogues) so the `to_space!` sum-over-modes matmul and
+  the back-projection matmul are genuinely exercised — a single-mode test
+  would leave both matmuls implicitly untested, exactly the Phase 5
+  precedent this doc's task framing points at. Independently assert (before
+  trusting the Rust-vs-Julia comparison) that inter-mode coupling actually
+  moves energy between modes by a margin unmistakably above the FP floor —
+  same two-part structure Raman's gate test used (MATH.md §5.3) after a
+  first attempt at a Raman gate test passed for the wrong reason (an
+  exact-zero effect, not a genuine null result).
+- **OPEN, verify at implementation time, does not block this write-up:**
+  whether `prop_capillary(...; modes=[stepindex1, stepindex2])` — a solid
+  step-index-fibre mode basis inside a gas-capillary high-level entry
+  point — actually constructs a well-formed, numerically sensible
+  `TransModal` today (density/gas-fill semantics for a mode type that
+  isn't gas-based are untested territory). If it doesn't construct
+  cleanly, the equivalence test should build `TransModal` directly via the
+  low-level API (`Modes.ToSpace`/`NonlinearRHS.TransModal`) instead of
+  routing through `prop_capillary`, matching how several existing
+  native-port tests already bypass the high-level entry points when the
+  high-level combination isn't itself the thing under test.
+- Scope the gate test (and any first implementation) to `parity=:even`
+  only — §2's `theta`/`θ` typo means `:odd` has no working Julia oracle to
+  validate against until that upstream bug is fixed independently of this
+  work.
+
+### If someone picks this up
+
+1. **De-risk the one new special function first, in isolation.**
+   Implement `besselk(order, x)` in `diffraction.rs` (or a new module) via
+   upward recurrence from `K_0`/`K_1` rational approximations; write a
+   standalone Rust unit test asserting agreement against
+   `SpecialFunctions.besselk` (computed via a tiny throwaway Julia script,
+   the same way `j0`/`jn`'s docstrings cite their verification) over
+   `x ∈ (0, ~30]` (covers `w·R` for `R` up to 10 at realistic `w`). This
+   single step sets the honest single-step tolerance tier for everything
+   downstream and is almost all of the genuinely new work.
+2. **Widen `native_set_modal_params`'s signature** to carry `a_core` (used
+   for the `R = r/a_core` branch selector and the cubature's
+   core/clad-transition point, not the outer bound) alongside a new
+   `a_outer` (the `pcubature_v`/`hcubature_v_2d` domain bound,
+   `= 10·a_core` from `StepIndexMode`'s own `dimlimits`) plus, per mode:
+   `u`, `w`, `a1`, `a2`, `j_u`, `k_w`, a `parity` flag. Keep `unm`/existing
+   Marcatili fields as-is (still used for co-propagating Marcatili modes in
+   a mixed-type `TransModal` — check whether that combination needs
+   supporting or can be rejected as out of scope for a first cut).
+3. **Add a `StepIndexMode`-specific branch to `modal_pointcalc`** (or a
+   parallel function selected by a per-mode type tag) implementing
+   `corefields`/`cladfields`'s formula directly from §4's precomputed
+   scalars plus the new `besselk`, followed by the `(Er,Eθ)→(Ex,Ey)`
+   rotation — this is new Rust code, not a data-only change.
+4. **Widen `src/RK45.jl`'s modal guard** (~line 1657) from `all(m -> m isa
+   MarcatiliMode, modes)` to also accept `StepIndexMode`, dispatching to
+   whichever native params-setup path matches each mode's concrete type;
+   compute and pass the 7 new per-mode scalars from Julia (`f1f2`/`uwv`,
+   already exported functions in `StepIndexFibre.jl`, reusable as-is for
+   this purpose — no new Julia-side math needed, only new glue code calling
+   already-existing functions and threading their outputs through the
+   FFI call).
+5. **Scope the first cut narrowly**, mirroring every prior phase's
+   discipline: `parity=:even` only (§2), constant (non-tapered) radius
+   only, Kerr-only to start (defer Raman — `modal_pointcalc`'s existing
+   Raman block is written against the Marcatili scalar-field assumption
+   and would need its own check for whether it generalizes unchanged),
+   RealGrid only, `full=false` (radial-only cubature) only. Confirm the
+   `prop_capillary(...; modes=[...])` reachability question (§6's OPEN
+   item) before writing the equivalence test.
+6. Follow `AGENTS.md` §3/§4 exactly: build the Rust lib, wire Julia, write
+   the two-tier `@testitem tags=[:rust]` test, run the `rust` group plus a
+   check for regressions in `sim-multimode`, and append a `PORT_LOG.md`
+   entry recording both achieved tolerances and every gotcha found —
+   in particular the `modal_a` split and the `theta`/`θ` typo, since a
+   future reader will hit both again if they aren't written down here.
+
+---
+
+## 6. Beyond-Luna math options (BACKLOG Phase J item 6)
+
+Feasibility/design pass over the three items `native-port/MATH.md` §8 +
+`SUGGESTIONS.md` items 15-17 grouped as "beyond-Luna math options": direct
+DP5(4) embedded-error coefficients, direct PPT evaluation replacing the
+spline LUT, and short-kernel overlap-save Raman convolution. Each is
+individually assessed below against the β1 bar (`BETA1_ANALYTIC.md`): a
+divergence from the Julia oracle is acceptable only with a derivation, a
+ground truth that isn't Julia itself, a quantified error against that
+ground truth, and a stated validation blast radius. This is a
+feasibility/design pass, not an implementation — no Rust or Julia source
+was changed.
+
+| Item | Candidate | Verdict |
+|---|---|---|
+| 6.1 | Direct DP5(4) embedded-error coefficients (SUGGESTIONS #15) | **Recommend against — already implemented on both sides.** The backlog's own premise (`errest` computed as a runtime `y5−y4` cancellation) does not match the current code. Same class of finding as S5 item 3 ("backlog premise wrong"), not a genuine open design question. |
+| 6.2 | Direct PPT evaluation replacing the spline LUT (SUGGESTIONS #16) | **Recommend against, as specified.** The accuracy gain is real but physically immaterial (LUT error is already far below anything the physics cares about); the cost is not — plasma is already a measured 24.5-40.5% of `rhs_radial` time on the *cheap* path, and direct evaluation is 1-3 orders of magnitude more expensive per call, with an unbounded tail (BigFloat adaptive quadrature) that cannot run in a hot loop at all. The stated secondary motivation (structurally eliminating an out-of-range segfault) is also moot — that segfault was already fixed by a cheaper, already-shipped guard. |
+| 6.3 | Short-kernel overlap-save Raman convolution (SUGGESTIONS #17) | **Recommend, narrowly scoped.** Not full block-based overlap-save — just shortening the zero-pad to the truncated kernel length. Complementary to, not superseded by or exclusive with, item J.3's r2c/c2r halving (BACKLOG open remainder 2); the two multiply. Scope is the FFT-convolution Raman paths only (native `:SiO2` kernel + Julia `RamanPolarEnv`); the default carrier-field path (`raman.rs`'s ADE solver) is already O(N) and out of scope. Unlike the other two items and unlike β1, this one need not diverge from the Julia oracle at all if the cutoff is chosen below the f64 noise floor — the ground truth is the existing full-grid convolution, not a "more correct" reformulation. |
+
+---
+
+### 6.1 Direct DP5(4) embedded-error coefficients
+
+**Verdict: recommend against — the code already does this.**
+
+#### What the backlog item asserts
+
+`MATH.md` §8.1 and `SUGGESTIONS.md` #15 both describe the problem as: "Luna
+computes the DP5(4) embedded error as the difference of the 5th- and
+4th-order solutions — a near-total cancellation," and propose replacing it
+with "the estimate directly as `err = Σᵢ eᵢ·kᵢ` with precomputed
+`eᵢ = b5ᵢ − b4ᵢ` coefficients (exact rationals, no runtime cancellation)."
+
+#### What the code actually does
+
+Neither side forms two full solution vectors and subtracts them.
+
+- **Rust (`amalthea/src/native.rs`):** `DP_ERREST` (`native.rs:5889-5897`) is
+  an array of *directly-typed rational literals* — `-71.0/57600.0`,
+  `71.0/16695.0`, `-71.0/1920.0`, `17253.0/339200.0`, `-22.0/525.0`,
+  `1.0/40.0` — computed once at compile time. The error estimate
+  (`native.rs:4668-4710`, inside `native_step`) is `Σᵢ eᵢ·kᵢ` directly:
+  `e0*k0 + e1*k1 + ... + e6*k6`. There is **no `DP_B4` array anywhere in
+  `native.rs`** (confirmed by grep) — the accepted solution `yn` is formed
+  only from `DP_B5` (the 5th-order weights, `native.rs:4622-4665`); a
+  4th-order solution is never computed, let alone subtracted from the
+  5th-order one.
+- **Julia (`src/dopri.jl:14-18`):** `b5` and `b4` are each defined as
+  `Float64`-rounded rational literals, and `const errest = b5 .- b4` is
+  computed **once at module load** (a `const`, not recomputed per step).
+  `RK45.jl:288-291`'s `step!` then accumulates `s.yerr += s.dt*s.ks[ii]*errest[ii]`
+  — the same `Σᵢ eᵢ·kᵢ` direct-dot-product form, not a per-step `y5−y4`
+  subtraction of full state vectors. `PreconStepper` (`RK45.jl:239`) reuses
+  the same generic `step!`.
+
+So both backends already implement "the standard, numerically superior
+formulation" the item proposes. There is no runtime `y5−y4` cancellation to
+remove from either hot loop.
+
+#### The real (much smaller) discrepancy, and why fixing it doesn't help
+
+The one genuine gap: Julia's `errest[i]` is computed via
+`Float64(b5ᵢ_rational) − Float64(b4ᵢ_rational)` (double-rounded), while
+Rust's `DP_ERREST[i]` is `Float64(eᵢ_rational)` (singly-rounded, from the
+already-reduced fraction). Checked numerically (Python, reproducing both
+computations bit-for-bit):
+
+| Coefficient | Julia (`b5−b4`) | Rust (`DP_ERREST`, direct) | Match |
+|---|---|---|---|
+| E1 | −0.0012326388888888873 | −0.0012326388888888888 | 1 ULP off |
+| E3 | 0.004252770290506136 | 0.0042527702905061394 | 1 ULP off |
+| E4 | −0.036979166666666674 | −0.03697916666666667 | 1 ULP off |
+| E5 | 0.05086379716981132 | 0.05086379716981132 | exact |
+| E6 | −0.04190476190476192 | −0.0419047619047619 | 1 ULP off |
+| E7 | 0.025 | 0.025 | exact |
+
+4 of 6 nonzero coefficients differ by exactly 1 ULP (~1e-15 to ~1e-17
+relative to the coefficient's own magnitude — the same order as the
+FFTW/BLAS summation-order noise already documented as unavoidable, TESTING.md
+§3). This is a genuine, tiny, **one-time** (not per-step) discrepancy
+between the two backends' constants — but it is not the mechanism CLAUDE.md's
+"Phase 2 gotcha" and TESTING.md §3 describe. That mechanism is: the DP5(4)
+embedded pair is constructed so its error estimate is, by design,
+mathematically small whenever the true local truncation error is small —
+which is exactly the regime a weakly-nonlinear early propagation step is
+in. When the *true* `err` sits near the ~1e-15 floor, any independent
+~1e-15-relative noise in the `kᵢ` themselves (from Julia's BLAS/FFTW vs.
+Rust's Rayon-sequential summation order — an unrelated, unavoidable source,
+same TESTING.md §3) dominates the signal, producing the documented ~20%
+relative swings and the resulting adaptive-path divergence. That mechanism
+lives entirely in the `kᵢ` (the RHS evaluations), not in how the fixed
+`eᵢ` constants are computed or represented — and no reformulation of the
+coefficients touches it.
+
+**Concretely: aligning Julia's `errest` to Rust's directly-typed rational
+literals** (a one-line, free, zero-runtime-cost change — replace
+`errest = b5 .- b4` with the reduced-fraction literals, mirroring
+`DP_ERREST`) **would close the ~1e-15-relative constant gap without
+addressing the actual, much larger, and irreducible source of divergence.**
+It is available and harmless, but should not be sold as "dissolving the
+fixed-step test discipline" — it doesn't, because the dominant noise
+source it leaves untouched (cross-backend `kᵢ` summation-order noise,
+amplified by an intrinsically tiny true `err` for smooth problems) is
+unrelated to coefficient precision.
+
+#### Acceptance test / ground truth, if the micro-fix were made anyway
+
+Not a "more correct than Julia" claim in the β1 sense — both constants are
+already accurate to their own last bit; this is purely a
+bit-for-bit-alignment question. Ground truth: the exact rational value of
+each `eᵢ`, computed once and compared to both backends' current constants
+(the table above already does this). No BigFloat/analytic derivation
+needed — the "ground truth" is exact rational arithmetic, trivially exact.
+
+#### Validation blast radius
+
+Because the micro-fix changes a controller input (`err`) used by every
+adaptive (non-fixed-`dt`) test, it is technically downstream of the entire
+suite (Phase 8's gate: 46590 pass / 12 broken, 46602 total,
+`TESTING.md` §4). In practice: the perturbation (~1e-15 to ~1e-17 per
+coefficient) is smaller than the FFTW/BLAS run-to-run noise floor
+(~2e-8, TESTING.md §3) already tolerated by every full-solve test, so no
+currently-passing assertion is expected to flip. The honest statement is
+"technically all ~46.6k assertions are downstream of the step controller;
+practically none should move, because the change is smaller than noise
+already priced into every tolerance" — not "zero blast radius." Given the
+fix buys nothing for the actual documented failure mode, this doesn't
+clear the bar for spending a validation pass on it.
+
+---
+
+### 6.2 Direct PPT evaluation replacing the spline LUT
+
+**Verdict: recommend against, as specified** (replacing the LUT with a
+per-call direct evaluation in the hot RHS loop). Below is the accuracy
+case, the cost case, and the one narrower variant that might still be
+worth a bench — restated as an open question with an explicit measurement
+gate, not a recommendation.
+
+#### What's being proposed
+
+`amalthea/src/ionization.rs`'s `PptIonizationRate` evaluates a natural
+cubic spline fit to `ln(rate)` over `|E|` (`CubicSplineLUT`, built from
+`N=2^16` knots by default — `src/Ionisation.jl:533`'s
+`IonRatePPTAccel(...; N=2^16, ...)` — with a strict lower-bound cutoff
+`e_min` and a clamp-not-error policy above `e_max`,
+`ionization.rs:242-289`). Julia's own `IonRatePPTAccel` (`Ionisation.jl:480-518`)
+is the same idea one level up — a `Maths.CSpline` fit to the same
+log-rate data, cached to disk (`~/.luna/pptcache`, `Ionisation.jl:528-570`)
+so the expensive fit is amortized across process launches. The item
+proposes evaluating the true PPT series (`IonRatePPT`, `Ionisation.jl:367-422`)
+directly on every call, on both sides, removing interpolation error
+entirely.
+
+#### Accuracy argument: real, but immaterial
+
+Evaluating the PPT formula directly is unambiguously "more correct" than
+interpolating a spline through it, in the same direction as β1 (Rust
+computing something exact instead of an approximation). But unlike β1,
+where Julia's FD error against the true derivative was ~1e-12 and
+accumulated *coherently* over a broadband, long-propagation to a physically
+meaningful ~1e-4–1e-7 full-solve effect, the LUT here is fit at
+`N=2^16` = 65536 knots in log-space over the field-strength axis. A
+natural cubic spline at that knot density interpolates a smooth,
+monotonic-ish function (`IonRatePPT` output) to an error far below any
+physical tolerance the simulation carries elsewhere (this is exactly why
+`TESTING.md` §2 classifies "LUT/spline interpolation" as its own
+~1e-8-tier bucket, already tighter than the ~1e-6 floor tier most
+full-solve tests live at). There is no evidence, measured or structural, of
+a coherent, propagation-scale error mechanism here the way there was for
+β1 — the interpolation error is uncorrelated, essentially white noise
+across the field-strength axis, at a magnitude below the noise floor the
+suite already tolerates. **"More correct" is true; "buys anything" is not
+demonstrated,** which is the opposite of β1's case.
+
+#### Cost argument: this is where it fails
+
+`amalthea/src/ionization.rs`'s `PptIonizationRate::rate` today is a binary
+search (`~log2(65536)≈16` comparisons) plus a cubic evaluation
+(`a + dx*(b + dx*(c + dx*d))`, ~6 flops) — call it O(10ns) per grid point,
+per stage, and it vectorizes/parallelizes trivially (`rate_vector`,
+`ionization.rs:291-306`, with an optional GPU path).
+
+The PPT formula it replaces (`Ionisation.jl:367-422`) is materially more
+expensive, and in its default configuration has an **unbounded** tail:
+
+- `sum_integral` defaults to `false` (`Ionisation.jl:347-348`), meaning the
+  rate is not the closed-form integral approximation but an explicit
+  series summed via `Maths.converge_series` to `rtol=1e-6`
+  (`Ionisation.jl:409-413`) — an iteration count that depends on the
+  Keldysh parameter `γ` and isn't bounded a priori.
+- Each series term calls `φ(m, x)` (`Ionisation.jl:427-461`), which for
+  `m=0` is a Dawson-function evaluation, for `m≠0, x≤26` is a confluent
+  hypergeometric function (`pFq`) times gamma functions, and **for
+  `m≠0, x>26` falls back to adaptive quadrature (`hquadrature`) over a
+  `BigFloat` integrand** (`Ionisation.jl:453-459`). That last branch is
+  categorically impossible to run in a Rust hot loop without either
+  reimplementing arbitrary-precision arithmetic and adaptive quadrature in
+  Rust (a large, separate porting project with no existing primitive to
+  reuse — `cubature.rs`'s `libcubature` binding is `f64`-only) or accepting
+  silent divergence from Julia's answer exactly in the regime it was added
+  to handle.
+- Even the cheaper `sum_integral=true` closed-form variant
+  (`Ionisation.jl:407`, `s = sqrt(π)*factorial(mabs)*β^mabs/...`) requires
+  several `pow`/`exp`/`asinh`/`sqrt`/`gamma`-adjacent evaluations per call
+  — call it conservatively 20-30 transcendental-function-class operations,
+  each tens of ns, i.e. **~0.5-1.5µs per call**, a rough 50-150x per-call
+  slowdown versus the spline even before counting the accuracy cost of
+  using a cheaper formula than Julia's own default oracle uses (see below).
+
+The plasma path is not a cold path: `apply_plasma_radial`/the mode-averaged
+plasma step calls the ionisation rate once per time-domain grid point,
+every RHS stage, every accepted-or-rejected step. Measured
+(`docs/dev/BACKLOG.md`, S2 Phase 2 item 2, `Instant`-based profiling,
+add/measure/revert discipline): **plasma is 24.5-40.5% of `rhs_radial`
+wall time today, on the cheap spline path**
+(N=32 r-points: 40.5%; N=128 r-points: 24.5%). A 50-150x per-call slowdown
+on a term that is already a quarter-to-two-fifths of RHS time would not
+shave a few percent off a solve — it would make plasma-enabled propagation
+dominated by ionisation-rate evaluation, likely a multi-x regression on
+total wall time for exactly the configs (strong-field, plasma-heavy) where
+the native port's performance case matters most. And that estimate is for
+the *cheap* variant; the *default* (`sum_integral=false`, unbounded series
++ occasional BigFloat quadrature) is not boundable at all — it cannot be
+given a worst-case per-call cost, which alone disqualifies it from a
+allocation-free, real-time-budgeted hot loop.
+
+There is also a version-mismatch problem baked into "replace the LUT with
+direct evaluation": if the *cheap* (`sum_integral=true`) formula is used
+for speed, that is no longer the same ground truth the LUT was fit to
+(which uses Julia's default `sum_integral=false`) — so switching would
+trade a well-characterized, sub-noise-floor interpolation error for an
+uncharacterized, physically real "neglects the multiphoton thresholds"
+approximation error (the docstring's own words, `Ionisation.jl:285-286`).
+That is not obviously a net accuracy win, and is not the β1 pattern
+("more correct, unambiguously") at all.
+
+#### The stated secondary motivation is already moot
+
+`SUGGESTIONS.md` #16 and `MATH.md` §8.2 both cite "structurally eliminates
+the out-of-range segfault (BACKLOG Phase J item 2)" as a benefit. That
+segfault is **already resolved** (`ARCHIVE.md`, Phase J archived item 2,
+"Resolved 2026-07-09"): the root cause was a NaN/±inf comparison gap (IEEE
+754 makes every comparison with NaN false, silently falling through both
+the `< e_min`/`> e_max` guards), fixed by an explicit `is_finite()` check
+in both `CubicSplineLUT::evaluate` and `PptIonizationRate::rate`
+(`ionization.rs:242-289`), backed by 11 new Rust unit tests
+(`ionization.rs:449-591`, including `ppt_non_finite_inputs_never_panic`,
+`ppt_extreme_sweep_never_panics`) sweeping ±1e10× the fitted range in both
+signs without a panic. The LUT already has no fitted-range-based failure
+mode left to eliminate; a direct-eval rewrite would not be closing an open
+safety gap, it would be redundant with a cheaper fix already shipped.
+
+#### Acceptance test / ground truth, if pursued anyway
+
+The direct sum against a `BigFloat` evaluation of the same series (as
+`SUGGESTIONS.md` #16 itself proposes) is the right ground truth *for the
+accuracy question* — but accuracy was never the blocker here. Cost is. Any
+future revisit should lead with a Criterion microbenchmark of
+`IonRatePPT`-direct (both `sum_integral` settings) against
+`PptIonizationRate::rate`, at the actual per-RHS-call rate (once per
+`n_time × n_r` point, or `n_time` for mode-averaged), gated the same way
+S5 item 1's mixed-precision spike was: **measure first, in a
+timeboxed/reverted benchmark, before writing any production code**, against
+an explicit threshold (e.g. "total plasma-path time must not exceed
+current + X% of a representative solve's wall time" — pick X based on
+how much of the native port's advertised speedup budget plasma is allowed
+to consume, not an arbitrary number invented here).
+
+#### Validation blast radius
+
+If measurement somehow cleared the cost bar (unlikely given the analysis
+above, and only conceivable for the `sum_integral=true` variant with a
+hard cap disallowing the `m≠0,x>26` BigFloat branch — i.e., a genuinely
+different, narrower formula than Julia's default, which would itself need
+its own accuracy sign-off before being called a drop-in replacement): every
+plasma-enabled test in `sim-propagation`, `sim-multimode`, and the `rust`
+group's ionisation-specific tests (`test_ionisation_rust.jl`) would need
+re-validation at whatever tier the new method/ground-truth pairing
+justifies — likely the "method/spline" ~1e-8 tier stays, since both old
+and new paths interpolate or approximate the same underlying physics, just
+via a different intermediate representation.
+
+---
+
+### 6.3 Short-kernel overlap-save Raman convolution
+
+**Verdict: recommend, narrowly scoped to pad-shortening — not full
+block-based overlap-save.**
+
+#### Scope: which Raman kernel this touches
+
+There are two distinct native Raman kernels (`CLAUDE.md`'s kernel-wiring
+table, `MATH.md` §5.3, §8.4):
+
+1. The **default carrier-field path** (`raman.rs`'s
+   `TimeDomainRamanSolver`, an explicit exponential-integrator ADE
+   solve) — already O(N), allocation-free, no FFT at all. **Out of scope**
+   for this item; there is no convolution to shorten.
+2. The **intermediate-broadening `:SiO2` path** (`native.rs`'s
+   `raman_fft_e2`/`raman_fft_hw`/`raman_fft_plan`, `native.rs:301-325,
+   1490-1523`, wired via `native_set_raman_fft_params`) and its Julia
+   counterpart `RamanPolarEnv` (`Nonlinear.jl:327` onward) — both use a
+   **full c2c FFT over a zero-padded double-length grid**
+   (`2·n_time_over`), every RHS call. This is the one the item, and BACKLOG
+   open remainder "Phase J.3," both target.
+
+#### Why the grid is doubled today, and why truncation is safe in principle
+
+Luna's own comment (`Nonlinear.jl:443-447`) explains the doubling: it gives
+an "accurate full convolution between the full field grid and the full
+extent of the impulse response function, with no truncation of the
+response function... this is safe, until we come up with [something more
+efficient]." For the SiO2 intermediate-broadening (Hollenbeck & Cantrell
+Gaussian-damped) response, `h ≈ 0` beyond roughly 100 fs on a
+multi-picosecond simulation grid — already noted as the reason a stale-tail
+bug in the padded buffer was numerically invisible in every existing test
+(`ARCHIVE.md`, Phase I archived item 1). That is the concrete basis for
+truncating the kernel: measure the index `M` where `|h|` drops below (say)
+a few ULPs of its peak in `f64`, and use a pad of `~n_time_over + M`
+instead of `2·n_time_over`.
+
+#### Decomposing the actual speedup — the "overlap-save" name overclaims
+
+The naive framing ("kernel is a small fraction of the grid → convolution
+gets proportionally cheaper") is wrong because FFT cost is `O(N log N)`,
+not `O(N)`, and there are two structurally different ways to exploit a
+short kernel:
+
+- **Pad-shortening only (recommended here):** keep a single FFT per RHS
+  call, but size the zero-pad to `n_time_over + M` (rounded to an
+  FFT-friendly length) instead of `2·n_time_over`. This is a **clean,
+  low-risk ~2x** in the typical case where `M ≈ n_time_over` shrinks the
+  transform length by roughly half — no algorithmic change, same
+  convolution theorem, same single resident FFTW plan (just shorter),
+  same code shape as the existing `raman_fft_plan`. It **stacks
+  multiplicatively** with item J.3's r2c/c2r halving (also ~2x, from using
+  a real-valued transform instead of c2c on data that's real in both
+  domains) — combined, roughly **~4x** on this specific kernel.
+- **Full block-based overlap-save** (many short FFTs, one per
+  `M`-sized input block, standard fast-convolution machinery): adds only
+  the *additional* `log(N)/log(M)` factor on top of the above — for
+  realistic `M/N` ratios here (kernel maybe 5-10% of the padded grid),
+  that's roughly **another 1.3-1.5x**, at materially higher implementation
+  complexity (block bookkeeping, save/discard logic, edge handling at
+  segment boundaries) and more surface area for a correctness bug.
+
+**The bulk of the achievable win is pad-shortening alone.** Full
+block-based overlap-save is a real but much smaller additional
+multiplier for a lot more code — worth deferring until pad-shortening
+plus J.3's r2c/c2r halving are landed and measured, not worth bundling into
+the same change.
+
+#### Relationship to item J.3 (r2c/c2r halving)
+
+**Complementary, not superseded by or exclusive with it.** J.3 attacks the
+*representation* of the transform (complex-valued FFT on real-valued data →
+real-valued FFT, same length, ~2x from skipping the redundant
+conjugate-symmetric half). Pad-shortening attacks the *length* of the
+transform (shorter effective kernel → shorter pad → smaller `N` in the
+`O(N log N)` cost, another ~2x). Neither subsumes the other; a combined
+r2c/c2r-on-a-shortened-pad implementation captures both multipliers
+(~4x) with one coordinated change, and is a natural single unit of work
+alongside — or immediately following — whichever agent lands J.3, so the
+two don't produce a merge conflict on the same `native.rs` FFT-setup code.
+
+#### Why this one, uniquely among the three, need not diverge from the oracle
+
+Items 6.1 and 6.2 either found nothing to change (6.1) or would need a
+genuine, physically real accuracy/cost tradeoff against the Julia oracle
+(6.2). Item 6.3 is different in kind: **if the truncation cutoff `M` is
+chosen so that everything discarded is below the f64 noise floor relative
+to the kept kernel's peak, the truncated convolution and the full-grid
+convolution are the same computation to within noise — not a "more
+correct than Julia" divergence in the β1 sense, but a "provably
+equivalent to the existing native SiO2 kernel and to `RamanPolarEnv`,
+just computed over a shorter buffer" claim.** The ground truth is the
+existing full-double-length-grid convolution (Rust-vs-Rust, or
+Rust-vs-Julia's `RamanPolarEnv`), not a BigFloat/analytic derivation — a
+materially easier bar than β1's, precisely because nothing here is
+claimed to be *more accurate than Luna's physics*, only *cheaper to
+compute the same physics*.
+
+Two implementation choices follow from this:
+
+- **Truncate only where measured, per-material, at setup** — not a fixed
+  cutoff. `MATH.md` §8.5's own framing ("checked at setup, falling back to
+  the full double grid otherwise") is right: compute `M` from the actual
+  `h` array being used (SiO2's specific Gaussian-damping constants,
+  already resident), not a hardcoded 100fs guess, so the mechanism is
+  correct for any future material with a longer-tailed response.
+- **If the cutoff is chosen conservatively enough that truncation error is
+  below f64 noise, both `RamanPolarEnv` (Julia) and the native `:SiO2`
+  kernel can adopt the shorter pad in the same commit**, preserving exact
+  bit-parity between them (same discipline `SUGGESTIONS.md` #15 correctly
+  insists on for the DP5(4) coefficients: land both sides together). This
+  keeps the change inside the *existing* SiO2 equivalence tier
+  (`~1e-6`-ish, FFT-method class, `TESTING.md` §2) rather than opening a
+  new "deliberate divergence" tier.
+
+**Hard boundary (already correctly stated in `MATH.md` §8.5, repeated
+here for completeness):** do not go further and fit a recursive/IIR filter
+to the Gaussian-damped response to avoid the FFT altogether — that is the
+multi-SDO approximation trap `ARCHIVE.md`'s Phase I item 2 explicitly
+rules out ("prefer analytic over LUT/fit-the-noise").
+
+#### Acceptance test / ground truth
+
+Rust-vs-Rust (truncated-pad kernel vs. the existing full-`2·n_time_over`
+kernel, same inputs, single RHS evaluation) at whatever tier the measured
+truncation error justifies — expect ~bitwise-to-reassociation
+(`< 1e-13`) if the cutoff is chosen conservatively per the discussion
+above, since the discarded tail is defined to be below the f64 noise
+floor. If Julia's `RamanPolarEnv` is changed in the same commit, the
+existing native-vs-Julia SiO2 full-solve test keeps its current tolerance
+tier unchanged (fixed-step discipline per `TESTING.md` §3, since any
+transform-length change alters summation order).
+
+#### What to measure before implementing
+
+1. **The effective kernel length `M`** for the SiO2 response actually used
+   in the test suite and in representative user configs: the smallest `M`
+   such that `max(|h[M:]|) < ε · max(|h|)` for `ε` a few ULPs of `f64`
+   (e.g. `1e-15`-`1e-14` relative). This single number decides both
+   pad-shortening's multiplier (`M / n_time_over`, roughly) and whether
+   full block-based overlap-save's extra `log(N)/log(M)` factor is worth
+   its complexity — if `M` turns out close to `n_time_over` (i.e. the
+   response barely decays on the grid), there is little to gain and this
+   item should be shelved for that config.
+2. **A wall-clock benchmark of the shortened-pad FFT vs. the current
+   `2·n_time_over` FFT**, isolated (Criterion, add/measure/revert
+   discipline per S1.6/S5.1), to confirm the ~2x (or combined ~4x with
+   r2c/c2r) actually materializes on this codebase's FFTW binding and
+   plan-reuse pattern, before committing to a production change.
+
+#### Validation blast radius
+
+Narrow by construction: only the `:SiO2`/`RamanPolarEnv` path is touched
+(`prop_gnlse(...; ramanmodel=:SiO2)`'s reachable configs, per `native.rs`'s
+own comment at `native.rs:5516-5519`). The default carrier-field SDO
+path, every Kerr-only/plasma-only config, and every other geometry are
+untouched. If both Julia and Rust change together (recommended), the
+existing SiO2-specific tests are the entire blast radius — no
+suite-wide adaptive-step-path perturbation the way 6.1's micro-fix would
+cause, because the *result* is designed to be numerically unchanged, only
+the FFT length differs.
