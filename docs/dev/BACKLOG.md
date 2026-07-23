@@ -105,9 +105,11 @@ and S5 on 2026-07-23.
 
 Full detail (equations, rationale, per-item code sketches) stays in
 `SUGGESTIONS.md` — this is the tracking summary, synced so status lives in
-one place. None of S2/S4/S5/S6 has started; **S1.5 was attempted
+one place. S1, S2, S4 and S5 are now closed (S2 on 2026-07-22, S5 on
+2026-07-23); S6 has not started; **S1.5 was attempted
 2026-07-07 and found broken** (see S1.5 below — disabled by default, real
-fix still open). **S3 is partially started**:
+fix still open). **S3 is partially started, and what landed does not work**
+(item 0 below):
 the GPU-resident stepper work landed 2026-07-05/07 (see Phase G's "Open
 items" entry and ARCHIVE.md's "Done (recent)") implements a narrow slice of S3
 (mode-averaged RealGrid Kerr-only, no threading/dispatch-threshold/design
@@ -117,7 +119,11 @@ rot"), which is exactly what happened once already (uncommitted 2 days,
 found broken until manually re-verified). GPU CI is still open (see "GPU
 CI coverage" below) — treat S3's remaining scope (design doc, full
 `NativeBackend` parity, threading, dispatch threshold, `test_native_gpu.jl`)
-as still gated on it.
+as still gated on it. **Update 2026-07-23:** the slice that did land is
+now known not to compute any nonlinearity at all (item 0), which is exactly
+the rot that entry predicted — it went unnoticed for over two weeks because
+the only test guarding it asserts a tolerance larger than the physics it
+tests.
 
 **ISA / hardware dispatch — synced to actual code state (2026-07-07):**
 `dispatch.rs`'s hardware cascade (CUDA → Vulkan → AVX-512 → AVX2 → NEON →
@@ -331,13 +337,15 @@ then reproducing the crash directly:**
   must be **bit-identical**, not merely within tolerance — a stronger,
   more testable guarantee than typical parallel-code equivalence.
 
-### 🟠 S3 — GPU-resident propagation (suggestion 1) — partially started, see note above
+### 🔴 S3 — GPU-resident propagation (suggestion 1) — partially started, and the landed slice is broken (item 0)
 *Large (5+ sessions). Plan's own stated dependency (GPU CI) is not yet
 met — see "GPU CI coverage" below. This machine has real GPU hardware
-(RTX 5060 Ti, CUDA 13.3) usable for manual verification of future slices,
-confirmed 2026-07-11 (`nvidia-smi` needs the sandbox disabled to reach the
-driver — a standing requirement for any GPU work in this repo, not a
-one-off).*
+(RTX 5060 Ti, driver 610.43.02, CUDA 13.3) usable for manual verification of
+future slices, confirmed 2026-07-11 and again 2026-07-23 (`nvidia-smi` needs
+the sandbox disabled to reach the driver — a standing requirement for any GPU
+work in this repo, not a one-off). **Read item 0 before treating any other
+item in this track, or any "verified on real hardware" claim elsewhere in the
+docs, as load-bearing.**
 Already landed (2026-07-05/07, ahead of the plan's own sequencing): the
 `NativeBackend` trait extraction, `CudaNativeSim` scoped to mode-averaged
 RealGrid Kerr-only (not "+plasma" — see item 1 below, plasma was never

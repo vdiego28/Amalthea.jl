@@ -59,6 +59,17 @@ call site matching on an enum. §4 above is left as historical design intent;
 treat "`Box<dyn NativeBackend>`, not an `enum`" as current fact everywhere
 else in this document.
 
+> **🔴 Retracted in part, 2026-07-23.** "Verified on real hardware" below
+> means *ran to completion and matched the Julia oracle within the tolerance
+> its test asserts*. That tolerance (`rel_solve < 1e-3`) turns out to be
+> larger than the entire nonlinear effect of the config being tested
+> (~4.5e-4), and direct measurement now shows the GPU-resident RHS
+> contributes **no nonlinearity at all** (`max|kᵢ|` = 3.5e-13 vs the CPU
+> backend's 12225; the accepted step is pure linear propagation to 15
+> digits). The six bugs listed below were real and really fixed; the
+> *numerical* verification claim was not the check it appeared to be. See
+> `BACKLOG.md` S3 item 0 before relying on anything in this document.
+
 **Verified on real CUDA hardware 2026-07-07** (RTX 5060 Ti, CUDA 13.3 —
 the same machine, confirmed via `nvidia-smi`) and **wired into `RK45.jl`**,
 opt-in via `AMALTHEA_USE_RUST_CUDA_NATIVE=1` (`RustNativeSimHandle`'s `use_gpu`
