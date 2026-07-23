@@ -343,6 +343,35 @@ Already landed (2026-07-05/07, ahead of the plan's own sequencing): the
 RealGrid Kerr-only (not "+plasma" — see item 1 below, plasma was never
 implemented), verified on real hardware, wired behind
 `AMALTHEA_USE_RUST_CUDA_NATIVE=1`. Still open, per the original design:
+
+0. 🔴🔴 **The GPU-resident RHS contributes no nonlinearity at all — found
+   2026-07-23, blocks everything else in this track.** For the exact config
+   `test_native_cuda.jl`'s Kerr-only testitem uses (125µm He capillary,
+   1 bar, 800nm, 1µJ, 30fs), the GPU backend's stage derivatives measure
+   `max|kᵢ| = 3.5e-13` against the CPU backend's **12225**, and its accepted
+   step equals pure linear propagation `exp(L·h)·y₀` to 15 digits — i.e. the
+   nonlinear term is absent, not merely inaccurate. Reproduced on real
+   hardware (RTX 5060 Ti, driver 610.43.02), and confirmed **pre-existing**
+   by re-measuring against a build with the 2026-07-23 `cuda_native.rs`
+   changes reverted (identical numbers to the last digit).
+   - **Why every GPU test passes anyway:** `test_native_cuda.jl` asserts
+     `rel_solve < 1e-3`, but the *entire* nonlinear effect for that config is
+     ~4.5e-4 over the solve (1.3e-4 per step). The tolerance is looser than
+     the physics being tested, so "GPU matches Julia" is vacuously true —
+     the same failure mode as the Phase I plasma-density bug
+     (`VANILLA_LUNA_ISSUES.md` §1), where every equivalence test ran in a
+     regime where the missing term was negligible.
+   - **Not yet diagnosed.** Prime suspects, in order: `set_mode_avg_params`
+     discards `pre_re`/`pre_im`/`beta`/`sidx`/`nlscale`/`sqrt_aeff`
+     (all `_`-prefixed there) which the mode-averaged RHS needs; the
+     `n_time > 0 && fft_r2c != 0 && fft_c2r != 0` guard around the whole
+     nonlinear block, which fails *silently* if `cufftPlan1d` fails (its
+     return code is discarded); and the `n_time`-vs-`n_time_over` sizing
+     mismatch (item 6) feeding the cuFFT plans.
+   - **First step when resuming:** assert every `cufftPlan1d`/`cufftExec`
+     return code instead of discarding it, and tighten
+     `test_native_cuda.jl`'s tolerance below the config's own nonlinear
+     share so the test can fail.
 1. 🟢 **Done 2026-07-11.** Design doc reconciliation
    (`docs/dev/native-port/GPU.md`). Rewrote §8 (was still the stale
    2026-07-05, pre-hardware "untested" text — the 2026-07-07 verification

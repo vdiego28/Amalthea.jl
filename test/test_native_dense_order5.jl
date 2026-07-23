@@ -332,3 +332,96 @@ end
         end
     end
 end
+
+@testitem "Native-Rust dense output: GPU-resident backend (BACKLOG S5 item 3)" tags=[:rust] begin
+    import Test: @test, @test_skip, @testset
+    using Amalthea
+    using Amalthea.RK45: RustNativeStepper, step!, interpolate
+    import Logging: with_logger, NullLogger
+    import LinearAlgebra: norm
+
+    libpath = RK45._LIBAMALTHEA_RK45
+    if !isfile(libpath)
+        @test_skip "Rust library not found"
+    else
+        # `CudaNativeSim` doesn't implement `compute_extra_stages` (returns
+        # -1), so `interpolate` takes the order-4 `interpC` branch there. Two
+        # things that branch needs on the GPU backend, neither of which had
+        # any coverage before 2026-07-23 because every GPU test drives the
+        # stepper through raw `solve()` and never asks for dense output:
+        #   1. `native_apply_prop` must work at all. `CudaNativeSim::apply_prop`
+        #      returned a bare -1, so `check_ffi` threw and *every* dense-output
+        #      query on the GPU path was a hard error — i.e. any `Luna.run`
+        #      with `saveN` under `AMALTHEA_USE_RUST_CUDA_NATIVE=1` crashed.
+        #   2. Its result must actually equal `exp(linop*(t2-t1))*y`, which is
+        #      checked below against the CPU backend's own `apply_prop` on
+        #      identical input — a tight (~1e-15) equivalence, since both are
+        #      the same closed-form elementwise complex exponential.
+        radius = 125e-6; flength = 0.15; gas = :He; pressure = 1.0
+        args = (radius, flength, gas, pressure)
+        kw = (; λ0=800e-9, λlims=(200e-9, 4e-6), trange=1e-12, raman=false,
+              plasma=false, kerr=true, shotnoise=false, energy=1e-6, τfwhm=30e-15)
+
+        Eω, grid, linop, transform, FT, output = with_logger(NullLogger()) do
+            Interface.prop_capillary_args(args...; kw...)
+        end
+
+        t0 = 0.0; h = 0.01
+        s_cpu = RustNativeStepper(transform, linop, copy(Eω), t0, h;
+                                  rtol=1e-6, atol=1e-10, max_dt=h, min_dt=h)
+
+        gpu_available = true
+        gpu_error = nothing
+        withenv("AMALTHEA_USE_RUST_CUDA_NATIVE" => "1", "AMALTHEA_NATIVE_GPU" => "on") do
+            local s_gpu
+            try
+                s_gpu = RustNativeStepper(transform, linop, copy(Eω), t0, h;
+                                          rtol=1e-6, atol=1e-10, max_dt=h, min_dt=h)
+            catch e
+                gpu_available = false
+                gpu_error = e
+                return
+            end
+            @assert step!(s_gpu)
+
+            @testset "dense output does not error on the GPU backend" begin
+                # Regression for `CudaNativeSim::apply_prop` returning -1.
+                y = interpolate(s_gpu, t0 + 0.5h)
+                @test length(y) == length(Eω)
+                @test all(isfinite, y)
+                @test norm(y) > 0
+            end
+
+            @testset "GPU apply_prop matches the CPU backend (~1e-15)" begin
+                n = length(Eω)
+                for frac in (0.25, 0.6, 1.0)
+                    a = copy(Eω); b = copy(Eω)
+                    for (s, buf) in ((s_gpu, a), (s_cpu, b))
+                        rc = ccall((:native_apply_prop, RK45._LIBAMALTHEA_RK45), Cint,
+                              (Ptr{Cvoid}, Ptr{ComplexF64}, Csize_t, Float64, Float64),
+                              s._handle.ptr, buf, Csize_t(n), 0.0, frac*h)
+                        @test rc == 0
+                    end
+                    rel = norm(a .- b) / norm(b)
+                    println("GPU-vs-CPU apply_prop at dt=$(frac*h): rel=$rel")
+                    @test rel < 1e-14
+                end
+            end
+
+            # NOT asserted here: the dense-output *convergence order* on the
+            # GPU path, which is what would empirically confirm the FSAL fix
+            # (`cuda_native.rs` step 0) for this backend the way the CPU
+            # testsets above do. It cannot be measured while the GPU-resident
+            # RHS contributes no nonlinearity at all — measured `max|kᵢ|` is
+            # 3.5e-13 against the CPU backend's 12225 for this exact config,
+            # and the GPU's accepted step equals pure linear propagation to
+            # 15 digits. With `kᵢ ≈ 0` the interpolant is exact whichever
+            # stage sits in slot 0, so the measurement is blind. Tracked as an
+            # open item in `docs/dev/BACKLOG.md` / `VANILLA_LUNA_ISSUES.md` §5;
+            # re-enable an order check here once it is fixed.
+            @test_skip "GPU dense-output convergence order — blocked on the missing GPU-resident nonlinearity (BACKLOG S3)"
+        end
+
+        gpu_available || @test_skip "CUDA GPU/toolkit not available on this machine: $gpu_error"
+    end
+end

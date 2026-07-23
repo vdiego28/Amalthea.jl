@@ -22,6 +22,7 @@ so much as documented).
 | `Polarisation.ellipse` always returns θ=0 | 1. Correctness bug | Fixed |
 | `SSHExec` missing `files=String[]` kwarg (scp loop dropped) | 1. Correctness bug | Fixed |
 | `PhysData._safe_n` clamped below-resonance Sellmeier to n=1 instead of complex sqrt | 1. Correctness bug | Fixed |
+| Eager FSAL carry destroys k1 before `interpolate` reads it → **all** dense output is first-order | 1. Correctness bug | Fixed (2026-07-23) |
 | Native plasma polarization missing density factor (mode-avg/radial) | 1. Correctness bug (port-introduced, not vanilla) | Fixed — see note |
 | `Modes.dispersion`'s adaptive-FD β1(z) has ~1e-12 relative error vs. the true derivative | 2. Numerical-accuracy shortcut | Accepted limitation (Rust deliberately diverges for accuracy) |
 | PPT ionisation rate is a spline LUT, not a direct evaluation | 2. Numerical-accuracy shortcut | Not fixed (open, MATH.md §8.2 / SUGGESTIONS #16) |
@@ -35,11 +36,13 @@ so much as documented).
 | Default `prop_capillary` (plasma on by default) silently never used the native path | 3. Port-of-vanilla-behavior bug | Fixed (Phase C) |
 | Mode-averaged/radial shot noise (`Et_noise`) silently dropped by native path | 3. Port-of-vanilla-behavior bug | Fixed (Phase I item 1) |
 | `:SiO2` intermediate-broadening Raman model not representable by native's SDO solver | 3. Port-of-vanilla-behavior gap | Fixed (Phase I item 2, second resident kernel) |
+| GPU-resident dense output threw on every query (`apply_prop` returned -1) | 3. Port-of-vanilla-behavior bug | Fixed (2026-07-23) |
 | FFTW `PATIENT` mode + `loadFFTwisdom`/`saveFFTwisdom` cause run-to-run step-path variability | 4. Non-determinism characteristic | Accepted limitation (pre-existing upstream behavior); newly *also* exposed on the native path (open design question) |
 | Adaptive-path divergence amplifies tiny FP differences into different `dt` sequences | 4. Non-determinism characteristic | Accepted limitation; worked around in tests via fixed-step comparison |
 | `PptIonizationRate::rate` can segfault far outside its fitted range | 5. Open/tracked problem | Not fixed (open, BACKLOG Phase J item 2) |
 | BLAS-3 QDHT wiring is broken, disabled by default | 5. Open/tracked problem | Not fixed (open, BACKLOG S1 item 5) |
 | Windows scan-queue `flock`/native FFTW-wisdom race under concurrent processes | 5. Open/tracked problem | Not fixed (open, newly found 2026-07-09) |
+| GPU-resident RHS contributes no nonlinearity; its own test's tolerance is looser than the physics | 5. Open/tracked problem | Not fixed (open, found 2026-07-23) |
 
 ---
 
@@ -81,6 +84,62 @@ below-resonance refractive index behavior for any simulation probing deep-UV
 or other below-resonance wavelengths for these glasses.
 **Status: Fixed.** Restored complex-sqrt semantics; `test/test_physdata.jl`
 pins BK7 at 70nm (n²≈-3.70, below resonance) against upstream's value.
+
+### Eager FSAL carry destroyed k1 before `interpolate` could use it
+**Found:** `BACKLOG.md` S5 item 3, 2026-07-23, while finishing an interrupted
+agent's order-5 dense-output work. This one is squarely **upstream Luna's**,
+not the fork's: it is present in `LupoLab/Luna.jl`'s own `src/RK45.jl` and
+was faithfully re-ported into all three of this fork's Rust steppers.
+**Problem:** `step!` performed the FSAL carry `s.ks[1] .= s.ks[end]` (k7
+becomes the next step's k1) at the moment a step was *accepted*:
+
+```julia
+if s.ok
+    s.tn = s.t + s.dt
+    s.ks[1] .= s.ks[end]   # ← clobbers this interval's k1
+```
+
+But `interpolate(s, ti)` runs **after** that, for output points lying inside
+the interval that just finished, and the continuous extension needs *that
+interval's* k1 — it was handed k7 instead, which differs from k1 by O(h).
+The irony is that the surrounding code was written with exactly this hazard
+in mind: `evaluate!` carries the comment *"this happens at the beginning
+because the interpolant still requires the old values after the step has
+finished"*, and defers `dt`/`t`/`y` for precisely that reason. `ks[1]` was
+the one piece of state that got missed.
+
+Consequence: the dense-output polynomial reproduced only `y0 + σ·h·y′(t0)`
+correctly, so its local defect degraded from O(h⁵) to **O(h²)** — i.e. the
+"quartic Hermite" interpolant was in practice *first-order*, no better than
+the linear stopgap it is contrasted with in §3 below. Every saved output
+point that does not land exactly on an accepted-step boundary — which is
+very nearly all of them, for any `saveN`/`MemoryOutput` run — was affected,
+on every stepper: vanilla `Stepper`, vanilla `PreconStepper`, and this
+fork's `RustPreconStepper`, `RustNativeStepper` and CUDA-resident backend.
+Final-z values were never affected (they land on a step boundary), which is
+why it survived so long: the quantity most tests assert on is exactly the
+one quantity the bug cannot touch.
+
+Measured signature, mode-averaged Kerr `prop_capillary`, local defect vs. a
+32×-finer reference, per halving of h:
+
+| | h=4e-2 | ratio | ratio | ratio |
+|---|---|---|---|---|
+| before (nominally quartic) | 1.08e-7 | 3.996 | 3.999 | 4.000 | ← O(h²) |
+| after | 9.57e-7 | 29.8 | 31.4 | 31.9 | ← O(h⁵) ✓ |
+
+**Status: Fixed** (2026-07-23). The carry is deferred to the top of the
+*next* step, immediately before the pre-existing re-framing of `ks[0]` into
+the new interaction-picture frame (`prop!(ks[1], t, tn)` in Julia,
+`apply_prop_cached(&mut s.ks[0], …, t_new - t_old)` in Rust). Copy still
+precedes reframe, so accepted-step values stay bit-identical — only dense
+output changes. Guarded against rejected-step retries (where `ks[0]` is
+already the right k1) via `s.ok` in Julia, a new `CpuNativeSim::fsal_pending`
+flag in `native.rs`, and `t_new > t_old` in `ffi.rs`/`cuda_native.rs`.
+Regression coverage: `test/test_native_dense_order5.jl`'s order-4 testset
+fails at ratio ≈4 if the eager copy is reintroduced.
+**Not yet reported upstream** — worth doing; the fix transfers to
+`LupoLab/Luna.jl` unchanged as the two-line `step!`/`evaluate!` move.
 
 ### Native plasma polarization missing its density factor
 **Found:** `BACKLOG.md` Phase I preamble, 2026-07-08, flagged 🔴🔴 ("critical").
@@ -240,6 +299,12 @@ final field (matched to 7.1e-15) for the same fixed-dt run.
 `get_ks_stage`; new `native_apply_prop` FFI re-expresses the polynomial
 correction at query time; `interpolate` now ports the same `interpC` formula.
 Verified: the same 201-point comparison went from 1.77e-2 to 4.9e-15.
+**Amended 2026-07-23:** the interpolant this reached parity *with* was itself
+only first-order, because of the eager-FSAL bug in §1 — so the real source of
+the Phase 8 improvement was the accompanying `native_apply_prop` call (i.e.
+applying the interaction-picture propagator at dense-output time at all), not
+the polynomial order. Parity with Julia was genuine; both sides were simply
+first-order. Both are now order-5 (`BACKLOG.md` S5 item 3).
 
 ### Unrecognized bare `f!` closures silently got zero nonlinearity
 **Found:** Phase 8, item 1 of the four bugs found running the full suite.
@@ -394,6 +459,49 @@ this port's own tests via fixed-step (`max_dt=min_dt`) comparison.
 Real, live gaps still sitting in `BACKLOG.md`, listed here for completeness
 since they are relevant "vanilla Luna" (or vanilla-Luna-adjacent) issues even
 though they haven't been resolved.
+
+### GPU-resident RHS contributes no nonlinearity at all
+**Found:** `BACKLOG.md` S3 item 0, 2026-07-23, while verifying the FSAL fix
+on real hardware (RTX 5060 Ti, driver 610.43.02).
+**Problem:** for the exact mode-averaged Kerr config
+`test/test_native_cuda.jl` uses, `CudaNativeSim`'s stage derivatives measure
+`max|kᵢ| = 3.5e-13` where `CpuNativeSim` gives **12225**, and the GPU's
+accepted step equals pure linear propagation `exp(L·h)·y₀` to 15 digits. The
+nonlinear term is absent, not merely lower-fidelity — so the whole
+GPU-resident backend currently solves the *linear* problem.
+**Why it went unnoticed:** the GPU test asserts `rel_solve < 1e-3` while the
+entire nonlinear effect for its config is ~4.5e-4. The tolerance is looser
+than the physics under test, making "GPU matches Julia" vacuously true. This
+is the same failure mode as the plasma-density bug in §1, and it is the
+second time this exact pattern has hidden missing physics on a native path:
+worth treating "is this tolerance smaller than the effect I claim to be
+testing?" as a standing review question for any new equivalence test.
+**Status: Not fixed (open).** Confirmed pre-existing (not introduced by the
+2026-07-23 `cuda_native.rs` FSAL/`apply_prop` changes) by re-measuring
+against a build with those changes reverted — identical to the last digit.
+Suspects and the recommended first step are in `BACKLOG.md` S3 item 0.
+**Consequence for S5 item 3:** the FSAL fix in `cuda_native.rs` is correct by
+construction and mirrors the CPU one exactly, but cannot be *empirically*
+confirmed on the GPU path while `kᵢ ≈ 0` — with zero stage derivatives the
+interpolant is exact whichever stage occupies slot 0.
+
+### GPU-resident dense output threw on every query
+**Found:** 2026-07-23, same session.
+**Problem:** `CudaNativeSim::apply_prop` returned a bare `-1` ("not used
+manually — managed internally via cuLaunchKernel"), but `RK45.jl`'s
+`interpolate(s::RustNativeStepper, ti)` calls the `native_apply_prop` FFI
+unconditionally to re-express the dense-output polynomial at the query time.
+`check_ffi` therefore threw on **every** dense-output query under
+`AMALTHEA_USE_RUST_CUDA_NATIVE=1` — i.e. any `Luna.run`/`prop_capillary`
+with `saveN` crashed outright on the GPU path. Invisible because every GPU
+test drives the stepper through raw `solve()`, never through `Luna.run`
+— the same blind spot that hid the Phase 8 windowing bug (§3).
+**Status: Fixed** (2026-07-23). Implemented `apply_prop` for `CudaNativeSim`
+by staging the host buffer through `ystage_d` and launching the existing
+`apply_prop_fn` kernel. Verified against `CpuNativeSim`'s own `apply_prop`
+on identical input: ~1e-17 relative at three step fractions
+(`test/test_native_dense_order5.jl`'s GPU testitem, which also asserts
+`interpolate` completes at all).
 
 ### `PptIonizationRate::rate` can segfault far outside its fitted range
 **Found:** `BACKLOG.md` Phase J item 2 (promoted from a buried note in Phase
