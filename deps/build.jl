@@ -16,6 +16,21 @@ import Pkg, Downloads, SHA, TOML
 # published release asset.
 const _AMALTHEA_RELEASE_REPO = "vdiego28/Amalthea.jl"
 
+# The repo was renamed `luna_rust` -> `amalthea` mid-development, but GitHub
+# release v1.0.0 was published *before* `.github/workflows/release.yml` was
+# updated to stage the new `libamalthea-<triple>` names, so its three binaries
+# (and SHA256SUMS.txt manifest entries) are still named `libluna_rust-<triple>`.
+# v1.0.0 is the *only* release with this problem — release.yml stages the
+# canonical `libamalthea-*` names for every tag from here on — so the legacy
+# fallback below is bounded to versions at or before it, not open-ended: an
+# unbounded fallback would let a genuinely broken *future* release (e.g. a
+# release.yml regression that silently reverts the asset name, or an asset
+# upload that failed) masquerade as a working legacy-named install rather
+# than surfacing as a download miss. See
+# docs/dev/native-port/portlog-inbox/prebuilt-asset-compat.md for the record.
+const _LAST_LEGACY_NAMED_VERSION = v"1.0.0"
+const _LEGACY_LIBNAME_PREFIX = "libluna_rust"
+
 _libamalthea_name() = Sys.iswindows() ? "amalthea.dll" :
                         Sys.isapple()  ? "libamalthea.dylib" :
                                          "libamalthea.so"
@@ -29,54 +44,106 @@ _target_triple() = Sys.iswindows() ? "x86_64-pc-windows-msvc" :
                                      nothing
 
 """
-    try_download_prebuilt(rust_dir) -> Bool
+    _prebuilt_asset_candidates(triple, ext, version) -> Vector{String}
+
+Asset names to try, in priority order: the canonical `libamalthea-<triple>`
+name always first (so a correctly-named future release takes the fast path
+without ever touching the legacy branch), then — only for versions at or
+before `_LAST_LEGACY_NAMED_VERSION` — the legacy `libluna_rust-<triple>` name
+that release v1.0.0 actually published under.
+"""
+function _prebuilt_asset_candidates(triple, ext, version::VersionNumber)
+    candidates = String["libamalthea-$(triple)$(ext)"]
+    if version <= _LAST_LEGACY_NAMED_VERSION
+        push!(candidates, "$(_LEGACY_LIBNAME_PREFIX)-$(triple)$(ext)")
+    end
+    candidates
+end
+
+"""
+    try_download_prebuilt(rust_dir; base_url=nothing) -> Bool
 
 Download the release asset matching this package's version (`Project.toml`)
 and the running platform's target triple, verify it against the release's
 `SHA256SUMS.txt` manifest, and place it at the same
 `amalthea/target/release/<libname>` path `cargo build --release` would
-have produced. Returns `false` (never throws) on any failure — missing
-release, unsupported platform, network error, checksum mismatch — so the
-caller can fall back to building from source.
+have produced. Tries the canonical `libamalthea-<triple>` asset name first,
+falling back to the legacy pre-rename `libluna_rust-<triple>` name (bounded
+to `_LAST_LEGACY_NAMED_VERSION`, see its docstring/comment above) if the
+canonical name isn't in the manifest. Returns `false` (never throws) on any
+failure — missing release, unsupported platform, network error, checksum
+mismatch — so the caller can fall back to building from source.
+
+`base_url` overrides the GitHub releases URL (production default computed
+from `_AMALTHEA_RELEASE_REPO` + the package version); this exists solely so
+tests can point the function at a local HTTP server serving a fake release
+layout — the production call site never passes it.
 """
-function try_download_prebuilt(rust_dir)
+function try_download_prebuilt(rust_dir; base_url::Union{Nothing,AbstractString}=nothing)
     get(ENV, "AMALTHEA_RUST_SKIP_DOWNLOAD", "") == "1" && return false
     triple = _target_triple()
     triple === nothing && return false
 
-    version = TOML.parsefile(joinpath(@__DIR__, "..", "Project.toml"))["version"]
+    version_str = TOML.parsefile(joinpath(@__DIR__, "..", "Project.toml"))["version"]
+    version = VersionNumber(version_str)
     libname = _libamalthea_name()
     ext = splitext(libname)[2]
-    asset = "libamalthea-$(triple)$(ext)"
-    base_url = "https://github.com/$(_AMALTHEA_RELEASE_REPO)/releases/download/v$(version)"
+    resolved_base_url = base_url === nothing ?
+        "https://github.com/$(_AMALTHEA_RELEASE_REPO)/releases/download/v$(version_str)" :
+        String(base_url)
+    candidates = _prebuilt_asset_candidates(triple, ext, version)
 
     dest_dir = joinpath(rust_dir, "target", "release")
     mkpath(dest_dir)
     try
         return mktempdir() do tmp_dir
-            tmp_lib = joinpath(tmp_dir, asset * ".download")
             tmp_sums = joinpath(tmp_dir, "SHA256SUMS.txt")
+            Downloads.download("$resolved_base_url/SHA256SUMS.txt", tmp_sums)
+            sums_lines = collect(eachline(tmp_sums))
 
-            Downloads.download("$base_url/$asset", tmp_lib)
-            Downloads.download("$base_url/SHA256SUMS.txt", tmp_sums)
-
-            expected = nothing
-            for line in eachline(tmp_sums)
-                parts = split(line)
-                if length(parts) == 2 && parts[2] == asset
-                    expected = parts[1]
-                    break
+            for asset in candidates
+                expected = nothing
+                for line in sums_lines
+                    parts = split(line)
+                    if length(parts) == 2 && parts[2] == asset
+                        expected = parts[1]
+                        break
+                    end
                 end
+                if expected === nothing
+                    @info "No checksum entry for $asset in SHA256SUMS.txt; trying next candidate."
+                    continue
+                end
+
+                tmp_lib = joinpath(tmp_dir, asset * ".download")
+                try
+                    Downloads.download("$resolved_base_url/$asset", tmp_lib)
+                catch e
+                    @info "Could not download prebuilt asset $asset: $e"
+                    continue
+                end
+
+                actual = bytes2hex(open(SHA.sha256, tmp_lib))
+                if actual != expected
+                    # A checksum mismatch means the manifest *does* list this
+                    # asset but the downloaded bytes don't match it — a
+                    # tamper/corruption signal, not "this release doesn't have
+                    # that name." Unlike the "not in manifest" and "download
+                    # failed" cases above, don't treat this as "try the next
+                    # candidate": if the canonical asset is present but
+                    # corrupt, silently trying the legacy name next could mask
+                    # a broken release behind an unrelated fallback. Fail the
+                    # whole attempt so the caller falls back to source.
+                    @info "Checksum mismatch for $asset (expected $expected, got $actual); " *
+                          "not installing, falling back to source build."
+                    return false
+                end
+
+                mv(tmp_lib, joinpath(dest_dir, libname); force=true)
+                @info "Downloaded prebuilt amalthea library ($asset, v$version_str), skipping cargo build."
+                return true
             end
-            expected === nothing && error("no checksum entry for $asset in SHA256SUMS.txt")
-
-            actual = bytes2hex(open(SHA.sha256, tmp_lib))
-            actual == expected || error("checksum mismatch for $asset " *
-                                         "(expected $expected, got $actual)")
-
-            mv(tmp_lib, joinpath(dest_dir, libname); force=true)
-            @info "Downloaded prebuilt amalthea library ($triple, v$version), skipping cargo build."
-            true
+            return false
         end
     catch e
         @info "No usable prebuilt amalthea binary (falling back to source build): $e"

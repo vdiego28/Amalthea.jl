@@ -18,7 +18,7 @@ nmodes = length(modes)
 grid = Grid.RealGrid(flength, λ0, (160e-9, 3000e-9), 1e-12)
 
 energyfun, energyfunω = Fields.energyfuncs(grid)
-normfun = NonlinearRHS.norm_modal(grid.ω)
+normfun = NonlinearRHS.norm_modal(grid)
 
 densityfun = let dens0=PhysData.density(gas, pres)
     z -> dens0
@@ -35,9 +35,9 @@ inputs = Fields.GaussField(λ0=λ0, τfwhm=τfwhm, energy=energy)
 Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs, modes,
                                :xy; full=true)
 
+linop = LinearOps.make_const_linop(grid, modes, λ0)
 statsfun = Stats.default(grid, Eω, modes, linop, transform; gas=gas, windows=((150e-9, 300e-9),))
 output = Output.MemoryOutput(0, grid.zmax, 201, statsfun)
-linop = LinearOps.make_const_linop(grid, modes, λ0)
 
 Amalthea.run(Eω, grid, linop, transform, FT, output)
 

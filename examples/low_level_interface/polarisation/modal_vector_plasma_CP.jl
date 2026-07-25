@@ -31,14 +31,14 @@ responses = (Nonlinear.Kerr_field(PhysData.γ3_gas(gas)),
              plasma)
 
 inputs = ((mode=1, fields=(Fields.GaussField(λ0=λ0, τfwhm=τfwhm, energy=energy/2),)),
-          (mode=2, fields=(Fields.GaussField(λ0=λ0, τfwhm=τfwhm, energy=energy/2, ϕ=π/2),)))
+          (mode=2, fields=(Fields.GaussField(λ0=λ0, τfwhm=τfwhm, energy=energy/2, ϕ=[π/2]),)))
 
 Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs, modes,
                                :xy; full=false)
 
+linop = LinearOps.make_const_linop(grid, modes, λ0)
 statsfun = Stats.default(grid, Eω, modes, linop, transform; gas=gas, windows=((150e-9, 300e-9),))
 output = Output.HDF5Output("modalvectorns_CP.h5", 0, grid.zmax, 201, statsfun)
-linop = LinearOps.make_const_linop(grid, modes, λ0)
 
 Amalthea.run(Eω, grid, linop, transform, FT, output)
 
