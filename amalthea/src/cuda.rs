@@ -319,6 +319,14 @@ pub struct GpuContext {
     pub plasma_phase_fn: CUfunction,
     pub plasma_current_fn: CUfunction,
     pub plasma_polarization_fn: CUfunction,
+    /// Step 1 (zero-pad + scale spectrum into the oversampled buffer) —
+    /// BACKLOG.md S3 item 0.
+    pub expand_spectrum_fn: CUfunction,
+    /// Combined Step 1 (cuFFT unnormalized-inverse factor) + Step 2
+    /// (`1/(nlscale*sqrt_aeff)`) scalar rescale.
+    pub scale_real_fn: CUfunction,
+    /// Step 5+6+7 (crop+scale_inv, norm_pre_beta, owin).
+    pub finalize_spectrum_fn: CUfunction,
 }
 
 unsafe impl Send for GpuContext {}
@@ -554,6 +562,36 @@ pub fn init_gpu_context() -> Result<&'static GpuContext, String> {
                     return Err("cuModuleGetFunction plasma_polarization_kernel failed".to_string());
                 }
 
+                let mut expand_spectrum_fn = std::ptr::null_mut();
+                res = (driver.cuModuleGetFunction)(
+                    &mut expand_spectrum_fn,
+                    module,
+                    CString::new("expand_spectrum_kernel").unwrap().as_ptr(),
+                );
+                if res != 0 {
+                    return Err("cuModuleGetFunction expand_spectrum_kernel failed".to_string());
+                }
+
+                let mut scale_real_fn = std::ptr::null_mut();
+                res = (driver.cuModuleGetFunction)(
+                    &mut scale_real_fn,
+                    module,
+                    CString::new("scale_real_kernel").unwrap().as_ptr(),
+                );
+                if res != 0 {
+                    return Err("cuModuleGetFunction scale_real_kernel failed".to_string());
+                }
+
+                let mut finalize_spectrum_fn = std::ptr::null_mut();
+                res = (driver.cuModuleGetFunction)(
+                    &mut finalize_spectrum_fn,
+                    module,
+                    CString::new("finalize_spectrum_kernel").unwrap().as_ptr(),
+                );
+                if res != 0 {
+                    return Err("cuModuleGetFunction finalize_spectrum_kernel failed".to_string());
+                }
+
                 Ok(GpuContext {
                     device,
                     context,
@@ -573,6 +611,9 @@ pub fn init_gpu_context() -> Result<&'static GpuContext, String> {
                     plasma_phase_fn,
                     plasma_current_fn,
                     plasma_polarization_fn,
+                    expand_spectrum_fn,
+                    scale_real_fn,
+                    finalize_spectrum_fn,
                 })
             }
         })

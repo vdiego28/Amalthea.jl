@@ -248,6 +248,69 @@ extern "C" __global__ void apply_time_window_kernel(
     pto[idx] *= towin[idx];
 }
 
+// Step 1 (native.rs::rhs_mode_avg_real): zero-pad + scale the ODE-state
+// spectrum (length n_spec) into the oversampled spectral buffer (length
+// n_spec_over) that the inverse FFT expects, ahead of the nonlinear
+// evaluation on the oversampled real-space grid. `in`/`out` may be the same
+// length only when n_spec == n_spec_over (no oversampling); the general
+// case is n_spec_over >= n_spec (BACKLOG.md S3 item 6's sizing fix).
+extern "C" __global__ void expand_spectrum_kernel(
+    const cuDoubleComplex* in,
+    cuDoubleComplex* out,
+    double scale_fwd,
+    int n_spec,
+    int n_spec_over
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n_spec_over) return;
+    if (idx < n_spec) {
+        cuDoubleComplex v = in[idx];
+        out[idx] = make_cuDoubleComplex(v.x * scale_fwd, v.y * scale_fwd);
+    } else {
+        out[idx] = make_cuDoubleComplex(0.0, 0.0);
+    }
+}
+
+// Generic real-array scalar multiply. Used to fold native.rs's Step 1
+// (cuFFT's unnormalized-inverse `1/n_time_over` factor) together with
+// Step 2 (`1/(nlscale*sqrt_aeff)`) into a single pass over `eto`.
+extern "C" __global__ void scale_real_kernel(
+    double* a,
+    double factor,
+    int n
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) return;
+    a[idx] *= factor;
+}
+
+// Step 5+6+7 (native.rs::rhs_mode_avg_real): crop the oversampled forward-FFT
+// output (length n_spec_over) back to n_spec and scale by `scale_inv`
+// (Step 5), then multiply by the precomputed `norm_pre_beta` (Step 6,
+// `pre/beta*sqrt_aeff`, already folded to identity outside `sidx` on the
+// host) and `owin` (Step 7, already folded to 1.0 outside `sidx`).
+extern "C" __global__ void finalize_spectrum_kernel(
+    const cuDoubleComplex* poo,
+    cuDoubleComplex* ks_out,
+    const cuDoubleComplex* norm_pre_beta,
+    const double* owin,
+    double scale_inv,
+    int n_spec
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n_spec) return;
+
+    double vre = poo[idx].x * scale_inv;
+    double vim = poo[idx].y * scale_inv;
+
+    cuDoubleComplex npb = norm_pre_beta[idx];
+    double re = vre * npb.x - vim * npb.y;
+    double im = vre * npb.y + vim * npb.x;
+
+    double w = owin[idx];
+    ks_out[idx] = make_cuDoubleComplex(re * w, im * w);
+}
+
 // Plasma ionization fraction: fused cumtrapz(rate)*dt + rho transform.
 // Reproduces native.rs's apply_plasma_real steps 2-3 (Maths.cumtrapz! then
 // `preionfrac + 1 - exp(-integral)`) in one single-thread sequential pass —

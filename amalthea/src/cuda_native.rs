@@ -10,6 +10,10 @@ pub struct CudaNativeSim {
     pub n: usize,
     pub n_time: usize,
     pub n_time_over: usize,
+    /// Oversampled spectral length `n_time_over/2+1` (RealGrid r2c
+    /// convention) — mirrors `CpuNativeSim::n_spec_over`. Zero until
+    /// `set_mode_avg_params` runs.
+    pub n_spec_over: usize,
 
     pub field_d: GpuBuffer,
     pub linop_d: GpuBuffer,
@@ -19,6 +23,12 @@ pub struct CudaNativeSim {
     pub out_sq_d: GpuBuffer,
     pub reduced_d: GpuBuffer,
 
+    // `eto_d`/`pto_d` are real, length `n_time_over` (oversampled real-space
+    // grid) — mirrors CpuNativeSim's `eto`/`pto`. `eoo_d`/`poo_d` are
+    // complex, length `n_spec_over` — mirrors `eoo`/`poo`. All four are
+    // resized in `set_mode_avg_params` once `n_time_over` is known (BACKLOG
+    // S3 item 6 — this item fixes the sizing fidelity gap, see
+    // portlog-inbox/gpu-nonlinearity.md).
     pub eto_d: GpuBuffer,
     pub pto_d: GpuBuffer,
     pub eoo_d: GpuBuffer,
@@ -26,11 +36,28 @@ pub struct CudaNativeSim {
     pub towin_d: GpuBuffer,
     pub kerr_fac: c_double,
 
+    // ── CPU oracle Steps 1/2/5/6/7 (native.rs::rhs_mode_avg_real) ──────────
+    /// Step 1's `scale_fwd = (n_spec_over-1)/(n_spec-1)`.
+    pub scale_fwd: c_double,
+    /// Step 5's `scale_inv = (n_spec-1)/(n_spec_over-1)`.
+    pub scale_inv: c_double,
+    /// Combined Step 1 (`1/n_time_over`, cuFFT's unnormalized inverse
+    /// transform) and Step 2 (`1/(nlscale·sqrt_aeff)`) scalar, applied to
+    /// `eto_d` in one pass right after the inverse FFT.
+    pub inv_nto_sc: c_double,
+    pub nlscale: c_double,
+    pub sqrt_aeff: c_double,
+    /// Step 6 `pre[i]/beta[i]*sqrt_aeff`, folded to `1+0i` outside `sidx` —
+    /// identical formula/order to `CpuNativeSim::norm_pre_beta`. Length
+    /// `n` (=`n_spec`), complex.
+    pub norm_pre_beta_d: GpuBuffer,
+    /// Step 7 window, folded to `1.0` outside `sidx` — identical to
+    /// `CpuNativeSim::owin`. Length `n` (=`n_spec`), real.
+    pub owin_d: GpuBuffer,
+
     // Plasma (mode-averaged, PPT only — see docs/dev/BACKLOG.md S3 item 2; ADK
     // still returns -1 from set_plasma_params_adk). Buffers sized
-    // `n_time` (set in set_mode_avg_params), matching this file's existing
-    // `eto_d`/`pto_d` — same documented n_time-vs-n_time_over fidelity gap
-    // as the Kerr path, not something this item fixes.
+    // `n_time_over` (set in set_mode_avg_params), matching `eto_d`/`pto_d`.
     pub has_plasma: bool,
     pub plasma_segments_d: GpuBuffer,
     pub plasma_num_segments: usize,
@@ -98,6 +125,8 @@ impl CudaNativeSim {
         let eoo_d = GpuBuffer::alloc(16)?;
         let poo_d = GpuBuffer::alloc(16)?;
         let towin_d = GpuBuffer::alloc(8)?;
+        let norm_pre_beta_d = GpuBuffer::alloc(16)?;
+        let owin_d = GpuBuffer::alloc(8)?;
 
         let plasma_segments_d = GpuBuffer::alloc(8)?;
         let plas_rate_d = GpuBuffer::alloc(8)?;
@@ -109,6 +138,7 @@ impl CudaNativeSim {
             n,
             n_time: 0,
             n_time_over: 0,
+            n_spec_over: 0,
             field_d,
             linop_d,
             ks_d,
@@ -122,6 +152,13 @@ impl CudaNativeSim {
             poo_d,
             towin_d,
             kerr_fac: 0.0,
+            scale_fwd: 1.0,
+            scale_inv: 1.0,
+            inv_nto_sc: 0.0,
+            nlscale: 1.0,
+            sqrt_aeff: 1.0,
+            norm_pre_beta_d,
+            owin_d,
             has_plasma: false,
             plasma_segments_d,
             plasma_num_segments: 0,
@@ -198,11 +235,300 @@ unsafe fn launch_checked(
     }
 }
 
+impl CudaNativeSim {
+    /// Full CPU-oracle RHS pipeline — mirrors
+    /// `CpuNativeSim::rhs_mode_avg_real` (`native.rs:897-971`) Steps 1-7
+    /// exactly, step-numbered in the comments below for cross-checking.
+    /// Reads the spectral stage input from `self.ystage_d` (length `n` =
+    /// `n_spec`) and writes the result into `self.ks_d[idx]`.
+    ///
+    /// Callers: `step()`'s per-stage loop (after copying the propagated
+    /// stage state into `ystage_d`, for `idx = ii+1`), and `set_field`
+    /// (after copying the initial field into `ystage_d`, for `idx = 0`) —
+    /// the latter mirrors `CpuNativeSim::set_field`'s
+    /// `rhs_mode_avg_real(0, &field)` call, which seeds the FSAL stage-0
+    /// derivative for the initial condition (see
+    /// `docs/dev/native-port/portlog-inbox/gpu-nonlinearity.md` for why this
+    /// was a second, previously-undiagnosed bug: without it `ks_d[0]` is
+    /// whatever `cuMemAlloc` happened to return, not the true k1).
+    ///
+    /// # Safety
+    /// `self.ystage_d` must already hold the current stage's spectral field
+    /// (length `n`), and `idx < 7`.
+    unsafe fn compute_rhs_mode_avg(&mut self, idx: usize) -> Result<(), String> {
+        if self.n_time_over == 0 || self.fft_r2c == 0 || self.fft_c2r == 0 {
+            // No FFT plans configured (set_mode_avg_params not called yet,
+            // or plan creation failed) — zero-fill, matching this file's
+            // pre-existing fallback for the same condition.
+            let zeros = vec![Complex::new(0.0, 0.0); self.n];
+            self.ks_d[idx].copy_to_device(&zeros)?;
+            return Ok(());
+        }
+        let ctx = get_gpu_context().ok_or_else(|| "GPU context not initialized".to_string())?;
+        let driver = get_driver_api()?;
+        let cufft = get_cufft_api()?;
+        unsafe {
+            crate::cuda::activate_context()?;
+
+            let block_size = 256u32;
+            let grid_size_spec = (self.n as u32).div_ceil(block_size);
+            let grid_size_over = (self.n_spec_over as u32).div_ceil(block_size);
+            let grid_size_t = (self.n_time_over as u32).div_ceil(block_size);
+
+            let mut n_spec_i = self.n as i32;
+            let mut n_spec_over_i = self.n_spec_over as i32;
+            let mut n_time_over_i = self.n_time_over as i32;
+
+            // ── Step 1: zero-pad + scale ystage_d[n_spec] -> eoo_d[n_spec_over],
+            // then inverse rfft (Z2D) eoo_d -> eto_d. cuFFT's out-of-place Z2D
+            // may clobber its input buffer (unlike FFTW's PRESERVE_INPUT c2r
+            // plan native.rs relies on) — safe here because eoo_d is rebuilt
+            // from ystage_d fresh on every call, never reused across calls.
+            let mut scale_fwd = self.scale_fwd;
+            let mut expand_args: [*mut libc::c_void; 5] = [
+                &mut self.ystage_d.dptr as *mut _ as *mut _,
+                &mut self.eoo_d.dptr as *mut _ as *mut _,
+                &mut scale_fwd as *mut _ as *mut _,
+                &mut n_spec_i as *mut _ as *mut _,
+                &mut n_spec_over_i as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.expand_spectrum_fn,
+                grid_size_over,
+                block_size,
+                0,
+                &mut expand_args,
+                "expand_spectrum",
+            )?;
+
+            let rc = (cufft.cufftExecZ2D)(
+                self.fft_c2r,
+                self.eoo_d.dptr as *mut _,
+                self.eto_d.dptr as *mut _,
+            );
+            if rc != 0 {
+                return Err(format!("cufftExecZ2D failed ({rc})"));
+            }
+
+            // ── Step 1 (cuFFT's 1/n_time_over unnormalized-inverse factor)
+            // combined with Step 2 (1/(nlscale*sqrt_aeff)) into one scalar
+            // multiply of eto_d — both are plain scalar rescales of the same
+            // buffer, so fusing changes nothing about the result.
+            let mut inv_nto_sc = self.inv_nto_sc;
+            let mut scale_args: [*mut libc::c_void; 3] = [
+                &mut self.eto_d.dptr as *mut _ as *mut _,
+                &mut inv_nto_sc as *mut _ as *mut _,
+                &mut n_time_over_i as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.scale_real_fn,
+                grid_size_t,
+                block_size,
+                0,
+                &mut scale_args,
+                "scale_eto(step1+2)",
+            )?;
+
+            // ── Step 3: Kerr RHS. Reuses rhs_mode_avg_real_kernel unchanged
+            // (see its own doc comment in kernels.cu), now correctly sized to
+            // n_time_over (was n_time).
+            let mut kerr_fac = self.kerr_fac;
+            let mut kerr_args: [*mut libc::c_void; 4] = [
+                &mut self.pto_d.dptr as *mut _ as *mut _,
+                &mut self.eto_d.dptr as *mut _ as *mut _,
+                &mut kerr_fac as *mut _ as *mut _,
+                &mut n_time_over_i as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.rhs_mode_avg_real_fn,
+                grid_size_t,
+                block_size,
+                0,
+                &mut kerr_args,
+                "rhs_mode_avg_real(step3)",
+            )?;
+
+            // ── Step 3b: plasma polarisation (PPT only), if enabled — same
+            // 5-kernel sequence as before, buffers now n_time_over-sized.
+            if self.has_plasma {
+                let mut err_code_d = GpuBuffer::alloc(4)?;
+                let zero = [0i32];
+                err_code_d.copy_to_device(&zero)?;
+                let mut num_segments_val = self.plasma_num_segments as c_int;
+                let mut strict_val = self.plasma_strict;
+                let mut e_min = self.plasma_e_min;
+                let mut e_max = self.plasma_e_max;
+                let mut rate_args: [*mut libc::c_void; 9] = [
+                    &mut self.eto_d.dptr as *mut _ as *mut _,
+                    &mut self.plas_rate_d.dptr as *mut _ as *mut _,
+                    &mut self.plasma_segments_d.dptr as *mut _ as *mut _,
+                    &mut e_min as *mut _ as *mut _,
+                    &mut e_max as *mut _ as *mut _,
+                    &mut num_segments_val as *mut _ as *mut _,
+                    &mut n_time_over_i as *mut _ as *mut _,
+                    &mut err_code_d.dptr as *mut _ as *mut _,
+                    &mut strict_val as *mut _ as *mut _,
+                ];
+                launch_checked(
+                    driver,
+                    ctx.ppt_fn,
+                    grid_size_t,
+                    block_size,
+                    0,
+                    &mut rate_args,
+                    "plasma_rate",
+                )?;
+
+                let mut preionfrac = self.plasma_preionfrac;
+                let mut plasma_dt = self.plasma_dt;
+                let mut fraction_args: [*mut libc::c_void; 5] = [
+                    &mut self.plas_rate_d.dptr as *mut _ as *mut _,
+                    &mut self.plas_fraction_d.dptr as *mut _ as *mut _,
+                    &mut preionfrac as *mut _ as *mut _,
+                    &mut plasma_dt as *mut _ as *mut _,
+                    &mut n_time_over_i as *mut _ as *mut _,
+                ];
+                launch_checked(
+                    driver,
+                    ctx.plasma_fraction_fn,
+                    1,
+                    1,
+                    0,
+                    &mut fraction_args,
+                    "plasma_fraction",
+                )?;
+
+                let mut e_ratio = self.plasma_e_ratio;
+                let mut phase_args: [*mut libc::c_void; 5] = [
+                    &mut self.plas_fraction_d.dptr as *mut _ as *mut _,
+                    &mut self.eto_d.dptr as *mut _ as *mut _,
+                    &mut e_ratio as *mut _ as *mut _,
+                    &mut self.plas_phase_d.dptr as *mut _ as *mut _,
+                    &mut n_time_over_i as *mut _ as *mut _,
+                ];
+                launch_checked(
+                    driver,
+                    ctx.plasma_phase_fn,
+                    grid_size_t,
+                    block_size,
+                    0,
+                    &mut phase_args,
+                    "plasma_phase",
+                )?;
+
+                let mut ionpot = self.plasma_ionpot;
+                let mut current_args: [*mut libc::c_void; 8] = [
+                    &mut self.plas_phase_d.dptr as *mut _ as *mut _,
+                    &mut self.plas_rate_d.dptr as *mut _ as *mut _,
+                    &mut self.plas_fraction_d.dptr as *mut _ as *mut _,
+                    &mut self.eto_d.dptr as *mut _ as *mut _,
+                    &mut ionpot as *mut _ as *mut _,
+                    &mut plasma_dt as *mut _ as *mut _,
+                    &mut self.plas_current_d.dptr as *mut _ as *mut _,
+                    &mut n_time_over_i as *mut _ as *mut _,
+                ];
+                launch_checked(
+                    driver,
+                    ctx.plasma_current_fn,
+                    1,
+                    1,
+                    0,
+                    &mut current_args,
+                    "plasma_current",
+                )?;
+
+                let mut density = self.plasma_density;
+                let mut polarization_args: [*mut libc::c_void; 5] = [
+                    &mut self.plas_current_d.dptr as *mut _ as *mut _,
+                    &mut self.pto_d.dptr as *mut _ as *mut _,
+                    &mut density as *mut _ as *mut _,
+                    &mut plasma_dt as *mut _ as *mut _,
+                    &mut n_time_over_i as *mut _ as *mut _,
+                ];
+                launch_checked(
+                    driver,
+                    ctx.plasma_polarization_fn,
+                    1,
+                    1,
+                    0,
+                    &mut polarization_args,
+                    "plasma_polarization",
+                )?;
+            }
+
+            // ── Step 4: time-domain window apodization on the combined Pto.
+            let mut window_args: [*mut libc::c_void; 3] = [
+                &mut self.pto_d.dptr as *mut _ as *mut _,
+                &mut self.towin_d.dptr as *mut _ as *mut _,
+                &mut n_time_over_i as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.apply_time_window_fn,
+                grid_size_t,
+                block_size,
+                0,
+                &mut window_args,
+                "apply_time_window(step4)",
+            )?;
+
+            // ── Step 5: forward rfft (D2Z) pto_d -> poo_d[n_spec_over], then
+            // crop to n_spec and scale by scale_inv, folded together with
+            // Step 6 (norm_pre_beta) and Step 7 (owin) into one kernel.
+            let rc = (cufft.cufftExecD2Z)(
+                self.fft_r2c,
+                self.pto_d.dptr as *mut _,
+                self.poo_d.dptr as *mut _,
+            );
+            if rc != 0 {
+                return Err(format!("cufftExecD2Z failed ({rc})"));
+            }
+
+            let mut scale_inv = self.scale_inv;
+            let mut finalize_args: [*mut libc::c_void; 6] = [
+                &mut self.poo_d.dptr as *mut _ as *mut _,
+                &mut self.ks_d[idx].dptr as *mut _ as *mut _,
+                &mut self.norm_pre_beta_d.dptr as *mut _ as *mut _,
+                &mut self.owin_d.dptr as *mut _ as *mut _,
+                &mut scale_inv as *mut _ as *mut _,
+                &mut n_spec_i as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.finalize_spectrum_fn,
+                grid_size_spec,
+                block_size,
+                0,
+                &mut finalize_args,
+                "finalize_spectrum(step5+6+7)",
+            )?;
+
+            Ok(())
+        }
+    }
+}
+
 impl NativeBackend for CudaNativeSim {
     unsafe fn set_field(&mut self, data: *const c_double, n: size_t) -> i32 {
         unsafe {
             let slice = std::slice::from_raw_parts(data as *const Complex<f64>, n);
             self.field_d.copy_to_device(slice).unwrap();
+            // Seed ks_d[0] with the true FSAL stage-0 derivative for this
+            // initial condition — mirrors `CpuNativeSim::set_field`'s
+            // `rhs_mode_avg_real(0, &field)` call. Without this, `ks_d[0]`
+            // at the first `step()` is whatever `cuMemAlloc` happened to
+            // return (not necessarily zeroed), corrupting the first
+            // internal stage (DP_B[0]=0.2, nonzero) once the RHS itself is
+            // nonzero. See portlog-inbox/gpu-nonlinearity.md.
+            if self.ystage_d.copy_from_device(&self.field_d).is_err() {
+                return -1;
+            }
+            if self.compute_rhs_mode_avg(0).is_err() {
+                return -1;
+            }
         }
         0
     }
@@ -352,47 +678,162 @@ impl NativeBackend for CudaNativeSim {
         n_time: size_t,
         n_time_over: size_t,
         towin: *const c_double,
-        _owin: *const c_double,
-        _sidx: *const u8,
-        _pre_re: *const c_double,
-        _pre_im: *const c_double,
-        _beta: *const c_double,
+        owin: *const c_double,
+        sidx: *const u8,
+        pre_re: *const c_double,
+        pre_im: *const c_double,
+        beta: *const c_double,
         kerr_fac: c_double,
-        _nlscale: c_double,
-        _sqrt_aeff: c_double,
+        nlscale: c_double,
+        sqrt_aeff: c_double,
     ) -> i32 {
+        // `n_spec` is the ODE state length (`self.n`), matching
+        // `CpuNativeSim::set_mode_avg_params`'s `s.n_spec = s.n`. All
+        // buffers below that used to be sized `n_time` (skipping the
+        // oversampling/anti-aliasing grid Julia/CPU both use for the
+        // nonlinear evaluation — BACKLOG.md S3 item 6) are now sized
+        // `n_time_over`, and the new `n_spec_over`-sized `eoo_d`/`poo_d`
+        // scratch (already existed as fields, previously left at their
+        // placeholder 16-byte allocation) close the crop/pad gap.
+        let n_spec = self.n;
         self.n_time = n_time;
         self.n_time_over = n_time_over;
+        self.n_spec_over = n_time_over / 2 + 1;
         self.kerr_fac = kerr_fac;
+        self.nlscale = nlscale;
+        self.sqrt_aeff = sqrt_aeff;
 
-        self.eto_d = GpuBuffer::alloc(n_time * 8).unwrap();
-        self.pto_d = GpuBuffer::alloc(n_time * 8).unwrap();
-        self.plas_rate_d = GpuBuffer::alloc(n_time * 8).unwrap();
-        self.plas_fraction_d = GpuBuffer::alloc(n_time * 8).unwrap();
-        self.plas_phase_d = GpuBuffer::alloc(n_time * 8).unwrap();
-        self.plas_current_d = GpuBuffer::alloc(n_time * 8).unwrap();
+        let sc = nlscale * sqrt_aeff;
+        if sc == 0.0 {
+            eprintln!(
+                "Amalthea GPU error: nlscale*sqrt_aeff == 0 in set_mode_avg_params; \
+                 refusing to configure a divide-by-zero RHS scaling."
+            );
+            return -2;
+        }
+        // Combined Step 1 (cuFFT's unnormalized-inverse `1/n_time_over`) and
+        // Step 2 (`1/(nlscale*sqrt_aeff)`) scalar — see
+        // `compute_rhs_mode_avg`'s doc.
+        self.inv_nto_sc = (1.0 / n_time_over as f64) * (1.0 / sc);
+        self.scale_fwd = (self.n_spec_over as f64 - 1.0) / (n_spec as f64 - 1.0);
+        self.scale_inv = (n_spec as f64 - 1.0) / (self.n_spec_over as f64 - 1.0);
 
-        let slice = unsafe { std::slice::from_raw_parts(towin, n_time) };
-        self.towin_d = GpuBuffer::alloc(n_time * 8).unwrap();
-        self.towin_d.copy_to_device(slice).unwrap();
+        self.eto_d = GpuBuffer::alloc(n_time_over * 8).unwrap();
+        self.pto_d = GpuBuffer::alloc(n_time_over * 8).unwrap();
+        self.eoo_d = GpuBuffer::alloc(self.n_spec_over * 16).unwrap();
+        self.poo_d = GpuBuffer::alloc(self.n_spec_over * 16).unwrap();
+        self.plas_rate_d = GpuBuffer::alloc(n_time_over * 8).unwrap();
+        self.plas_fraction_d = GpuBuffer::alloc(n_time_over * 8).unwrap();
+        self.plas_phase_d = GpuBuffer::alloc(n_time_over * 8).unwrap();
+        self.plas_current_d = GpuBuffer::alloc(n_time_over * 8).unwrap();
+
+        // towin: length n_time_over — matches `CpuNativeSim`'s own
+        // `set_mode_avg_params` (`s.towin = ...from_raw_parts(towin,
+        // n_time_over)`). Previously read as `n_time` elements here, which
+        // (for n_time_over > n_time, the normal oversampled case) silently
+        // read only a prefix of the true window and left the resident
+        // buffer sized for the wrong grid entirely.
+        let towin_vec: Vec<f64> = if !towin.is_null() {
+            unsafe { std::slice::from_raw_parts(towin, n_time_over) }.to_vec()
+        } else {
+            vec![1.0; n_time_over]
+        };
+        self.towin_d = GpuBuffer::alloc(n_time_over * 8).unwrap();
+        self.towin_d.copy_to_device(&towin_vec).unwrap();
+
+        // sidx: length n_spec — de-branch exactly like CpuNativeSim does
+        // (BACKLOG.md S1 item 4): fold sidx into owin/norm_pre_beta once
+        // here, host-side, so the GPU kernel is a plain vectorizable
+        // multiply with no per-element branch, identical in spirit to the
+        // CPU path's own `norm_pre_beta`/`owin` precomputation.
+        let sidx_vec: Vec<bool> = if !sidx.is_null() {
+            unsafe { std::slice::from_raw_parts(sidx, n_spec) }
+                .iter()
+                .map(|&x| x != 0)
+                .collect()
+        } else {
+            vec![true; n_spec]
+        };
+
+        let mut owin_vec: Vec<f64> = if !owin.is_null() {
+            unsafe { std::slice::from_raw_parts(owin, n_spec) }.to_vec()
+        } else {
+            vec![1.0; n_spec]
+        };
+        for i in 0..n_spec {
+            if !sidx_vec[i] {
+                owin_vec[i] = 1.0;
+            }
+        }
+
+        let pre_vec: Vec<Complex<f64>> = if !pre_re.is_null() && !pre_im.is_null() {
+            let re = unsafe { std::slice::from_raw_parts(pre_re, n_spec) };
+            let im = unsafe { std::slice::from_raw_parts(pre_im, n_spec) };
+            re.iter()
+                .zip(im.iter())
+                .map(|(&r, &i)| Complex::new(r, i))
+                .collect()
+        } else {
+            vec![Complex::new(0.0, 0.0); n_spec]
+        };
+        let beta_vec: Vec<f64> = if !beta.is_null() {
+            unsafe { std::slice::from_raw_parts(beta, n_spec) }.to_vec()
+        } else {
+            vec![1.0; n_spec]
+        };
+        let norm_pre_beta_vec: Vec<Complex<f64>> = (0..n_spec)
+            .map(|i| {
+                if sidx_vec[i] {
+                    pre_vec[i] / beta_vec[i] * sqrt_aeff
+                } else {
+                    Complex::new(1.0, 0.0)
+                }
+            })
+            .collect();
+
+        self.owin_d = GpuBuffer::alloc(n_spec * 8).unwrap();
+        self.owin_d.copy_to_device(&owin_vec).unwrap();
+        self.norm_pre_beta_d = GpuBuffer::alloc(n_spec * 16).unwrap();
+        self.norm_pre_beta_d
+            .copy_to_device(&norm_pre_beta_vec)
+            .unwrap();
 
         if let Ok(cufft) = get_cufft_api() {
             unsafe {
                 if self.fft_r2c != 0 {
                     (cufft.cufftDestroy)(self.fft_r2c);
+                    self.fft_r2c = 0;
                 }
                 if self.fft_c2r != 0 {
                     (cufft.cufftDestroy)(self.fft_c2r);
+                    self.fft_c2r = 0;
                 }
+                // Both cufftPlan1d return codes are now checked (previously
+                // discarded) — a silent plan failure used to leave
+                // `fft_r2c`/`fft_c2r` at 0, which *did* disable the
+                // nonlinear block via the existing `!= 0` guard, but with
+                // no diagnostic distinguishing "plan failed" from
+                // "never configured".
                 let mut plan_d2z = 0;
-                (cufft.cufftPlan1d)(&mut plan_d2z, n_time as i32, CUFFT_D2Z, 1);
+                let rc1 = (cufft.cufftPlan1d)(&mut plan_d2z, n_time_over as i32, CUFFT_D2Z, 1);
+                if rc1 != 0 {
+                    eprintln!("Amalthea GPU error: cufftPlan1d (D2Z) failed: {rc1}");
+                    return -1;
+                }
                 self.fft_r2c = plan_d2z;
                 let mut plan_z2d = 0;
-                (cufft.cufftPlan1d)(&mut plan_z2d, n_time as i32, CUFFT_Z2D, 1);
+                let rc2 = (cufft.cufftPlan1d)(&mut plan_z2d, n_time_over as i32, CUFFT_Z2D, 1);
+                if rc2 != 0 {
+                    eprintln!("Amalthea GPU error: cufftPlan1d (Z2D) failed: {rc2}");
+                    (cufft.cufftDestroy)(self.fft_r2c);
+                    self.fft_r2c = 0;
+                    return -1;
+                }
                 self.fft_c2r = plan_z2d;
             }
         } else {
             eprintln!("Warning: cuFFT not available, mode_avg_params will fail during step");
+            return -1;
         }
         0
     }
@@ -662,7 +1103,9 @@ impl NativeBackend for CudaNativeSim {
                 let ctx =
                     get_gpu_context().ok_or_else(|| "GPU context not initialized".to_string())?;
                 let driver = get_driver_api()?;
-                let cufft = get_cufft_api()?;
+                // cuFFT handles are no longer touched directly in this closure —
+                // the full RHS pipeline (FFTs included) now lives in
+                // `compute_rhs_mode_avg`, called once per stage below.
                 // `raman.rs`'s `solve_gpu`/`ionization.rs`'s equivalent both call this
                 // immediately before their `cuLaunchKernel` — the CUDA context
                 // current on a thread isn't guaranteed to stick across API calls in
@@ -779,198 +1222,15 @@ impl NativeBackend for CudaNativeSim {
                         &format!("apply_prop(ystage, ii={ii})"),
                     )?;
 
-                    if self.n_time_over > 0 && self.fft_r2c != 0 && self.fft_c2r != 0 {
-                        // FFT C2R (Z2D, inverse) -> ystage_d to eto_d
-                        let rc = (cufft.cufftExecZ2D)(
-                            self.fft_c2r,
-                            self.ystage_d.dptr as *mut _,
-                            self.eto_d.dptr as *mut _,
-                        );
-                        if rc != 0 {
-                            return Err(format!("cufftExecZ2D failed ({rc})"));
-                        }
-
-                        let n_time_u32 = self.n_time as u32;
-                        let grid_size_t = n_time_u32.div_ceil(block_size);
-                        // Args must match rhs_mode_avg_real_kernel's own declared
-                        // parameter order `(pto, eto, kerr_fac, n_time)` — the
-                        // previous version of this call passed `(eto_d, pto_d, ...)`,
-                        // backwards, so the kernel's `pto` parameter was actually
-                        // bound to `eto_d` (silently overwriting the just-FFT'd
-                        // field with the Kerr result) and its `eto` parameter was
-                        // bound to `pto_d` (reading whatever stale/uninitialized
-                        // memory happened to be there, not the field). The
-                        // subsequent forward FFT below reads `pto_d`, which this
-                        // kernel — under the old argument order — never actually
-                        // wrote: every accepted step's nonlinear contribution was
-                        // computed from garbage, not from `eto`. Found while adding
-                        // plasma support alongside it (docs/dev/BACKLOG.md S3 item 2); fixed
-                        // here since plasma's own final kernel
-                        // (`plasma_polarization_kernel`) also writes into `pto_d`
-                        // and depends on it being the buffer that actually gets
-                        // forward-transformed.
-                        let mut kerr_args: [*mut libc::c_void; 4] = [
-                            &mut self.pto_d.dptr as *mut _ as *mut _,
-                            &mut self.eto_d.dptr as *mut _ as *mut _,
-                            &mut self.kerr_fac as *mut _ as *mut _,
-                            &mut self.n_time as *mut _ as *mut _,
-                        ];
-                        launch_checked(
-                            driver,
-                            ctx.rhs_mode_avg_real_fn,
-                            grid_size_t,
-                            block_size,
-                            0,
-                            &mut kerr_args,
-                            &format!("rhs_mode_avg_real(ii={ii})"),
-                        )?;
-
-                        if self.has_plasma {
-                            // Reuses ppt_ionization_kernel from the standalone
-                            // AMALTHEA_USE_RUST_IONISATION path (same SplineSegment
-                            // upload format, same kernel) — its `err_code` output is
-                            // unused here: `plasma_rate` (native.rs, CPU reference)
-                            // never propagates a strict-mode error either, it always
-                            // has a non-strict fallback (clamp to rate(e_max)). GPU
-                            // plasma is PPT-only and always non-strict for the same
-                            // reason; `err_code_d` is write-only scratch.
-                            //
-                            // Every arg is bound to a named local first (not an
-                            // inline temporary) — `&mut {expr} as *mut _` on an
-                            // anonymous temporary is exactly the UB pattern that
-                            // crashed this file's step() on real hardware before
-                            // (see apply_prop's dt0/b6/dt_prop comments above); a
-                            // cast breaks Rust's temporary-lifetime extension, a
-                            // named `let` binding doesn't.
-                            let mut err_code_d = GpuBuffer::alloc(4)?;
-                            let zero = [0i32];
-                            err_code_d.copy_to_device(&zero)?;
-                            let mut num_segments_val = self.plasma_num_segments as c_int;
-                            let mut strict_val = self.plasma_strict;
-                            let mut rate_args: [*mut libc::c_void; 9] = [
-                                &mut self.eto_d.dptr as *mut _ as *mut _,
-                                &mut self.plas_rate_d.dptr as *mut _ as *mut _,
-                                &mut self.plasma_segments_d.dptr as *mut _ as *mut _,
-                                &mut self.plasma_e_min as *mut _ as *mut _,
-                                &mut self.plasma_e_max as *mut _ as *mut _,
-                                &mut num_segments_val as *mut _ as *mut _,
-                                &mut self.n_time as *mut _ as *mut _,
-                                &mut err_code_d.dptr as *mut _ as *mut _,
-                                &mut strict_val as *mut _ as *mut _,
-                            ];
-                            launch_checked(
-                                driver,
-                                ctx.ppt_fn,
-                                grid_size_t,
-                                block_size,
-                                0,
-                                &mut rate_args,
-                                &format!("plasma_rate(ii={ii})"),
-                            )?;
-
-                            let mut fraction_args: [*mut libc::c_void; 5] = [
-                                &mut self.plas_rate_d.dptr as *mut _ as *mut _,
-                                &mut self.plas_fraction_d.dptr as *mut _ as *mut _,
-                                &mut self.plasma_preionfrac as *mut _ as *mut _,
-                                &mut self.plasma_dt as *mut _ as *mut _,
-                                &mut self.n_time as *mut _ as *mut _,
-                            ];
-                            launch_checked(
-                                driver,
-                                ctx.plasma_fraction_fn,
-                                1,
-                                1,
-                                0,
-                                &mut fraction_args,
-                                &format!("plasma_fraction(ii={ii})"),
-                            )?;
-
-                            let mut phase_args: [*mut libc::c_void; 5] = [
-                                &mut self.plas_fraction_d.dptr as *mut _ as *mut _,
-                                &mut self.eto_d.dptr as *mut _ as *mut _,
-                                &mut self.plasma_e_ratio as *mut _ as *mut _,
-                                &mut self.plas_phase_d.dptr as *mut _ as *mut _,
-                                &mut self.n_time as *mut _ as *mut _,
-                            ];
-                            launch_checked(
-                                driver,
-                                ctx.plasma_phase_fn,
-                                grid_size_t,
-                                block_size,
-                                0,
-                                &mut phase_args,
-                                &format!("plasma_phase(ii={ii})"),
-                            )?;
-
-                            let mut current_args: [*mut libc::c_void; 8] = [
-                                &mut self.plas_phase_d.dptr as *mut _ as *mut _,
-                                &mut self.plas_rate_d.dptr as *mut _ as *mut _,
-                                &mut self.plas_fraction_d.dptr as *mut _ as *mut _,
-                                &mut self.eto_d.dptr as *mut _ as *mut _,
-                                &mut self.plasma_ionpot as *mut _ as *mut _,
-                                &mut self.plasma_dt as *mut _ as *mut _,
-                                &mut self.plas_current_d.dptr as *mut _ as *mut _,
-                                &mut self.n_time as *mut _ as *mut _,
-                            ];
-                            launch_checked(
-                                driver,
-                                ctx.plasma_current_fn,
-                                1,
-                                1,
-                                0,
-                                &mut current_args,
-                                &format!("plasma_current(ii={ii})"),
-                            )?;
-
-                            let mut polarization_args: [*mut libc::c_void; 5] = [
-                                &mut self.plas_current_d.dptr as *mut _ as *mut _,
-                                &mut self.pto_d.dptr as *mut _ as *mut _,
-                                &mut self.plasma_density as *mut _ as *mut _,
-                                &mut self.plasma_dt as *mut _ as *mut _,
-                                &mut self.n_time as *mut _ as *mut _,
-                            ];
-                            launch_checked(
-                                driver,
-                                ctx.plasma_polarization_fn,
-                                1,
-                                1,
-                                0,
-                                &mut polarization_args,
-                                &format!("plasma_polarization(ii={ii})"),
-                            )?;
-                        }
-
-                        // Time-domain window apodization — applied once to the
-                        // combined Pto (Kerr [+ plasma]), matching native.rs's
-                        // ordering (see rhs_mode_avg_real_kernel's doc comment).
-                        let mut window_args: [*mut libc::c_void; 3] = [
-                            &mut self.pto_d.dptr as *mut _ as *mut _,
-                            &mut self.towin_d.dptr as *mut _ as *mut _,
-                            &mut self.n_time as *mut _ as *mut _,
-                        ];
-                        launch_checked(
-                            driver,
-                            ctx.apply_time_window_fn,
-                            grid_size_t,
-                            block_size,
-                            0,
-                            &mut window_args,
-                            &format!("apply_time_window(ii={ii})"),
-                        )?;
-
-                        // FFT R2C (D2Z) -> pto_d to ks_d[ii+1]
-                        let rc = (cufft.cufftExecD2Z)(
-                            self.fft_r2c,
-                            self.pto_d.dptr as *mut _,
-                            self.ks_d[ii + 1].dptr as *mut _,
-                        );
-                        if rc != 0 {
-                            return Err(format!("cufftExecD2Z failed ({rc})"));
-                        }
-                    } else {
-                        let zeros = vec![Complex::new(0.0, 0.0); self.n];
-                        self.ks_d[ii + 1].copy_to_device(&zeros)?;
-                    }
+                    // Full CPU-oracle RHS pipeline (Steps 1-7) — see
+                    // `compute_rhs_mode_avg`'s doc and
+                    // `docs/dev/native-port/portlog-inbox/gpu-nonlinearity.md`
+                    // for the step-by-step correspondence. This replaces the
+                    // previous inline "Kerr [+plasma] +window, FFT sized to
+                    // n_time" block, which skipped Steps 1/2/5/6/7 entirely
+                    // (the root cause of the GPU RHS computing ~zero
+                    // nonlinearity — BACKLOG.md S3 item 0).
+                    self.compute_rhs_mode_avg(ii + 1)?;
 
                     let mut dt_prop_neg = -dt_prop;
                     let mut apply_args_inv: [*mut libc::c_void; 4] = [
