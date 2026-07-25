@@ -25,11 +25,11 @@ so much as documented).
 | Eager FSAL carry destroys k1 before `interpolate` reads it → **all** dense output is first-order | 1. Correctness bug | Fixed (2026-07-23) |
 | Native plasma polarization missing density factor (mode-avg/radial) | 1. Correctness bug (port-introduced, not vanilla) | Fixed — see note |
 | `Modes.dispersion`'s adaptive-FD β1(z) has ~1e-12 relative error vs. the true derivative | 2. Numerical-accuracy shortcut | Accepted limitation (Rust deliberately diverges for accuracy) |
-| PPT ionisation rate is a spline LUT, not a direct evaluation | 2. Numerical-accuracy shortcut | Not fixed (open, MATH.md §8.2 / SUGGESTIONS #16) |
-| Embedded RK45 error estimate is a near-total cancellation (`b5-b4=0`) | 2. Numerical-accuracy shortcut (structural) | Accepted limitation; alternative recorded, not implemented |
-| `RamanPolarEnv` uses full c2c FFT where the signal is real (no r2c halving) | 2. Numerical-accuracy shortcut (perf, not accuracy) | Not fixed (open, BACKLOG Phase J item 3) |
+| PPT ionisation rate is a spline LUT, not a direct evaluation | 2. Numerical-accuracy shortcut | Accepted design; direct evaluation studied and rejected |
+| Embedded RK45 error estimate is a near-total cancellation (`b5-b4=0`) | 2. Numerical-accuracy shortcut (structural) | Accepted limitation; proposed coefficient rewrite studied and rejected |
+| `RamanPolarEnv` used full c2c FFT where the signal is real | 2. Numerical-accuracy shortcut (perf, not accuracy) | Fixed (r2c/c2r on both sides, 2026-07-22) |
 | `stepfun`'s per-step windowing silently dropped on the native path | 3. Port-of-vanilla-behavior bug | Fixed (Phase 8) |
-| Native dense-output interpolation was linear, not Julia's quartic Hermite | 3. Port-of-vanilla-behavior bug | Fixed (Phase 8) |
+| Native dense-output interpolation was linear, not Julia's quartic extension | 3. Port-of-vanilla-behavior bug | Fixed (Phase 8), then upgraded to order 5 (2026-07-23) |
 | Unrecognized bare `f!` closures silently got zero nonlinearity | 3. Port-of-vanilla-behavior bug | Fixed (Phase 8) |
 | Gas mixtures crashed with a raw `MethodError` instead of a graceful fallback | 3. Port-of-vanilla-behavior bug | Fixed (Phase 8) |
 | `RamanPolarEnv` silently vanished (matched no `isa` branch, no error) | 3. Port-of-vanilla-behavior bug | Fixed (Phase 8) |
@@ -37,11 +37,11 @@ so much as documented).
 | Mode-averaged/radial shot noise (`Et_noise`) silently dropped by native path | 3. Port-of-vanilla-behavior bug | Fixed (Phase I item 1) |
 | `:SiO2` intermediate-broadening Raman model not representable by native's SDO solver | 3. Port-of-vanilla-behavior gap | Fixed (Phase I item 2, second resident kernel) |
 | GPU-resident dense output threw on every query (`apply_prop` returned -1) | 3. Port-of-vanilla-behavior bug | Fixed (2026-07-23) |
-| FFTW `PATIENT` mode + `loadFFTwisdom`/`saveFFTwisdom` cause run-to-run step-path variability | 4. Non-determinism characteristic | Accepted limitation (pre-existing upstream behavior); newly *also* exposed on the native path (open design question) |
+| FFTW `PATIENT` mode + `loadFFTwisdom`/`saveFFTwisdom` cause run-to-run step-path variability | 4. Non-determinism characteristic | Upstream behavior accepted; native on-disk wisdom is opt-in/default-off |
 | Adaptive-path divergence amplifies tiny FP differences into different `dt` sequences | 4. Non-determinism characteristic | Accepted limitation; worked around in tests via fixed-step comparison |
-| `PptIonizationRate::rate` can segfault far outside its fitted range | 5. Open/tracked problem | Not fixed (open, BACKLOG Phase J item 2) |
-| BLAS-3 QDHT wiring is broken, disabled by default | 5. Open/tracked problem | Not fixed (open, BACKLOG S1 item 5) |
-| Windows scan-queue `flock`/native FFTW-wisdom race under concurrent processes | 5. Open/tracked problem | Not fixed (open, newly found 2026-07-09) |
+| `PptIonizationRate::rate` could admit non-finite input past its fitted-range guards | 5. Tracked hardening issue | Fixed (2026-07-09; finite/non-finite hammer tests) |
+| BLAS-3 QDHT originally called an unusable CBLAS trampoline stub | 5. Tracked optimization issue | Correctness fixed (2026-07-09); remains opt-in pending performance bar |
+| Windows scan-lock validation / native FFTW-wisdom race under concurrent processes | 5. Tracked robustness issue | Windows lock validated; native on-disk race removed by default-off wisdom (opt-in tradeoff remains) |
 | GPU-resident RHS contributes no nonlinearity; its own test's tolerance is looser than the physics | 5. Open/tracked problem | Not fixed (open, found 2026-07-23) |
 
 ---
@@ -205,12 +205,11 @@ port's `PptIonizationRate`) is evaluated via a 1-D cubic B-spline LUT fitted
 over `|E|`, not the closed-form PPT rate expression directly. This trades a
 small interpolation error (and the fitted-range boundary problem below) for
 speed.
-**Status: Not fixed (open).** Recorded as an available "beyond-Luna" option
-in `MATH.md` §8.2 / `SUGGESTIONS.md` item 16 — direct PPT evaluation would
-also structurally fix the segfault-outside-fitted-range problem (see §5
-below), but has not been implemented; would require its own
-controlled-divergence verification against a ground truth, same discipline
-as the β1 case above.
+**Status: Accepted design; direct replacement not recommended.** The
+feasibility study in `PLANS.md` §6 found that the true series includes a
+BigFloat-quadrature tail unsuitable for a propagation hot loop and that LUT
+error is already below physical significance. The fitted-range/non-finite
+crash motivation was fixed directly by hardening the LUT/rate guards (§5).
 
 ### Embedded RK45 error estimate is a near-total cancellation
 **Found:** Phase 2, `PORT_LOG.md` 2026-07-01 entry; also `MATH.md` §8.1 /
@@ -231,25 +230,22 @@ a near-zero true error, not a bug introduced by the port.
 by constructing both steppers with `max_dt=min_dt=dt` (pinning the step-size
 sequence so both integrators can't diverge onto different z, isolating
 genuine multi-step accumulation error from adaptive-path divergence — see
-`TESTING.md` §3). `MATH.md` §8.1 records an alternative (direct DP5(4)
-embedded-error coefficients that avoid the cancellation at its root,
-potentially dissolving the need for the fixed-step test discipline) as a
-future option; not implemented.
+`TESTING.md` §3). The proposed "direct coefficients" alternative was later
+rejected: both implementations already precompute `b5-b4`, so it would not
+change the cancellation in the stage sum (`MATH.md` §8.1, `PLANS.md` §6).
 
-### `RamanPolarEnv` uses a full complex FFT where the signal is real
+### `RamanPolarEnv` used a full complex FFT where the signal is real
 **Found:** `BACKLOG.md` Phase J item 3, `Nonlinear.jl:327`.
 **Problem:** the padded E² and the impulse response h are both mathematically
 real in both the carrier-field and envelope Raman convolution paths. Julia's
 `RamanPolarField` already exploits this via `plan_rfft` (r2c/c2r halving), but
-`RamanPolarEnv` uses a full c2c `plan_fft` — and this port's native `:SiO2`
-kernel faithfully mirrors that (matching parity exactly, not fixing it), so
-both do double the necessary transform work.
-**Status: Not fixed (open).** `BACKLOG.md` Phase J item 3, pairs with
-`SUGGESTIONS.md` item 17 (short-kernel overlap-save convolution). Flagged as
-a summation-order change requiring the fixed-step validation discipline, and
-as something worth benchmarking first to confirm the convolution is actually
-a measurable fraction of a step's cost before investing the work — not yet
-done on either the Julia or the native side.
+`RamanPolarEnv` used a full c2c `plan_fft` — and this port's native `:SiO2`
+kernel initially mirrored it for parity, so both did double the necessary
+transform work.
+**Status: Fixed 2026-07-22.** Both Julia `RamanPolarEnv` and the native
+`:SiO2` convolution moved to r2c/c2r together, preserving the equivalence
+tier. The Criterion spike measured 1.8–2.8× across realistic sizes. The
+separate short-kernel/pad-shortening idea remains open and benchmark-first.
 
 ---
 
@@ -454,11 +450,11 @@ this port's own tests via fixed-step (`max_dt=min_dt`) comparison.
 
 ---
 
-## 5. Open / tracked problems, not yet fixed
+## 5. Tracked problems and resolutions
 
-Real, live gaps still sitting in `BACKLOG.md`, listed here for completeness
-since they are relevant "vanilla Luna" (or vanilla-Luna-adjacent) issues even
-though they haven't been resolved.
+Issues retained here for completeness because they are relevant
+"vanilla Luna" (or vanilla-Luna-adjacent) findings. Only entries explicitly
+marked open remain resume work.
 
 ### GPU-resident RHS contributes no nonlinearity at all
 **Found:** `BACKLOG.md` S3 item 0, 2026-07-23, while verifying the FSAL fix
@@ -503,7 +499,7 @@ on identical input: ~1e-17 relative at three step fractions
 (`test/test_native_dense_order5.jl`'s GPU testitem, which also asserts
 `interpolate` completes at all).
 
-### `PptIonizationRate::rate` can segfault far outside its fitted range
+### `PptIonizationRate::rate` admitted non-finite/out-of-range input
 **Found:** `BACKLOG.md` Phase J item 2 (promoted from a buried note in Phase
 G.3).
 **Problem:** repeatedly `step!`-ing far beyond `flength` with a too-large
@@ -511,17 +507,27 @@ fixed `dt` can grow the field until a PPT LUT query lands outside
 `[e_min, e_max]`, and something in that path segfaults instead of hitting
 the documented Phase B.2 clamp-to-`rate(e_max)` behavior. A rate query
 should never be able to crash the process regardless of input.
-**Status: Not fixed (open).** Needs reproduction via the
-`benchmark_native_default.jl` overshoot scenario, a fix, and a Rust unit test
-hammering `rate()` across ±1e10× the fitted range.
+**Status: Fixed 2026-07-09.** The finite `[e_min,e_max]` clamp and spline
+binary search were already bounds-safe. The real hole was NaN/±inf:
+comparisons with NaN are false, so the input bypassed both range guards.
+`CubicSplineLUT::evaluate` now rejects non-finite inputs at the source;
+`PptIonizationRate::rate` routes them through its strict/clamp overflow
+policy, and ADK received the corresponding guard. Eleven Rust tests cover
+±1e10× range sweeps, both signs, NaN, infinities, and boundaries.
 
-### BLAS-3 QDHT wiring is broken, disabled by default
+### BLAS-3 QDHT originally used the wrong trampoline entry point
 **Found:** `BACKLOG.md` S1 item 5, wired 2026-07-07.
 **Problem:** the Julia-side caller (`NonlinearRHS._init_rust_qdht_blas`) was
-missing and has since been added, surfacing a real, previously-untested bug
-in `blas.rs` involving `libblastrampoline`'s dynamic dispatch. Left disabled
-by default pending a real fix (see `BACKLOG.md` for the specific mechanism).
-**Status: Not fixed (open).**
+was initially missing; adding it surfaced a real bug in `blas.rs` involving
+`libblastrampoline`'s dynamic dispatch. The path was left disabled by default
+until the corrected entry point below landed.
+**Status: Correctness fixed 2026-07-09; default flip deliberately parked.**
+The implementation now binds Julia's configured ILP64 Fortran
+`dgemm_64_` entry point with the correct by-reference arguments and hidden
+string lengths. Production equivalence passes through the already-loaded
+`libblastrampoline`; a bare Rust process cannot configure that trampoline
+and is not a valid test topology. `AMALTHEA_QDHT_BLAS` remains opt-in because
+the separate ≥1.5× n_r=256 performance gate was not demonstrated.
 
 ### Concurrent-process races on shared native FFTW-wisdom / scan-lock files
 **Found:** 2026-07-09, during test-gate redistribution.

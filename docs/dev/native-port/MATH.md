@@ -1,6 +1,9 @@
 # Native-Rust Backend Port — Governing Math
 
-> Status: design doc for the phased port. No phase is implemented yet.
+> Status: implemented loop-level math and historical phase design. The CPU
+> native port is complete. Narrow-scope paragraphs record the phase in which a
+> formula first landed; use
+> [NATIVE_SUPPORT_MATRIX.md](NATIVE_SUPPORT_MATRIX.md) for current support.
 > Companion docs: [ARCHITECTURE.md](ARCHITECTURE.md), [TESTING.md](TESTING.md),
 > [PORT_LOG.md](PORT_LOG.md).
 >
@@ -65,18 +68,17 @@ Standard Dormand-Prince 5(4) (7 stages, the coefficients live in
 - **FSAL** (First Same As Last): stage 7 of the accepted step is stage 1 of the
   next — one RHS evaluation per step is reused, not recomputed.
 - **Embedded 4th-order** solution gives the error estimate `yerr = y5 - y4`.
-- **Dense output**: 4th-order interpolation (`src/RK45.jl:260-278`) using the
-  stage derivatives `ks[1..7]` and a cubic-in-σ coefficient table, so `saveN`
-  output points are produced without extra RHS evals. **This is a hard
-  requirement, not an optional accuracy nicety**: Phases 0-7's
-  `RustNativeStepper` used *linear* interpolation between accepted steps as a
-  stopgap (no per-step FFI round-trip needed) — invisible while every
-  native-specific test drove the stepper via raw `solve()`/`step!()` calls
-  with no dense-output sampling, but responsible for nearly every
-  general-purpose test failure once Phase 8 made native the default (any
-  `saveN`/`MemoryOutput` config resamples between steps). Fixed in Phase 8 by
-  exporting the 7 resident stages (`get_ks_stage`) and porting the same
-  `interpC` quartic formula Julia-side — see PORT_LOG's Phase 8 entry.
+- **Dense output**: the current default is the
+  Calvo–Montijano–Rández order-5 continuous extension. It evaluates extra
+  stages lazily for an interval that is actually sampled
+  (`native_compute_extra_stages` on the resident path), then both Julia and
+  native steppers use the shared `interpC5` coefficients. The older 7-stage
+  `interpC` order-4 extension remains as a fallback. The 2026-07-23 work also
+  fixed an inherited FSAL bug: carrying k7→k1 at accept time destroyed the
+  completed interval's k1 before interpolation and collapsed both extensions
+  to first order. FSAL carry is now deferred to the top of the next step.
+  See `PORT_LOG.md`'s latest entry and
+  `portlog-inbox/dense-order5.md`.
 
 ### 2.1a Per-step external field mutation must be pushed back to Rust (Phase 8)
 `Luna.run`'s `stepfun` callback (grid frequency/time windowing) mutates the
@@ -321,13 +323,14 @@ explicitly for future phases: node placement is bit-identical (same
 `SpecialFunctions.besselj`, so ~1e-10 (not ~1e-13) is the *documented*
 ceiling even though this run landed far under it.
 
-> **Concurrency note (do not reintroduce):** the `TransModal` integration loop
-> writes shared struct buffers (`t.Erω`, `t.Prω`, `t.Prmω`); it must stay
-> **sequential**. A prior `Threads.@threads` parallelization caused a data race
-> → corrupted overlaps → every RK step rejected. (BACKLOG "Done" item.) The Rust
-> port keeps the `libcubature` call and its Rust callback strictly
-> single-threaded (no `rayon`/`Threads` inside the callback) for the same
-> reason.
+> **Concurrency note:** Julia `TransModal` still must not use a naive
+> `Threads.@threads` loop because its `Erω`/`Prω`/`Prmω` scratch is shared;
+> that attempt raced. The resident Rust implementation safely parallelizes
+> only the independent nodes within each `libcubature` callback batch. It
+> splits read-only state into `ModalRO` and gives every worker its own
+> `ModalScratch` (including cloned Raman/Hilbert scratch), while cubature's
+> adaptive node placement remains sequential. Preserve that ownership split;
+> do not revert to shared scratch.
 
 ### 3.4 Free-space — `TransFree` (`src/NonlinearRHS.jl:826`) — Phase 6, ported
 2-D Cartesian spatial axis: a genuine **3-D FFT** over `(t,y,x)` jointly
@@ -582,10 +585,11 @@ The expensive nonlinearity. Per RHS:
 2. **three cumulative trapezoidal integrals** (`cumtrapz`): free-electron density
    `ρ(t)` from the rate; the loss/heating current; the polarization current;
 3. assemble the plasma current `J(t)` and add to `Pt`.
-Ported in Phase 2 as `rhs_plasma` (`amalthea/src/native.rs`, `cumtrapz_slice_f64`
-+ `native_set_plasma_params`), gated on `AMALTHEA_USE_RUST_IONISATION=1` (the native
-path silently falls back to Julia plasma physics if the ionization handle isn't
-wired — see PORT_LOG 2026-06-30 "Wire plasma" note).
+Ported in Phase 2 as `rhs_plasma` (`amalthea/src/native.rs`,
+`cumtrapz_slice_f64` + `native_set_plasma_params`). Since Phase C, native
+construction creates the required ionization handle whenever the resident
+backend is enabled; the older per-kernel `AMALTHEA_USE_RUST_IONISATION`
+toggle no longer decides whether the default native workload is eligible.
 
 ### 5.3 Raman (`src/Nonlinear.jl:357-431`) — Phase 4, ported
 Delayed χ⁽³⁾. The carrier-field SDO path (`RamanPolarField`) is already Rust
@@ -692,36 +696,36 @@ bit-pattern at runtime — agreement ~1e-13 (BLAS vs. sequential summation order
 The resident-QDHT port (Phase 3) must keep using Julia's T matrix, **not**
 recompute T from the Rust convention, or the normalization will silently differ.
 
-## 8. Beyond-Luna math options (2026-07-08 audit — not ported behavior, deliberate improvements)
+## 8. Beyond-Luna math options (2026-07-08 audit — outcomes updated 2026-07-25)
 
 The port has already crossed the "better than the oracle" line
 deliberately in a few places: the analytic β1 closed form
 (BETA1_ANALYTIC.md) replacing Julia's adaptive-FD noise, Chebyshev-
 recurrence dispersion, the O(Nt) ADE Raman integrator replacing
 O(Nt·logNt) FFT convolution, and exact Gauss-Legendre integrating
-factors. The options below continue that line. **None is a parity
-port**: each breaks bit-parity with the Julia oracle, so each needs its
-own controlled-divergence verification like β1 got — prove the
-divergence is Rust being *more* correct (e.g. against a BigFloat or
-closed-form ground truth), not just different. That verification is
-most of the cost, not the code. Tracked as SUGGESTIONS.md items 12,
-15-17 / BACKLOG.md Phase J.
+factors. The options below were audited under that standard. Two were
+rejected after their premises were checked, two landed without changing
+the physics, and one remains a benchmark-first candidate. Durable
+feasibility detail is in `PLANS.md` §6; live status is in `BACKLOG.md`.
 
 ### 8.1 Direct embedded-error coefficients (SUGGESTIONS.md #15)
-Luna computes the DP5(4) embedded error as the difference of the 5th-
-and 4th-order solutions — a near-total cancellation (`b5-b4`,
-TESTING.md §3), which is why a ~1e-15 summation-order difference can
-become a ~20% relative disagreement in `err` and send two adaptive
-integrators down different step paths. The standard, numerically
-superior formulation computes the estimate directly as
-`err = Σᵢ eᵢ·kᵢ` with precomputed `eᵢ = b5ᵢ − b4ᵢ` coefficients (exact
-rationals, no runtime cancellation). This could dissolve the entire
-fixed-step (`max_dt=min_dt`) test discipline that exists to work around
-the cancellation — but note it changes *both* steppers' step sequences,
-so it should land on the Julia `PreconStepper` and the native stepper in
-the same commit (same rule as the dense-output item).
+**Outcome: do not pursue.** Both Julia and Rust already precompute
+`errest = b5-b4`; there is no runtime subtraction of two completed
+solutions to remove. The remaining sensitivity is summation-order
+cancellation in `Σ errestᵢkᵢ`, which this proposal would not change.
+
+The original proposal assumed the implementations formed `y5-y4` at
+runtime. Source tracing found both instead evaluate
+`err = Σᵢ errestᵢ·kᵢ` with `errest = b5-b4` precomputed at load/compile
+time. Replacing those constants with the same exact differences cannot
+change the cancellation that occurs while summing weak stage derivatives.
 
 ### 8.2 Direct PPT evaluation (SUGGESTIONS.md #16)
+**Outcome: do not pursue.** The true PPT series includes a
+BigFloat-quadrature tail unsuitable for the hot loop, while the LUT error is
+already below physical significance. The out-of-range/non-finite crash
+motivation was independently fixed by hardening the LUT/rate guards.
+
 Julia's `IonRatePPTAccel` is itself a spline LUT over the true PPT
 series, and the Rust port matched it LUT-for-LUT (parity, per the
 port's rules). But the PPT rate can be evaluated directly with good
@@ -733,11 +737,14 @@ against a BigFloat evaluation of the same series, then the sim-level
 triangulating tests unchanged.
 
 ### 8.3 5th-order dense output (SUGGESTIONS.md #12, already tracked)
-Luna's quartic `interpC` is one order below the integrator; Shampine's
-DP5 continuous extension is the textbook-correct choice. Both sides
-must change in the same commit (see S5.3).
+**Outcome: complete 2026-07-23.** Both sides use the same order-5
+extra-stage extension; the same work fixed the eager FSAL carry that had
+reduced dense output to first order.
 
 ### 8.4 r2c halving of the FFT-conv Raman (BACKLOG Phase J item 3)
+**Outcome: complete 2026-07-22.** Both the native `:SiO2` kernel and Julia
+`RamanPolarEnv` moved together; measured speedup was 1.8–2.8×.
+
 The padded E² and h are mathematically real in both Raman convolution
 paths; Julia's `RamanPolarEnv` nonetheless uses a full c2c `plan_fft`
 (Nonlinear.jl:327) and the native SiO2 kernel mirrors it for parity. A
@@ -746,6 +753,8 @@ transform cost. Same answer, different summation order → fixed-step
 validation discipline.
 
 ### 8.5 Short-kernel (overlap-save) Raman convolution (SUGGESTIONS.md #17)
+**Outcome: open, recommended, benchmark first.**
+
 Luna's own comment (Nonlinear.jl:406-411) concedes the double-length
 grid is "safe, until we come up with [something more efficient]". For
 strongly damped responses — SiO2's Gaussian damping kills h beyond

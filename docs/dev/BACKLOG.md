@@ -7,12 +7,145 @@ Deferred work and known issues for Amalthea.jl. Severity: 🔴 correctness · �
 > [`ARCHIVE.md`](ARCHIVE.md) with its section names unchanged. Cross-references
 > below to a phase, to S1/S4, or to "Done (recent)" resolve there.
 
+## Start here — current resume queue (2026-07-25)
+
+This is the authoritative short queue. The long sections below retain design
+history and measured evidence, but older words such as "next", "not started",
+or "verified" inside a superseded narrative do not outrank this list.
+
+> **2026-07-25 agent wave — four of the five queue items below were worked
+> and are resolved or closed.** Four agent branches merged with no conflicts.
+> Per-item records: `native-port/portlog-inbox/{gpu-nonlinearity,
+> examples-repair,prebuilt-asset-compat,raman-short-kernel}.md`, each also
+> summarized in `PORT_LOG.md`.
+>
+> **Gate, re-run by the lead on the integrated tree (not agent-reported):**
+> full 7-group `run_full_gate.py` **exit 0, 774.3s** — physics 1657/1657,
+> rust 42247/42248, sim_multimode 33/33, sim_interface 314/314,
+> sim_propagation 18/18, io 2302/2302, fields 334/334. Supplemental
+> `examples` group **20/20**. GPU verified separately by running the `rust`
+> group under `AMALTHEA_USE_RUST_CUDA_NATIVE=1 AMALTHEA_NATIVE_GPU=on`:
+> `test_native_cuda.jl` **31/31** — see item 9 for why that same env makes
+> 18 *unrelated* CPU-native tests fail.
+
+1. 🟢 **Restore nonlinear physics on `CudaNativeSim` (S3 item 0) — DONE
+   2026-07-25, verified on real hardware.** `set_mode_avg_params` now uploads
+   `pre`/`β`/`sidx`/`ωwin`/`nlscale`/`sqrt_aeff`, and a new
+   `compute_rhs_mode_avg` helper ports CPU Steps 1/2/5/6/7 alongside the
+   existing Kerr cubic; all Kerr/plasma buffers and cuFFT plans resized to
+   `n_time_over` (**this also closes S3 item 6**, which is not separable —
+   Steps 1 and 5 are crop/pad operations); both `cufftPlan1d` return codes
+   checked. A **second, undiagnosed bug** was found in review:
+   `CudaNativeSim::set_field` never seeded `ks_d[0]` (CPU's does), so the
+   first `step()` read uninitialized `cuMemAlloc` memory — latent, and the
+   Kerr fix would have activated it. Measured on the RTX 5060 Ti: stage
+   derivatives `3.5e-13` → `~1230` (CPU-native agreement ~1e-15), fixed-step
+   full-solve vs the Julia oracle **3.5e-16**, `Luna.run` dense output
+   **1.25e-7**. Test tolerances tightened `1e-3`/`5e-2` → `1e-12`, with the
+   config's nonlinear share (`rel_nl` ≈ 4.5e-4) now *measured in-test* and
+   asserted to exceed the tolerance by >100× — the AGENTS.md §3 step 4 rule
+   whose absence let this ship. Still open: the `err` weak-norm placeholder
+   is demoted to a diagnostic rather than fixed (a real pre-acceptance trial
+   solution in `step()` is the honest fix), and GPU scope beyond
+   mode-averaged RealGrid Kerr(+PPT) is untouched.
+2. 🟡 **Add standing GPU CI — deliberately deferred 2026-07-25 (lead's
+   call).** A CUDA-equipped scheduled/dedicated runner must run the CUDA Rust
+   tests and `test/test_native_cuda.jl`; until then every GPU change also
+   requires a recorded manual hardware run. **Item 1 is the argument for
+   this:** a zero-nonlinearity GPU backend survived over two weeks because
+   nothing re-measured it automatically.
+3. 🟢 **Repair the known-broken low-level examples — 6 of 7 DONE
+   2026-07-25.** Both documented classes fixed (`linop` before assignment ×6;
+   `norm_modal(grid.ω)` ×3) and re-audited across all 44 example files — the
+   file list was exactly right. Four *further* bugs surfaced that the
+   original audit missed because its harness stopped at the first error per
+   file (a scalar `ϕ` where `Fields.PulseField.ϕ::Vector{Float64}` is
+   required; and in `elliptical_env.jl` an undefined `τ`, a missing broadcast
+   dot, a missing `import FFTW`, and a positional `normfun` where `setup`
+   takes `norm!` as a keyword). Regression cases for both classes added to
+   `test/test_examples_smoke.jl` and verified to fail against the unfixed
+   originals. `examples` 20/20, `sim-multimode` 33/33. **The 7th file is a
+   library defect, not an example bug — split out as its own item below.**
+4. 🟢 **Prebuilt release installation — local fix DONE 2026-07-25; release
+   handling decided.** `deps/build.jl` now tries the canonical
+   `libamalthea-<triple>` asset first and falls back to the legacy
+   `libluna_rust-<triple>` name *only* for versions ≤ `v1.0.0`, so a future
+   genuinely-broken release cannot be masked. Verified against the real
+   published `v1.0.0` (download + checksum + install) and by a 4-scenario
+   local-HTTP fixture suite (20/20). `release.yml` already stages canonical
+   names for future tags — unchanged. **Lead's decision: leave `v1.0.0`'s
+   published assets untouched and prepare a `v1.0.1` instead** (see the new
+   item below); no release asset was mutated.
+5. ⚪ **Short-kernel Raman convolution — measured 2026-07-25, RECOMMEND
+   AGAINST, closed.** This **reverses Phase J.6(c)'s prior "recommend"**,
+   whose premise was an unmeasured guess. `PLANS.md` §6.3 assumed the SiO2
+   response decays within ~100fs / 5-10% of the padded grid; the real
+   Hollenbeck & Cantrell support at an f64-noise cutoff is **~4.15ps ≈ 76-86%
+   of `n_time_over`** — about 40× longer. Isolated speedup is **0.98× (i.e.
+   slower)** at the repo's real config (n_time_over=4096: the natural
+   `n_time_over+M` length isn't a power of two and FFTW's mixed-radix penalty
+   erases the gain), reaching 2.1× only at sizes no config here uses.
+   Projected end-to-end ~0.99-1.05× against the >1.4× S5.1 gate. Correctness
+   was never the blocker (truncation error 1.7e-16-3.4e-14, inside the
+   existing tier). Bench and profiling reverted per S1.6/S5.1 discipline.
+
+### New items raised by the 2026-07-25 wave
+
+6. 🟡 **`TransModal` `DimensionMismatch` for `full=true` + npol=2 + plasma.**
+   `examples/low_level_interface/full_modal/basic_modal_full_bothpolarisations.jl`
+   still fails, but not as an example typo: the stack trace puts it inside
+   `TransModal`'s Cubature integration during `PreconStepper`'s initial FSAL
+   evaluation (`RK45.jl:269`), independent of fibre length. This is a
+   library-level defect in a config combination nothing else in the suite
+   covers. Reproduce with that example; fix in `NonlinearRHS.jl`.
+7. ⚪ **Prepare and publish `v1.0.1`.** Chosen over republishing `v1.0.0`'s
+   assets. `release.yml` already emits canonical `libamalthea-*` names, so
+   the whole remaining job is: bump `Project.toml` `version` to `1.0.1`, tag
+   `v1.0.1`, and push. Left entirely to the lead — it is outward-facing, and
+   once item 4's fallback is in place nothing is broken while it waits.
+8. ⚪ **GPU `err` estimate uses a placeholder.** `weaknorm_elem_kernel` passes
+   `field_d` as both the "old" and "trial new" field because `step()` has no
+   pre-acceptance trial solution. Harmless under fixed-step (`stepcontrol_pi`
+   forces acceptance), and now printed as a diagnostic rather than asserted,
+   but unproven for adaptive stepping in general.
+9. 🟡 **`AMALTHEA_NATIVE_GPU=on` process-wide silently reroutes CPU-native
+   equivalence tests onto the GPU, where they fail.** Found 2026-07-25 while
+   verifying item 1: running the whole `rust` group with
+   `AMALTHEA_USE_RUST_CUDA_NATIVE=1 AMALTHEA_NATIVE_GPU=on` produces **18
+   failures** (`test_native_phase1.jl` 6, `test_native_fftw_wisdom.jl` 3,
+   `test_native_phase2.jl` 1, and others), while the same tree under the
+   default env is fully green (7-group gate exit 0, `rust` 42247/42248).
+   Cause: those tests construct a `RustNativeStepper` and assert CPU-native
+   tolerance tiers, but have no `withenv` guard pinning the backend — `on`
+   bypasses the `:auto` size/shape dispatch that normally protects them.
+   Only `test_native_cuda.jl` sets its backend explicitly. **Not a
+   regression from the 2026-07-25 wave and not a GPU-correctness problem**
+   (`test_native_cuda.jl` passes 31/31 under exactly that env), but it makes
+   "run the suite on the GPU" quietly unusable as a verification technique.
+   Fix by pinning `AMALTHEA_NATIVE_GPU=off` (or asserting the chosen
+   backend) in the CPU-native phase tests.
+10. ⚪ **Test discovery recurses into `.claude/worktrees/`.** Running a test
+    group from the repo root while agent worktrees exist inflates counts —
+    `@run_package_tests` finds each nested worktree's copy of every test
+    file. Measured 2026-07-25: the `examples` group reported **120/120** from
+    the root versus the true **20/20** in a clean worktree. Harmless to
+    correctness (everything passes either way) but it makes assertion counts
+    meaningless as a regression signal, which this backlog relies on
+    throughout. Either prune stale worktrees before gating, run the gate from
+    inside a worktree, or exclude `.claude/` from discovery.
+
+Explicitly parked, and therefore **not** resume points without a new user need:
+multi-mode `StepIndexMode` (no consumer), the full SoA conversion (~1% ceiling),
+the cold-start standalone CLI (porting all Julia setup has negative ROI), and
+direct PPT/direct-error-coefficient rewrites (premises did not survive study).
+
 ## Completed work — status index
 
 Full narrative for everything below lives in
 [`ARCHIVE.md`](ARCHIVE.md); section names there are unchanged, so a source
-comment citing "Phase E.3" or "S1 item 6" still resolves. Only the
-**open remainders** listed at the end of this section are still live.
+comment citing "Phase E.3" or "S1 item 6" still resolves. The remainder list
+below preserves each item's disposition; only entries explicitly marked open
+are live.
 
 ### Improvement plan (2026-07-02 review) — Phases A-J
 
@@ -30,21 +163,22 @@ fully executed, kept as provenance). Gate for every phase: full
 | F | Native scope: Raman completions (`thg=false`, `RamanPolarEnv`) + z-dependence | ✅ |
 | G | Platform & CI robustness (Windows scan lock, CI benchmark job) | ✅ except GPU CI — see "GPU CI coverage" under Open items |
 | H | Upstream contributions | 3 of 4 sent; `pointcalc!` race fix not actionable (upstream doesn't thread it) |
-| I | Close remaining native-port gaps (incl. the 🔴🔴 missing plasma density factor) | ✅ except item 5 — see remainders below |
-| J | Post-completion audit (2026-07-08) | ✅ except items 3, 5, 6 — see remainders below |
+| I | Close remaining native-port gaps (incl. the 🔴🔴 missing plasma density factor) | ✅ except deliberately parked I.5b (`StepIndexMode`) |
+| J | Post-completion audit (2026-07-08) | ✅ except J.6(c), the benchmark-first short-kernel Raman candidate |
 
 ### Suggestions backlog — closed tracks
 
 | Track | Scope | Status |
 |---|---|---|
 | S1 | Hot-loop CPU performance (FFTW wisdom, fused RK45 accumulation, de-branched Kerr, BLAS-3 QDHT, SoA spike) | ✅ all 6 items resolved or deliberately parked |
+| S2 | Threading the native RHS (radial, modal, free-space) | ✅ closed 2026-07-22 |
 | S4 | Architecture cleanups (`BackendConfig`, `RK45.check_ffi`, explicit accessor seams) | ✅ gate closed 2026-07-11 |
 | S5 | Numerics options (mixed precision, deterministic mode, order-5 dense output) | ✅ all 3 items resolved, closed 2026-07-23 |
 
-S3 and S6 still carry open items and stay live below; S2 closed 2026-07-22
-and S5 on 2026-07-23.
+S3 and the release/example remainders of S6 stay live below; S2 closed
+2026-07-22 and S5 on 2026-07-23.
 
-### Open remainders lifted out of the archived phases
+### Remainders lifted out of the archived phases
 
 1. 🟢 **Phase I.5a — `ZeisbergerMode`/`VincettiMode` multi-mode: native Rust
    port done (2026-07-22).** `RK45.jl`'s native modal guard now accepts both
@@ -106,9 +240,12 @@ and S5 on 2026-07-23.
 Full detail (equations, rationale, per-item code sketches) stays in
 `SUGGESTIONS.md` — this is the tracking summary, synced so status lives in
 one place. S1, S2, S4 and S5 are now closed (S2 on 2026-07-22, S5 on
-2026-07-23); S6 has not started; **S1.5 was attempted
-2026-07-07 and found broken** (see S1.5 below — disabled by default, real
-fix still open). **S3 is partially started, and what landed does not work**
+2026-07-23). S6's HDF5 writer and release machinery are implemented; its
+cold-start CLI was studied and parked, while the v1.0.0 asset-name repair and
+known-broken examples remain in the queue above. S1.5's BLAS-3 correctness
+bug was fixed; the path remains opt-in because its ≥1.5× default-flip
+benchmark was never demonstrated. **S3 is partially started, and what
+landed does not work**
 (item 0 below):
 the GPU-resident stepper work landed 2026-07-05/07 (see Phase G's "Open
 items" entry and ARCHIVE.md's "Done (recent)") implements a narrow slice of S3
@@ -337,23 +474,31 @@ then reproducing the crash directly:**
   must be **bit-identical**, not merely within tolerance — a stronger,
   more testable guarantee than typical parallel-code equivalence.
 
-### 🔴 S3 — GPU-resident propagation (suggestion 1) — partially started, and the landed slice is broken (item 0)
-*Large (5+ sessions). Plan's own stated dependency (GPU CI) is not yet
-met — see "GPU CI coverage" below. This machine has real GPU hardware
+### 🟡 S3 — GPU-resident propagation (suggestion 1) — the broken slice is fixed (item 0); scope beyond mode-averaged Kerr(+PPT) is still unbuilt
+*Large (5+ sessions). Plan's own stated dependency (GPU CI) is **still** not
+met — see "GPU CI coverage" below, and note that item 0 is precisely what
+that gap allowed to happen. This machine has real GPU hardware
 (RTX 5060 Ti, driver 610.43.02, CUDA 13.3) usable for manual verification of
-future slices, confirmed 2026-07-11 and again 2026-07-23 (`nvidia-smi` needs
-the sandbox disabled to reach the driver — a standing requirement for any GPU
-work in this repo, not a one-off). **Read item 0 before treating any other
-item in this track, or any "verified on real hardware" claim elsewhere in the
-docs, as load-bearing.**
+future slices, confirmed 2026-07-11, 2026-07-23 and 2026-07-25. On the
+sandbox: `nvidia-smi` needed the sandbox disabled in earlier sessions, but
+reached the driver directly in the 2026-07-25 agent session — treat this as
+environment-dependent, not a fixed rule.*
 Already landed (2026-07-05/07, ahead of the plan's own sequencing): the
 `NativeBackend` trait extraction, `CudaNativeSim` scoped to mode-averaged
 RealGrid Kerr-only (not "+plasma" — see item 1 below, plasma was never
 implemented), verified on real hardware, wired behind
 `AMALTHEA_USE_RUST_CUDA_NATIVE=1`. Still open, per the original design:
 
-0. 🔴🔴 **The GPU-resident RHS contributes no nonlinearity at all — found
-   2026-07-23, blocks everything else in this track.** For the exact config
+0. 🟢 **The GPU-resident RHS contributed no nonlinearity at all — found
+   2026-07-23, FIXED and hardware-verified 2026-07-25.** The fix is
+   summarized in the resume queue at the top of this file and recorded in
+   full in `native-port/portlog-inbox/gpu-nonlinearity.md` + `PORT_LOG.md`.
+   It also closes **item 6** below (the `n_time`-vs-`n_time_over` sizing gap,
+   which is not separable from Steps 1/5) and fixed a second, undiagnosed
+   bug: `CudaNativeSim::set_field` never seeded `ks_d[0]`, so the first
+   `step()` read uninitialized device memory. **The diagnosis below is
+   retained as-written for provenance — it is what the fix was built from.**
+   For the exact config
    `test_native_cuda.jl`'s Kerr-only testitem uses (125µm He capillary,
    1 bar, 800nm, 1µJ, 30fs), the GPU backend's stage derivatives measure
    `max|kᵢ| = 3.5e-13` against the CPU backend's **12225**, and its accepted
@@ -376,10 +521,15 @@ implemented), verified on real hardware, wired behind
      nonlinear block, which fails *silently* if `cufftPlan1d` fails (its
      return code is discarded); and the `n_time`-vs-`n_time_over` sizing
      mismatch (item 6) feeding the cuFFT plans.
-   - **First step when resuming:** assert every `cufftPlan1d`/`cufftExec`
-     return code instead of discarding it, and tighten
-     `test_native_cuda.jl`'s tolerance below the config's own nonlinear
-     share so the test can fail.
+   - **Resume diagnosis (2026-07-25, traced against the CPU RHS):**
+     `cufftExecZ2D`/`cufftExecD2Z` return codes are now checked, but both
+     `cufftPlan1d` return codes are still discarded. More importantly,
+     `set_mode_avg_params` visibly discards `_owin`, `_sidx`, `_pre_re`,
+     `_pre_im`, `_beta`, `_nlscale`, and `_sqrt_aeff`, and the GPU RHS has
+     no equivalents of CPU Steps 2 and 5–7. Implement those missing
+     scaling/normalization/window steps before expanding GPU scope, then
+     tighten the test below the config's independently measured nonlinear
+     share so a zero-nonlinearity implementation must fail.
 1. 🟢 **Done 2026-07-11.** Design doc reconciliation
    (`docs/dev/native-port/GPU.md`). Rewrote §8 (was still the stale
    2026-07-05, pre-hardware "untested" text — the 2026-07-07 verification
@@ -614,10 +764,14 @@ had been holding *every* stepper's dense output at first order; see the
      zero drift elsewhere), physics/sim-interface/sim-multimode/
      sim-propagation/io/fields all green (see ARCHIVE.md's "Done (recent)" for the
      dated full run).
-3. 🟡 **Investigated 2026-07-19 — backlog premise wrong; the stated goal is
-   unachievable by an interpolant-order change. Delivered the tighter
-   regression guard the item could actually achieve; the genuine 5th-order
-   continuous extension is deferred as a larger (extra-stage) item.**
+3. 🟢 **Done 2026-07-23 — genuine order-5 continuous extension plus the
+   FSAL/k1 correctness fix.** The landed implementation uses the
+   Calvo–Montijano–Rández extra-stage tableau on both Julia and resident
+   native steppers; see the open-remainders summary above and
+   `native-port/portlog-inbox/dense-order5.md`.
+
+   **Historical 2026-07-19 investigation (superseded by the implementation
+   above):**
    The entry read: "Shampine's DP5 continuous extension in
    `native.rs::interpolate` and `RK45.jl`'s `interpC`, same commit — removes
    the Julia-vs-native saved-grid tolerance tier entirely." Two structural
@@ -663,18 +817,19 @@ had been holding *every* stepper's dense output at first order; see the
      order gain.
 
 ### ⚪ S6 — Distribution & ecosystem (suggestions 9, 13, 14)
-*Item 1 done 2026-07-11. Item 2 done 2026-07-19 (commit 05c4a4e). Item 3 not
-started.*
+*Items 1-2 are implemented. Item 3 was measured and parked; the live S6 work
+is the v1.0.0 asset-name repair/validation and the example repairs in the
+resume queue.*
 1. 🟢 **Done 2026-07-11.** Prebuilt binaries (item 13).
    `.github/workflows/release.yml`: triggered on `v*` tags (same tags
    TagBot.yml pushes after a Julia registry release) or manual dispatch;
-   builds `libluna_rust` on the same three CI hosts `run_tests.yml` already
+   builds `libamalthea` on the same three CI hosts `run_tests.yml` already
    tests on (`ubuntu-latest`→`x86_64-unknown-linux-gnu`, `macos-latest`→
    `aarch64-apple-darwin`, `windows-2025-vs2026`→`x86_64-pc-windows-msvc`),
    deliberately with `RUSTFLAGS=""` (portable, no `target-cpu=native` —
    unlike the dev/test build path — since a downloaded binary must run on
    any user's CPU, not just the builder's); stages each asset as
-   `libluna_rust-<triple>.<ext>` with a per-asset `.sha256` file, then a
+   `libamalthea-<triple>.<ext>` with a per-asset `.sha256` file, then a
    `publish` job merges all `.sha256` files into one `SHA256SUMS.txt` and
    uploads everything to a GitHub Release via `softprops/action-gh-release`.
    `deps/build.jl` gained `try_download_prebuilt(rust_dir)`, tried before
@@ -684,7 +839,7 @@ started.*
    — returns `nothing` and falls straight to source), downloads the binary
    + `SHA256SUMS.txt`, verifies the asset's sha256 against the manifest
    entry, and only then moves it into the exact
-   `amalthea/target/release/<libname>` path every `_libluna_rust_path()`
+   `amalthea/target/release/<libname>` path every `_libamalthea_path*()`
    helper across `src/*.jl` already resolves to — so no Artifacts.toml or
    separate lookup path was needed, just placing the file where the
    existing from-source build already puts it. Any failure at any step
@@ -693,16 +848,18 @@ started.*
    silently — never `rethrow`s from the download path itself. Opt-out:
    `AMALTHEA_RUST_SKIP_DOWNLOAD=1` forces straight to source (useful for local
    dev iteration on `amalthea/`, where a stale downloaded binary would
-   silently shadow local changes). **Verified:** the fallback path (no
-   `v0.7.0` release exists yet, so every attempt 404s) confirmed to return
-   `false` cleanly, leave any existing library file untouched (mtime
-   unchanged), and leave no `.download`/`SHA256SUMS.txt` temp files behind.
+   silently shadow local changes). **Verified:** the fallback path returns
+   `false` cleanly, leaves any existing library file untouched (mtime
+   unchanged), and leaves no `.download`/`SHA256SUMS.txt` temp files behind.
    The download+verify+install happy path was verified in isolation
-   against a local HTTP server serving a real build of `libluna_rust.so`
+   against a local HTTP server serving a real build of `libamalthea.so`
    plus its real sha256 manifest line — confirmed the checksum-match branch
-   installs correctly. **Not yet verified:** an actual tagged release
-   completing the `release.yml` pipeline and `deps/build.jl` consuming it
-   end-to-end in the wild — that only happens on the next real version tag.
+   installs correctly. **Live release defect, verified 2026-07-25 with
+   `gh release view v1.0.0`:** the tag exists, but its assets use legacy
+   `libluna_rust-*` names while current `deps/build.jl` requests
+   `libamalthea-*`; the real download therefore misses and falls back to
+   Cargo. Resume-queue item 4 owns the compatibility fix and end-to-end
+   clean-install validation.
 2. 🟢 **Done 2026-07-19 (commit 05c4a4e).** Rust-side scan HDF5 writer
    (item 9) — `io.rs` `scan_write_point(...)` (+ `create_dataset_nd_julia`)
    writes a finished scan point's field/z arrays directly from native buffers,
@@ -742,9 +899,8 @@ started.*
    and HDF5 are both `dlopen`ed native libraries with no general `dlopen`
    equivalent in WASM.
 
-**Suggested execution order** (per `SUGGESTIONS.md`, adjusted for what's
-already partially done): S1 → S4 → S2 → S5.2/S5.3 → S6.1 → finish S3 →
-remaining S6. (S1, S2, S4 and S5 are now all closed; only S3 and S6 remain.)
+**Current execution order:** use the dated resume queue at the top of this
+file. The older track-order plan has been completed or superseded.
 
 ## Open items
 
@@ -892,13 +1048,14 @@ full-`solve` ~1e-6 vs the Julia oracle — see TESTING.md §3 nondeterminism flo
 
 **Native-Rust backend port (Phases 0-8) complete.**
 
-### 🟡 Wire remaining Rust kernels into the Julia pipeline
-PPT ionization is now wired (opt-in via `AMALTHEA_USE_RUST_IONISATION=1`).
+### 🟢 Per-kernel Rust FFI wiring — complete
+All kernels in the original per-kernel wiring list are now wired. PPT
+ionization is opt-in via `AMALTHEA_USE_RUST_IONISATION=1`.
 The pattern: Rust exports an opaque handle lifecycle + a vector-eval FFI function;
 Julia stores the handle in the struct and routes the in-place vector call through
 `ccall`; a `@testitem tags=[:rust]` equivalence test guards the boundary.
 
-Remaining kernels to wire (same pattern, in this order):
+Completed kernels:
 1. ✅ **PPT ionization** (`IonRatePPTAccel`) — `AMALTHEA_USE_RUST_IONISATION` toggle —
    `test/test_ionisation_rust.jl`
 2. ✅ **Time-domain Raman** (`raman.rs` `TimeDomainRamanSolver`) — toggle
@@ -991,7 +1148,13 @@ was a stale-documentation item, not an untested-code item.
 (CUDA/Vulkan dispatch, GPU QDHT/Raman/ionization) are never exercised in CI.
 - **Fix:** add a GPU-equipped CI runner (or a scheduled job) that actually executes them.
 
-### 🟢 GPU-resident stepper (Track S3, `CudaNativeSim`) — verified on real CUDA hardware 2026-07-07, see ARCHIVE.md's "Done (recent)" for the fixes this took
+### ⚪ Historical 2026-07-05 GPU-resident review — superseded
+
+> This subsection is retained as provenance for the scaffolding review. Its
+> "verified" and "not wired" statements describe intermediate states and are
+> not current. The authoritative status is S3 above: Julia wiring exists, but
+> the backend currently omits nonlinear physics and must not be used.
+
 A prior agent pass (2026-07-05, external review — see ARCHIVE.md's "Done
 (recent)" entry for the GPU ionisation clamp, and `docs/dev/native-port/GPU.md`)
 left a large uncommitted working-tree diff implementing three of `SUGGESTIONS.md`'s
@@ -1044,34 +1207,41 @@ findings below.
     along the way (this section's text above is left as historical record of the pre-hardware
     state).
 
-### 🟡 Distribution & example-code maintenance
+### 🟡 Distribution & example-code maintenance — smoke coverage landed; repairs remain
 
 Salvaged 2026-07-22 from a retrospective architecture review
 (`ADR-001`, drafted 2026-07-20, not kept — see note at the end of this
 subsection). Only the two findings that survived verification against the
 tree are recorded here.
 
-1. 🟡 **Install-time Rust-toolchain dependency is an undocumented failure
-   mode.** `deps/build.jl` shells out to `cargo build --release`, so a user
-   who previously needed only Julia now needs a working `rustup`/`cargo` for
-   `Pkg.add`/`instantiate` to succeed — a new class of install failure
-   inherited from the fork, and one upstream Luna.jl users won't expect.
-   Two separable pieces of work: (a) document the requirement and the
-   failure signature where a user will actually hit it (README + the build
-   script's own error path); (b) consider shipping precompiled artifacts
-   (e.g. a JLL) for common platforms so the toolchain isn't required at all.
-   (b) is the larger call — it means owning a release matrix — so treat (a)
-   as independently shippable.
-2. 🟡 **`examples/low_level_interface/` is public but unexercised.** 11
-   `.jl` files plus `freespace/`, `full_modal/`, `gnlse/` subdirectories,
-   and nothing under `test/`, `.github/`, or `docs/` references any of them
-   (verified 2026-07-22 by grep) — so nothing catches an API drift that
-   breaks them, while they remain the documented entry point for the
-   low-level API. Either wire a smoke-run of the examples into a CI group
-   (cheapest: run each to completion at tiny grid sizes and assert only that
-   it doesn't throw), or mark the low-level examples explicitly unmaintained
-   so users stop treating them as a supported surface. Doing neither leaves
-   a latent support burden.
+1. 🟢 **Install failure is documented and release machinery exists.**
+   `README.md` and `deps/build.jl` explain the Cargo fallback and give an
+   actionable error. `.github/workflows/release.yml` builds three portable
+   assets and `deps/build.jl` verifies checksums before installing them.
+   🟡 The `v1.0.0` release used legacy `libluna_rust-*` asset names, so the
+   current `libamalthea-*` lookup misses and falls back to source. Fix and
+   validate this as resume-queue item 4.
+2. 🟡 **Representative smoke CI landed; seven broken examples remain.**
+   `test/test_examples_smoke.jl` runs eight representative files at a shrunk
+   5 mm propagation length in the `examples` CI group (16/16 assertions,
+   ~45 s package time). It deliberately stops before plotting. The audit
+   found 44 Julia files across 11 low-level-example subdirectories and seven
+   distinct broken files outside the smoke subset:
+
+   - `full_modal/basic_modal_full_bothpolarisations.jl`
+   - `full_modal/basic_modal_full.jl`
+   - `polarisation/modal_vector_plasma.jl`
+   - `polarisation/modal_nonvector_plasma.jl`
+   - `polarisation/modal_vector_plasma_CP.jl`
+   - `polarisation/modal_vector_plasma_45deg.jl`
+   - `polarisation/elliptical_env.jl`
+
+   The first six reference `linop` before assignment; the two `full_modal`
+   files plus `elliptical_env.jl` pass `grid.ω` to `norm_modal` instead of
+   the required grid object. Fix them, then add at least one regression case
+   for each failure class to the smoke subset. Full measurements and the
+   plotting/AST-harness rationale are preserved in
+   `native-port/portlog-inbox/hygiene.md`.
 
 *Three further items from the same review were dropped after checking them
 against the tree, recorded here so they aren't re-raised: (i) "confirm CI
@@ -1094,12 +1264,13 @@ amending it.*
 ## Informational / no action planned
 
 - ⚪ `deps/build.jl` forwards `ENV["RUSTFLAGS"]` (defaulting to `""` if unset),
-  which neutralizes `.cargo/config.toml`'s `target-cpu=native` for package-driven
-  builds. This is the intended portability safeguard (the runtime dispatcher in
-  `dispatch.rs` selects the ISA at runtime); native opt only applies to a manual
-  `cargo build`. Note that today this selection is mostly informational for
-  everything but Raman — see the "Suggestions backlog" section's ISA sync note
-  and S1.4 for the gap. **Note:** `actions-rust-lang/setup-rust-toolchain` sets
+  which neutralizes `.cargo/config.toml`'s `target-cpu=native` for
+  package-driven builds. This is the portability safeguard: the resulting
+  binary uses the compiler's portable baseline plus ordinary LLVM
+  auto-vectorization. `dispatch.rs` does **not** select a propagation ISA at
+  runtime; it is detection-only and unwired. `target-cpu=native` applies only
+  to a manual Cargo build that leaves the repository config active. The one
+  explicit runtime SIMD kernel is Raman's AVX2 lane. **Note:**
+  `actions-rust-lang/setup-rust-toolchain` sets
   `RUSTFLAGS=-D warnings` in CI, which propagates through `deps/build.jl` — so
   the package build runs under strict warnings (desired; keeps the Rust code clean).
-

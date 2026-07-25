@@ -1,5 +1,16 @@
 # Inbox note — Distribution & example-code maintenance (BACKLOG.md item 1a + item 2)
 
+> **Correction, 2026-07-25 (supersedes the 2026-07-22 "lead's correction"
+> below):** live GitHub verification shows the agent's original release
+> finding was materially correct. `gh release view v1.0.0 --json assets`
+> returns three binaries named `libluna_rust-<triple>` plus
+> `SHA256SUMS.txt`; current `deps/build.jl` requests
+> `libamalthea-<triple>`. The v1.0.0 tag was published 2026-07-12, so the
+> later claim that it did not exist was itself wrong. The current workflow
+> now stages `libamalthea-*`, but that does not repair already-published
+> v1.0.0 assets. BACKLOG resume item 4 tracks the compatibility fix and
+> clean-install validation.
+
 Agent: worktree `agent-a93b74bcb1ea21068`. Date: 2026-07-22.
 Scope: the two "Distribution & example-code maintenance" items in
 `docs/dev/BACKLOG.md`. Exclusive file zone: `README.md`, `deps/build.jl`,

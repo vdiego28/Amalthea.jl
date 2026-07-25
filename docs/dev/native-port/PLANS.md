@@ -2,11 +2,11 @@
 
 The four per-task plan documents that used to live beside this file, merged
 2026-07-22 so the native-port doc set is one reference set plus one plans file.
-Each section below is the original document verbatim apart from its status
-line, which has been refreshed against the current code.
+Each section below preserves the original design narrative, with status
+labels and short supersession notes refreshed against the current code.
 
-**These are decision records, not a queue.** Two of them (S1 item 6, S6 item 3)
-exist to record a deliberate *no* — read them before proposing that work again.
+**These are decision records, not a queue.** Several record a deliberate
+*no* or a parked scope — read them before proposing that work again.
 Live status for every item is in [`../BACKLOG.md`](../BACKLOG.md); this file is
 the durable rationale.
 
@@ -14,8 +14,10 @@ the durable rationale.
 |---|---|---|
 | [FFTW wisdom persistence](#1-fftw-wisdom-persistence-in-the-native-path-backlog-s1-item-1) | S1 item 1 | **Implemented** — opt-in via `AMALTHEA_NATIVE_FFTW_WISDOM`, default OFF |
 | [SoA conversion](#2-full-soa-conversion-of-the-resident-field-backlog-s1-item-6) | S1 item 6 | **Parked — negative ROI.** Phase 0 committed as infrastructure; Phases 1-4 will not be built |
-| [Threading the native RHS](#3-threading-the-native-rhs-backlog-s2) | S2 | **Mostly landed.** Only free-space 3-D FFT threading remains |
+| [Threading the native RHS](#3-threading-the-native-rhs-backlog-s2) | S2 | **Complete 2026-07-22.** Radial, modal, and free-space seams landed |
 | [Standalone CLI](#4-standalone-cli-luna-cli-backlog-s6-item-3) | S6 item 3 | **Parked — recommend against building as specified.** A smaller "dump-and-replay" alternative is sketched |
+| [Multi-mode StepIndex](#5-native-multi-mode-stepindexmode-backlog-phase-i-item-5) | Phase I.5b | **Parked.** Feasible but no consumer; numerical mode-field work is disproportionate |
+| [Beyond-Luna math](#6-beyond-luna-math-options-backlog-phase-j-item-6) | Phase J.6 | Direct error/PPT: **do not pursue**; short-kernel Raman: **open, benchmark first** |
 
 ---
 
@@ -573,7 +575,11 @@ unchanged (not yet wired into `native.rs`, so this is a no-op check): rust
 sim-interface 301/301, sim-multimode 33/33, sim-propagation 18/18,
 io 2302/2302, fields 334/334.
 
-#### Phase 1 — universal RK buffers + `ExpCache` (the benchmarked win) — NEXT
+#### Phase 1 — universal RK buffers + `ExpCache` — NOT PLANNED (negative ROI)
+
+The instructions below are retained as the abandoned design, not a resume
+point. The end-to-end ceiling measurement above overruled the isolated
+microbenchmark.
 Convert the 5 universal buffers touched by every geometry —
 `field`, `linop`, `ks: [Vec<Complex<f64>>; 7]`, `yerr`, `ystage` — plus
 `ExpCache`'s cached arrays, to SoA (`re: Vec<f64>, im: Vec<f64>` pairs, or a
@@ -668,10 +674,9 @@ a sandbox artifact. Fix: run the test commands with the sandbox disabled.
 
 ## 3. Threading the native RHS (BACKLOG S2)
 
-Status: **Phases 1-3 (radial: plumbing, measurement, FFT+plasma) + Phase 4
-Raman-radial + Phase 4 modal all done. RE-LANDED 2026-07-11; modal threading
-landed 2026-07-20.** Only free-space 3-D FFT threading (Phase 4, last bullet)
-remains open. Phase 3 was originally
+Status: **Complete 2026-07-22.** Radial plumbing/FFT/plasma/Raman,
+modal cubature-node evaluation, and free-space 3-D FFT planning all landed.
+Phase 3 was originally
 implemented, committed, pushed, then REVERTED (2026-07-10) after a
 post-push wall-clock benchmark surfaced an intermittent segfault. The
 revert's isolation experiment correctly implicated
@@ -700,8 +705,7 @@ S1.6 (the SoA/split-complex conversion) was measured and parked: the
 exp-linop multiply it targeted is only ~2% of `step()` time, so its
 ceiling was too small to justify the rewrite. That investigation also
 confirmed FFT/RHS work dominates `step()` time — which is exactly what S2
-targets: the resident RHS (`rhs_radial`, `rhs_modal`, `rhs_free`) runs
-single-threaded per stage today.
+targeted. The paragraphs below preserve the pre-implementation design.
 
 An Explore survey (2026-07-10) found the risk profile is better than the
 backlog's own framing suggested. The backlog warns "one scratch slab per
@@ -769,7 +773,7 @@ dominates the rest but is already internally parallel/BLAS-backed (S1
 item 5) — out of scope for this item. Instrumentation was fully reverted
 (`git diff` empty on `native.rs`) before Phase 3 started.
 
-### Phase 3 — thread the safe seams: FFT-per-column + plasma-per-column — NEXT
+### Phase 3 — thread the safe seams: FFT-per-column + plasma-per-column — DONE 2026-07-11
 
 Gated behind `self.n_threads > 1` (via
 `self.thread_pool.as_ref().unwrap().install(|| { ... })`, building the
@@ -831,12 +835,13 @@ gate at `n_threads=1` (must match all baselines exactly) plus a second
   pointer into Julia memory — contrast the plasma-pointer UAF fixed on
   `main`). Test: `test/test_native_modal_threading.jl` (Kerr full=false/
   full=true/2-mode/npol=2, Raman :N2, + a forced-`GC.gc()` stress loop).
-- Free-space 3-D FFT threading via `fftw_init_threads`/
-  `fftw_plan_with_nthreads` (new bindings in `fftw.rs`, a planning-time
-  setting under `PLANNER_LOCK`) — **still open**. `fftw.rs`'s
-  `unsafe impl Sync` only holds for single-threaded plans, so an
-  `nthreads>1` plan would deadlock under the existing concurrent
-  `fftw_execute_dft` path; needs an isolated multi-threaded plan first.
+- **Free-space 3-D FFT threading — DONE 2026-07-22.**
+  `with_nthreads_plan` configures FFTW under `PLANNER_LOCK` and restores the
+  process-global planner thread count afterward. Free-space performs one
+  joint 3-D transform per stage from one caller, so `RealFft3d`/
+  `ComplexFft3d` do not need `Sync`. Measured 2.46–2.51× for the transform
+  and 1.43–1.51× end to end; `n_threads=1` vs 4 is bit-identical
+  (`test/test_native_free_threading.jl`).
 
 ### Verification (every phase)
 

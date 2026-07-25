@@ -47,8 +47,10 @@ using TestItems
         kw = (; λ0, τfwhm=τ, energy, modes=:HE11, loss=false,
                 saveN=2, trange=0.5e-12, λlims=(200e-9, 4e-6))
 
-        out_julia = with_logger(NullLogger()) do
-            prop_capillary(args...; kw...)
+        out_julia = withenv("AMALTHEA_USE_RUST_NATIVE" => "0") do
+            with_logger(NullLogger()) do
+                prop_capillary(args...; kw...)
+            end
         end
         out_rust = withenv("AMALTHEA_USE_RUST_NATIVE" => "1") do
             with_logger(NullLogger()) do
@@ -64,11 +66,18 @@ end
 ```
 
 Notes:
-- Toggle both paths via `withenv`, never by mutating global state.
+
+- Toggle **both** paths explicitly via `withenv`, never by relying on the
+  default or mutating global state. Native defaults on, so omitting the
+  `"0"` around the oracle produces a vacuous native-vs-native comparison.
 - `prop_capillary` **requires** `λlims`; it does **not** accept `stepfun`,
   `rtol`, or `atol` as kwargs (learned the hard way — see PORT_LOG seed).
 - Compare the final-z spectrum `Eω[:,end]`. For stronger checks also compare an
   intermediate save and a derived observable (e.g. spectral energy).
+- Prove the feature under test changes the explicit Julia oracle by more than
+  the comparison tolerance. The CUDA test failed this rule: a zero-nonlinearity
+  backend passed because its `1e-3` tolerance exceeded the entire `4.5e-4`
+  nonlinear effect.
 - Place the file in `test/` and add nothing else — `@run_package_tests`
   auto-discovers every `@testitem`.
 
@@ -174,6 +183,7 @@ coincidence of regime, not immunity to the same mechanism).
 | 6 | ✅ done | free-space 3-D FFT (RealGrid, const_norm_free, Kerr-only) | `test/test_native_free.jl` | 7.05e-18 (achieved) | 5.01e-17 (achieved; fixed dt) |
 | 7 | ✅ done | z-dependent linop (mode-avg, graded-core, two-point pressure gradient) | `test/test_native_zdep_linop.jl` | <1e-9 (β1 vs BigFloat truth, achieved); ~1e-12 (`dtn`/`err`, achieved) | <1e-3 tier (measured ~2.7e-7 post-Phase-8-precision-fix, deliberate-divergence, see §2) |
 | 8 | ✅ done | default-flip: existing suite green with native as default | `test/test_native_phase8.jl` + full suite | — | 46590 pass / 0 fail / 0 error / 12 broken (pre-existing), 46602 total |
+| S5.3 | ✅ done | order-5 dense output + deferred FSAL carry on Julia/native, all geometries | `test/test_native_dense_order5.jl` | observed order → 5; native-vs-Julia ~1e-17 | full seven-group gate green |
 
 Phase 5's single-step tier is documented looser (~1e-10) than the FFTW-only
 phases, not because cubature node placement is algorithm-dependent — it binds
@@ -223,6 +233,17 @@ that tier on any future test failure, check first whether both sides of the
 comparison are actually eligible for the same backend; if they are, a
 failure is a real bug, not a tolerance problem.
 
+**GPU-specific acceptance rule (current blocker).** A self-skipping CUDA test
+passing on a CPU-only CI runner proves only that the skip guard works. Closing
+BACKLOG S3 item 0 requires all of:
+
+1. a CPU-native and Julia-oracle control showing the intended nonlinear effect;
+2. a GPU stage-derivative check whose scale is comparable to CPU native, not
+   approximately zero;
+3. a full-solve tolerance tighter than that measured nonlinear effect;
+4. a recorded run on real CUDA hardware; and
+5. eventually, a standing CUDA CI job so the path cannot rot silently.
+
 ## 5. Commands
 
 ```bash
@@ -239,12 +260,15 @@ cd amalthea && cargo test
 julia --project -e 'using Pkg; Pkg.test("Luna")'
 ```
 
-Valid `LUNA_TEST_GROUP` values: `physics`, `rust`, `sim-interface`,
+Main-gate `LUNA_TEST_GROUP` values: `physics`, `rust`, `sim-interface`,
 `sim-multimode`, `sim-propagation`, `io`, `fields`, `All` (default).
+`examples` is a supplemental CI smoke group and is not yet part of
+`test/run_full_gate.py`'s seven-group default.
 
-## 6. Definition of done for a phase
+## 6. Definition of done for a native work item
 
-A phase is complete when **all** hold:
+A native work item is complete when **all** hold:
+
 1. The native path is selected by its toggle and runs the full geometry with no
    Julia callback in the hot loop (verify: no `@cfunction` round-trip for that path).
 2. A single-step equivalence test passes at the tier in §4.
@@ -252,3 +276,6 @@ A phase is complete when **all** hold:
 4. The pre-existing Julia-path tests still pass (no regression).
 5. A `PORT_LOG.md` entry records both achieved tolerances, the FFI symbols added,
    and any gotchas.
+6. The test is non-vacuous: the feature changes the oracle by more than the
+   asserted equivalence tolerance, or another direct assertion proves the
+   relevant intermediate quantity is present.

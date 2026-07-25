@@ -23,7 +23,10 @@ Amalthea.jl is a flexible platform for the simulation of nonlinear optical dynam
     - Strong-field photoionisation and plasma dynamics
 - A built-in interface for the running and processing of multi-dimensional [parameter scans](#running-parameter-scans) in serial or parallel
 - A standard library of [plotting](#plotting-results) and [processing](#output-processing) functions, including calculation of spectrograms and beam properties
-- **Rust-accelerated numerical kernels** with automatic hardware dispatch (AVX2, AVX-512, CUDA, Vulkan)
+- **Rust-resident propagation backend** with LLVM auto-vectorized CPU kernels
+  and an experimental, explicitly opt-in CUDA backend. The legacy
+  `dispatch.rs` AVX/CUDA/Vulkan selector is detection-only and is not wired
+  into propagation.
 
 Amalthea.jl is designed to be extensible: adding e.g. a new type of waveguide or a new nonlinear effect is straightforward, even without editing the main source code.
 
@@ -43,7 +46,7 @@ Amalthea.jl is an independent hard fork of [Luna.jl](https://github.com/LupoLab/
 
 Two things worth being explicit about:
 
-- **Why a hard fork and not a PR series.** Luna.jl is still maintained by the Lupo Lab, but it isn't set up to take in a change of this scope (a parallel native backend, a new build/FFI toolchain, hardware dispatch, etc.) through its normal contribution path. Diverging as a fork was the practical way to pursue this direction without blocking on upstream review bandwidth for a change this large.
+- **Why a hard fork and not a PR series.** Luna.jl is still maintained by the Lupo Lab, but it isn't set up to take in a change of this scope (a parallel native backend plus a new build/FFI toolchain) through its normal contribution path. Diverging as a fork was the practical way to pursue this direction without blocking on upstream review bandwidth for a change this large.
 - **What stays intact.** The MIT license and copyright notice from the original authors (Chris Brahms and John Travers) are preserved in [`LICENSE`](LICENSE), as required by that license, and they're credited in [`CITATION.cff`](CITATION.cff) and the [Credits & Acknowledgements](#credits--acknowledgements) section below. If you're citing this software, please cite both the original Luna.jl work and this fork — see [Citing](#citing).
 
 If you're deciding which one to use: Luna.jl is the actively-maintained, PR-accepting original; Amalthea.jl trades that contribution model for raw throughput on the numerical hot path. They're expected to diverge further over time rather than reconverge.
@@ -52,7 +55,11 @@ If you're deciding which one to use: Luna.jl is the actively-maintained, PR-acce
 
 The `amalthea` crate provides the high-performance numerical engine that powers the most compute-intensive parts of the simulation. Key features include:
 
-- **Automatic hardware dispatch**: at runtime, `amalthea` detects the available hardware and selects the most performant code path—AVX2 SIMD, AVX-512 SIMD, CUDA (NVIDIA GPU), Vulkan (cross-vendor GPU), or a portable fallback.
+- **Resident CPU propagation**: eligible simulations use the native CPU
+  backend by default. LLVM performs target-appropriate auto-vectorization;
+  the experimental CUDA-resident backend is opt-in and currently
+  correctness-blocked. `dispatch.rs` detects hardware for its own tests but
+  is not a propagation dispatcher, and there is no Vulkan implementation.
 - **Parallelised transforms**: the quasi-discrete Hankel transform (QDHT) used in free-space propagation is parallelised with [Rayon](https://github.com/rayon-rs/rayon).
 - **Raman solver**: the time-domain Raman solver uses an explicit matrix-exponential integrator with AVX2 optimisation.
 - **Cross-platform**: builds and runs on Linux, macOS, and Windows, including
@@ -73,7 +80,21 @@ add https://github.com/vdiego28/Amalthea.jl
 
 This will install and precompile Amalthea.jl and all its dependencies (including the native Rust backend, `amalthea`).
 
-**On the Rust toolchain requirement.** For the three platforms Amalthea.jl intends to publish release binaries for (Linux x86_64, macOS aarch64/Apple Silicon, Windows x86_64), the build step (`deps/build.jl`) *attempts* to download a prebuilt `amalthea` library matching your package version before falling back to compiling from source — when that download path is working end to end, users on those platforms need no Rust toolchain at all. **In practice, as of this writing, the toolchain is required for everyone**: the download intentionally never throws on failure, so a missing or mismatched release asset is silent and just falls through to a source build (see `try_download_prebuilt` in `deps/build.jl`) — check the project's current release assets if you want to confirm whether this has changed. Either way, when the download path doesn't cover you, the build falls back to compiling `amalthea` from source with `cargo build --release`, which **does** require a working [Rust toolchain](https://rustup.rs/) (cargo >= 1.85) installed and on `PATH`. This is a build-time-only requirement inherited from this fork's native backend — plain [Luna.jl](https://github.com/LupoLab/Luna.jl) users won't have seen it. (`AMALTHEA_RUST_SKIP_DOWNLOAD=1` forces the source-build path directly, skipping the download attempt.)
+**On the Rust toolchain requirement.** For the three platforms Amalthea.jl
+intends to publish release binaries for (Linux x86_64, macOS aarch64/Apple
+Silicon, Windows x86_64), the build step (`deps/build.jl`) first attempts to
+download a prebuilt `amalthea` library matching the package version, then falls
+back to compiling from source. **Version 1.0.0 has release binaries, but they
+were published under the legacy `libluna_rust-<triple>` names while the
+current installer requests `libamalthea-<triple>`. See the
+[v1.0.0 assets](https://github.com/vdiego28/Amalthea.jl/releases/tag/v1.0.0).
+Until those assets are republished or the installer gains a legacy-name
+fallback, every install takes the source-build path.** That path requires a working
+[Rust toolchain](https://rustup.rs/) (cargo >= 1.85) on `PATH`. Repairing and
+validating the release path is tracked in `docs/dev/BACKLOG.md`; once
+correctly named assets exist, supported platforms should no longer need Rust
+for a normal install. `AMALTHEA_RUST_SKIP_DOWNLOAD=1`
+forces the source-build path directly.
 
 If `Pkg.build`/`Pkg.instantiate` fails, look for a `Failed to find/compile the Rust library` error from the build script — it names the actual problem and how to fix it. The most common cause is simply that `cargo` isn't installed or isn't on `PATH`; installing it via [rustup.rs](https://rustup.rs/) and re-running `Pkg.build("Amalthea")` resolves it.
 

@@ -1251,3 +1251,328 @@ native dense output from linear to "quartic" fixed a batch of failures — the
 quartic was never better than O(h²); the win came from applying the
 interaction-picture propagator at all. Worth reporting upstream to Luna.jl.
 Full record: `portlog-inbox/dense-order5.md`.
+
+## 2026-07-25 — Documentation handoff audit — Codex (GPT-5)
+
+**Status:** complete
+
+**Did:** Reconciled the contributor-facing documentation with the code and
+current project state. The live queue now starts with the correctness-blocked
+CUDA RHS, followed by standing GPU CI, seven broken low-level examples,
+prebuilt-release installation repair, and a benchmark-first Raman experiment.
+Closed S2 threading and S5 dense-output work, rejected/parked proposals, the
+CPU-native default, and the remaining fallback boundaries are now consistently
+identified across `BACKLOG.md`, `SUGGESTIONS.md`, `ARCHITECTURE.md`, `GPU.md`,
+`MATH.md`, `PLANS.md`, `TESTING.md`, `NATIVE_SUPPORT_MATRIX.md`,
+`VANILLA_LUNA_ISSUES.md`, `ARCHIVE.md`, `README.md`, `AGENTS.md`, and
+`CLAUDE.md`.
+
+**How:** Traced the missing GPU path directly from
+`amalthea/src/cuda_native.rs:350` (`set_mode_avg_params`, which discards
+`owin`/`sidx`/`pre`/`beta`/`nlscale`/`sqrt_aeff`) to the complete CPU reference
+at `amalthea/src/native.rs:897` (`rhs_mode_avg_real`, especially Steps 2 and
+5–7). No source or FFI symbol changed. Verified the public release state with
+`gh release list` and `gh release view v1.0.0`: the tag exists and contains
+three `libluna_rust-<triple>` binaries, whereas current `deps/build.jl` requests
+`libamalthea-<triple>`. Added a correction at the top of
+`portlog-inbox/hygiene.md` because its later 2026-07-22 correction was itself
+incorrect.
+
+**Decisions:**
+
+- Treat eligible CPU `NativeSim` as the production/default backend and the
+  Julia pipeline as its explicit equivalence oracle/fallback.
+- Treat `CudaNativeSim` as unusable until its full nonlinear transform pipeline
+  matches the CPU reference; successful execution or a loose full-solve
+  comparison is not a correctness result.
+- Require GPU tests to force the Julia oracle (`AMALTHEA_USE_RUST_NATIVE=0`),
+  assert the intended GPU backend, and use a tolerance below an independently
+  measured nonlinear control effect.
+- Keep `StepIndexMode`, the full SoA conversion, and a cold-start standalone
+  CLI parked; do not pursue direct PPT or direct error-coefficient rewrites
+  without new evidence.
+- Preserve historical narratives where useful, but label them as superseded
+  and make `BACKLOG.md`'s dated resume queue authoritative.
+
+**Gotchas:** `AGENTS.md` and `CLAUDE.md` are deliberately ignored by this
+checkout's `.gitignore`; they were updated in the working tree but will not
+appear in ordinary `git status` or a future commit unless the repository policy
+changes. The 2026-07-22 entry above says the release asset mismatch was
+"fabricated"; this entry and the correction in `portlog-inbox/hygiene.md`
+supersede that statement. The current release workflow stages canonical
+`libamalthea-*` names, but that does not repair the already-published v1.0.0
+assets.
+
+**Tests:** Documentation-only change; no numerical or source test suite was
+run. `git diff --check` passed. A repository-local Markdown link audit passed
+for every edited document. Live `gh release list` and
+`gh release view v1.0.0` checks confirmed the release/tag/asset-name findings.
+
+**Next:** Implement `BACKLOG.md` resume item 1: make the omitted
+mode-averaged arrays/scalars resident in `CudaNativeSim`, use `n_time_over`,
+port CPU RHS Steps 2 and 5–7, check both `cufftPlan1d` return codes, and verify
+with non-vacuous single-step plus full-solve tests on the RTX 5060 Ti.
+
+## 2026-07-25 — S3 item 0 — Restore GPU-resident nonlinear physics (`CudaNativeSim`) — Claude (sonnet-5), agent wave
+
+**Status:** complete (verified on real CUDA hardware; two follow-ons left open)
+
+**Did:** Fixed the 🔴🔴 blocker — the GPU-resident RHS computed effectively
+zero nonlinearity, so `AMALTHEA_USE_RUST_CUDA_NATIVE=1` behaved like linear
+propagation. Two distinct bugs, only one of which was in the original
+diagnosis.
+
+**How:**
+1. *The diagnosed bug.* `cuda_native.rs::set_mode_avg_params` discarded
+   `pre`/`beta`/`sidx`/`owin`/`nlscale`/`sqrt_aeff`, and `step()`'s inline
+   Kerr path implemented only CPU Step 3 (the Kerr cubic). CPU Steps 1
+   (oversampled crop + IFFT), 2 (scale by `1/(nlscale·sqrt_aeff)`), 5
+   (forward FFT + crop-back), 6 (`norm_pre_beta`) and 7 (`ωwin`) were absent.
+   Because Step 2's missing division is by a large factor and the term
+   entering it is *cubed*, the Kerr output came out many orders of magnitude
+   too small — quantitatively consistent with the measured `max|kᵢ|=3.5e-13`
+   against CPU's `12225`. Fixed by a new private
+   `CudaNativeSim::compute_rhs_mode_avg(&mut self, idx)` that ports the CPU
+   oracle (`CpuNativeSim::rhs_mode_avg_real`, `native.rs`) step for step,
+   with the CPU step numbers kept in the comments so the correspondence
+   stays checkable. Three new CUDA kernels in `kernels.cu`:
+   `expand_spectrum_kernel`, `scale_real_kernel`, `finalize_spectrum_kernel`.
+   Every Kerr/plasma buffer and cuFFT plan resized `n_time` → `n_time_over`
+   (this folds in S3 item 6, which had to be fixed for Steps 1/5 to be
+   portable at all). Both `cufftPlan1d` return codes are now checked — a
+   silent plan failure previously disabled the whole nonlinear block through
+   the `n_time > 0 && fft_r2c != 0 && fft_c2r != 0` guard.
+2. *A second bug, found in design review, not in the BACKLOG diagnosis.*
+   `CudaNativeSim::set_field` only copied the field to the device; it never
+   seeded `ks_d[0]`. `CpuNativeSim::set_field` deliberately re-evaluates the
+   RHS after copying so `ks[0]` holds the true FSAL stage-0 derivative for
+   the *initial* condition (`step()`'s FSAL carry only fires from the second
+   step onward). So on GPU, `ks_d[0]` at the first `step()` was whatever
+   `cuMemAlloc` returned. This was invisible while every stage was ~1e-13,
+   and would *not* have stayed invisible once the Kerr fix landed — a latent
+   uninitialized-memory read that the primary fix would have activated.
+   Fixed by calling the same `compute_rhs_mode_avg` helper with `idx=0` from
+   `set_field`, mirroring CPU control flow exactly.
+
+**Decisions:** the `err` weak-norm placeholder (`field_d` in both the "old"
+and "trial new" slots) is left as-is and *demoted from a gate to a printed
+diagnostic*. With a real nonlinear RHS there is no reason that estimate
+should sit below 1, and under fixed-step `stepcontrol_pi` clamps `dtn` and
+forces acceptance regardless, so it never affects the accepted trajectory
+that the equivalence assertions actually check. The honest fix is a real
+pre-acceptance trial solution in `step()` — recorded as open, not hidden.
+
+**Gotchas:**
+- The `n_time`-vs-`n_time_over` sizing gap (S3 item 6) is not separable from
+  this fix: Steps 1 and 5 are crop/pad operations, so they are meaningless
+  without the oversampled length. Anyone reading S3 item 6 as still open
+  should know it closed here.
+- Every new kernel-arg array is bound through named `let` locals, never
+  inline temporaries — that `&mut {expr} as *mut _` pattern caused a real
+  `SIGSEGV` inside `libcuda.so` in the 2026-07-07 verification pass.
+- Contrary to this repo's standing note that GPU work needs the sandbox
+  disabled, `nvidia-smi` and `nvcc` were reachable directly from the agent
+  sandbox in this session. The requirement is environment-dependent, not
+  absolute.
+
+**Tests:** `test/test_native_cuda.jl` substantially rewritten against
+AGENTS.md §3 step 4, which the old test violated and which is exactly why
+this bug shipped for two weeks:
+- Non-vacuousness is now *measured in-test*: the Julia oracle is run with
+  `kerr=true` vs `kerr=false` and the resulting nonlinear share (`rel_nl`,
+  ≈4.5e-4) is asserted to exceed the equivalence tolerance by >100×. The old
+  test asserted `rel_solve < 1e-3` against a config whose entire nonlinear
+  effect was ≈4.5e-4 — looser than the physics under test, so a
+  zero-nonlinearity backend passed vacuously.
+- New **stage-derivative structural check**: GPU vs CPU-native `ks[i]` via
+  `get_ks_stage`, probed both immediately after construction (which is what
+  catches the `set_field`/`ks_d[0]` bug) and for all 7 stages after one
+  accepted step. This catches the whole failure class directly, without
+  routing through an integrated solve.
+- New **`Luna.run`/dense-output test** (adaptive stepping, `saveN=11`, via
+  `prop_capillary`), added after review flagged that every prior GPU test
+  drove the stepper through raw `solve()`/`step!()` and so never exercised
+  `interpolate`'s dense-output *value* — the same blind-spot class as the
+  Phase 8 windowing bug and the S5.3 dense-output-order bug.
+- Measured on real hardware (RTX 5060 Ti, driver 610.43.02, CUDA 13.3):
+  stage derivatives `3.5e-13` → `~1230`, matching CPU-native to ~1e-15;
+  fixed-step full-solve vs the Julia oracle `3.5e-16`; `Luna.run` dense
+  output `1.25e-7`. Tolerances tightened `1e-3`/`5e-2` → `1e-12` for the
+  fixed-step tiers (the reassociation tier per TESTING.md §2, >1000× margin
+  above measured) and the ~1e-6 floor tier for the adaptive one.
+- Gate: `rust` group green.
+
+**Next:** GPU CI (S3 item 2) remains the real gap — this fix was found only
+because someone re-measured by hand. Also open: the `err` placeholder's
+inflation is documented but proven harmless only for the two tested configs,
+not for adaptive stepping in general. GPU scope beyond mode-averaged
+RealGrid Kerr(+PPT) is untouched and still `-1`-stubbed.
+Full record: `portlog-inbox/gpu-nonlinearity.md`.
+
+## 2026-07-25 — Examples — Repair the seven known-broken low-level examples — Claude (sonnet-5), agent wave
+
+**Status:** complete for 6 of 7; the 7th is a genuine library defect, now
+tracked separately
+
+**Did:** Fixed BACKLOG resume-queue item 3 and added regression coverage for
+both documented failure classes.
+
+**How:** Class 1 (`linop` referenced before assignment — six files) fixed by
+moving the `LinearOps.make_const_linop(...)` assignment ahead of its first
+use in `Stats.default(...)`. Class 2 (`norm_modal(grid.ω)` instead of
+`norm_modal(grid)` — three files) fixed to pass the grid object. Both classes
+were re-audited across all 44 example files first: the backlog's file list
+was exactly right, no additions or removals.
+
+**Decisions:** fixes are minimal and match the working sibling examples in
+the maintained smoke subset, rather than modernizing the examples.
+
+**Gotchas:** the 2026-07-22 audit undersold three files, because its harness
+stopped at the first error per file and never saw what lay behind it. Four
+further real bugs surfaced only on end-to-end runs: `modal_vector_plasma_CP.jl`
+needs `ϕ=[π/2]` (vector), not a scalar — `Fields.PulseField.ϕ::Vector{Float64}`;
+`elliptical_env.jl` had a chain of four (undefined `τ` for `τfwhm`, a missing
+broadcast dot on `Maths.gauss`, a missing `import FFTW`, and an errant
+*positional* `normfun` argument to `Amalthea.setup`, whose modal-`EnvGrid`
+method takes `norm!` as a keyword). **Lesson: a first-error-per-file audit
+undercounts; only an end-to-end run establishes that an example works.**
+
+**Tests:** `test/test_examples_smoke.jl` extended with one file per failure
+class — `full_modal/basic_modal_full.jl` (both classes) and
+`polarisation/modal_nonvector_plasma.jl` (class 1) — plus an AST rewrite so
+the HDF5 example stops leaving a stray `.h5` in the CWD. Both additions were
+verified to actually *fail* against the unfixed originals (single-file
+`git show HEAD:` reverts): class 2 fails with `FieldError` on `referenceλ`,
+class 1 with `UndefVarError: linop`. `LUNA_TEST_GROUP=examples` 20/20
+(1m54s, up from ~45-58s for 8 files); `LUNA_TEST_GROUP=sim-multimode` 33/33,
+no regressions.
+
+**Next:** `full_modal/basic_modal_full_bothpolarisations.jl` still throws
+`DimensionMismatch` inside `TransModal`'s Cubature integration for
+`full=true` + 2 polarisations + plasma. Confirmed by stack trace to fire
+during `PreconStepper`'s initial FSAL evaluation (`RK45.jl:269`) and to be
+independent of fibre length — i.e. a library-level defect, not an example
+typo. Filed as a new BACKLOG item.
+Full record: `portlog-inbox/examples-repair.md`.
+
+## 2026-07-25 — S6/release — Prebuilt-binary asset-name compatibility — Claude (sonnet-5), agent wave
+
+**Status:** complete (local half; the release-republish half is the lead's
+call and was deliberately not taken)
+
+**Did:** Made prebuilt-binary installation actually work against the
+published `v1.0.0` release, closing the local half of resume-queue item 4.
+The repo's rename from `luna_rust` to `amalthea` left `v1.0.0`'s assets named
+`libluna_rust-<triple>` while `deps/build.jl` requested
+`libamalthea-<triple>`, so `try_download_prebuilt` always missed and silently
+fell back to `cargo build --release` — the prebuilt feature was dead for the
+only published release.
+
+**How:** new `_prebuilt_asset_candidates(triple, ext, version)`
+(`deps/build.jl:46-61`) returns the canonical name first, then appends the
+legacy name *only* when `version <= _LAST_LEGACY_NAMED_VERSION` (`v"1.0.0"`,
+`deps/build.jl:31`). `try_download_prebuilt` (`deps/build.jl:82-143`) fetches
+`SHA256SUMS.txt` once and walks the candidates in priority order, installing
+the first checksum-verified match at the unchanged canonical local path. A
+`base_url` keyword (default `nothing` → production URL) was added purely as a
+test seam.
+
+**Decisions:**
+- The legacy fallback is *version-bounded* rather than unconditional, so a
+  future genuinely-broken release cannot be masked by an unrelated
+  legacy-name match.
+- Checksum mismatch is deliberately asymmetric with "asset absent from the
+  manifest": a mismatch on *any* candidate aborts the whole attempt rather
+  than cascading to the next name, because a mismatch on a listed asset
+  signals corruption or tampering, not "this name isn't used here."
+- `.github/workflows/release.yml` was checked and already stages canonical
+  `libamalthea-<triple>` names for every future tag — unchanged.
+
+**Gotchas:** the real `SHA256SUMS.txt` contains a CRLF line for the Windows
+asset; Julia's `split` over `eachline` handles it, but this was verified with
+`cat -A` rather than assumed.
+
+**Tests:** the actual production code path (no URL override) was run against
+the real GitHub `v1.0.0` release into a throwaway `rust_dir` — downloaded,
+verified and installed successfully. The full unmodified `deps/build.jl` then
+installed the real legacy-named binary to
+`amalthea/target/release/libamalthea.so`. A 4-scenario local-HTTP-server
+fixture suite (legacy happy path; checksum mismatch rejected; canonical wins
+when both present; total miss falls back cleanly with mtime untouched and no
+temp files) passed 20/20.
+
+**Next:** the lead chose to leave `v1.0.0`'s published assets untouched and
+prepare a `v1.0.1` whose assets carry canonical names. No release asset was
+mutated by this work; only read-only `gh release view` was used.
+Full record: `portlog-inbox/prebuilt-asset-compat.md`.
+
+## 2026-07-25 — Phase J.6(c) — short-kernel Raman convolution (BACKLOG open remainder 5) — Claude (sonnet-5)
+**Status:** complete (measure-first spike; recommend against implementing)
+**Did:** Measured whether shortening the `:SiO2` intermediate-broadening
+Raman FFT-convolution pad from the current `2·n_time_over` to
+`n_time_over + M` (M = the real Hollenbeck & Cantrell response's support
+length at an f64-noise cutoff) is worth implementing. It is not, at any grid
+size this repository's own configs or examples reach. Full numbers below.
+**How:** (1) Derived M analytically/numerically from the exact SiO2
+parameters already in `PhysData.jl:1179-1188`/`native.rs`'s
+`set_raman_fft_params` (native.rs:4409-4483) — no guessing. (2) Wrote a
+temporary Criterion bench (`raman_short_kernel_bench.rs`, modeled on
+`raman_fft_r2c_bench.rs` which measured J.3) using the *real* h(t), not a
+synthetic kernel, across the same n_time_over=1024..65536 sweep. (3) Added
+temporary `Instant`-based profiling directly to `rhs_mode_avg_env`
+(native.rs:1568, Step 3c at 1647-1688) to measure Step 3c's real share of
+RHS wall time at the actual `test/test_native_raman_sio2.jl` config (via a
+temporary `:tmpprofile` testitem tag, reverted after), at both its native
+trange=4e-12 (n_time_over=4096) and a widened trange=16e-12
+(n_time_over=16384, same λlims ⇒ same dt ⇒ same M). (4) Quantified
+truncation error against a realistic sech² pulse intensity via a pure-Python
+r2c convolution (no numpy in this environment; hand-rolled radix-2 FFT),
+not just a kernel-norm proxy.
+**Decisions:**
+- Truncation cutoff eps=1e-13 (relative to h's peak) — chosen to match the
+  existing native-vs-Julia SiO2 full-solve tolerance floor (1.8e-13-3.6e-13,
+  `test_native_raman_sio2.jl`), so a truncation error introduced at this
+  cutoff cannot itself blow that budget (confirmed empirically, see §4 below).
+- Held dt fixed at the real test config's value across the bench's
+  n_time_over sweep, since dt is set by λlims/λ0 (bandwidth), not by trange —
+  physically, M (in samples) is roughly fixed while n_time_over grows with
+  trange, so the achievable ratio is a property of *how much trange margin
+  the user chose beyond the material's Raman decay time*, not of grid size
+  alone.
+**Gotchas (the load-bearing finding):**
+- `native-port/PLANS.md` §6.3 assumed "kernel maybe 5-10% of the padded
+  grid" and `MATH.md` §8.5 asserted "h ≈ 0 beyond ~100fs" for SiO2. Both were
+  unmeasured guesses and both are wrong by roughly 40x: the real support is
+  M≈3104 samples ≈ **4.15 ps**, not ~100fs. At the one real production-shaped
+  grid in this repo (`test_native_raman_sio2.jl`, n_time_over=4096), that's
+  **76% of the grid**, not 5-10%. This single wrong assumption is the entire
+  reason the prior recommendation ("recommend" in BACKLOG) was wrong — it's
+  independently useful to the repo, and it retroactively vindicates
+  native.rs's existing zero-fill comment at Step 3c ("don't rely on h's tail
+  happening to be zero at the wrap distance") — the tail genuinely reaches
+  the wrap boundary at real grid sizes.
+- Two independent reasons the shortened pad doesn't help even where the
+  kernel *is* meaningfully shorter than the grid: (a) the natural
+  `n_time_over+M` length is not a power of two, and FFTW's mixed-radix path
+  measurably underperforms a pure-radix-2 transform of similar or even
+  larger size — enough to erase the entire length-reduction gain at
+  n_time_over=4096 (7200 vs 8192: 43.66µs vs 42.89µs, i.e. *slower*); (b)
+  even where the isolated transform *is* faster (n_time_over=16384: 1.32x),
+  Step 3c's non-FFT overhead (`raman_intensity_half_env`, the mandatory
+  zero-fill, `raman_accumulate_env`) is untouched by pad-shortening and
+  dilutes the RHS-level gain to ~1.05x — short of the >1.4x bar S5.1 was
+  rejected against.
+**Tests:** `cargo test` (amalthea, release): 71/71 pass, post-revert.
+`test_native_raman_sio2.jl` (via `LUNA_TEST_GROUP=rust`, post-revert):
+unaffected — no production code changed. During measurement (pre-revert,
+same physics, only added timers), native-vs-Julia agreement was 2.95e-13
+(n_time_over=4096, the file's own config) and 1.04e-12
+(n_time_over=16384, widened trange) — both within the expected FFT-method
+summation-order tier, confirming the instrumentation didn't perturb the
+math.
+**Next:** None — this item is closed as "do not implement" pending a future
+config that actually uses a trange many times longer than SiO2's ~4ps decay
+time (none exist in this repo today; chasing that would be optimizing for a
+hypothetical workload). If BACKLOG open remainder 5 needs a live entry, the
+lead should mark Phase J.6(c) "recommend against" (reversing the prior
+"recommend") and cite this file.

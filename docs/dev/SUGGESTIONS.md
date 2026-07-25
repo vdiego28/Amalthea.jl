@@ -1,34 +1,54 @@
-# Suggestions — beyond the current backlog
+# Suggestions — rationale and outcomes
 
-Ideas out of scope of the fix/parity plan in `BACKLOG.md`. Roughly ordered
-by expected payoff per unit effort for the typical workload (mode-averaged
-HCF, 8k–16k time samples, ~10³–10⁴ RK stages per solve).
+This file preserves the original *why* behind the 17 suggestions. It is not a
+queue and some proposal text intentionally describes the pre-implementation
+state. Current execution status belongs to `BACKLOG.md`.
+
+Status snapshot (2026-07-25):
+
+| Idea | Outcome |
+|---|---|
+| 1 GPU-resident propagation | **Correctness-blocked.** Narrow `CudaNativeSim` exists, but currently omits nonlinear scaling/normalization and behaves linearly; BACKLOG S3 item 0 is the first priority |
+| 2 Threading | **Complete.** Radial, modal, and free-space seams landed; reductions remain sequential |
+| 3 SIMD/layout | Fused/de-branched loops landed; full SoA conversion **parked** after an end-to-end ceiling of ~1% |
+| 4 FFTW wisdom | **Complete, opt-in.** `AMALTHEA_NATIVE_FFTW_WISDOM=1`, default off for determinism |
+| 5 BLAS-3 QDHT | Correctness wiring fixed; remains opt-in pending the default-flip performance bar |
+| 6 Config struct | **Complete.** `BackendConfig` plus backend reporting |
+| 7 FFI error model | **Complete.** Shared `RK45.check_ffi`/`NativeIneligible` policy |
+| 8 Explicit setup accessors | **Complete.** Reflective probes were replaced |
+| 9 Native scan HDF5 writer | **Complete**, opt-in |
+| 10 Mixed precision | **Rejected after measurement** (~1.0–1.06×, below bar; numerically risky) |
+| 11 Deterministic mode | **Complete, re-scoped** to process-global BLAS eligibility |
+| 12 Order-5 dense output | **Complete 2026-07-23**, including the upstream FSAL/k1 bug fix |
+| 13 Prebuilt binaries | Workflow/install fallback **implemented**, but v1.0.0 assets use legacy `libluna_rust-*` names and do not match the current installer; fix/validate remains |
+| 14 Standalone CLI/WASM | **Parked.** Cold-start CLI has negative ROI; dump-and-replay is the only recommended variant |
+| 15 Direct error coefficients | **Do not pursue.** Both steppers already precompute the coefficient differences |
+| 16 Direct PPT | **Do not pursue.** BigFloat-quadrature tail is unsuitable for the hot loop; LUT hardening is already fixed |
+| 17 Short-kernel Raman | **Open and recommended**, benchmark first |
+
+The original ordering below was by expected payoff per unit effort for the
+typical workload (mode-averaged HCF, 8k–16k time samples, ~10³–10⁴ RK
+stages per solve). The table above supersedes present-tense claims in those
+historical proposal paragraphs.
 
 ## Performance
 
 ### 1. GPU-resident propagation (the real GPU win)
-The current CUDA/Vulkan paths accelerate individual kernels but the field
-round-trips host↔device per call, so they rarely beat AVX2 at typical grid
-sizes. The payoff structure changes completely if the *whole* `NativeSim`
-state lives on the GPU for the duration of a `solve`: field, RK stage
-buffers, cuFFT plans, ionisation LUT, Raman ADE state — with only per-step
-scalars (z, dt, err) crossing PCIe. The Phase 0–8 architecture is already
-shaped for this (one opaque handle owning all state); a `CudaNativeSim`
-implementing the same FFI surface is the natural next tier. Free-space
-(3-D FFT dominated) and multi-mode modal (many independent per-node
-evaluations) benefit first; mode-averaged 1-D cases may stay CPU-bound —
-keep the runtime dispatcher deciding per problem size.
+
+This proposal produced the resident `CudaNativeSim` and the
+`AMALTHEA_NATIVE_GPU=off/on/auto` policy for a narrow mode-averaged
+RealGrid Kerr/PPT scope. It eliminated per-kernel PCIe round-trips, but the
+current RHS is missing required scaling, oversampling, normalization, and
+windowing and therefore behaves linearly. Correctness restoration and
+non-vacuous GPU tests precede any scope expansion; Vulkan remains
+unimplemented.
 
 ### 2. Threading the native RHS
-The resident RHS is currently single-threaded per stage. Three easy seams,
-all embarrassingly parallel: (a) rayon over radial nodes in `rhs_radial`
-(each r is an independent 1-D FFT + Kerr); (b) rayon over cubature
-evaluation points in the modal path (the *reason* the Julia
-`Threads.@threads` attempt raced was shared scratch — give each rayon task
-its own scratch slab and the race disappears by construction); (c) split
-the ω-loop of the exp-linop application + windowing broadcasts. FFTW plans
-can also be created with `fftw_plan_with_nthreads` for the 3-D free-space
-case, where FFT time dominates everything else.
+
+This track is complete. Rayon now covers independent radial nodes and modal
+cubature points using per-worker scratch, and the free-space 3-D FFT uses
+threaded FFTW plans. Reductions and Julia's shared-scratch `TransModal`
+integration remain sequential by design.
 
 ### 3. Instruction-level parallelism / SIMD layout
 - The Kerr kernel (`E → E³` or `|E|²E`) and the window/norm broadcasts are
@@ -118,17 +138,16 @@ valuable for papers and regression archaeology, cheap to implement since
 the dispatcher already exists.
 
 ### 12. Higher-order dense output everywhere
-Phase 8 fixed dense output to Julia's quartic `interpC`. Consider exposing
-the full DP5(4) continuous extension (5th-order Shampine dense output) on
-both paths — the coefficients are standard, the cost is one extra k-vector
-combination per saved point, and it removes a documented Julia-vs-native
-tolerance tier (saved-grid interpolation) entirely.
+**Implemented 2026-07-23.** Both steppers now use the same
+Calvo–Montijano–Rández order-5 extra-stage extension. This work also found
+and fixed the eager FSAL carry that had silently reduced every dense-output
+path to first order.
 
 ## Ecosystem
 
-### 13. Prebuilt binaries via a JLL / cargo-dist
+### 13. Prebuilt binaries via release assets / JLL
 Requiring a Rust toolchain at `Pkg.build` time is the biggest adoption
-barrier vs upstream Luna. Publishing `libluna_rust` as a JLL artifact
+barrier vs upstream Luna. Publishing `libamalthea` as a JLL artifact
 (Yggdrasil build recipe, or GitHub-release binaries fetched by
 `deps/build.jl` with a source-build fallback) makes `]add Amalthea`
 just work — and pins the exact rustc for reproducibility.
@@ -150,25 +169,23 @@ each needs a controlled-divergence verification against a ground truth
 (BigFloat / closed form), which is most of its cost.
 
 ### 15. Direct embedded-error coefficients
-Compute the DP5(4) error estimate as `Σᵢ eᵢ·kᵢ` with precomputed
-`eᵢ = b5ᵢ − b4ᵢ` (exact rationals) instead of subtracting the two
-solutions — removes the near-total cancellation documented in
-TESTING.md §3 that makes the PI controller FP-noise-sensitive and
-forces the fixed-step test discipline. Must land on `PreconStepper` and
-the native stepper in the same commit (both step sequences change).
-Potentially the highest-leverage numerics item: it attacks the root
-cause behind the adaptive-path divergence, the deterministic-mode
-motivation (#11), and part of the mixed-precision risk (#10).
+**Studied; do not pursue.** The premise was wrong: both steppers already
+compute `Σᵢ eᵢ·kᵢ` with `eᵢ=b5ᵢ-b4ᵢ` precomputed. The sensitivity comes from
+the mathematically cancelling stage sum itself, so rewriting the same
+coefficients cannot remove it.
 
 ### 16. Direct PPT evaluation (replace the spline LUT on both sides)
+**Studied; do not pursue.** `IonRatePPTAccel` is a spline LUT in Julia too,
+but the true PPT series contains a BigFloat-quadrature tail that cannot
+replace a LUT in the hot loop at acceptable cost. LUT error is already below
+physical significance, and fitted-range/non-finite safety was fixed directly.
+
 `IonRatePPTAccel` is a spline LUT in Julia too; evaluating the PPT
-series directly with good special-function code is more accurate than
-both current paths and structurally eliminates the out-of-range
-segfault (BACKLOG Phase J item 2) — no fitted range to fall off of.
-Verify the direct sum against BigFloat, then existing triangulating
-sim tests unchanged.
+series directly remains useful only as an offline ground-truth tool.
 
 ### 17. Short-kernel (overlap-save) Raman convolution
+**Open; recommended, benchmark first.**
+
 For strongly damped responses (SiO2: h ≈ 0 beyond ~100 fs on a
 multi-ps grid), replace the double-length-grid FFT convolution with
 overlap-save using a kernel truncated where |h| < f64 noise (checked
@@ -191,15 +208,14 @@ duplicate copy of the track plan that used to sit here was removed on
 | Track | Covers ideas | Where |
 |---|---|---|
 | S1 — Hot-loop CPU performance | 3, 4, 5 | ✅ closed — [`ARCHIVE.md`](ARCHIVE.md) |
-| S2 — Threading the native RHS | 2 | live — [`BACKLOG.md`](BACKLOG.md) |
+| S2 — Threading the native RHS | 2 | ✅ closed — [`BACKLOG.md`](BACKLOG.md) |
 | S3 — GPU-resident propagation | 1 | live — [`BACKLOG.md`](BACKLOG.md) |
 | S4 — Architecture cleanups | 6, 7, 8 | ✅ closed — [`ARCHIVE.md`](ARCHIVE.md) |
-| S5 — Numerics options | 10, 11, 12 | live — [`BACKLOG.md`](BACKLOG.md) |
-| S6 — Distribution & ecosystem | 9, 13, 14 | live — [`BACKLOG.md`](BACKLOG.md) |
+| S5 — Numerics options | 10, 11, 12 | ✅ closed — [`BACKLOG.md`](BACKLOG.md) |
+| S6 — Distribution & ecosystem | 9, 13, 14 | implementation resolved/parked; v1.0.0 asset-name repair and validation remain — [`BACKLOG.md`](BACKLOG.md) |
 
 Ideas 15-17 (post-port audit additions) are tracked as ARCHIVE.md's
-Phase J item 6, surfaced in `BACKLOG.md`'s open remainders.
+Phase J item 6. Only idea 17 remains open.
 
 **Read this file for the *why* — the rationale, equations and code
 sketches. Read `BACKLOG.md` for the *whether* and *when*.**
-

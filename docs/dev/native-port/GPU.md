@@ -1,16 +1,47 @@
 # GPU-Resident Propagation (Track S3) Design Document
 
-## 1. Goal
-The primary objective of Track S3 is to eliminate the severe PCIe bottleneck that currently throttles GPU acceleration in Amalthea. Currently, kernels (like Ionization or Raman) are individually accelerated, but the main simulation state (the spectral field `y`, the RK45 intermediate stages `k1..k7`, the step-error estimators `yerr`, and the scratch space `ystage`) lives on the CPU host. This requires copying arrays back and forth every RK45 sub-step.
+> **Current status (2026-07-25, updated): the correctness block is FIXED.**
+> `CudaNativeSim` computes real nonlinearity again and is verified on real
+> hardware — stage derivatives match CPU native to ~1e-15 (previously
+> `max|kᵢ| ≈ 3.5e-13` against CPU's 12225, i.e. pure linear propagation),
+> fixed-step full-solve matches the Julia oracle to 3.5e-16, and `Luna.run`
+> dense output to 1.25e-7. `set_mode_avg_params` now uploads `ωwin`, `sidx`,
+> `pre`, `β`, `nlscale` and `sqrt_aeff`, and `compute_rhs_mode_avg` ports the
+> CPU path's input scaling, oversampled crop/rescale, `norm_pre_beta` and
+> frequency-window steps. **This also closes the `n_time`-vs-`n_time_over`
+> sizing gap described in §8** — the two were not separable. A second bug was
+> fixed alongside: `set_field` never seeded `ks_d[0]`, so the first `step()`
+> read uninitialized device memory.
+>
+> **Remaining caveats:** scope is still only mode-averaged RealGrid Kerr +
+> PPT plasma (everything else returns `-1` and falls back); there is still no
+> GPU CI, so every GPU change needs a recorded manual hardware run; and the
+> `err` weak-norm estimate is still a placeholder (BACKLOG S3 item 8).
+> Sections below that describe the defect in the present tense are retained
+> for provenance — BACKLOG S3 item 0 and
+> `portlog-inbox/gpu-nonlinearity.md` are authoritative.
 
-We will introduce a `CudaNativeSim` that mirrors the CPU `NativeSim`. In this architecture, the **entire state vector and all RK45 scratch buffers** reside in VRAM for the full duration of a `solve`. 
+## 1. Goal
+
+The original objective was to eliminate per-kernel PCIe round-trips by keeping
+the simulation state resident on the GPU. The landed `CudaNativeSim` does own
+the field, RK stages, error buffers, scratch, cuFFT plans, and the narrow
+mode-averaged Kerr/PPT state in VRAM. The current objective is no longer
+residency scaffolding; it is numerical parity with `CpuNativeSim` before any
+scope expansion.
+
+`CudaNativeSim` mirrors the CPU `NativeSim`: the **entire state vector and all
+RK45 scratch buffers** reside in VRAM for the full duration of a `solve`.
 
 ## 2. Traffic Budget (Host ↔ Device)
+
 - **Per RK45 sub-step (6 per step):** ZERO array transfers. Only scalars like `t` or `dt` (and maybe the reduced error scalar) are communicated.
 - **Per accepted step:** The `NativeSim::native_resync_field` and `get_field`/`set_field` methods will be the *only* seams that trigger a `cudaMemcpy` from Device to Host. This happens once per accepted step (for dense output/saving to HDF5) and transfers exactly `n_t` elements (the current field). This is highly acceptable.
 
 ## 3. Data Residency
+
 The following `NativeSim` fields will be completely migrated to device memory in `CudaNativeSim`:
+
 - `field` (the current spectral field)
 - `linop` (the linear operator)
 - `ks[7]` (the 7 RK45 stage derivatives)
@@ -19,45 +50,56 @@ The following `NativeSim` fields will be completely migrated to device memory in
 - `eto`, `pto`, `eoo`, `poo` (the time and frequency domain interaction buffers)
 
 ## 4. Architectural Implementation (The `NativeBackend` Trait)
-To support this transparently to Julia, we will:
-1. Rename the existing monolithic `NativeSim` struct in `native.rs` to `CpuNativeSim`.
-2. Define a `NativeBackend` trait (or use an enum wrapper) that defines the core interface:
+The implementation:
+
+1. Renamed the original monolithic simulation to `CpuNativeSim`.
+2. Defines a `NativeBackend` trait with the core interface:
    - `fn step(...) -> NativeStepResult`
    - `fn set_field(...)`
    - `fn get_field(...)`
    - `fn set_mode_avg_params(...)`
-3. Expose a new `NativeSim` which is just an `enum { Cpu(CpuNativeSim), Gpu(CudaNativeSim) }`.
-4. The FFI `native_step` and `native_set_*` functions will just `match` on this enum and delegate the work. This avoids any dynamic dispatch overhead (no `Box<dyn>`) while perfectly preserving the FFI ABI for Julia.
+3. Stores `Box<dyn NativeBackend>` inside the FFI-facing `NativeSim`, rather
+   than the originally sketched enum.
+4. Delegates `native_step` and every `native_set_*` call through that trait,
+   preserving one Julia FFI surface.
+
+The one vtable call per accepted step is immaterial beside CUDA launch/sync
+cost and is not a cleanup item.
 
 ## 5. cuFFT Lifecycle
-- The `CudaNativeSim` will own `cufftHandle` plans.
-- These plans will be created during the `native_set_mode_avg_params` configuration step (since `init_native_sim` only knows the spectral length `Nω`, not `Nt`).
-- They will be destroyed when `free_native_sim` drops the handle.
+
+- `CudaNativeSim` owns separate D2Z and Z2D `cufftHandle` plans.
+- Plans are created during `native_set_mode_avg_params`, because
+  `init_native_sim` knows only the spectral length.
+- `free_native_sim` drops the backend and destroys the plans.
+- The two `cufftPlan1d` return codes are still unchecked and are part of the
+  current correctness fix; `cufftExecZ2D`/`D2Z` codes are already checked.
 
 ## 6. Kernel Requirements (`kernels.cu`)
-We will need CUDA kernels for:
+
+The landed slice has CUDA kernels for:
+
 1. **RK45 Fusion:** Fusing the stage accumulations (replicating the S1 optimization but in PTX).
 2. **Error Estimation:** Computing the embedded error norm.
 3. **Exp-Linop:** The `exp(L * dt)` application.
 4. **Kerr/Norm Broadcasts:** Applying the windowing and nonlinear scale.
-5. **Cumtrapz:** For plasma (using a work-efficient prefix scan).
+5. **Cumtrapz:** PPT plasma, currently implemented as single-thread sequential
+   scans rather than a work-efficient prefix scan.
+
+The missing correctness work is around those kernels: input normalization,
+oversampled FFT sizing/cropping, spectral `pre/β` normalization, and `ωwin`.
 
 ## 7. Scope of V1
-As per `SUGGESTIONS.md`, V1 of `CudaNativeSim` was planned as **mode-averaged RealGrid Kerr (+plasma)**. What actually shipped (see §8) is narrower: **mode-averaged RealGrid, scalar density, exactly one plain Kerr response, and nothing else** — plasma was never implemented (`set_plasma_params` and every other `set_*_params` beyond `set_mode_avg_params` returns `-1`). Free-space, Modal, and Radial geometries stay on `CpuNativeSim`; `RK45.jl`'s `_gpu_native_eligible` falls back to CPU for anything outside this scope.
+The intended landed scope is **mode-averaged RealGrid, constant linop, scalar
+density, exactly one plain Kerr response, and at most one PPT plasma
+response**. ADK, Raman, shot noise, z-dependence, and radial/modal/free-space
+return or route to ineligibility and remain on `CpuNativeSim`. This table
+describes intended eligibility only; no eligible GPU configuration is
+numerically trustworthy until the blocker above is fixed.
 
-## 8. Status (updated 2026-07-11 — supersedes the 2026-07-05 review below)
+## 8. Status (updated 2026-07-25 — supersedes the historical reviews below)
 
-**Reconciled against §4:** implemented as `Box<dyn NativeBackend>`, not the
-`enum { Cpu, Gpu }` described in §4 ("avoids dynamic dispatch overhead"). This
-is a deliberate, permanent deviation, not a TODO — the dynamic-dispatch cost
-is one vtable call per `native_step` (once per accepted step, not once per
-RK45 sub-stage; see §2's traffic budget), immaterial next to a step's actual
-GPU kernel-launch/sync cost, and `Box<dyn NativeBackend>` is what lets
-`CpuNativeSim`/`CudaNativeSim` share the exact same FFI entry points
-(`native_step`, `native_set_*`) as one polymorphic handle instead of every
-call site matching on an enum. §4 above is left as historical design intent;
-treat "`Box<dyn NativeBackend>`, not an `enum`" as current fact everywhere
-else in this document.
+The `Box<dyn NativeBackend>` decision in §4 is settled and not a TODO.
 
 > **🔴 Retracted in part, 2026-07-23.** "Verified on real hardware" below
 > means *ran to completion and matched the Julia oracle within the tolerance
@@ -122,22 +164,23 @@ existing `n_time`-vs-`n_time_over` gap below, confirmed via an energy sweep
 showing linear scaling, and via the CPU-resident native path matching the
 Julia oracle to `1.3e-16` on the identical config).
 
-**Known, documented, un-fixed fidelity gap** (not a correctness bug — a
-bounded, intentional approximation): the GPU Kerr/plasma FFT buffers/plans
+**Secondary, un-fixed fidelity gap:** the GPU Kerr/plasma FFT buffers/plans
 are sized `n_time` (`grid.t`), not `n_time_over` (`grid.to`) — it skips the
 oversampling/anti-aliasing padding both `CpuNativeSim` and Julia apply.
-Kerr-only full-solve agreement against `PreconStepper` is ~4.5e-4 (test
-tolerance `<1e-3`); Kerr+plasma is ~2.0e-2 at the tested energy (test
-tolerance `<5e-2`) — both versus the CPU-resident native path's ~1e-6
-(Phase 1) / ~1e-16 (this exact plasma config). Fixing this is a real
-buffer-sizing change in `cuda_native.rs`/`kernels.cu`, not attempted yet.
+Earlier numbers attributed to this approximation are not trustworthy while
+the nonlinear RHS is absent. Fix the sizing/crop path as part of S3 item 0,
+then remeasure its residual effect; do not preserve it as an intentional
+approximation without new evidence.
 
 **Test coverage:** `test/test_native_cuda.jl` has two testitems (Kerr-only,
 Kerr+plasma), each constructing a GPU-backed stepper via
 `withenv("AMALTHEA_USE_RUST_CUDA_NATIVE" => "1")`; both self-skip cleanly on CI
 (no GPU/toolkit) but on real hardware assert `_gpu_native_eligible`
-actually returned `true` (not a vacuous CPU-vs-CPU comparison) and check
-full-solve field agreement against `PreconStepper`. `amalthea/src/lib.rs`
+actually returned `true` and check full-solve field agreement against
+`PreconStepper`. Those comparisons are nevertheless **numerically vacuous**:
+their tolerances exceed the effect under test and allow zero nonlinearity.
+The replacement must assert stage scale and independently measure the
+nonlinear control effect. `amalthea/src/lib.rs`
 and `amalthea/tests/test_gpu_cuda.jl` also self-skip without a GPU —
 **still true in CI today**: no CI runner has a GPU, so none of this
 executes except when run by hand on hardware like this machine. This is
@@ -145,24 +188,21 @@ executes except when run by hand on hardware like this machine. This is
 either the 2026-07-07 or 2026-07-11 verification passes, both one-time
 manual runs, not a standing CI job.
 
-**What's still open, per `BACKLOG.md`'s S3 list:**
-1. ~~Design doc reconciliation~~ — done 2026-07-11.
-2. ~~PPT plasma~~ — done 2026-07-11 (mode-averaged only). Raman, radial/
-   modal/free-space geometries, and ADK plasma remain unimplemented; every
-   other `set_*_params` still returns `-1` as noted above.
-3. Problem-size dispatch threshold (measured crossover, not guessed) so
-   small grids stay on CPU; `AMALTHEA_NATIVE_GPU=0/1/auto` env override — not
-   started. Today it's all-or-nothing per `AMALTHEA_USE_RUST_CUDA_NATIVE`.
-4. Raman ADE / ADK plasma GPU kernels, radial/modal/free-space geometries —
-   or an explicit `NativeIneligible`-style split keeping those configs on
-   CPU, documented as such. A work-efficient parallel prefix scan for
-   cumtrapz (superseding item 2's single-thread kernels) would matter for
-   radial's much larger per-column plasma state, not at mode-averaged scale.
-5. `test/test_native_gpu.jl`-style phase-test coverage of items 3-4, once
-   they exist.
-6. The `n_time_over` Kerr/plasma-buffer fidelity gap above.
-7. Phase G.2 / "GPU CI coverage" — a scheduled/dedicated GPU CI runner so
-   this doesn't silently bit-rot un-exercised again between manual runs.
+**What's still open, in order:**
+
+1. Restore the CPU RHS's input scaling, oversampled FFT/crop, spectral
+   normalization, and frequency window; check plan creation; replace the
+   vacuous tests; reverify on hardware.
+2. Add scheduled/dedicated GPU CI.
+3. Only after 1-2, decide whether to expand beyond mode-averaged RealGrid
+   Kerr/PPT. Raman, ADK, radial/modal/free-space, and parallel plasma scans
+   remain unimplemented and should continue routing to CPU until individually
+   designed and tested.
+
+The problem-size dispatch policy is already complete:
+`AMALTHEA_NATIVE_GPU=off/on/auto`, with `auto` selecting only Kerr-only
+problems at `length(y0) ≥ 16384`; PPT never auto-selects because measured GPU
+performance was worse across the tested range.
 
 ---
 

@@ -918,6 +918,12 @@ future work, roughly ordered by value.
    `RUSTFLAGS="-D warnings"`, zero regressions. Pairs well with S4.2's
    `FfiStatus` enum.
 
+> **Historical priority snapshot (superseded 2026-07-25).** S1/S2/S4/S5
+> below are now closed or parked, and the GPU backend's former
+> "hardware-verified" claim was retracted after measuring zero nonlinear
+> contribution. Use `BACKLOG.md`'s dated resume queue, not this paragraph,
+> to choose work.
+
 **Where the project goes from here** (the port itself is done — items
 1-4 of Phase I were the last correctness-scope gaps): the highest-value
 tracks in order are **S1 (CPU hot-loop performance)** — the port's

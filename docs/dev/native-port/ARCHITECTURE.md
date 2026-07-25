@@ -1,8 +1,10 @@
 # Native-Rust Backend Port — Architecture
 
-> Status: design doc for the phased port. Phases 0-8 are implemented and
-> passing (see `docs/dev/native-port/PORT_LOG.md` for the latest entry) — the
-> native-Rust backend port is complete.
+> Status: implemented architecture and decision record. The CPU resident
+> backend (Phases 0-8 and D-I) is complete and is the default. The optional
+> CUDA implementation is correctness-blocked: its mode-averaged RHS currently
+> omits the nonlinear scaling/normalization path and behaves like linear
+> propagation. See `BACKLOG.md` S3 item 0 before touching GPU code.
 > Companion docs: [MATH.md](MATH.md), [TESTING.md](TESTING.md),
 > [PORT_LOG.md](PORT_LOG.md), [BETA1_ANALYTIC.md](BETA1_ANALYTIC.md). Agent
 > workflow: `AGENTS.md`.
@@ -10,15 +12,16 @@
 
 ## 1. Why this document exists
 
-The goal is to make the propagation backend run **exclusively in Rust** — the
-per-step hot loop should execute with no return into Julia. Today it does not,
-even with every `AMALTHEA_USE_RUST_*` toggle enabled. This document explains the
-current architecture, why it cannot reach that goal, the target architecture
-that can, and the rationale behind each load-bearing decision.
+The port's goal was to make the per-step propagation hot loop run entirely in
+Rust, with Julia retaining setup, orchestration, output, and a correctness
+fallback. That goal is implemented for every native-eligible CPU
+configuration. This document now records the legacy callback architecture,
+the resident architecture that replaced it, and the decisions future work
+must preserve.
 
-## 2. Current architecture (per-kernel offload + callback stepper)
+## 2. Legacy architecture still retained (per-kernel offload + callback stepper)
 
-Luna offloads five kernels to Rust, each behind an opt-in env toggle that
+The compatibility path offloads five kernels to Rust, each behind an opt-in env toggle that
 defaults **off** (`get(ENV, "AMALTHEA_USE_RUST_*", "0") == "1"`):
 
 | Kernel | Toggle | Julia site | Rust handle |
@@ -34,7 +37,7 @@ Each follows the same lifecycle pattern: a `mutable struct *Handle` wrapping a
 `Ptr{Cvoid}` with a GC finalizer that calls `free_*`; an env toggle gating
 construction; an `@testitem tags=[:rust]` equivalence test guarding the boundary.
 
-### 2.1 The fatal limitation
+### 2.1 Why this path could not meet the resident-loop goal
 
 The RK45 stepper is **interaction-picture Dormand-Prince**: each accepted step
 performs ~7 nonlinear-RHS evaluations and ~13 linear-propagator applications
@@ -48,21 +51,22 @@ ffi.rs: prop_fn(t1, t2, y, …)   →  RK45.jl:_prop_cfun  →  Julia prop!  (ex
 ffi.rs: fbar_fn(t1, t2, y, k, …) →  RK45.jl:_fbar_cfun  →  Julia fbar!  (full RHS)
 ```
 
-So with **all five toggles on**, one propagation step still executes in Julia
+So with **all per-kernel toggles on**, one propagation step still executes in Julia
 6–7×: every FFT (there is no Rust FFT at all), Kerr, the plasma `cumtrapz`
 integrals and current assembly, all `norm!`/window broadcasts, the
 `exp(linop·dt)` application, and — for modal — the cubature-wrapped overlap
 integrals. The toggles offload only the leaf kernels listed above; the
 *structure* of the loop, and most of its cost, is Julia.
 
-**Conclusion:** "exclusively Rust" cannot be reached by flipping defaults. The
-field must become resident in Rust and the RHS + propagator must execute there.
+**Conclusion reached by the phased port:** flipping leaf-kernel defaults could
+never remove the callback boundary. This is why the default CPU path now uses
+the resident backend below instead.
 
-## 3. Target architecture (resident field + native RHS)
+## 3. Implemented architecture (resident field + native RHS)
 
 ### 3.1 `NativeSim` — a Rust-resident simulation state
 
-Introduce one opaque Rust handle that owns, for the lifetime of a single
+One opaque Rust handle owns, for the lifetime of a single
 `solve`, everything the loop touches:
 
 - the spectral field `Eω` and all scratch buffers (`Et`, `Pt`, `Pω`, the 7 `ks`,
@@ -72,29 +76,36 @@ Introduce one opaque Rust handle that owns, for the lifetime of a single
   (`towin`, `ωwin`), the linear-operator array (or its z-dependent builder), the
   response coefficients, and the QDHT T-matrix where applicable.
 
-Julia builds this once via `init_native_sim(...)`, hands over the initial field
-with `set_field`, calls `native_solve` (or repeated `native_step` for dense
-output), and retrieves results with `get_field`. **The FFI boundary is crossed a
-handful of times per `solve`, not ~14× per step.**
+Julia constructs it with `init_native_sim(...)`, configures the geometry and
+responses through `native_set_*` calls, hands over the initial field with
+`set_field`, and drives repeated `native_step` calls. Julia intentionally
+retains the outer solve/output loop because `stepfun`, dense-output sampling,
+and output callbacks live there; the nonlinear stages and propagator do not
+return to Julia. The resident field is pushed back only at explicit seams such
+as `native_resync_field`.
 
 ### 3.2 FFI surface
 
 ```
-init_native_sim(grid_spec, plan_spec, linop, windows, resp_spec, …) -> *mut NativeSim
+init_native_sim(linop, n) -> *mut NativeSim
 free_native_sim(*mut NativeSim)
+native_set_fftw_plans(...)
+native_set_<geometry/response>_params(...)
 set_field(*mut NativeSim, *const Complex<f64>, n)
 get_field(*const NativeSim, *mut Complex<f64>, n)
-native_step(*mut NativeSim, …) -> NativeStepResult     # one adaptive step, for dense output
-native_solve(*mut NativeSim, tmax, …) -> NativeSolveResult   # full run when no per-step callback needed
+native_resync_field(*mut NativeSim, ...)
+native_step(*mut NativeSim, …) -> NativeStepResult
+get_ks_stage(...) / native_compute_extra_stages(...)   # order-5 dense output
+native_apply_prop(...)                                 # interpolation frame
 ```
 
-The existing `precon_step_ffi` is retained during the transition: phases are
-validated against it by swapping a Rust-native RHS in for the Julia callback,
-one `Trans*` type at a time.
+There is deliberately no `native_solve` entry point in the implemented API.
+The existing `precon_step_ffi` and pure Julia `PreconStepper` remain as
+compatibility paths and equivalence oracles.
 
 ### 3.3 Julia integration point
 
-`RK45.solve_precon` (`src/RK45.jl:19`) gains a top-level branch: native path vs.
+`RK45.solve_precon` has a top-level branch: native path vs.
 the existing `PreconStepper`/`RustPreconStepper`. Selection is once per `solve`,
 not per op. The high-level `prop_capillary` / `prop_gnlse` interface is unchanged.
 
@@ -105,6 +116,7 @@ Julia uses FFTW via `FFTW.jl`. Binding the **same FFTW C library** from Rust
 makes the transforms bit-identical, so every ported phase can be validated to
 ~1e-13 against the Julia oracle instead of needing a method-difference tolerance.
 This collapses the hardest validation risk in the whole port.
+
 - *Trade-off:* a C link-time/runtime dependency on FFTW. Mitigated — FFTW is
   already a Julia dependency present on every Luna install.
 - *Recorded alternative:* `rustfft` (pure Rust, no C dep) remains a future
@@ -112,16 +124,18 @@ This collapses the hardest validation risk in the whole port.
   and is acceptable if the FFTW dependency ever becomes a portability problem.
 
 ### 4.2 Resident field, not per-op FFI
-The per-stage Julia round-trip is *the* reason the current loop is Julia-bound.
-A resident `NativeSim` is the single change that removes it. Per-op FFI (e.g.
+The per-stage Julia round-trip was *the* reason the legacy loop was Julia-bound.
+The resident `NativeSim` removes it. Per-op FFI (e.g.
 "call Rust for just the FFT") would add FFI overhead without removing the
 round-trip, and is explicitly rejected.
 
-### 4.3 Keep the Julia pipeline as a whole-pipeline fallback (default-on + warn)
+### 4.3 Keep the Julia pipeline as a reachable whole-pipeline fallback
 Once the field is resident, there is no natural per-op fallback — it is
 native-loop vs. the old Julia loop, chosen once at `solve` time. We keep the
-entire Julia pipeline reachable and emit a **one-time `@warn`** on fallback.
+entire Julia pipeline reachable and emit a **one-time `@warn`** on fallback;
+the eligible resident CPU-native path defaults on.
 Three reasons:
+
 1. Portability — CPU-only / unbuilt-lib installs keep working (`.so` missing).
 2. **The Julia path is the equivalence oracle.** Every test compares native
    output against it; deleting it would delete the test baseline.
@@ -142,6 +156,22 @@ Mode-averaged is the simplest geometry (1 inverse + 1 forward FFT, no spatial
 transform). It proves the resident-field architecture end-to-end before the hard
 geometries (modal cubature, free-space 3D FFT) are attempted. Each phase is
 independently shippable and independently testable.
+
+### 4.5 GPU is a backend implementation, not a separate physics model
+
+`NativeSim` is a `Box<dyn NativeBackend>` dispatching to `CpuNativeSim` or the
+explicitly opt-in `CudaNativeSim`. Both must implement the same transferred
+physics, not merely the same RK tableau. In particular, GPU mode-averaged
+setup must retain and use `ωwin`, `sidx`, `pre`, `β`, `nlscale`, and
+`sqrt_aeff`, and must reproduce every numbered step in
+`CpuNativeSim::rhs_mode_avg_real`.
+
+That invariant is currently broken: the CUDA setter discards those values and
+the CUDA RHS omits input scaling, oversampled crop/rescale, spectral
+normalization, and frequency windowing. Direct hardware measurement therefore
+shows near-zero nonlinear stages. Treat `CudaNativeSim` as unavailable until
+S3 item 0 closes with a non-vacuous hardware test. This does not affect the
+default `CpuNativeSim`.
 
 ## 5. Geometry → phase map
 
@@ -168,9 +198,9 @@ setup code (grid construction, mode solvers, Sellmeier/gas data, pulse
 synthesis), HDF5 output (`Output.jl`), parameter scans (`Scans.jl`),
 plotting/processing/stats. This runs once per simulation, costs
 milliseconds, and porting it buys nothing. The port's goal was "the
-*per-step hot loop* is 100% Rust", and that is achieved: for every
-configuration the documented high-level API (`prop_capillary` /
-`prop_gnlse`) can construct, no Julia code runs between steps.
+*per-step hot loop* is 100% Rust", and that is achieved for every
+native-eligible configuration; ineligible configurations intentionally use
+the whole-pipeline Julia fallback listed in the support matrix.
 
 **(b) Ineligible-but-portable configs — "won't", not "can't".**
 BACKLOG.md Phase I items 5-6: `StepIndexMode`/`ZeisbergerMode`/
