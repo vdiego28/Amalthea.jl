@@ -29,34 +29,55 @@ using TestItems
 #     still exercises the real grid/mode/field/RHS/RK45 setup and a handful
 #     of accepted steps, in seconds rather than minutes.
 #
-# Why only 8 of the 44 files under examples/low_level_interface/, not all:
+# Why only 10 of the 44 files under examples/low_level_interface/, not all:
 # a full run (even at SMOKE_LENGTH) of every file is not a "cheap" smoke
 # test — some examples carry grid-resolution costs (large radial/hankel
 # matrices, dense post-processing) that don't shrink with `flength`, and
-# several are independently broken today regardless of this harness (see
-# below) — running those would make this CI group fail on unrelated,
-# pre-existing bugs rather than on genuine regressions. The 8 chosen files
-# were individually verified (2026-07-22) to run to completion under this
-# harness and span the main low-level code paths: mode-averaged field/env,
-# modal field/env, GNLSE, gas Raman, gas mixtures, and step-index fibre.
+# one is independently broken today regardless of this harness (see below)
+# — running that one would make this CI group fail on an unrelated,
+# pre-existing bug rather than on genuine regressions. The first 8 chosen
+# files were individually verified (2026-07-22) to run to completion under
+# this harness and span the main low-level code paths: mode-averaged
+# field/env, modal field/env, GNLSE, gas Raman, gas mixtures, and
+# step-index fibre. Two more (2026-07-25, BACKLOG resume-queue item 3) add
+# regression coverage for the two example-code bug classes fixed in that
+# pass (see docs/dev/native-port/portlog-inbox/examples-repair.md for the
+# full repair record): `full_modal/basic_modal_full.jl` (both classes) and
+# `polarisation/modal_nonvector_plasma.jl` (class 1 only).
 #
-# Known-broken examples found while building this test (NOT fixed here —
-# out of this change's scope, see docs/dev/native-port/portlog-inbox/hygiene.md):
-#   - full_modal/basic_modal_full.jl,
-#     full_modal/basic_modal_full_bothpolarisations.jl,
-#     polarisation/modal_vector_plasma.jl,
-#     polarisation/modal_nonvector_plasma.jl,
-#     polarisation/modal_vector_plasma_CP.jl,
-#     polarisation/modal_vector_plasma_45deg.jl
-#     all reference `linop` in a `Stats.default(...)` call that appears
-#     BEFORE the `linop = LinearOps.make_const_linop(...)` assignment in
-#     the same file — `UndefVarError: linop not defined`.
-#   - full_modal/basic_modal_full.jl,
-#     full_modal/basic_modal_full_bothpolarisations.jl,
-#     polarisation/elliptical_env.jl
-#     call `NonlinearRHS.norm_modal(grid.ω)` — `norm_modal` takes the whole
-#     grid object (it reads `grid.referenceλ` internally, see
-#     src/NonlinearRHS.jl:476-477), not `grid.ω` — `FieldError`.
+# Bug classes fixed 2026-07-25 (previously tracked as "known-broken" here,
+# see docs/dev/native-port/portlog-inbox/hygiene.md for the original
+# 2026-07-22 audit that found them, and .../examples-repair.md for the fix
+# details, including two file-specific bugs the original audit's harness
+# never reached — it stopped at the first error in each file, before
+# either of these):
+#   - Class 1 — `linop` referenced (inside a `Stats.default(...)` call)
+#     BEFORE the `linop = LinearOps.make_const_linop(...)` assignment
+#     later in the same file — `UndefVarError: linop not defined`. Fixed in
+#     full_modal/basic_modal_full.jl, full_modal/basic_modal_full_bothpolarisations.jl,
+#     polarisation/modal_vector_plasma.jl, polarisation/modal_nonvector_plasma.jl,
+#     polarisation/modal_vector_plasma_CP.jl, polarisation/modal_vector_plasma_45deg.jl
+#     by moving the `linop = ...` assignment immediately before its use.
+#   - Class 2 — `NonlinearRHS.norm_modal(grid.ω)` instead of
+#     `NonlinearRHS.norm_modal(grid)` (`norm_modal` reads `grid.referenceλ`
+#     internally, see src/NonlinearRHS.jl:476-477) — `FieldError`. Fixed in
+#     full_modal/basic_modal_full.jl, full_modal/basic_modal_full_bothpolarisations.jl,
+#     polarisation/elliptical_env.jl.
+#
+# Residual, NOT fixed (out of scope — a library-level defect, not an
+# example-file bug; see examples-repair.md):
+#   - full_modal/basic_modal_full_bothpolarisations.jl still throws
+#     `DimensionMismatch: cannot broadcast array to have fewer
+#     non-singleton dimensions` inside `TransModal`'s Cubature integration
+#     (src/NonlinearRHS.jl:453, via src/RK45.jl:269's initial FSAL
+#     evaluation) — full=true modal propagation with 2 polarisations
+#     (`:xy`) and plasma appears to be a combination that has never worked.
+#     The throw happens during `PreconStepper` construction's very first
+#     RHS evaluation (`fbar!(k1, y0, t, t)`, RK45.jl:269), before any step
+#     is taken, so it is independent of `flength`/`SMOKE_LENGTH` — not a
+#     harness artifact. Left broken and excluded from this smoke set; not
+#     tracked in BACKLOG.md per this task's doc-ownership rules (recorded
+#     here and in the inbox note instead).
 @testitem "Low-level example smoke run" tags=[:examples] begin
     import Test: @test, @testset
     using Amalthea
@@ -70,7 +91,16 @@ using TestItems
     examples_dir = joinpath(@__DIR__, "..", "examples", "low_level_interface")
 
     # (relative path, human label) — see the file-level comment above for
-    # why these 8 and not the full 44.
+    # why these 10 and not the full 44. The last two are regression cases
+    # for the two example-code bug classes fixed 2026-07-25 (BACKLOG
+    # resume-queue item 3): `full_modal/basic_modal_full.jl` covers both
+    # classes (linop-before-assignment and norm_modal(grid.ω)); it was
+    # verified to fail (`UndefVarError: linop`, class 1's error, since it
+    # fires first) against the unfixed original.
+    # `polarisation/modal_nonvector_plasma.jl` covers class 1 only; also
+    # verified to fail (`UndefVarError: linop`) against the unfixed
+    # original. See docs/dev/native-port/portlog-inbox/examples-repair.md
+    # for the exact revert-and-rerun proof.
     examples = [
         ("basic_modeAvg.jl", "mode-averaged, field-resolved, plasma"),
         ("basic_modeAvg_env.jl", "mode-averaged, envelope"),
@@ -80,6 +110,10 @@ using TestItems
         (joinpath("Raman", "Raman_modeAvg.jl"), "gas Raman response"),
         (joinpath("mixtures", "mixture_modeAvg.jl"), "gas mixture"),
         (joinpath("stepindex", "stepscg_modeAvg.jl"), "step-index fibre"),
+        (joinpath("full_modal", "basic_modal_full.jl"),
+         "full modal (regression: linop-before-assignment + norm_modal(grid.ω))"),
+        (joinpath("polarisation", "modal_nonvector_plasma.jl"),
+         "modal, HDF5 output (regression: linop-before-assignment)"),
     ]
 
     # `using A, PyPlot` -> `using A` (drops PyPlot only); returns `nothing`
@@ -90,6 +124,27 @@ using TestItems
         end
         isempty(kept) && return nothing
         return Expr(:using, kept...)
+    end
+
+    # `output = Output.HDF5Output("some_name.h5", ...)` -> rewrite the
+    # hardcoded relative filename to a fresh temp directory, so the smoke
+    # run (polarisation/modal_nonvector_plasma.jl) doesn't leave a stray
+    # .h5 file in whatever the test process's working directory is. Same
+    # no-edits-to-the-example-file precedent as the flength/L rewrite
+    # below; only rewrites the AST node evaluated by this harness.
+    function _rewrite_hdf5_tempdir(e::Expr)
+        if e.head === :(=) && e.args[2] isa Expr && e.args[2].head === :call
+            call = e.args[2]
+            fn = call.args[1]
+            is_hdf5 = fn isa Expr && fn.head === :(.) && length(fn.args) == 2 &&
+                      fn.args[2] isa QuoteNode && fn.args[2].value === :HDF5Output
+            if is_hdf5 && length(call.args) >= 2 && call.args[2] isa AbstractString
+                newpath = Expr(:call, :joinpath, Expr(:call, :mktempdir), call.args[2])
+                newcall = Expr(:call, fn, newpath, call.args[3:end]...)
+                return Expr(:(=), e.args[1], newcall)
+            end
+        end
+        return e
     end
 
     # Evaluate an example's physics-setup statements (skipping/stopping
@@ -114,6 +169,9 @@ using TestItems
             end
             if e isa Expr && e.head === :(=) && e.args[1] in (:flength, :L)
                 e = Expr(:(=), e.args[1], SMOKE_LENGTH)
+            end
+            if e isa Expr && e.head === :(=)
+                e = _rewrite_hdf5_tempdir(e)
             end
             s = string(e)
             (occursin("Plotting", s) || occursin("plt.", s) ||

@@ -1,4 +1,5 @@
 using Amalthea
+import FFTW
 import StaticArrays: SMatrix, SVector
 import LinearAlgebra: mul!, ldiv!
 
@@ -17,10 +18,10 @@ nmodes = length(modes)
 grid = Grid.EnvGrid(10e-2, λ0, (160e-9, 3000e-9), 1e-12)
 
 energyfun = Fields.energyfuncs(grid)[1]
-normfun = NonlinearRHS.norm_modal(grid.ω)
+normfun = NonlinearRHS.norm_modal(grid)
 
 function gausspulse(t)
-    It = Maths.gauss(t, fwhm=τ)
+    It = Maths.gauss.(t, fwhm=τfwhm)
     Et = @. sqrt(It)
 end
 
@@ -49,7 +50,7 @@ responses = (Nonlinear.Kerr_env(PhysData.γ3_gas(gas)),)
 # dummy, we don't use these
 inputs = Fields.GaussField(λ0=λ0, τfwhm=τfwhm, energy=energy)
 
-Eω, transform, FT = Amalthea.setup(grid, densityfun, normfun, responses, inputs,
+Eω, transform, FT = Amalthea.setup(grid, densityfun, responses, inputs,
                               modes, :xy; full=false)
 
 Eω .= Ew
