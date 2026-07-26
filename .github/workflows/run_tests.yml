@@ -275,5 +275,11 @@ jobs:
           pytest python/tests/
         env:
           PYTHON_JULIAPKG_JULIA: julia
+          # This job builds the Rust library and installs Julia above, so the
+          # integration tests' "backend unavailable" skip must be a failure
+          # here — otherwise a backend that loads but is broken (e.g. the
+          # stale-prebuilt undefined symbol of 2026-07-25) is reported as a
+          # green run with four skips. See python/tests/test_integration.py.
+          AMALTHEA_REQUIRE_INTEGRATION: "1"
 
 

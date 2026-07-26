@@ -11,6 +11,9 @@ Julia/Amalthea can't be loaded (e.g. no Julia on PATH). Run with:
     pytest python/tests/                          # everything, incl. these
     pytest -m "not integration" python/tests/      # fast loop, skips these
     pytest -m integration python/tests/            # only these
+
+Set `AMALTHEA_REQUIRE_INTEGRATION=1` (the CI job does) to turn those skips
+into failures — see `_unavailable`.
 """
 import os
 import sys
@@ -34,10 +37,37 @@ def _rust_lib_missing():
     return not os.path.isfile(lib)
 
 
+def _unavailable(reason):
+    """Skip because a prerequisite is missing — unless it isn't allowed to be.
+
+    A bare `pytest.skip` here is a silent-green hazard: these are the only
+    tests that load the real backend, so *any* reason they can't (including
+    "the library loads but its FFI symbols don't match this source tree") gets
+    reported as a skip and the suite passes. That is not hypothetical — on
+    2026-07-25 the python-test CI job spent 263 s booting Julia, hit
+    `undefined symbol: native_compute_extra_stages` from a stale prebuilt
+    library, skipped all four tests and reported success while every other CI
+    job failed on that exact error.
+
+    So: an environment that promises a working backend (CI builds the Rust
+    library and installs Julia before invoking pytest) sets
+    `AMALTHEA_REQUIRE_INTEGRATION=1`, and there an unavailable backend is a
+    failure. A local `pytest python/tests/` without Julia still skips.
+    """
+    if os.environ.get("AMALTHEA_REQUIRE_INTEGRATION", "") == "1":
+        pytest.fail(
+            f"{reason}\n\nThis is a failure rather than a skip because "
+            "AMALTHEA_REQUIRE_INTEGRATION=1: this environment is supposed to "
+            "provide a working Julia + Rust backend, so 'unavailable' means "
+            "something is broken, not absent."
+        )
+    pytest.skip(reason)
+
+
 @pytest.fixture(scope="module")
 def real_amalthea():
     if _rust_lib_missing():
-        pytest.skip(
+        _unavailable(
             "Rust shared library not built; run `cargo build --release` "
             "in amalthea/ first."
         )
@@ -45,8 +75,8 @@ def real_amalthea():
         import amalthea
         amalthea.get_julia()
     except Exception as e:
-        pytest.skip(
-            f"Could not boot Julia/Amalthea: {e}. See python/README.md's "
+        _unavailable(
+            f"Could not boot Julia/Amalthea: {e!r}. See python/README.md's "
             "Install section."
         )
     import amalthea
