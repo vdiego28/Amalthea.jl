@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784824757039,
+  "lastUpdate": 1785082667979,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -492,6 +492,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.633691,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "distinct": true,
+          "id": "a2d7a499cf5ee83b9e03849f1c7cda76b111ca62",
+          "message": "CI: never install a release binary over the checked-out Rust source\n\nEvery job in both workflows failed on 7aea2f4 with\n\n  could not load symbol \"native_compute_extra_stages\":\n  libamalthea.so: undefined symbol: native_compute_extra_stages\n\n0f7c071 taught deps/build.jl to fall back to v1.0.0's legacy\n`libluna_rust-<triple>` asset names, which turned a benign download miss\ninto a successful install of a binary older than the FFI surface src/\ncalls: try_download_prebuilt keys the asset on Project.toml's version,\nwhich still reads 1.0.0 while main is far past that tag. The download\nalso overwrote the library the `rust` and `python-test` jobs had just\nbuilt themselves.\n\n- deps/build.jl: skip the prebuilt download entirely for a source\n  checkout (_is_source_checkout — `.git` present, file or directory).\n  Registered `Pkg.add` installs keep the fast path; clones, Pkg.develop\n  and CI compile from source, which is the documented dev path anyway.\n- run_tests.yml / documenter.yml: workflow-level\n  AMALTHEA_RUST_SKIP_DOWNLOAD=1, so CI's independence from release\n  assets doesn't rest on that heuristic.\n- run_tests.yml: cache: false on the three setup-rust-toolchain steps.\n  Their built-in rust-cache runs `cargo metadata` at the repo root,\n  where there is no Cargo.toml — it printed an Error in every job and\n  cached nothing. The explicit Swatinem/rust-cache steps\n  (workspaces: amalthea) are the ones that work.\n\nStill open: bump Project.toml to a -DEV version after each release, or\nthe same trap re-arms after the next tag for source tarballs.\nDocs: README, BACKLOG item 4 / S6 item 1, portlog-inbox §7.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-26T12:14:36-04:00",
+          "tree_id": "5116f884eb1b04bd466acb3426cd629063bf46a0",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/a2d7a499cf5ee83b9e03849f1c7cda76b111ca62"
+        },
+        "date": 1785082667575,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.904536,
             "unit": "ms/step"
           }
         ]
