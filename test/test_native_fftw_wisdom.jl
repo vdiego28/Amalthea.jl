@@ -43,7 +43,7 @@ using TestItems
         # regardless of the ambient environment.
         withenv("AMALTHEA_NATIVE_GPU" => "off") do
 
-        @assert !RK45._gpu_native_eligible(transform, linop, length(Eω)) "backend guard regression: this config must be CPU-native under AMALTHEA_NATIVE_GPU=off regardless of AMALTHEA_USE_RUST_CUDA_NATIVE"
+        @test !RK45._gpu_native_eligible(transform, linop, length(Eω))
 
         # docs/dev/BACKLOG.md S1 item 1 / docs/dev/native-port/PLANS.md §1.
         # T1: default (env var unset) must not touch the on-disk wisdom file

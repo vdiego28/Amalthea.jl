@@ -125,7 +125,7 @@ end
                 s_ru = withenv("AMALTHEA_USE_RUST_NATIVE" => "1",
                                "AMALTHEA_USE_RUST_IONISATION" => "1",
                                "AMALTHEA_NATIVE_GPU" => "off") do
-                    @assert !RK45._gpu_native_eligible(transform, linop, length(Eω)) "backend guard regression"
+                    @test !RK45._gpu_native_eligible(transform, linop, length(Eω))
                     RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10)
                 end
 

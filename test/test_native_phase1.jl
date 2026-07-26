@@ -44,7 +44,7 @@ using TestItems
         # rerouting.
         withenv("AMALTHEA_NATIVE_GPU" => "off") do
 
-        @assert !RK45._gpu_native_eligible(transform, linop, length(Eω)) "backend guard regression: this config must be CPU-native under AMALTHEA_NATIVE_GPU=off regardless of AMALTHEA_USE_RUST_CUDA_NATIVE"
+        @test !RK45._gpu_native_eligible(transform, linop, length(Eω))
 
         @testset "Single-step equivalence (~1e-13)" begin
             s_jl = PreconStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10)

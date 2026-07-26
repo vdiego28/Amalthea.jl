@@ -45,7 +45,7 @@ using TestItems
         # rerouting.
         withenv("AMALTHEA_NATIVE_GPU" => "off") do
 
-        @assert !RK45._gpu_native_eligible(transform, linop, length(Eω)) "backend guard regression: this config must be CPU-native under AMALTHEA_NATIVE_GPU=off regardless of AMALTHEA_USE_RUST_CUDA_NATIVE"
+        @test !RK45._gpu_native_eligible(transform, linop, length(Eω))
 
         """
         Near-exact reference value of the dense output at absolute position
@@ -392,7 +392,7 @@ end
         # (GPU-vs-GPU, not GPU-vs-CPU) — pin it explicitly and assert the
         # backend actually chosen.
         s_cpu = withenv("AMALTHEA_NATIVE_GPU" => "off") do
-            @assert !RK45._gpu_native_eligible(transform, linop, length(Eω)) "backend guard regression: this config must be CPU-native under AMALTHEA_NATIVE_GPU=off regardless of AMALTHEA_USE_RUST_CUDA_NATIVE"
+            @test !RK45._gpu_native_eligible(transform, linop, length(Eω))
             RustNativeStepper(transform, linop, copy(Eω), t0, h;
                                rtol=1e-6, atol=1e-10, max_dt=h, min_dt=h)
         end
