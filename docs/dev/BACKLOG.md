@@ -121,8 +121,25 @@ or "verified" inside a superseded narrative do not outrank this list.
    pre-acceptance trial solution. Harmless under fixed-step (`stepcontrol_pi`
    forces acceptance), and now printed as a diagnostic rather than asserted,
    but unproven for adaptive stepping in general.
-9. 🟡 **`AMALTHEA_NATIVE_GPU=on` process-wide silently reroutes CPU-native
-   equivalence tests onto the GPU, where they fail.** Found 2026-07-25 while
+9. 🟢 **`AMALTHEA_NATIVE_GPU=on` process-wide silently reroutes CPU-native
+   equivalence tests onto the GPU — FIXED and verified on hardware
+   2026-07-26.** The five vulnerable files (`test_native_phase1.jl`,
+   `test_native_phase2.jl`, `test_native_phase8.jl`,
+   `test_native_fftw_wisdom.jl`, `test_native_dense_order5.jl`) now pin
+   `withenv("AMALTHEA_NATIVE_GPU" => "off")` around every `RustNativeStepper`
+   construction and assert the choice with a counted
+   `@test !RK45._gpu_native_eligible(...)`. Measured on the RTX 5060 Ti: the
+   full `rust` group under `AMALTHEA_USE_RUST_CUDA_NATIVE=1
+   AMALTHEA_NATIVE_GPU=on` is **42269 pass / 1 broken / 0 failures** (was 18
+   failures), and the default-env run has **identical totals** — proving no
+   test was disabled — while the GPU tests still execute on the GPU. Two extra
+   instances the original count missed: `test_native_phase8.jl` was passing
+   only by tolerance luck (1.7e-9 vs an expected ~1.6e-11, under a loose 1e-8
+   bound) and `test_native_dense_order5.jl`'s GPU testitem was comparing GPU
+   against GPU. Record:
+   `docs/dev/native-port/portlog-inbox/gpu-env-pinning.md`. Original report
+   below.
+   Found 2026-07-25 while
    verifying item 1: running the whole `rust` group with
    `AMALTHEA_USE_RUST_CUDA_NATIVE=1 AMALTHEA_NATIVE_GPU=on` produces **18
    failures** (`test_native_phase1.jl` 6, `test_native_fftw_wisdom.jl` 3,
@@ -1276,6 +1293,22 @@ consequences, so correcting it would have meant rewriting rather than
 amending it.*
 
 ## Informational / no action planned
+
+- ⚪ **One-off macOS `Bus error: 10` in CI, 2026-07-26.** Run `30209977981`'s
+  `physics - macos-latest` job died with `signal 10 (1): Bus error: 10` in
+  expression starting at `test/test_rk45.jl:64`, after ~1900 propagation
+  steps. The immediately following run on the same tree passed that job (all
+  16 jobs green), and the Julia/Rust sources had not changed since the last
+  green macOS run before it, so this is filed as a runner flake rather than a
+  defect. Recorded because a signal-10 in the stepper is the kind of thing
+  that reads as new the second time it happens: if it recurs in
+  `test_rk45.jl`, it is a real memory-safety lead (native stepper + macOS
+  aarch64 alignment), not noise.
+  **Note:** `RUSTFLAGS=-D warnings` now applies to every CI job's package
+  build, because both workflows force the from-source path
+  (`AMALTHEA_RUST_SKIP_DOWNLOAD=1`, see resume item 4) — so a new crate
+  warning fails all jobs, not just the `rust` group's explicit steps, which
+  neutralize `RUSTFLAGS` themselves.
 
 - ⚪ `deps/build.jl` forwards `ENV["RUSTFLAGS"]` (defaulting to `""` if unset),
   which neutralizes `.cargo/config.toml`'s `target-cpu=native` for
