@@ -32,6 +32,19 @@ using TestItems
         wisdom_path = joinpath(Amalthea.Utils.cachedir(),
                                "native_fftw_wisdom_$(Amalthea.Utils.FFTWthreads())threads")
 
+        # docs/dev/BACKLOG.md resume-queue item 9: this config (mode-averaged,
+        # RealGrid, Kerr-only, constant linop) is GPU-eligible under
+        # `RK45._gpu_kernel_supports`, and the FFTW-wisdom persistence this
+        # file is testing is a CPU-resident-stepper-only concept (the GPU
+        # backend uses cuFFT plans, not FFTW). Under a process-wide
+        # `AMALTHEA_NATIVE_GPU=on`, every `RustNativeStepper` below would
+        # silently take the GPU path and never touch `wisdom_path` at all —
+        # pin the backend explicitly so this test means what it says
+        # regardless of the ambient environment.
+        withenv("AMALTHEA_NATIVE_GPU" => "off") do
+
+        @test !RK45._gpu_native_eligible(transform, linop, length(Eω))
+
         # docs/dev/BACKLOG.md S1 item 1 / docs/dev/native-port/PLANS.md §1.
         # T1: default (env var unset) must not touch the on-disk wisdom file
         # at all — this is the whole point of making persistence opt-in.
@@ -65,5 +78,7 @@ using TestItems
             end
             isfile(wisdom_path) && rm(wisdom_path)
         end
+
+        end # withenv("AMALTHEA_NATIVE_GPU" => "off")
     end
 end

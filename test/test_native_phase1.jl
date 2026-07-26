@@ -26,10 +26,26 @@ using TestItems
         Eω, grid, linop, transform, FT, output = with_logger(NullLogger()) do
             Interface.prop_capillary_args(args...; kw...)
         end
-        
+
         t0 = 0.0
         dt = 0.01 # 10 mm step size to get error far above machine precision floor
-        
+
+        # docs/dev/BACKLOG.md resume-queue item 9: this config (mode-averaged,
+        # RealGrid, Kerr-only, constant linop) is exactly what
+        # `RK45._gpu_kernel_supports` accepts, so under a process-wide
+        # `AMALTHEA_NATIVE_GPU=on` (e.g. someone running the whole `rust`
+        # group on GPU hardware to verify item 1) every `RustNativeStepper`
+        # built below would silently take the GPU-resident backend instead
+        # of the CPU-resident one this test is actually pinning to the
+        # Julia oracle at ~1e-13 — a tolerance the GPU backend cannot meet
+        # (different kernel, different FP summation order). Pin the backend
+        # explicitly rather than trusting the ambient environment; assert it
+        # too, so a future dispatch change fails loudly instead of silently
+        # rerouting.
+        withenv("AMALTHEA_NATIVE_GPU" => "off") do
+
+        @test !RK45._gpu_native_eligible(transform, linop, length(Eω))
+
         @testset "Single-step equivalence (~1e-13)" begin
             s_jl = PreconStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10)
             s_ru = RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10)
@@ -67,5 +83,7 @@ using TestItems
             println("Full solve rel_solve: ", rel_solve)
             @test rel_solve < 1e-6
         end
+
+        end # withenv("AMALTHEA_NATIVE_GPU" => "off")
     end
 end

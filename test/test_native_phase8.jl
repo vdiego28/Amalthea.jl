@@ -23,6 +23,22 @@ using TestItems
         trange = 1e-12
         common = (; λ0, λlims, trange, energy=1e-7, τfwhm=30e-15, saveN=2)
 
+        # docs/dev/BACKLOG.md resume-queue item 9: every config in this file
+        # is mode-averaged, RealGrid, Kerr-only (or Kerr+Raman for the
+        # ineligible-fallback testset) with a constant linop — the
+        # Kerr-only ones are exactly what `RK45._gpu_kernel_supports`
+        # accepts. Under a process-wide `AMALTHEA_NATIVE_GPU=on` (e.g.
+        # someone running the whole `rust` group on GPU hardware), the
+        # "eligible config" testset below would silently take the
+        # GPU-resident backend for BOTH `out_native_explicit` and
+        # `out_default` (still bit-identical to each other, so that
+        # assertion wouldn't catch it) while comparing against the
+        # ~1.6e-11 native-vs-Julia method tolerance meant for the CPU
+        # backend — confirmed empirically to slip through at 1.7e-9 (still
+        # under the loose 1e-8 bound) rather than failing loudly. Pin the
+        # whole file to the CPU-resident backend explicitly.
+        withenv("AMALTHEA_NATIVE_GPU" => "off") do
+
         @testset "Default (env unset) picks native for an eligible config" begin
             # Kerr-only, mode-averaged, RealGrid — eligible since Phase 1.
             kw = (; common..., raman=false, plasma=false, kerr=true, shotnoise=false)
@@ -152,5 +168,7 @@ using TestItems
             # (DP5's 7-stage FSAL free interpolant is provably order 4).
             @test rel < 1e-9
         end
+
+        end # withenv("AMALTHEA_NATIVE_GPU" => "off")
     end
 end

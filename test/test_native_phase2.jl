@@ -111,10 +111,21 @@ end
             t0 = 0.0
             dt = 0.01
 
+            # docs/dev/BACKLOG.md resume-queue item 9: mode-averaged RealGrid
+            # Kerr+single-PPT-plasma is exactly what `RK45._gpu_kernel_supports`
+            # accepts, so every `withenv` below that builds a `RustNativeStepper`
+            # also pins `AMALTHEA_NATIVE_GPU=off` — otherwise a process-wide
+            # `AMALTHEA_NATIVE_GPU=on` (e.g. someone running the whole `rust`
+            # group on GPU hardware) silently reroutes these to the GPU-resident
+            # backend, which cannot meet the ~1e-13/~1e-6/~1e-10 tolerances
+            # below (different kernel, different FP summation order).
+
             @testset "Single-step equivalence (RealGrid + plasma, ~1e-13)" begin
                 s_jl = PreconStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10)
                 s_ru = withenv("AMALTHEA_USE_RUST_NATIVE" => "1",
-                               "AMALTHEA_USE_RUST_IONISATION" => "1") do
+                               "AMALTHEA_USE_RUST_IONISATION" => "1",
+                               "AMALTHEA_NATIVE_GPU" => "off") do
+                    @test !RK45._gpu_native_eligible(transform, linop, length(Eω))
                     RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10)
                 end
 
@@ -136,7 +147,8 @@ end
                 s_jl = PreconStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
                                       max_dt=dt, min_dt=dt)
                 s_ru = withenv("AMALTHEA_USE_RUST_NATIVE" => "1",
-                               "AMALTHEA_USE_RUST_IONISATION" => "1") do
+                               "AMALTHEA_USE_RUST_IONISATION" => "1",
+                               "AMALTHEA_NATIVE_GPU" => "off") do
                     RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
                                       max_dt=dt, min_dt=dt)
                 end
@@ -178,7 +190,8 @@ end
                                         max_dt=dt_s, min_dt=dt_s)
                 s_jl_np = PreconStepper(transform_sn, linop_sn, copy(Eω_sn), t0, dt_s, rtol=1e-6, atol=1e-10,
                                          max_dt=dt_s, min_dt=dt_s)
-                s_ru_p = withenv("AMALTHEA_USE_RUST_NATIVE" => "1", "AMALTHEA_USE_RUST_IONISATION" => "1") do
+                s_ru_p = withenv("AMALTHEA_USE_RUST_NATIVE" => "1", "AMALTHEA_USE_RUST_IONISATION" => "1",
+                                 "AMALTHEA_NATIVE_GPU" => "off") do
                     RustNativeStepper(transform_s, linop_s, copy(Eω_s), t0, dt_s, rtol=1e-6, atol=1e-10,
                                        max_dt=dt_s, min_dt=dt_s)
                 end

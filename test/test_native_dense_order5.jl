@@ -32,6 +32,21 @@ using TestItems
 
         t0 = 0.0
 
+        # docs/dev/BACKLOG.md resume-queue item 9: this config (mode-averaged,
+        # RealGrid, Kerr-only, constant linop) is exactly what
+        # `RK45._gpu_kernel_supports` accepts, and `CudaNativeSim` doesn't
+        # implement `compute_extra_stages` at all (see the third `@testitem`
+        # below), so under a process-wide `AMALTHEA_NATIVE_GPU=on` every
+        # `RustNativeStepper` in this testitem — including the `reference_at`
+        # helper's own fine-step "ground truth" — would silently take the
+        # order-4 dense-output fallback instead of the order-5 extension this
+        # whole file exists to measure. Pin the backend explicitly; assert it
+        # too, so a future dispatch change fails loudly instead of silently
+        # rerouting.
+        withenv("AMALTHEA_NATIVE_GPU" => "off") do
+
+        @test !RK45._gpu_native_eligible(transform, linop, length(Eω))
+
         """
         Near-exact reference value of the dense output at absolute position
         `ti`, obtained by stepping a *fresh*, much finer fixed-step stepper
@@ -219,6 +234,8 @@ using TestItems
                 @test rel < 1e-12
             end
         end
+
+        end # withenv("AMALTHEA_NATIVE_GPU" => "off")
     end
 end
 
@@ -367,8 +384,18 @@ end
         end
 
         t0 = 0.0; h = 0.01
-        s_cpu = RustNativeStepper(transform, linop, copy(Eω), t0, h;
-                                  rtol=1e-6, atol=1e-10, max_dt=h, min_dt=h)
+        # docs/dev/BACKLOG.md resume-queue item 9: this config is
+        # GPU-eligible, so under a process-wide `AMALTHEA_NATIVE_GPU=on` (the
+        # exact env this file's own GPU testset below forces) `s_cpu` would
+        # silently ALSO build on the GPU-resident backend, making the
+        # "GPU apply_prop matches the CPU backend" testset below a tautology
+        # (GPU-vs-GPU, not GPU-vs-CPU) — pin it explicitly and assert the
+        # backend actually chosen.
+        s_cpu = withenv("AMALTHEA_NATIVE_GPU" => "off") do
+            @test !RK45._gpu_native_eligible(transform, linop, length(Eω))
+            RustNativeStepper(transform, linop, copy(Eω), t0, h;
+                               rtol=1e-6, atol=1e-10, max_dt=h, min_dt=h)
+        end
 
         gpu_available = true
         gpu_error = nothing
