@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785083136762,
+  "lastUpdate": 1785086298644,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -550,6 +550,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.916903,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "distinct": true,
+          "id": "2af2e012a8852dc8171009e390aa5419cc58d0e0",
+          "message": "Docs: record item 9's fix and hardware verification\n\nAdds portlog-inbox/gpu-env-pinning.md (per the inbox convention) and flips\nBACKLOG item 9 to green with the measured numbers: full rust group under\nAMALTHEA_USE_RUST_CUDA_NATIVE=1 AMALTHEA_NATIVE_GPU=on is 42269 pass / 1\nbroken / 0 failures on an RTX 5060 Ti, down from 18 failures, with the\ndefault-env run showing identical totals so no test was disabled.\n\nTwo instances the original report missed are recorded: phase8 was passing\nonly by tolerance luck (1.7e-9 vs an expected ~1.6e-11 under a loose 1e-8\nbound), and dense_order5's GPU testitem was comparing GPU against GPU.\n\nAlso files two informational notes: the unreproduced macOS Bus error: 10 in\ntest_rk45.jl from run 30209977981 (next run green on the same tree — filed\nas a flake, but worth recognising if it recurs), and the fact that\n-D warnings now reaches every CI job's package build now that both\nworkflows force the from-source path.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-26T13:17:21-04:00",
+          "tree_id": "b68280aca1643d2d3c5e01b64adf7e0f2c55f191",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/2af2e012a8852dc8171009e390aa5419cc58d0e0"
+        },
+        "date": 1785086298123,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.291162,
             "unit": "ms/step"
           }
         ]
