@@ -130,8 +130,10 @@ or "verified" inside a superseded narrative do not outrank this list.
    construction and assert the choice with a counted
    `@test !RK45._gpu_native_eligible(...)`. Measured on the RTX 5060 Ti: the
    full `rust` group under `AMALTHEA_USE_RUST_CUDA_NATIVE=1
-   AMALTHEA_NATIVE_GPU=on` is **42269 pass / 1 broken / 0 failures** (was 18
-   failures), and the default-env run has **identical totals** — proving no
+   AMALTHEA_NATIVE_GPU=on` is **42269 pass / 1 broken / 0 failures** (the 18
+   failures it replaces are agent-measured, matching the count recorded
+   independently on 2026-07-25; only this post-fix state was lead-verified),
+   and the default-env run has **identical totals** — proving no
    test was disabled — while the GPU tests still execute on the GPU. Two extra
    instances the original count missed: `test_native_phase8.jl` was passing
    only by tolerance luck (1.7e-9 vs an expected ~1.6e-11, under a loose 1e-8

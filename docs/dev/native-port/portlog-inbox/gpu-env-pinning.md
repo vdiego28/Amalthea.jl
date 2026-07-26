@@ -74,7 +74,12 @@ Both runs are the full `rust` group from a clean worktree, GPU present:
 
 Before the fix, the first of those produced 18 failures —
 `test_native_phase1.jl` 6, `test_native_dense_order5.jl` 8,
-`test_native_fftw_wisdom.jl` 3, `test_native_phase2.jl` 1.
+`test_native_fftw_wisdom.jl` 3, `test_native_phase2.jl` 1. **That before-state
+split, and the phase8 "1.7e-9 vs ~1.6e-11" figure above, are agent-measured and
+were not re-run by the lead session** — only the post-fix state was verified on
+hardware here. The 18 total matches what item 9 recorded independently on
+2026-07-25. Nothing in the fix's validity rests on those numbers: the claim
+that matters is 0 failures under the GPU env, and that one is lead-measured.
 
 The two runs have **identical totals**, which is the check that matters against
 the obvious way to fake this fix: pinning `off` did not skip, disable or
