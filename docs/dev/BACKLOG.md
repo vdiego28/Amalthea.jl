@@ -192,7 +192,35 @@ or "verified" inside a superseded narrative do not outrank this list.
    "run the suite on the GPU" quietly unusable as a verification technique.
    Fix by pinning `AMALTHEA_NATIVE_GPU=off` (or asserting the chosen
    backend) in the CPU-native phase tests.
-10. ⚪ **Test discovery recurses into `.claude/worktrees/`.** Running a test
+10. 🟢 **Test discovery recurses into `.claude/worktrees/` — FIXED
+    2026-07-26.** `test/runtests.jl` now filters out any test item whose file
+    lives under a `.claude` path component (matched via
+    `splitpath(relpath(...))`, not a bare substring, so a checkout path that
+    merely contains the string ".claude" can't misfire), in both the `All`
+    branch and the tagged branch — the `All` branch previously ran
+    `@run_package_tests` with no filter at all. `amalthea/tests/*.jl` (the
+    auto-discovered half of the `rust` safety net, `CLAUDE.md`/this file
+    line ~1182) has no `.claude` path component and stays discovered.
+    **No leftover worktrees existed to reproduce with, so the confounder was
+    constructed by hand:** a throwaway `.claude/worktrees/fake/test/`
+    holding one copy of `test_noise.jl` (`:fields`). Measured on the
+    `fields` group: **432/432 with the fix reverted** (334 baseline + 98 from
+    the duplicated file) vs. **334/334 with the fix applied**, confounder
+    still present — matching the documented `fields` baseline exactly. The
+    throwaway directory was then deleted (`git status` clean of it, never
+    `git add`ed) and a final clean-tree run reconfirmed **334/334**. Checked
+    the parallel/gate path too (`test/parallel_group_tests.py`,
+    `test/run_full_gate.py`): `discover_group_files()` uses a **non-recursive**
+    `TEST_DIR.glob("*.jl")` scoped to `test/`, so it can never see
+    `.claude/worktrees/.../test/*.jl` — not affected. Its worker subprocess
+    (`test/run_group_bucket.jl`) does call `@run_package_tests` and re-walks
+    the repo, but already carries its own `in_this_checkout` guard (commit
+    `fe08fa9`, predating this fix) — so only the plain serial
+    `test/runtests.jl` entry point (the one `AGENTS.md` §3 step 5 tells
+    every agent to run) had the gap. No changes needed to either Python
+    script. Record: `docs/dev/native-port/portlog-inbox/test-discovery-worktree-exclusion.md`.
+    Original report below.
+    Running a test
     group from the repo root while agent worktrees exist inflates counts —
     `@run_package_tests` finds each nested worktree's copy of every test
     file. Measured 2026-07-25: the `examples` group reported **120/120** from
