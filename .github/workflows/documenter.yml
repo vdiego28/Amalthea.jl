@@ -7,6 +7,12 @@ on:
   pull_request:
     branches: [ main ]
 
+# Build the Rust library from the checked-out source, never from a release
+# asset — see the same block in run_tests.yml for why (this job failed the
+# same way on 2026-07-25).
+env:
+  AMALTHEA_RUST_SKIP_DOWNLOAD: "1"
+
 jobs:
   build:
     runs-on: ubuntu-latest

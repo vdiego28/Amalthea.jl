@@ -84,17 +84,19 @@ This will install and precompile Amalthea.jl and all its dependencies (including
 intends to publish release binaries for (Linux x86_64, macOS aarch64/Apple
 Silicon, Windows x86_64), the build step (`deps/build.jl`) first attempts to
 download a prebuilt `amalthea` library matching the package version, then falls
-back to compiling from source. **Version 1.0.0 has release binaries, but they
-were published under the legacy `libluna_rust-<triple>` names while the
-current installer requests `libamalthea-<triple>`. See the
-[v1.0.0 assets](https://github.com/vdiego28/Amalthea.jl/releases/tag/v1.0.0).
-Until those assets are republished or the installer gains a legacy-name
-fallback, every install takes the source-build path.** That path requires a working
-[Rust toolchain](https://rustup.rs/) (cargo >= 1.85) on `PATH`. Repairing and
-validating the release path is tracked in `docs/dev/BACKLOG.md`; once
-correctly named assets exist, supported platforms should no longer need Rust
-for a normal install. `AMALTHEA_RUST_SKIP_DOWNLOAD=1`
-forces the source-build path directly.
+back to compiling from source. Version 1.0.0's binaries were published under
+the pre-rename `libluna_rust-<triple>` names (see the
+[v1.0.0 assets](https://github.com/vdiego28/Amalthea.jl/releases/tag/v1.0.0)),
+which the installer now recognises as a fallback, so a `Pkg.add` of a released
+version on those platforms needs no Rust toolchain.
+
+**Building from a git checkout always compiles from source** — a working
+[Rust toolchain](https://rustup.rs/) (cargo >= 1.85) on `PATH` is required for
+`Pkg.develop`, a clone of this repo, and CI. A checkout's sources run ahead of
+the last tagged release while `Project.toml` still names that release, so
+downloading its binary would install a library older than the FFI calls in
+`src/`. `AMALTHEA_RUST_SKIP_DOWNLOAD=1` forces the source-build path for a
+registered install too.
 
 If `Pkg.build`/`Pkg.instantiate` fails, look for a `Failed to find/compile the Rust library` error from the build script — it names the actual problem and how to fix it. The most common cause is simply that `cargo` isn't installed or isn't on `PATH`; installing it via [rustup.rs](https://rustup.rs/) and re-running `Pkg.build("Amalthea")` resolves it.
 

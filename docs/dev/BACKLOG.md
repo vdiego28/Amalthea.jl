@@ -76,6 +76,19 @@ or "verified" inside a superseded narrative do not outrank this list.
    names for future tags — unchanged. **Lead's decision: leave `v1.0.0`'s
    published assets untouched and prepare a `v1.0.1` instead** (see the new
    item below); no release asset was mutated.
+   🔴→🟢 **Regression on the very next push, fixed 2026-07-26.** With the
+   fallback in place, CI itself downloaded the stale `v1.0.0` binary over the
+   library it had just built and every job in both workflows died with
+   `undefined symbol: native_compute_extra_stages` (the S5.3 dense-output FFI
+   symbol, added after the tag). Root cause is the version keying, not the
+   name matching: `Project.toml` still reads `1.0.0` while `main`'s sources
+   are far ahead of it. `deps/build.jl` now refuses the download entirely for
+   a source checkout (`_is_source_checkout()`, `.git` present — registered
+   `Pkg.add` installs keep the fast path), and both workflows set
+   `AMALTHEA_RUST_SKIP_DOWNLOAD=1` at workflow level. **Open:** bump
+   `Project.toml` to a `-DEV` version after each release, or the same trap
+   re-arms after the next tag for source tarballs. See
+   `docs/dev/native-port/portlog-inbox/prebuilt-asset-compat.md` §7.
 5. ⚪ **Short-kernel Raman convolution — measured 2026-07-25, RECOMMEND
    AGAINST, closed.** This **reverses Phase J.6(c)'s prior "recommend"**,
    whose premise was an unmeasured guess. `PLANS.md` §6.3 assumed the SiO2
@@ -1218,9 +1231,10 @@ tree are recorded here.
    `README.md` and `deps/build.jl` explain the Cargo fallback and give an
    actionable error. `.github/workflows/release.yml` builds three portable
    assets and `deps/build.jl` verifies checksums before installing them.
-   🟡 The `v1.0.0` release used legacy `libluna_rust-*` asset names, so the
-   current `libamalthea-*` lookup misses and falls back to source. Fix and
-   validate this as resume-queue item 4.
+   🟢 The `v1.0.0` release's legacy `libluna_rust-*` asset names are now
+   handled by a bounded fallback (resume-queue item 4), and source checkouts
+   (clones, `Pkg.develop`, CI) always compile from source rather than install
+   a binary older than their own FFI surface.
 2. 🟡 **Representative smoke CI landed; seven broken examples remain.**
    `test/test_examples_smoke.jl` runs eight representative files at a shrunk
    5 mm propagation length in the `examples` CI group (16/16 assertions,

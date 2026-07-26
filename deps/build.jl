@@ -44,6 +44,25 @@ _target_triple() = Sys.iswindows() ? "x86_64-pc-windows-msvc" :
                                      nothing
 
 """
+    _is_source_checkout() -> Bool
+
+`true` when this package tree is a git working copy (`.git` — a directory for
+a normal clone, a file for a worktree/submodule — sits at the package root).
+
+Such a tree is a *source* tree: `src/` and `amalthea/src/` are generally ahead
+of the last tagged release, but `Project.toml` still carries that release's
+version until the next bump — so the version-keyed download below would fetch a
+binary older than the FFI surface the Julia source expects and overwrite the
+locally built one with it. That is not hypothetical: it broke every CI job on
+2026-07-25 with `undefined symbol: native_compute_extra_stages` (a symbol added
+after v1.0.0 was tagged), and would hit any `Pkg.develop` user the same way.
+
+A registered install (`Pkg.add`) has no `.git` — Pkg unpacks a tarball — so the
+prebuilt fast path is unaffected for the users it exists for.
+"""
+_is_source_checkout() = ispath(joinpath(@__DIR__, "..", ".git"))
+
+"""
     _prebuilt_asset_candidates(triple, ext, version) -> Vector{String}
 
 Asset names to try, in priority order: the canonical `libamalthea-<triple>`
@@ -74,6 +93,9 @@ canonical name isn't in the manifest. Returns `false` (never throws) on any
 failure — missing release, unsupported platform, network error, checksum
 mismatch — so the caller can fall back to building from source.
 
+A source checkout (`.git` present next to this file's parent) never takes
+this path at all — see `_is_source_checkout`.
+
 `base_url` overrides the GitHub releases URL (production default computed
 from `_AMALTHEA_RELEASE_REPO` + the package version); this exists solely so
 tests can point the function at a local HTTP server serving a fake release
@@ -81,6 +103,11 @@ layout — the production call site never passes it.
 """
 function try_download_prebuilt(rust_dir; base_url::Union{Nothing,AbstractString}=nothing)
     get(ENV, "AMALTHEA_RUST_SKIP_DOWNLOAD", "") == "1" && return false
+    if _is_source_checkout()
+        @info "Source checkout detected (.git present); building the Rust library " *
+              "from source rather than downloading a release binary."
+        return false
+    end
     triple = _target_triple()
     triple === nothing && return false
 

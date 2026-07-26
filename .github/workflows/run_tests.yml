@@ -6,6 +6,17 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# CI must always exercise the Rust library built from the *checked-out*
+# source, never a published release asset. deps/build.jl keys its prebuilt
+# download on the Project.toml version, which still names the last tagged
+# release while main has moved ahead of it — so without this, every job
+# silently overwrites its freshly-built libamalthea with the v1.0.0 binary
+# and dies on the first FFI symbol added since that tag (2026-07-25:
+# `undefined symbol: native_compute_extra_stages`). Workflow-level, not
+# per-step, so a job added later can't forget it.
+env:
+  AMALTHEA_RUST_SKIP_DOWNLOAD: "1"
+
 jobs:
   test:
     name: Test (${{ matrix.group }} - ${{ matrix.os }} - Julia ${{ matrix.julia-version }})
@@ -85,6 +96,12 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
+          # This action's built-in rust-cache runs `cargo metadata` at the
+          # repo root, where there is no Cargo.toml (the crate lives in
+          # amalthea/) — it errors out and caches nothing. The explicit
+          # Swatinem/rust-cache steps below (workspaces: amalthea) are the
+          # ones that work.
+          cache: false
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
@@ -150,6 +167,12 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
+          # This action's built-in rust-cache runs `cargo metadata` at the
+          # repo root, where there is no Cargo.toml (the crate lives in
+          # amalthea/) — it errors out and caches nothing. The explicit
+          # Swatinem/rust-cache steps below (workspaces: amalthea) are the
+          # ones that work.
+          cache: false
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
@@ -214,6 +237,10 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
+          # As above: the built-in rust-cache errors out at the repo root and
+          # caches nothing. This job builds the crate once and has no explicit
+          # cache step, so just turn the broken one off.
+          cache: false
 
       - name: Build Rust release library (for Julia FFI)
         run: cargo build --release

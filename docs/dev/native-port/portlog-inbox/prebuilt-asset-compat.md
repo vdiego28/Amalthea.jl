@@ -229,3 +229,62 @@ Scenarios (all passed):
   approach (fixture webroot + `base_url` override) is directly liftable
   into `test/` behind a `:rust`-style tag or an opt-in env var, since the
   `base_url` seam already exists for exactly this purpose.
+
+---
+
+## 7. Follow-up 2026-07-26 — the fallback broke CI; source checkouts now skip the download
+
+Landing §1–§6 (commit `0f7c071`) turned a benign miss into a successful
+install of a *stale* binary, and **every job in both workflows failed on the
+next push** (runs `30174533901` "Run tests", `30174533896` "Documentation",
+commit `7aea2f4`):
+
+```
+[ Info: Downloaded prebuilt amalthea library (libluna_rust-x86_64-unknown-linux-gnu.so, v1.0.0), skipping cargo build.
+...
+ERROR: LoadError: could not load symbol "native_compute_extra_stages":
+  amalthea/target/release/libamalthea.so: undefined symbol: native_compute_extra_stages
+```
+
+`native_compute_extra_stages` is the S5.3 order-5 dense-output FFI symbol,
+added 2026-07-23 — after `v1.0.0` was tagged. The failure is *not* in the
+fallback's matching logic (which did exactly what §2 designed): it is that
+`try_download_prebuilt` keys the asset on `Project.toml`'s version, which on
+`main` still reads `1.0.0` while `src/` and `amalthea/src/` have moved well
+past that tag. Before `0f7c071` the canonical-name miss accidentally masked
+this — the `rust` and `python-test` jobs even had their own
+`cargo build --release` step silently overwritten by the download afterwards.
+
+Fixes applied:
+
+1. `deps/build.jl` — new `_is_source_checkout()` (`ispath(<pkgroot>/.git)`,
+   so worktrees/submodules with a `.git` *file* count too). When true,
+   `try_download_prebuilt` logs and returns `false` before touching the
+   network. A registered `Pkg.add` install has no `.git`, so the prebuilt
+   fast path this task built is untouched for the users it exists for;
+   `Pkg.develop` and clones now always compile, matching the documented dev
+   path. Verified both branches against a scratch package tree (with `.git`
+   → "Source checkout detected" → source build; without → the legacy asset
+   still downloads and installs as §4 recorded).
+2. `.github/workflows/{run_tests,documenter}.yml` — workflow-level
+   `env: AMALTHEA_RUST_SKIP_DOWNLOAD: "1"`, so CI's independence from
+   release assets doesn't rest on the `.git` heuristic and a job added later
+   can't forget it.
+3. Same edit removed `cache: true` (the default) from the three
+   `actions-rust-lang/setup-rust-toolchain` steps: its built-in rust-cache
+   runs `cargo metadata` at the repo root, where there is no `Cargo.toml`,
+   and had been printing `Error: ... could not find Cargo.toml` while caching
+   nothing in every job. The explicit `Swatinem/rust-cache` steps
+   (`workspaces: amalthea`) are unaffected.
+
+Docs updated: `CLAUDE.md` build note, `README.md` toolchain-requirement
+paragraph, and BACKLOG resume item 4 / S6 item 1.
+
+**Still open for the lead:** the version-keying trap re-arms after the next
+tag (main at `1.1.0` will happily download the `1.1.0` binary and go stale
+the moment an FFI symbol is added). The standard Julia remedy is to bump
+`Project.toml` to `1.1.0-DEV` immediately after each release; nothing in the
+repo pins the version string (checked: no `juliapkg.json`, `python/` uses a
+`dev=True` path add), so that bump is a one-line change whenever the lead
+wants it. The `.git` gate covers clones and CI meanwhile, but not a source
+*tarball* of `main`.
