@@ -208,7 +208,11 @@ or "verified" inside a superseded narrative do not outrank this list.
     the duplicated file) vs. **334/334 with the fix applied**, confounder
     still present — matching the documented `fields` baseline exactly. The
     throwaway directory was then deleted (`git status` clean of it, never
-    `git add`ed) and a final clean-tree run reconfirmed **334/334**. Checked
+    `git add`ed) and a final clean-tree run reconfirmed **334/334**.
+    **Provenance (per the item-9 convention):** the two confounder-present
+    numbers (432/432, 334/334) are **agent-measured**; the lead independently
+    re-ran the clean tree and confirms **334/334 in 2m37.6s** — which is the
+    number the before/after pair is meaningful relative to. Checked
     the parallel/gate path too (`test/parallel_group_tests.py`,
     `test/run_full_gate.py`): `discover_group_files()` uses a **non-recursive**
     `TEST_DIR.glob("*.jl")` scoped to `test/`, so it can never see
@@ -219,6 +223,20 @@ or "verified" inside a superseded narrative do not outrank this list.
     `test/runtests.jl` entry point (the one `AGENTS.md` §3 step 5 tells
     every agent to run) had the gap. No changes needed to either Python
     script. Record: `docs/dev/native-port/portlog-inbox/test-discovery-worktree-exclusion.md`.
+    **Separate discrepancy surfaced while verifying this, NOT fixed here and
+    not the one §5 documents:** the two guards are not the same predicate.
+    `run_group_bucket.jl`'s is `dirname(abspath(f)) == THIS_TEST_DIR` (exact
+    directory), while `runtests.jl`'s new one only excludes `.claude`
+    components — so the serial path discovers the four `tags=[:rust]`
+    `@testitem`s in `amalthea/tests/` (`test_julia_ffi.jl`,
+    `test_stepper_dispatch.jl`, `test_scans_io.jl`, `test_gpu_cuda.jl`) and
+    the parallel/gate path does not. `VANILLA_LUNA_ISSUES.md` §5's
+    "one-shared-process vs many-processes" caveat is about the **FFTW
+    wisdom pool-channel** delta (42104 vs 42087), a different cause — it
+    does not cover this file-set divergence. So serial and parallel `rust`
+    counts still legitimately differ, for two independent reasons rather
+    than one. Worth reconciling if `rust` counts are ever compared across
+    the two entry points; harmless otherwise, and pre-existing.
     Original report below.
     Running a test
     group from the repo root while agent worktrees exist inflates counts —
