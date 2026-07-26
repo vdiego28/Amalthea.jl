@@ -102,6 +102,42 @@ or "verified" inside a superseded narrative do not outrank this list.
    was never the blocker (truncation error 1.7e-16-3.4e-14, inside the
    existing tier). Bench and profiling reverted per S1.6/S5.1 discipline.
 
+### New items raised by the 2026-07-26 CI repair
+
+11. 🔴 **macOS CI crashes with `Bus error: 10` in `test/test_rk45.jl` —
+    reproducing, unexplained, NOT in our Rust code.** `physics -
+    macos-latest` died with `signal 10 (1): Bus error: 10`, "in expression
+    starting at `test/test_rk45.jl:64`", in **2 of 3** runs on 2026-07-26
+    (fail `30209977981`, pass `30210333905`, fail `30212265976`). Same file,
+    same line, no Julia backtrace printed, always mid-solve (~11-13 % of the
+    way in, after ~1650-1900 steps).
+
+    **The most important fact: line 64 is `RK45.solve(f!, ...)` — the plain,
+    *non-preconditioned* Julia stepper.** `AMALTHEA_USE_RUST_NATIVE` is only
+    wired at `solve_precon`, and this testitem's `f!`/`fnl!` are pure Julia
+    closures over `FFTW.plan_fft!`/`plan_ifft!`. So no `RustNativeStepper`,
+    no FFI, no `libamalthea` code runs in the crashing call. Do not start
+    this investigation in the native port.
+
+    Not introduced by the 2026-07-26 CI repair: that changed only which
+    library CI builds (source vs stale release asset) and a Python skip
+    guard, neither of which this code path touches. It was *masked* before —
+    on 2026-07-25 the whole suite died earlier at `undefined symbol`, and the
+    last macOS-green run was 2026-07-23. Which leaves the change in the
+    environment (macos-latest image, Julia '1' point release) or a
+    long-standing rare race that only now got sampled.
+
+    Leads, in order: (a) the restored `julia-actions/cache` carries
+    `lunacache/FFTW*wisdom` between runs and its key does not distinguish
+    Apple Silicon generations — wisdom recorded on one CPU replayed on
+    another is a classic SIGBUS source, and the crash logs do show "Found
+    FFTW wisdom at …" immediately before; (b) in-place `FFT*out`/`IFT*out`
+    plans applied to a buffer whose alignment differs from the planned one;
+    (c) genuine memory corruption elsewhere in the physics group that only
+    lands here. Cheapest first experiment: re-run `physics - macos-latest`
+    with the Julia cache disabled, several times, and see whether the crash
+    rate changes.
+
 ### New items raised by the 2026-07-25 wave
 
 6. 🟡 **`TransModal` `DimensionMismatch` for `full=true` + npol=2 + plasma.**
@@ -1296,17 +1332,7 @@ amending it.*
 
 ## Informational / no action planned
 
-- ⚪ **One-off macOS `Bus error: 10` in CI, 2026-07-26.** Run `30209977981`'s
-  `physics - macos-latest` job died with `signal 10 (1): Bus error: 10` in
-  expression starting at `test/test_rk45.jl:64`, after ~1900 propagation
-  steps. The immediately following run on the same tree passed that job (all
-  16 jobs green), and the Julia/Rust sources had not changed since the last
-  green macOS run before it, so this is filed as a runner flake rather than a
-  defect. Recorded because a signal-10 in the stepper is the kind of thing
-  that reads as new the second time it happens: if it recurs in
-  `test_rk45.jl`, it is a real memory-safety lead (native stepper + macOS
-  aarch64 alignment), not noise.
-  **Note:** `RUSTFLAGS=-D warnings` now applies to every CI job's package
+- ⚪ **`RUSTFLAGS` reach.** `RUSTFLAGS=-D warnings` now applies to every CI job's package
   build, because both workflows force the from-source path
   (`AMALTHEA_RUST_SKIP_DOWNLOAD=1`, see resume item 4) — so a new crate
   warning fails all jobs, not just the `rust` group's explicit steps, which
