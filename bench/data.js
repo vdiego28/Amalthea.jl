@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785082667979,
+  "lastUpdate": 1785083136762,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -521,6 +521,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.904536,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "distinct": true,
+          "id": "2c4a0a738bad7e0a15367e0da6a340670611d942",
+          "message": "python tests: a broken backend must fail, not skip\n\nExplains why python-test was the one green job on 7aea2f4 while every\nother job died on `undefined symbol: native_compute_extra_stages`: the\n`real_amalthea` fixture catches *any* exception from get_julia() and\nturns it into pytest.skip. The stale prebuilt library raised exactly\nthat exception, so the job spent 263s booting Julia, skipped all four\nintegration tests and reported \"23 passed, 4 skipped\" — green.\n\nThese are the only tests that load the real backend, so that guard\nconverts every backend break into a silent pass.\n\n- python/tests/test_integration.py: skips now go through _unavailable(),\n  which fails instead when AMALTHEA_REQUIRE_INTEGRATION=1 — i.e. when\n  the environment promised a working backend, so \"unavailable\" means\n  broken rather than absent. Local runs without Julia still skip.\n- run_tests.yml: python-test sets AMALTHEA_REQUIRE_INTEGRATION=1; it\n  builds the Rust library and installs Julia itself.\n- python/tests/test_integration_guard.py: Julia-free unit tests pinning\n  both branches and the strict \"1\" check — a guard whose failure mode is\n  silence needs its own test.\n\nVerified: full python suite from python/ with the flag set is 33 passed,\n0 skipped (was 23 passed, 4 skipped), so the integration tests really do\nexecute against the local backend.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-26T12:23:45-04:00",
+          "tree_id": "6863e62f3a50dcba319984152e315d3c1c5ea0c0",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/2c4a0a738bad7e0a15367e0da6a340670611d942"
+        },
+        "date": 1785083135769,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.916903,
             "unit": "ms/step"
           }
         ]
