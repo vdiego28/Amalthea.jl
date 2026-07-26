@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785086298644,
+  "lastUpdate": 1785087605714,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -579,6 +579,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.291162,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "distinct": true,
+          "id": "137ef6f60f360a135015d54892c3c92f2d2fae0e",
+          "message": "Backlog: file the reproducing macOS Bus error as item 11\n\nFiled it as a flake an hour ago on one sample; it has now failed 2 of 3\nmacos-latest physics runs at the same file and line, so that call was\nwrong. Records the load-bearing detail for whoever picks it up: line 64 is\nthe plain RK45.solve, not solve_precon, so no native stepper and no FFI\ncode runs in the crashing call — the native port is the wrong place to\nstart looking.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-26T13:23:54-04:00",
+          "tree_id": "cf0f6c1f6c1dd3e266355772d4b969367648a369",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/137ef6f60f360a135015d54892c3c92f2d2fae0e"
+        },
+        "date": 1785087604697,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.894793,
             "unit": "ms/step"
           }
         ]
