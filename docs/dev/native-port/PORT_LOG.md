@@ -1665,3 +1665,42 @@ already-landed GPU repair and negative short-kernel Raman measurement.
 to pass, and rerun its macOS physics job twice. If all three executions are
 green, record the run/job IDs, merge to `main`, and require the final
 `main` test and documentation workflows to pass.
+
+## 2026-07-27 — CI item 11 follow-up — macOS FFTW thread-pool mitigation — Codex (GPT-5)
+
+**Status:** in-progress — first hypothesis falsified; second mitigation locally
+verified and awaiting GitHub.
+
+**Did:** Analyzed the first branch Actions failure and extended the test
+harness's existing Windows FFTW single-thread guard to macOS. No production
+numerical code or default changed.
+
+**How:** Run `30291822719`, job `90063141471`, did not restore cached
+scratchspaces but still received `SIGBUS` in `test/test_rk45.jl:64` at 94.68%
+/ 20,541 steps. `test/runtests.jl:9-17` now calls
+`set_fftw_threads(1)` for `Sys.isapple()` as well as `Sys.iswindows()`.
+`.github/workflows/run_tests.yml` retains the macOS-physics scratchspace
+exclusion as a separate defence against CPU-specific wisdom. The revised
+decision record is in `PLANS.md` §7.2.
+
+**Decisions:** Pin FFTW, not Julia: `JULIA_NUM_THREADS=auto` stays enabled so
+the suite retains threaded Julia/native coverage. This is test-harness-only
+because the evidence is specific to macOS 26 arm64 CI repeatedly executing a
+1024-point FFTW plan with 12 FFTW threads; production users keep their
+configured/default FFTW policy.
+
+**Gotchas:** Fresh wisdom is still found later in the same job because tests
+create it locally; that is expected and proves only that cross-run restore was
+removed. The first mitigation was not a no-op—the log confirms it—but it was
+not sufficient. `Utils.FFTWthreads()` chooses `4*Threads.nthreads()` under the
+auto setting, which is pathological for this tiny transform even on platforms
+where it does not crash.
+
+**Tests:** Focused `test_rk45.jl` under `JULIA_NUM_THREADS=auto`: 4/4 pass in
+1m42.2s with automatic FFTW threading; 4/4 pass in 10.8s after
+`set_fftw_threads(1)`. The same three solves take 21945, 5426, and 5426 steps,
+so the faster result is not reduced work or a weakened assertion.
+
+**Next:** Push this follow-up and require its full matrix plus three
+consecutive green macOS physics executions (initial job + two reruns). If it
+still signals, test `FFTW.UNALIGNED` on `test_rk45.jl`'s two plans next.

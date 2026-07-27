@@ -111,8 +111,8 @@ or "verified" inside a superseded narrative do not outrank this list.
 
 ### New items raised by the 2026-07-26 CI repair
 
-11. 🟡 **macOS CI `Bus error: 10` mitigation implemented 2026-07-27;
-    GitHub re-verification in progress.** `physics -
+11. 🟡 **macOS CI `Bus error: 10` — first mitigation falsified; second
+    bounded mitigation ready 2026-07-27.** `physics -
     macos-latest` died with `signal 10 (1): Bus error: 10`, "in expression
     starting at `test/test_rk45.jl:64`", in **2 of 3** runs on 2026-07-26
     (fail `30209977981`, pass `30210333905`, fail `30212265976`). Same file,
@@ -141,14 +141,20 @@ or "verified" inside a superseded narrative do not outrank this list.
     FFTW wisdom at …" immediately before; (b) in-place `FFT*out`/`IFT*out`
     plans applied to a buffer whose alignment differs from the planned one;
     (c) genuine memory corruption elsewhere in the physics group that only
-    lands here. The bounded first mitigation is now in
+    lands here. The bounded first mitigation in
     `.github/workflows/run_tests.yml`: retain package caching everywhere,
     but set `cache-scratchspaces: false` only for the macOS physics matrix
-    entry so CPU-specific FFTW wisdom cannot be restored across runners.
-    Acceptance requires the full matrix plus at least two reruns of that job
-    on the same commit (three consecutive green executions). Reopen the
-    alignment/memory-corruption leads if the signal recurs with scratchspace
-    restore disabled.
+    entry so CPU-specific FFTW wisdom cannot be restored across runners —
+    was **not sufficient**. Branch run `30291822719`, job `90063141471`
+    created fresh host-local wisdom and still crashed at 94.68% / 20,541
+    steps. The next bounded change extends `test/runtests.jl`'s existing
+    Windows-only `set_fftw_threads(1)` guard to macOS: the job uses
+    `JULIA_NUM_THREADS=auto`, which otherwise makes Amalthea request 12 FFTW
+    threads for this repeatedly-executed 1024-point in-place transform.
+    Julia threads remain enabled and production defaults are unchanged.
+    Acceptance still requires the full matrix plus two same-commit macOS
+    physics reruns. If it recurs, test explicit `FFTW.UNALIGNED` plans next,
+    then prior memory corruption.
 
 ### New items raised by the 2026-07-25 wave
 

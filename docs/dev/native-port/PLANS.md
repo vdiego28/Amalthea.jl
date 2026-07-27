@@ -2064,3 +2064,26 @@ commit. Three consecutive green macOS physics executions, after the previous
 if `SIGBUS` recurs with scratchspace restore disabled, reopen the investigation
 at in-place FFT alignment or prior memory corruption rather than widening a
 test tolerance or touching the native port.
+
+#### First mitigation result and second bounded experiment
+
+The first branch run (`30291822719`, job `90063141471`) disproved
+cross-run scratch restoration as a sufficient explanation. The action did not
+restore scratchspaces, the job created its own host-local wisdom, and the same
+plain-Julia solve still received `SIGBUS` at 94.68% / 20,541 steps. This moves
+the evidence toward FFTW's macOS thread pool rather than the wisdom file
+itself: CI sets `JULIA_NUM_THREADS=auto`, `Utils.FFTWthreads()` chooses four
+FFTW threads per Julia thread (12 on that runner), and this test repeatedly
+executes tiny 1024-point in-place plans. The test harness already pins FFTW to
+one thread on Windows because that platform's FFTW thread pool crashes under
+the same many-Julia-threads setup.
+
+**Second mitigation:** extend that test-harness-only FFTW pin to macOS with
+`set_fftw_threads(1)`. Keep Julia threads enabled, so threaded Julia/native
+coverage is not removed; keep the scratchspace-cache exclusion as
+defence-in-depth against CPU-specific wisdom. Do not change production
+defaults or the RK45/FFTW test math. Validate with a fresh full matrix and,
+if its macOS physics job passes, two same-commit job reruns. If this still
+signals, the remaining experiment is to make `test_rk45.jl`'s two plans
+explicitly `FFTW.UNALIGNED`; FFTW.jl already checks new-array alignment before
+execution, so that is lower probability than the platform thread pool.

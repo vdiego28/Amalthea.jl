@@ -6,10 +6,13 @@ testdir = dirname(@__FILE__)
 import Amalthea: set_fftw_mode, set_fftw_threads
 set_fftw_mode(:estimate)
 
-# On Windows, FFTW's internal thread pool is unstable when Julia uses many threads
-# simultaneously, leading to EXCEPTION_ACCESS_VIOLATION crashes in libfftw3-3.dll.
-# Restrict FFTW to a single thread to avoid this.
-if Sys.iswindows()
+# On Windows and macOS, FFTW's internal thread pool is unstable when Julia
+# uses many threads simultaneously. Windows produced
+# EXCEPTION_ACCESS_VIOLATION in libfftw3-3.dll; macOS 26 arm64 intermittently
+# produced SIGBUS in test_rk45.jl's plain-Julia solve even with fresh,
+# host-local wisdom (BACKLOG item 11 / native-port/PLANS.md §7.2). Keep Julia
+# threads enabled for threaded coverage, but restrict FFTW itself to one.
+if Sys.iswindows() || Sys.isapple()
     set_fftw_threads(1)
 end
 
