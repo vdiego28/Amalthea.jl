@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785087605714,
+  "lastUpdate": 1785194734660,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -608,6 +608,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.894793,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "distinct": true,
+          "id": "0abaa32f323ca8e1bbf252b9cb687a334063e53f",
+          "message": "Merge validated CI and modal plasma fixes",
+          "timestamp": "2026-07-27T19:21:59-04:00",
+          "tree_id": "a6acb6a345e1faa701377614701b5ddf861f89dc",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/0abaa32f323ca8e1bbf252b9cb687a334063e53f"
+        },
+        "date": 1785194733622,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.91888,
             "unit": "ms/step"
           }
         ]
