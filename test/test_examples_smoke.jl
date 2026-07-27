@@ -32,10 +32,8 @@ using TestItems
 # Why only 10 of the 44 files under examples/low_level_interface/, not all:
 # a full run (even at SMOKE_LENGTH) of every file is not a "cheap" smoke
 # test — some examples carry grid-resolution costs (large radial/hankel
-# matrices, dense post-processing) that don't shrink with `flength`, and
-# one is independently broken today regardless of this harness (see below)
-# — running that one would make this CI group fail on an unrelated,
-# pre-existing bug rather than on genuine regressions. The first 8 chosen
+# matrices, dense post-processing) that don't shrink with `flength`.
+# The first 8 chosen
 # files were individually verified (2026-07-22) to run to completion under
 # this harness and span the main low-level code paths: mode-averaged
 # field/env, modal field/env, GNLSE, gas Raman, gas mixtures, and
@@ -64,20 +62,13 @@ using TestItems
 #     full_modal/basic_modal_full.jl, full_modal/basic_modal_full_bothpolarisations.jl,
 #     polarisation/elliptical_env.jl.
 #
-# Residual, NOT fixed (out of scope — a library-level defect, not an
-# example-file bug; see examples-repair.md):
-#   - full_modal/basic_modal_full_bothpolarisations.jl still throws
-#     `DimensionMismatch: cannot broadcast array to have fewer
-#     non-singleton dimensions` inside `TransModal`'s Cubature integration
-#     (src/NonlinearRHS.jl:453, via src/RK45.jl:269's initial FSAL
-#     evaluation) — full=true modal propagation with 2 polarisations
-#     (`:xy`) and plasma appears to be a combination that has never worked.
-#     The throw happens during `PreconStepper` construction's very first
-#     RHS evaluation (`fbar!(k1, y0, t, t)`, RK45.jl:269), before any step
-#     is taken, so it is independent of `flength`/`SMOKE_LENGTH` — not a
-#     harness artifact. Left broken and excluded from this smoke set; not
-#     tracked in BACKLOG.md per this task's doc-ownership rules (recorded
-#     here and in the inbox note instead).
+# The full=true, npol=2 plasma example remains outside this cheap subset
+# because its cubature propagation is expensive. Its 2026-07-25 failure was
+# diagnosed and fixed 2026-07-27: the example constructed `PlasmaCumtrapz`
+# with a vector example field although `components=:xy` supplies an N×2
+# field. `test/test_transmodal_vector_plasma.jl` now covers the focused
+# full=true/npol=2/plasma path and the constructor-shape diagnostic, and the
+# corrected example has been run end-to-end at a shortened fibre length.
 @testitem "Low-level example smoke run" tags=[:examples] begin
     import Test: @test, @testset
     using Amalthea

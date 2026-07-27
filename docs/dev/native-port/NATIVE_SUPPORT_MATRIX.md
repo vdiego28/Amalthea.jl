@@ -71,7 +71,7 @@ see the Modal table below).
 |---|---|---|
 | Kerr | ✅ (`MarcatiliMode`, `kind ∈ {HE,TE,TM}`, any order, `full=true`or `false`, npol 1-2, tapered or constant radius) | ✅ (npol 1-2, `full=true`/`false`) |
 | Raman (SDO) | ⚠️ npol=1 only | ❌ (native.rs's inline ADE Raman solve only touches real time-domain buffers) |
-| Plasma | ❌ (not ported for modal) | ❌ |
+| Plasma | ❌ native; correct Julia fallback supports npol 1-2, including `full=true` (`test/test_transmodal_vector_plasma.jl`; construct `PlasmaCumtrapz` with an example field matching the N×npol transform shape) | ❌ native |
 | Shot noise (`Emω_noise`) | ❌ (explicitly rejected — `NativeIneligible`) | ❌ |
 | Gas mixtures | ❌ (rejected — non-scalar densityfun) | ❌ |
 | Multi-mode `ZeisbergerMode`/`VincettiMode` (several such modes via `TransModal`) | ✅ (2026-07-22, Phase I.5a: `RK45.jl`'s modal guard unwraps to the inner `Capillary.MarcatiliMode` for the field-synthesis accessors — both wrappers delegate `field`/`N` verbatim, and dispersion is baked into `linop` by Julia before the native RHS runs. `test/test_native_modal_zv.jl`) | ✅ (same) |

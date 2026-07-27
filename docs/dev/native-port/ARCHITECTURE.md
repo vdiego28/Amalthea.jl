@@ -2,9 +2,9 @@
 
 > Status: implemented architecture and decision record. The CPU resident
 > backend (Phases 0-8 and D-I) is complete and is the default. The optional
-> CUDA implementation is correctness-blocked: its mode-averaged RHS currently
-> omits the nonlinear scaling/normalization path and behaves like linear
-> propagation. See `BACKLOG.md` S3 item 0 before touching GPU code.
+> CUDA implementation is hardware-verified for its narrow, explicitly opt-in
+> mode-averaged RealGrid Kerr/PPT scope; standing GPU CI and broader physics
+> remain open. See `GPU.md` and `BACKLOG.md` S3 before touching GPU code.
 > Companion docs: [MATH.md](MATH.md), [TESTING.md](TESTING.md),
 > [PORT_LOG.md](PORT_LOG.md), [BETA1_ANALYTIC.md](BETA1_ANALYTIC.md). Agent
 > workflow: `AGENTS.md`.
@@ -166,12 +166,13 @@ setup must retain and use `ωwin`, `sidx`, `pre`, `β`, `nlscale`, and
 `sqrt_aeff`, and must reproduce every numbered step in
 `CpuNativeSim::rhs_mode_avg_real`.
 
-That invariant is currently broken: the CUDA setter discards those values and
-the CUDA RHS omits input scaling, oversampled crop/rescale, spectral
-normalization, and frequency windowing. Direct hardware measurement therefore
-shows near-zero nonlinear stages. Treat `CudaNativeSim` as unavailable until
-S3 item 0 closes with a non-vacuous hardware test. This does not affect the
-default `CpuNativeSim`.
+That invariant is now enforced. The 2026-07-25 repair made the CUDA setter
+retain those values, ported the CPU path's input scaling, oversampled
+crop/rescale, spectral normalization, and frequency windowing, and fixed the
+uninitialized first RK stage. Non-vacuous hardware tests measure the nonlinear
+share before asserting CPU/Julia equivalence. `CudaNativeSim` remains
+explicitly opt-in because its scope is narrow and there is no standing GPU CI;
+the default `CpuNativeSim` is unaffected.
 
 ## 5. Geometry → phase map
 

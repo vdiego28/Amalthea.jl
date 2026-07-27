@@ -1576,3 +1576,167 @@ time (none exist in this repo today; chasing that would be optimizing for a
 hypothetical workload). If BACKLOG open remainder 5 needs a live entry, the
 lead should mark Phase J.6(c) "recommend against" (reversing the prior
 "recommend") and cite this file.
+
+## 2026-07-27 — Resume queue items 6/11 — modal vector plasma + macOS CI — Codex (GPT-5)
+
+**Status:** in-progress — implementation and local gate complete; GitHub
+Actions verification remains.
+
+**Did:** Corrected the last broken low-level example, added an actionable
+`PlasmaCumtrapz` vector-shape diagnostic and focused regression, and applied
+the bounded macOS physics-cache mitigation for the intermittent `SIGBUS`.
+Reconciled the tracked README/backlog/native-port reference set with the
+already-landed GPU repair and negative short-kernel Raman measurement.
+
+**How:**
+
+- The actual modal-plasma failure was at `src/Nonlinear.jl:279-283`, before
+  `PlasmaVector!`: the response's `P`/`J`/phase buffers inherited the vector
+  example field passed to its constructor while `TransModal` supplied an N×2
+  `Et`. The callable now compares the stored and incoming shapes and throws a
+  focused `DimensionMismatch`; no FFI symbol changed.
+- `examples/low_level_interface/full_modal/basic_modal_full_bothpolarisations.jl:30-32`
+  now constructs `PlasmaCumtrapz` with `zeros(length(grid.to), 2)`, matching
+  `components=:xy`.
+- `test/test_transmodal_vector_plasma.jl:3-73` covers both the former
+  mis-construction and an actual `full=true`, npol=2, Kerr+ADK-plasma
+  `TransModal` transform. It compares against a Kerr-only control and requires
+  the plasma contribution to exceed `1e-8`, so the test cannot pass merely
+  because the new response is inert.
+- `.github/workflows/run_tests.yml:133-141` passes the documented
+  `julia-actions/cache@v3` input `cache-scratchspaces: false` only when
+  `runner.os == 'macOS' && matrix.group == 'physics'`. The package, artifact,
+  and compiled caches remain enabled; only cross-run restoration of
+  CPU-specific FFTW wisdom is removed.
+- The design was written first in `PLANS.md` §7. The final status was then
+  propagated through `BACKLOG.md`, `README.md`, `ARCHITECTURE.md`, `MATH.md`,
+  `GPU.md`, `NATIVE_SUPPORT_MATRIX.md`, `VANILLA_LUNA_ISSUES.md`, and
+  `SUGGESTIONS.md`.
+
+**Decisions:**
+
+- Fix the example's constructor shape rather than changing
+  `PlasmaCumtrapz` to reallocate silently. Its scratch layout is intentionally
+  fixed at setup; a direct diagnostic catches future misuse without adding hot
+  loop allocation.
+- Keep modal plasma on the correct Julia fallback. This work proves the
+  supported Julia path; it does not widen resident-native eligibility.
+- Treat the macOS failure as a host-cache problem first. The crashing call is
+  plain Julia `RK45.solve` with FFTW closures, not `solve_precon`, FFI, or Rust.
+  Disabling only scratchspace restore tests the strongest lead without
+  weakening assertions or discarding every Julia cache.
+- Preserve dated PORT_LOG/inbox narratives as provenance while correcting
+  their live status pages.
+
+**Gotchas:**
+
+- Cubature catches and rethrows callback exceptions, so its frame at the top
+  of a stack trace does not establish that the integration algorithm is at
+  fault. Trace the callback body and its captured response state.
+- `PlasmaCumtrapz(t, E, ...)` uses `similar(E)` for all plasma scratch arrays;
+  its example field is a shape contract, not just sample data.
+- The macOS physics crash occurred in two of three runs at the same plain-Julia
+  solve and logs showed restored FFTW wisdom immediately beforehand. If it
+  recurs with scratchspace restore disabled, investigate in-place FFT
+  alignment or earlier memory corruption rather than touching native code.
+
+**Tests:**
+
+- Existing modal npol=2 focused test: 3/3 pass for `full=false` and
+  `full=true` Kerr controls.
+- New `test_transmodal_vector_plasma.jl`: 8/8 pass; malformed construction
+  reports the focused error and the plasma-vs-Kerr control effect is asserted
+  `>1e-8`.
+- Corrected example, Julia fallback forced, plotting removed, 5 mm length:
+  completed end-to-end in 39 accepted steps / 0 repeats (55.848 s).
+- `cargo build --release` in `amalthea/`: pass.
+- `LUNA_TEST_GROUP=sim-multimode julia --project test/runtests.jl`: 41/41
+  pass (712.3 s).
+- `LUNA_TEST_GROUP=examples julia --project test/runtests.jl`: 20/20 pass
+  (181.5 s).
+- `python3 test/run_full_gate.py`: exit 0 in 1170.2 s — physics 1657/1657,
+  rust 42252/42253 (one existing broken test, zero failures),
+  sim_multimode 41/41, sim_interface 314/314, sim_propagation 18/18,
+  io 2302/2302, fields 334/334.
+- Workflow YAML parses locally. GitHub matrix and repeated macOS executions
+  are pending this branch's push.
+
+**Next:** Push the integration branch, require the full GitHub Actions matrix
+to pass, and rerun its macOS physics job twice. If all three executions are
+green, record the run/job IDs, merge to `main`, and require the final
+`main` test and documentation workflows to pass.
+
+## 2026-07-27 — CI item 11 follow-up — macOS FFTW thread-pool mitigation — Codex (GPT-5)
+
+**Status:** in-progress — first hypothesis falsified; second mitigation locally
+verified and awaiting GitHub.
+
+**Did:** Analyzed the first branch Actions failure and extended the test
+harness's existing Windows FFTW single-thread guard to macOS. No production
+numerical code or default changed.
+
+**How:** Run `30291822719`, job `90063141471`, did not restore cached
+scratchspaces but still received `SIGBUS` in `test/test_rk45.jl:64` at 94.68%
+/ 20,541 steps. `test/runtests.jl:9-17` now calls
+`set_fftw_threads(1)` for `Sys.isapple()` as well as `Sys.iswindows()`.
+`.github/workflows/run_tests.yml` retains the macOS-physics scratchspace
+exclusion as a separate defence against CPU-specific wisdom. The revised
+decision record is in `PLANS.md` §7.2.
+
+**Decisions:** Pin FFTW, not Julia: `JULIA_NUM_THREADS=auto` stays enabled so
+the suite retains threaded Julia/native coverage. This is test-harness-only
+because the evidence is specific to macOS 26 arm64 CI repeatedly executing a
+1024-point FFTW plan with 12 FFTW threads; production users keep their
+configured/default FFTW policy.
+
+**Gotchas:** Fresh wisdom is still found later in the same job because tests
+create it locally; that is expected and proves only that cross-run restore was
+removed. The first mitigation was not a no-op—the log confirms it—but it was
+not sufficient. `Utils.FFTWthreads()` chooses `4*Threads.nthreads()` under the
+auto setting, which is pathological for this tiny transform even on platforms
+where it does not crash.
+
+**Tests:** Focused `test_rk45.jl` under `JULIA_NUM_THREADS=auto`: 4/4 pass in
+1m42.2s with automatic FFTW threading; 4/4 pass in 10.8s after
+`set_fftw_threads(1)`. The same three solves take 21945, 5426, and 5426 steps,
+so the faster result is not reduced work or a weakened assertion.
+
+**Next:** Push this follow-up and require its full matrix plus three
+consecutive green macOS physics executions (initial job + two reruns). If it
+still signals, test `FFTW.UNALIGNED` on `test_rk45.jl`'s two plans next.
+
+## 2026-07-27 — CI item 11 — GitHub validation complete — Codex (GPT-5)
+
+**Status:** complete
+
+**Did:** Closed the intermittent macOS physics `SIGBUS` after a full green
+matrix and three consecutive green executions of the formerly failing job on
+one commit.
+
+**How:** Branch commit `3c3eadf` kept `JULIA_NUM_THREADS=auto` but pinned FFTW
+to one thread on macOS through `test/runtests.jl`; the workflow also continued
+to exclude scratchspaces from the macOS physics Julia cache. No production
+solver, FFI symbol, tolerance, or physics assertion changed.
+
+**Decisions:** Accept only after the predeclared repeated-run gate, not after
+the first green result. Retain the cache exclusion as defence-in-depth even
+though run `30291822719` proved that fresh wisdom alone did not prevent the
+thread-pool crash.
+
+**Gotchas:** `gh run rerun --job` creates a new job ID and increments the run
+attempt while keeping the same run ID. Record all three job IDs rather than
+mistaking the latest attempt for the original matrix execution.
+
+**Tests:** GitHub Actions run `30293434654`, commit `3c3eadf`:
+
+- attempt 1: full **16/16-job matrix success**; macOS physics job
+  `90068647392` success in 6m07s;
+- attempt 2: macOS physics job `90074181421` success in 6m06s;
+- attempt 3: macOS physics job `90075895290` success in 6m25s.
+
+Together with the local full gate (1170.2s), examples 20/20, focused modal
+plasma 8/8, and corrected end-to-end example recorded above, all requested
+implementation gates are green.
+
+**Next:** Merge `test-discovery-claude-exclusion` into `main`, push, and
+require both the final `main` test matrix and Documentation workflow to pass.

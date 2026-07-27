@@ -132,6 +132,14 @@ jobs:
 
       - name: Cache Julia packages
         uses: julia-actions/cache@v3
+        with:
+          # FFTW wisdom is CPU-specific and macos-latest can move between host
+          # CPU models. Excluding scratchspace restore did not by itself stop
+          # the intermittent plain-Julia RK45 SIGBUS, but it removes one
+          # independent source of unsafe plan reuse while test/runtests.jl
+          # serializes FFTW's macOS thread pool (BACKLOG item 11 / PLANS §7.2).
+          # Keep every other Julia cache.
+          cache-scratchspaces: ${{ runner.os != 'macOS' || matrix.group != 'physics' }}
 
       - name: Install dependencies and build
         env:
@@ -281,5 +289,3 @@ jobs:
           # stale-prebuilt undefined symbol of 2026-07-25) is reported as a
           # green run with four skips. See python/tests/test_integration.py.
           AMALTHEA_REQUIRE_INTEGRATION: "1"
-
-

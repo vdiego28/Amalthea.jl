@@ -72,8 +72,8 @@ cost and is not a cleanup item.
 - Plans are created during `native_set_mode_avg_params`, because
   `init_native_sim` knows only the spectral length.
 - `free_native_sim` drops the backend and destroys the plans.
-- The two `cufftPlan1d` return codes are still unchecked and are part of the
-  current correctness fix; `cufftExecZ2D`/`D2Z` codes are already checked.
+- Both `cufftPlan1d` return codes and the `cufftExecZ2D`/`D2Z` return codes
+  are checked.
 
 ## 6. Kernel Requirements (`kernels.cu`)
 
@@ -86,22 +86,24 @@ The landed slice has CUDA kernels for:
 5. **Cumtrapz:** PPT plasma, currently implemented as single-thread sequential
    scans rather than a work-efficient prefix scan.
 
-The missing correctness work is around those kernels: input normalization,
-oversampled FFT sizing/cropping, spectral `pre/β` normalization, and `ωwin`.
+The 2026-07-25 correctness repair completed the surrounding pipeline: input
+normalization, oversampled FFT sizing/cropping, spectral `pre/β`
+normalization, and `ωwin`.
 
 ## 7. Scope of V1
 The intended landed scope is **mode-averaged RealGrid, constant linop, scalar
 density, exactly one plain Kerr response, and at most one PPT plasma
 response**. ADK, Raman, shot noise, z-dependence, and radial/modal/free-space
 return or route to ineligibility and remain on `CpuNativeSim`. This table
-describes intended eligibility only; no eligible GPU configuration is
-numerically trustworthy until the blocker above is fixed.
+describes intended eligibility only; eligible GPU configurations are not
+automatically rechecked because the project still lacks standing GPU CI.
+Within this scope, the backend is numerically hardware-verified.
 
 ## 8. Status (updated 2026-07-25 — supersedes the historical reviews below)
 
 The `Box<dyn NativeBackend>` decision in §4 is settled and not a TODO.
 
-> **🔴 Retracted in part, 2026-07-23.** "Verified on real hardware" below
+> **Historical correction, 2026-07-23; fixed 2026-07-25.** "Verified on real hardware" below
 > means *ran to completion and matched the Julia oracle within the tolerance
 > its test asserts*. That tolerance (`rel_solve < 1e-3`) turns out to be
 > larger than the entire nonlinear effect of the config being tested
@@ -110,7 +112,7 @@ The `Box<dyn NativeBackend>` decision in §4 is settled and not a TODO.
 > backend's 12225; the accepted step is pure linear propagation to 15
 > digits). The six bugs listed below were real and really fixed; the
 > *numerical* verification claim was not the check it appeared to be. See
-> `BACKLOG.md` S3 item 0 before relying on anything in this document.
+> `BACKLOG.md` S3 item 0 for the repair and non-vacuous re-verification.
 
 **Verified on real CUDA hardware 2026-07-07** (RTX 5060 Ti, CUDA 13.3 —
 the same machine, confirmed via `nvidia-smi`) and **wired into `RK45.jl`**,
@@ -164,7 +166,7 @@ existing `n_time`-vs-`n_time_over` gap below, confirmed via an energy sweep
 showing linear scaling, and via the CPU-resident native path matching the
 Julia oracle to `1.3e-16` on the identical config).
 
-**Secondary, un-fixed fidelity gap:** the GPU Kerr/plasma FFT buffers/plans
+**Historical fidelity gap, fixed 2026-07-25:** the GPU Kerr/plasma FFT buffers/plans
 are sized `n_time` (`grid.t`), not `n_time_over` (`grid.to`) — it skips the
 oversampling/anti-aliasing padding both `CpuNativeSim` and Julia apply.
 Earlier numbers attributed to this approximation are not trustworthy while
@@ -177,10 +179,10 @@ Kerr+plasma), each constructing a GPU-backed stepper via
 `withenv("AMALTHEA_USE_RUST_CUDA_NATIVE" => "1")`; both self-skip cleanly on CI
 (no GPU/toolkit) but on real hardware assert `_gpu_native_eligible`
 actually returned `true` and check full-solve field agreement against
-`PreconStepper`. Those comparisons are nevertheless **numerically vacuous**:
-their tolerances exceed the effect under test and allow zero nonlinearity.
-The replacement must assert stage scale and independently measure the
-nonlinear control effect. `amalthea/src/lib.rs`
+`PreconStepper`. The 2026-07-25 replacement tightens the Kerr/full-solve
+tolerances to 1e-12, checks stage scale, and independently measures the
+nonlinear control effect so a zero-nonlinearity backend cannot pass.
+`amalthea/src/lib.rs`
 and `amalthea/tests/test_gpu_cuda.jl` also self-skip without a GPU —
 **still true in CI today**: no CI runner has a GPU, so none of this
 executes except when run by hand on hardware like this machine. This is
@@ -190,11 +192,8 @@ manual runs, not a standing CI job.
 
 **What's still open, in order:**
 
-1. Restore the CPU RHS's input scaling, oversampled FFT/crop, spectral
-   normalization, and frequency window; check plan creation; replace the
-   vacuous tests; reverify on hardware.
-2. Add scheduled/dedicated GPU CI.
-3. Only after 1-2, decide whether to expand beyond mode-averaged RealGrid
+1. Add scheduled/dedicated GPU CI.
+2. Only after that, decide whether to expand beyond mode-averaged RealGrid
    Kerr/PPT. Raman, ADK, radial/modal/free-space, and parallel plasma scans
    remain unimplemented and should continue routing to CPU until individually
    designed and tested.
