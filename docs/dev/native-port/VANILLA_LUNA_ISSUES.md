@@ -42,7 +42,7 @@ so much as documented).
 | `PptIonizationRate::rate` could admit non-finite input past its fitted-range guards | 5. Tracked hardening issue | Fixed (2026-07-09; finite/non-finite hammer tests) |
 | BLAS-3 QDHT originally called an unusable CBLAS trampoline stub | 5. Tracked optimization issue | Correctness fixed (2026-07-09); remains opt-in pending performance bar |
 | Windows scan-lock validation / native FFTW-wisdom race under concurrent processes | 5. Tracked robustness issue | Windows lock validated; native on-disk race removed by default-off wisdom (opt-in tradeoff remains) |
-| GPU-resident RHS contributes no nonlinearity; its own test's tolerance is looser than the physics | 5. Open/tracked problem | Not fixed (open, found 2026-07-23) |
+| GPU-resident RHS contributed no nonlinearity; its own test's tolerance was looser than the physics | 5. Tracked port problem | Fixed and hardware-verified (2026-07-25) |
 
 ---
 
@@ -456,15 +456,15 @@ Issues retained here for completeness because they are relevant
 "vanilla Luna" (or vanilla-Luna-adjacent) findings. Only entries explicitly
 marked open remain resume work.
 
-### GPU-resident RHS contributes no nonlinearity at all
+### GPU-resident RHS contributed no nonlinearity at all
 **Found:** `BACKLOG.md` S3 item 0, 2026-07-23, while verifying the FSAL fix
 on real hardware (RTX 5060 Ti, driver 610.43.02).
 **Problem:** for the exact mode-averaged Kerr config
 `test/test_native_cuda.jl` uses, `CudaNativeSim`'s stage derivatives measure
 `max|kᵢ| = 3.5e-13` where `CpuNativeSim` gives **12225**, and the GPU's
 accepted step equals pure linear propagation `exp(L·h)·y₀` to 15 digits. The
-nonlinear term is absent, not merely lower-fidelity — so the whole
-GPU-resident backend currently solves the *linear* problem.
+nonlinear term was absent, not merely lower-fidelity — so the whole
+GPU-resident backend solved the *linear* problem.
 **Why it went unnoticed:** the GPU test asserts `rel_solve < 1e-3` while the
 entire nonlinear effect for its config is ~4.5e-4. The tolerance is looser
 than the physics under test, making "GPU matches Julia" vacuously true. This
@@ -472,14 +472,14 @@ is the same failure mode as the plasma-density bug in §1, and it is the
 second time this exact pattern has hidden missing physics on a native path:
 worth treating "is this tolerance smaller than the effect I claim to be
 testing?" as a standing review question for any new equivalence test.
-**Status: Not fixed (open).** Confirmed pre-existing (not introduced by the
-2026-07-23 `cuda_native.rs` FSAL/`apply_prop` changes) by re-measuring
-against a build with those changes reverted — identical to the last digit.
-Suspects and the recommended first step are in `BACKLOG.md` S3 item 0.
-**Consequence for S5 item 3:** the FSAL fix in `cuda_native.rs` is correct by
-construction and mirrors the CPU one exactly, but cannot be *empirically*
-confirmed on the GPU path while `kᵢ ≈ 0` — with zero stage derivatives the
-interpolant is exact whichever stage occupies slot 0.
+**Status: Fixed and hardware-verified 2026-07-25.** The repair uploads and
+uses `pre`/`β`/`sidx`/`ωwin`/`nlscale`/`sqrt_aeff`, ports the CPU RHS's
+scaling/crop/normalization/window steps, sizes the FFT path to
+`n_time_over`, checks both plan creations, and seeds the first RK stage.
+Stage derivatives now agree with CPU native to ~1e-15, fixed-step solve
+agrees with Julia to 3.5e-16, and dense output to 1.25e-7. The tightened
+test also proves the nonlinear control effect exceeds its tolerance by
+more than 100×. Standing GPU CI remains open.
 
 ### GPU-resident dense output threw on every query
 **Found:** 2026-07-23, same session.

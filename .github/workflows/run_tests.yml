@@ -132,6 +132,13 @@ jobs:
 
       - name: Cache Julia packages
         uses: julia-actions/cache@v3
+        with:
+          # FFTW wisdom is CPU-specific. macos-latest can move between host
+          # CPU models, and restoring Amalthea's cached scratchspace wisdom
+          # caused intermittent SIGBUS crashes in the plain Julia RK45 test
+          # (BACKLOG item 11 / native-port/PLANS.md §7.2). Keep every other
+          # Julia cache, and let this one job create host-local wisdom.
+          cache-scratchspaces: ${{ runner.os != 'macOS' || matrix.group != 'physics' }}
 
       - name: Install dependencies and build
         env:
@@ -281,5 +288,4 @@ jobs:
           # stale-prebuilt undefined symbol of 2026-07-25) is reported as a
           # green run with four skips. See python/tests/test_integration.py.
           AMALTHEA_REQUIRE_INTEGRATION: "1"
-
 

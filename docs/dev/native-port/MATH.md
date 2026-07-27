@@ -705,7 +705,7 @@ recurrence dispersion, the O(Nt) ADE Raman integrator replacing
 O(Nt·logNt) FFT convolution, and exact Gauss-Legendre integrating
 factors. The options below were audited under that standard. Two were
 rejected after their premises were checked, two landed without changing
-the physics, and one remains a benchmark-first candidate. Durable
+the physics, and the last was benchmarked and rejected. Durable
 feasibility detail is in `PLANS.md` §6; live status is in `BACKLOG.md`.
 
 ### 8.1 Direct embedded-error coefficients (SUGGESTIONS.md #15)
@@ -753,15 +753,13 @@ transform cost. Same answer, different summation order → fixed-step
 validation discipline.
 
 ### 8.5 Short-kernel (overlap-save) Raman convolution (SUGGESTIONS.md #17)
-**Outcome: open, recommended, benchmark first.**
-
-Luna's own comment (Nonlinear.jl:406-411) concedes the double-length
-grid is "safe, until we come up with [something more efficient]". For
-strongly damped responses — SiO2's Gaussian damping kills h beyond
-~100 fs on a multi-ps grid — an overlap-save convolution with a short
-kernel (length set by where |h| falls below f64 noise, checked at
-setup, falling back to the full double grid otherwise) is much
-cheaper. **Hard boundary**: do not go further and fit recursive/IIR
-filters to the Gaussian-damped response — that is the multi-SDO
-approximation trap BACKLOG Phase I item 2 explicitly rules out
-(feedback: prefer analytic over LUT/fit-the-noise).
+**Outcome: measured 2026-07-25; do not pursue.** The design premise was
+wrong for the implemented Hollenbeck & Cantrell response: its support at an
+f64-noise cutoff is about 4.15 ps, or 76-86% of `n_time_over`, not about
+100 fs / 5-10% of the padded grid. At the repository's real
+`n_time_over=4096` configuration, the natural mixed-radix transform length
+made the isolated candidate slightly slower (0.98×); projected end-to-end
+speedup was only about 0.99-1.05×, below the >1.4× gate. Truncation accuracy
+was already sufficient (1.7e-16-3.4e-14), so this is a performance rejection,
+not a correctness blocker. The benchmark/prototype was reverted; see
+`BACKLOG.md` queue item 5 and `PLANS.md` §6.3.

@@ -57,9 +57,10 @@ The `amalthea` crate provides the high-performance numerical engine that powers 
 
 - **Resident CPU propagation**: eligible simulations use the native CPU
   backend by default. LLVM performs target-appropriate auto-vectorization;
-  the experimental CUDA-resident backend is opt-in and currently
-  correctness-blocked. `dispatch.rs` detects hardware for its own tests but
-  is not a propagation dispatcher, and there is no Vulkan implementation.
+  the CUDA-resident backend is opt-in, hardware-verified for its narrow
+  mode-averaged RealGrid Kerr/PPT scope, and not yet covered by standing GPU
+  CI. `dispatch.rs` detects hardware for its own tests but is not a
+  propagation dispatcher, and there is no Vulkan implementation.
 - **Parallelised transforms**: the quasi-discrete Hankel transform (QDHT) used in free-space propagation is parallelised with [Rayon](https://github.com/rayon-rs/rayon).
 - **Raman solver**: the time-domain Raman solver uses an explicit matrix-exponential integrator with AVX2 optimisation.
 - **Cross-platform**: builds and runs on Linux, macOS, and Windows, including

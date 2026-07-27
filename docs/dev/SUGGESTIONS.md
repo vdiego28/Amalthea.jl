@@ -4,11 +4,11 @@ This file preserves the original *why* behind the 17 suggestions. It is not a
 queue and some proposal text intentionally describes the pre-implementation
 state. Current execution status belongs to `BACKLOG.md`.
 
-Status snapshot (2026-07-25):
+Status snapshot (2026-07-27):
 
 | Idea | Outcome |
 |---|---|
-| 1 GPU-resident propagation | **Correctness-blocked.** Narrow `CudaNativeSim` exists, but currently omits nonlinear scaling/normalization and behaves linearly; BACKLOG S3 item 0 is the first priority |
+| 1 GPU-resident propagation | Narrow `CudaNativeSim` is **hardware-verified** for mode-averaged RealGrid Kerr/PPT; standing GPU CI and broader scope remain open |
 | 2 Threading | **Complete.** Radial, modal, and free-space seams landed; reductions remain sequential |
 | 3 SIMD/layout | Fused/de-branched loops landed; full SoA conversion **parked** after an end-to-end ceiling of ~1% |
 | 4 FFTW wisdom | **Complete, opt-in.** `AMALTHEA_NATIVE_FFTW_WISDOM=1`, default off for determinism |
@@ -20,11 +20,11 @@ Status snapshot (2026-07-25):
 | 10 Mixed precision | **Rejected after measurement** (~1.0–1.06×, below bar; numerically risky) |
 | 11 Deterministic mode | **Complete, re-scoped** to process-global BLAS eligibility |
 | 12 Order-5 dense output | **Complete 2026-07-23**, including the upstream FSAL/k1 bug fix |
-| 13 Prebuilt binaries | Workflow/install fallback **implemented**, but v1.0.0 assets use legacy `libluna_rust-*` names and do not match the current installer; fix/validate remains |
+| 13 Prebuilt binaries | Workflow/install fallback **implemented and validated** for v1.0.0's legacy asset names; v1.0.1 publication remains a lead action |
 | 14 Standalone CLI/WASM | **Parked.** Cold-start CLI has negative ROI; dump-and-replay is the only recommended variant |
 | 15 Direct error coefficients | **Do not pursue.** Both steppers already precompute the coefficient differences |
 | 16 Direct PPT | **Do not pursue.** BigFloat-quadrature tail is unsuitable for the hot loop; LUT hardening is already fixed |
-| 17 Short-kernel Raman | **Open and recommended**, benchmark first |
+| 17 Short-kernel Raman | **Rejected after measurement**: 4.15 ps support, 0.98× at the real n=4096 case, below the >1.4× gate |
 
 The original ordering below was by expected payoff per unit effort for the
 typical workload (mode-averaged HCF, 8k–16k time samples, ~10³–10⁴ RK

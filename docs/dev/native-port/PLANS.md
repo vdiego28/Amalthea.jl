@@ -17,7 +17,7 @@ the durable rationale.
 | [Threading the native RHS](#3-threading-the-native-rhs-backlog-s2) | S2 | **Complete 2026-07-22.** Radial, modal, and free-space seams landed |
 | [Standalone CLI](#4-standalone-cli-luna-cli-backlog-s6-item-3) | S6 item 3 | **Parked — recommend against building as specified.** A smaller "dump-and-replay" alternative is sketched |
 | [Multi-mode StepIndex](#5-native-multi-mode-stepindexmode-backlog-phase-i-item-5) | Phase I.5b | **Parked.** Feasible but no consumer; numerical mode-field work is disproportionate |
-| [Beyond-Luna math](#6-beyond-luna-math-options-backlog-phase-j-item-6) | Phase J.6 | Direct error/PPT: **do not pursue**; short-kernel Raman: **open, benchmark first** |
+| [Beyond-Luna math](#6-beyond-luna-math-options-backlog-phase-j-item-6) | Phase J.6 | **Closed.** Direct error/PPT: do not pursue; short-kernel Raman measured 2026-07-25 and rejected |
 
 ---
 
@@ -1535,6 +1535,12 @@ Two-tier equivalence per TESTING.md §4:
 
 ## 6. Beyond-Luna math options (BACKLOG Phase J item 6)
 
+> **Status update 2026-07-25:** all three options are closed. The original
+> feasibility record below recommended benchmarking 6.3, but measurement
+> invalidated its short-support premise: support is ~4.15 ps / 76-86% of
+> `n_time_over`, the real n=4096 case measured 0.98×, and projected
+> end-to-end improvement was ~0.99-1.05×. The prototype was reverted.
+
 Feasibility/design pass over the three items `native-port/MATH.md` §8 +
 `SUGGESTIONS.md` items 15-17 grouped as "beyond-Luna math options": direct
 DP5(4) embedded-error coefficients, direct PPT evaluation replacing the
@@ -1550,7 +1556,7 @@ was changed.
 |---|---|---|
 | 6.1 | Direct DP5(4) embedded-error coefficients (SUGGESTIONS #15) | **Recommend against — already implemented on both sides.** The backlog's own premise (`errest` computed as a runtime `y5−y4` cancellation) does not match the current code. Same class of finding as S5 item 3 ("backlog premise wrong"), not a genuine open design question. |
 | 6.2 | Direct PPT evaluation replacing the spline LUT (SUGGESTIONS #16) | **Recommend against, as specified.** The accuracy gain is real but physically immaterial (LUT error is already far below anything the physics cares about); the cost is not — plasma is already a measured 24.5-40.5% of `rhs_radial` time on the *cheap* path, and direct evaluation is 1-3 orders of magnitude more expensive per call, with an unbounded tail (BigFloat adaptive quadrature) that cannot run in a hot loop at all. The stated secondary motivation (structurally eliminating an out-of-range segfault) is also moot — that segfault was already fixed by a cheaper, already-shipped guard. |
-| 6.3 | Short-kernel overlap-save Raman convolution (SUGGESTIONS #17) | **Recommend, narrowly scoped.** Not full block-based overlap-save — just shortening the zero-pad to the truncated kernel length. Complementary to, not superseded by or exclusive with, item J.3's r2c/c2r halving (BACKLOG open remainder 2); the two multiply. Scope is the FFT-convolution Raman paths only (native `:SiO2` kernel + Julia `RamanPolarEnv`); the default carrier-field path (`raman.rs`'s ADE solver) is already O(N) and out of scope. Unlike the other two items and unlike β1, this one need not diverge from the Julia oracle at all if the cutoff is chosen below the f64 noise floor — the ground truth is the existing full-grid convolution, not a "more correct" reformulation. |
+| 6.3 | Short-kernel overlap-save Raman convolution (SUGGESTIONS #17) | **Recommend against after measurement (2026-07-25).** The feasibility pass's assumed short support was wrong: support is ~4.15 ps / 76-86% of `n_time_over`; the real n=4096 case measured 0.98× and projected end-to-end improvement was ~0.99-1.05×. Correctness was acceptable, but the >1.4× performance bar was not. |
 
 ---
 
@@ -1979,3 +1985,82 @@ existing SiO2-specific tests are the entire blast radius — no
 suite-wide adaptive-step-path perturbation the way 6.1's micro-fix would
 cause, because the *result* is designed to be numerically unchanged, only
 the FFT length differs.
+
+## 7. 2026-07-27 CI and resume-queue repair
+
+This section is the design record for BACKLOG items 6 and 11. It supersedes
+item 6's initial diagnosis and records the bounded CI mitigation before either
+source or workflow code changes.
+
+### 7.1 `full=true` + npol=2 + plasma `DimensionMismatch`
+
+**Corrected diagnosis: this is an example-construction bug plus a missing
+input-shape diagnostic, not a `TransModal`/Cubature algorithm defect.**
+
+`Nonlinear.PlasmaCumtrapz(t, E, ratefunc, ionpot)` deliberately allocates its
+`phase`, `J`, and `P` scratch arrays with `similar(E)`. The failing example
+requests `components=:xy`, so `TransModal` passes an `(n_time, 2)` field to
+`PlasmaVector!`, but it constructs the response with
+`PlasmaCumtrapz(grid.to, grid.to, ...)`; that second `grid.to` is a vector, so
+all three plasma scratch arrays have shape `(n_time,)`. The first vector
+assignment at `src/Nonlinear.jl`'s `PlasmaVector!`
+(`Plas.phase = fraction * e_ratio * E`) therefore attempts to broadcast an
+`(n_time, 2)` result into an `(n_time,)` destination and throws
+`DimensionMismatch`. Cubature only catches and rethrows the callback exception,
+which is why the original stack trace appeared to implicate
+`TransModal(...; full=true)`.
+
+The controls rule out the original diagnosis:
+
+- the existing `test_native_modal_npol2.jl` exercises both `full=false` and
+  `full=true` with Kerr-only responses and passes the Julia oracle;
+- `test_vectorplasma.jl` already constructs the vector response correctly with
+  an `(n_time, 2)` example field and passes;
+- the failing example reproduces before the first RK step, at the first plasma
+  response evaluation, regardless of fibre length.
+
+**Implementation:**
+
+1. Change
+   `examples/low_level_interface/full_modal/basic_modal_full_bothpolarisations.jl`
+   to pass an `(length(grid.to), 2)` example field to `PlasmaCumtrapz`.
+2. Add an explicit compatibility check in `PlasmaCumtrapz`'s callable method
+   before routing to `PlasmaVector!`. A vector plasma call whose stored `P`
+   shape does not equal the incoming field shape must throw a focused
+   `DimensionMismatch` explaining that the constructor's example field must
+   have the same polarisation shape. Preserve the intentional scalar and
+   `(n_time, 1)` compatibility path.
+3. Add a regression test that (a) verifies the focused diagnostic for the
+   former mis-construction and (b) evaluates a correctly shaped,
+   two-polarisation, `full=true`, Kerr+plasma `TransModal` RHS and proves the
+   plasma term is nonzero. This is a Julia-path correctness/robustness test,
+   not a native-equivalence item: modal plasma remains intentionally
+   `NativeIneligible`.
+
+### 7.2 macOS physics `SIGBUS` in `test_rk45.jl`
+
+The failing call is the plain Julia `RK45.solve`, using in-place
+`FFTW.plan_fft!`/`plan_ifft!`; no resident-native stepper, FFI symbol, or Rust
+code is involved. On 2026-07-26 it failed twice and passed once at the same
+call site. The failing logs reported loading Amalthea's FFTW wisdom from the
+package scratchspace immediately before the crash.
+
+`julia-actions/cache@v3` caches `scratchspaces` by default and its key includes
+the matrix values and runner OS, but not the concrete macOS CPU model. FFTW
+wisdom can encode CPU-specific plan choices, so replaying that scratch file on
+a later `macos-latest` host is unsafe even when both runners use the same
+architecture label.
+
+**Mitigation:** keep the Julia package/artifact/compiled caches, but set the
+action's supported `cache-scratchspaces` input to `false` for the
+`macos-latest` physics matrix entry. Do not disable caches globally and do not
+change numerical code. Within one job Amalthea may still create and reuse
+wisdom generated on that same host; only cross-run restoration is removed.
+
+**Verification:** after pushing the fixed branch, require the full Actions
+matrix to pass, then rerun the macOS physics job at least twice on the same
+commit. Three consecutive green macOS physics executions, after the previous
+2-of-3 failure rate, are the acceptance signal. This is a CI-host mitigation:
+if `SIGBUS` recurs with scratchspace restore disabled, reopen the investigation
+at in-place FFT alignment or prior memory corruption rather than widening a
+test tolerance or touching the native port.

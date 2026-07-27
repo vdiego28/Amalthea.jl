@@ -276,6 +276,10 @@ function (Plas::PlasmaCumtrapz)(out, Et, ρ)
             PlasmaScalar!(Plas, reshape(Et, size(Et,1)))
             out .+= ρ .* reshape(Plas.P, size(Et))
         else
+            size(Plas.P) == size(Et) || throw(DimensionMismatch(
+                "PlasmaCumtrapz was constructed with an example field of size " *
+                "$(size(Plas.P)), but received a vector field of size $(size(Et)); " *
+                "construct it with an example field matching the time × polarisation shape"))
             PlasmaVector!(Plas, Et) # vector case
             out .+= ρ .* Plas.P
         end

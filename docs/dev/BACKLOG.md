@@ -7,7 +7,7 @@ Deferred work and known issues for Amalthea.jl. Severity: 🔴 correctness · �
 > [`ARCHIVE.md`](ARCHIVE.md) with its section names unchanged. Cross-references
 > below to a phase, to S1/S4, or to "Done (recent)" resolve there.
 
-## Start here — current resume queue (2026-07-25)
+## Start here — current resume queue (2026-07-27)
 
 This is the authoritative short queue. The long sections below retain design
 history and measured evidence, but older words such as "next", "not started",
@@ -54,8 +54,8 @@ or "verified" inside a superseded narrative do not outrank this list.
    requires a recorded manual hardware run. **Item 1 is the argument for
    this:** a zero-nonlinearity GPU backend survived over two weeks because
    nothing re-measured it automatically.
-3. 🟢 **Repair the known-broken low-level examples — 6 of 7 DONE
-   2026-07-25.** Both documented classes fixed (`linop` before assignment ×6;
+3. 🟢 **Repair the known-broken low-level examples — 7 of 7 DONE
+   2026-07-27.** Both documented classes fixed (`linop` before assignment ×6;
    `norm_modal(grid.ω)` ×3) and re-audited across all 44 example files — the
    file list was exactly right. Four *further* bugs surfaced that the
    original audit missed because its harness stopped at the first error per
@@ -64,8 +64,15 @@ or "verified" inside a superseded narrative do not outrank this list.
    dot, a missing `import FFTW`, and a positional `normfun` where `setup`
    takes `norm!` as a keyword). Regression cases for both classes added to
    `test/test_examples_smoke.jl` and verified to fail against the unfixed
-   originals. `examples` 20/20, `sim-multimode` 33/33. **The 7th file is a
-   library defect, not an example bug — split out as its own item below.**
+   originals. The seventh file's apparent library defect was corrected
+   2026-07-27 after tracing the Cubature callback: its
+   `PlasmaCumtrapz` was constructed with a vector example field even though
+   `components=:xy` supplies an N×2 field. The example now allocates N×2
+   plasma buffers, `PlasmaCumtrapz` reports a focused shape error for this
+   misuse, and `test/test_transmodal_vector_plasma.jl` covers the actual
+   `full=true` + npol=2 + plasma path. `examples` 20/20,
+   `sim-multimode` 41/41; the corrected example also completed end-to-end
+   at a shortened 5 mm length.
 4. 🟢 **Prebuilt release installation — local fix DONE 2026-07-25; release
    handling decided.** `deps/build.jl` now tries the canonical
    `libamalthea-<triple>` asset first and falls back to the legacy
@@ -104,8 +111,8 @@ or "verified" inside a superseded narrative do not outrank this list.
 
 ### New items raised by the 2026-07-26 CI repair
 
-11. 🔴 **macOS CI crashes with `Bus error: 10` in `test/test_rk45.jl` —
-    reproducing, unexplained, NOT in our Rust code.** `physics -
+11. 🟡 **macOS CI `Bus error: 10` mitigation implemented 2026-07-27;
+    GitHub re-verification in progress.** `physics -
     macos-latest` died with `signal 10 (1): Bus error: 10`, "in expression
     starting at `test/test_rk45.jl:64`", in **2 of 3** runs on 2026-07-26
     (fail `30209977981`, pass `30210333905`, fail `30212265976`). Same file,
@@ -127,26 +134,36 @@ or "verified" inside a superseded narrative do not outrank this list.
     environment (macos-latest image, Julia '1' point release) or a
     long-standing rare race that only now got sampled.
 
-    Leads, in order: (a) the restored `julia-actions/cache` carries
+    Leads, in order: (a) the restored `julia-actions/cache` carried
     `lunacache/FFTW*wisdom` between runs and its key does not distinguish
     Apple Silicon generations — wisdom recorded on one CPU replayed on
     another is a classic SIGBUS source, and the crash logs do show "Found
     FFTW wisdom at …" immediately before; (b) in-place `FFT*out`/`IFT*out`
     plans applied to a buffer whose alignment differs from the planned one;
     (c) genuine memory corruption elsewhere in the physics group that only
-    lands here. Cheapest first experiment: re-run `physics - macos-latest`
-    with the Julia cache disabled, several times, and see whether the crash
-    rate changes.
+    lands here. The bounded first mitigation is now in
+    `.github/workflows/run_tests.yml`: retain package caching everywhere,
+    but set `cache-scratchspaces: false` only for the macOS physics matrix
+    entry so CPU-specific FFTW wisdom cannot be restored across runners.
+    Acceptance requires the full matrix plus at least two reruns of that job
+    on the same commit (three consecutive green executions). Reopen the
+    alignment/memory-corruption leads if the signal recurs with scratchspace
+    restore disabled.
 
 ### New items raised by the 2026-07-25 wave
 
-6. 🟡 **`TransModal` `DimensionMismatch` for `full=true` + npol=2 + plasma.**
-   `examples/low_level_interface/full_modal/basic_modal_full_bothpolarisations.jl`
-   still fails, but not as an example typo: the stack trace puts it inside
-   `TransModal`'s Cubature integration during `PreconStepper`'s initial FSAL
-   evaluation (`RK45.jl:269`), independent of fibre length. This is a
-   library-level defect in a config combination nothing else in the suite
-   covers. Reproduce with that example; fix in `NonlinearRHS.jl`.
+6. 🟢 **`TransModal` `DimensionMismatch` for `full=true` + npol=2 + plasma —
+   FIXED 2026-07-27.** The initial diagnosis was wrong: Cubature merely
+   rethrew the nonlinear callback's exception. The example passed a vector
+   example field to `PlasmaCumtrapz`, which therefore allocated vector
+   `P`/`J`/phase buffers, while the `components=:xy` transform passed an N×2
+   `Et`. The example now constructs the response with
+   `zeros(length(grid.to), 2)`; `PlasmaCumtrapz` checks its stored buffer
+   shape and emits a focused constructor diagnostic; and
+   `test/test_transmodal_vector_plasma.jl` proves both the diagnostic and a
+   finite, nonzero full=true/npol=2/plasma transform whose plasma control
+   effect exceeds 1e-8. Focused test 8/8, `sim-multimode` 41/41, and the
+   corrected shortened end-to-end example completed in 39 accepted steps.
 7. ⚪ **Prepare and publish `v1.0.1`.** Chosen over republishing `v1.0.0`'s
    assets. `release.yml` already emits canonical `libamalthea-*` names, so
    the whole remaining job is: bump `Project.toml` `version` to `1.0.1`, tag
@@ -278,7 +295,7 @@ fully executed, kept as provenance). Gate for every phase: full
 | G | Platform & CI robustness (Windows scan lock, CI benchmark job) | ✅ except GPU CI — see "GPU CI coverage" under Open items |
 | H | Upstream contributions | 3 of 4 sent; `pointcalc!` race fix not actionable (upstream doesn't thread it) |
 | I | Close remaining native-port gaps (incl. the 🔴🔴 missing plasma density factor) | ✅ except deliberately parked I.5b (`StepIndexMode`) |
-| J | Post-completion audit (2026-07-08) | ✅ except J.6(c), the benchmark-first short-kernel Raman candidate |
+| J | Post-completion audit (2026-07-08) | ✅ all items closed; J.6(c) measured and rejected 2026-07-25 |
 
 ### Suggestions backlog — closed tracks
 
@@ -323,16 +340,17 @@ S3 and the release/example remainders of S6 stay live below; S2 closed
    intensity and `pto += E·(ρ·P)` accumulation loops (Steps 3b/3c in
    `rhs_mode_avg_env`) into shared free functions — pure code motion, no
    numerical change.
-4. ⚪ **Phase J.6 — beyond-Luna math options.** Feasibility studied
+4. 🟢 **Phase J.6 — beyond-Luna math options, closed.** Feasibility studied
    2026-07-22 (full write-up in [`native-port/PLANS.md`](native-port/PLANS.md)
    §6): (a) direct DP5(4) error coefficients — **recommend against**, both
    backends already precompute `errest = b5.-b4` at load, so the premise's
    runtime cancellation doesn't exist; (b) direct PPT evaluation — **recommend
    against**, the true series has a BigFloat-quadrature tail that can't live
    in a hot loop and the LUT error is already below physical significance;
-   (c) short-kernel Raman pad-shortening — **recommend**, ~2× that multiplies
-   with J.3's r2c gain and need not diverge from the oracle. Only (c) remains
-   open.
+   (c) short-kernel Raman pad-shortening — **recommend against after
+   measurement**: the response support is 76-86% of `n_time_over`, the real
+   n=4096 configuration measured 0.98×, and projected end-to-end improvement
+   was ~0.99-1.05×, below the >1.4× gate. The prototype was reverted.
 5. 🟢 **Phase S5.3 — order-5 dense-output continuous extension: done
    2026-07-23.** The Calvo-Montijano-Rández (1990) order-5 tableau, wired
    into both steppers (extra-stage FFI + shared `interpC5`/
@@ -356,11 +374,12 @@ Full detail (equations, rationale, per-item code sketches) stays in
 one place. S1, S2, S4 and S5 are now closed (S2 on 2026-07-22, S5 on
 2026-07-23). S6's HDF5 writer and release machinery are implemented; its
 cold-start CLI was studied and parked, while the v1.0.0 asset-name repair and
-known-broken examples remain in the queue above. S1.5's BLAS-3 correctness
+example repairs are complete; the v1.0.1 release remains in the queue above.
+S1.5's BLAS-3 correctness
 bug was fixed; the path remains opt-in because its ≥1.5× default-flip
-benchmark was never demonstrated. **S3 is partially started, and what
-landed does not work**
-(item 0 below):
+benchmark was never demonstrated. **S3 is partially implemented and its
+landed narrow slice is hardware-verified, but still lacks standing GPU CI**
+(items 0 and 2 below):
 the GPU-resident stepper work landed 2026-07-05/07 (see Phase G's "Open
 items" entry and ARCHIVE.md's "Done (recent)") implements a narrow slice of S3
 (mode-averaged RealGrid Kerr-only, no threading/dispatch-threshold/design
@@ -370,11 +389,10 @@ rot"), which is exactly what happened once already (uncommitted 2 days,
 found broken until manually re-verified). GPU CI is still open (see "GPU
 CI coverage" below) — treat S3's remaining scope (design doc, full
 `NativeBackend` parity, threading, dispatch threshold, `test_native_gpu.jl`)
-as still gated on it. **Update 2026-07-23:** the slice that did land is
-now known not to compute any nonlinearity at all (item 0), which is exactly
-the rot that entry predicted — it went unnoticed for over two weeks because
-the only test guarding it asserts a tolerance larger than the physics it
-tests.
+as still gated on it. **Update 2026-07-25:** the zero-nonlinearity defect
+found on 2026-07-23 is fixed and non-vacuously hardware-verified; the episode
+is why every future GPU change requires either standing CI or a recorded
+manual hardware run.
 
 **ISA / hardware dispatch — synced to actual code state (2026-07-07):**
 `dispatch.rs`'s hardware cascade (CUDA → Vulkan → AVX-512 → AVX2 → NEON →
@@ -1266,8 +1284,8 @@ was a stale-documentation item, not an untested-code item.
 
 > This subsection is retained as provenance for the scaffolding review. Its
 > "verified" and "not wired" statements describe intermediate states and are
-> not current. The authoritative status is S3 above: Julia wiring exists, but
-> the backend currently omits nonlinear physics and must not be used.
+> not current. The authoritative status is S3 above: the narrow slice is
+> wired, repaired, and hardware-verified, but has no standing GPU CI.
 
 A prior agent pass (2026-07-05, external review — see ARCHIVE.md's "Done
 (recent)" entry for the GPU ionisation clamp, and `docs/dev/native-port/GPU.md`)

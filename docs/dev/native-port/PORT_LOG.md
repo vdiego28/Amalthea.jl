@@ -1576,3 +1576,92 @@ time (none exist in this repo today; chasing that would be optimizing for a
 hypothetical workload). If BACKLOG open remainder 5 needs a live entry, the
 lead should mark Phase J.6(c) "recommend against" (reversing the prior
 "recommend") and cite this file.
+
+## 2026-07-27 — Resume queue items 6/11 — modal vector plasma + macOS CI — Codex (GPT-5)
+
+**Status:** in-progress — implementation and local gate complete; GitHub
+Actions verification remains.
+
+**Did:** Corrected the last broken low-level example, added an actionable
+`PlasmaCumtrapz` vector-shape diagnostic and focused regression, and applied
+the bounded macOS physics-cache mitigation for the intermittent `SIGBUS`.
+Reconciled the tracked README/backlog/native-port reference set with the
+already-landed GPU repair and negative short-kernel Raman measurement.
+
+**How:**
+
+- The actual modal-plasma failure was at `src/Nonlinear.jl:279-283`, before
+  `PlasmaVector!`: the response's `P`/`J`/phase buffers inherited the vector
+  example field passed to its constructor while `TransModal` supplied an N×2
+  `Et`. The callable now compares the stored and incoming shapes and throws a
+  focused `DimensionMismatch`; no FFI symbol changed.
+- `examples/low_level_interface/full_modal/basic_modal_full_bothpolarisations.jl:30-32`
+  now constructs `PlasmaCumtrapz` with `zeros(length(grid.to), 2)`, matching
+  `components=:xy`.
+- `test/test_transmodal_vector_plasma.jl:3-73` covers both the former
+  mis-construction and an actual `full=true`, npol=2, Kerr+ADK-plasma
+  `TransModal` transform. It compares against a Kerr-only control and requires
+  the plasma contribution to exceed `1e-8`, so the test cannot pass merely
+  because the new response is inert.
+- `.github/workflows/run_tests.yml:133-141` passes the documented
+  `julia-actions/cache@v3` input `cache-scratchspaces: false` only when
+  `runner.os == 'macOS' && matrix.group == 'physics'`. The package, artifact,
+  and compiled caches remain enabled; only cross-run restoration of
+  CPU-specific FFTW wisdom is removed.
+- The design was written first in `PLANS.md` §7. The final status was then
+  propagated through `BACKLOG.md`, `README.md`, `ARCHITECTURE.md`, `MATH.md`,
+  `GPU.md`, `NATIVE_SUPPORT_MATRIX.md`, `VANILLA_LUNA_ISSUES.md`, and
+  `SUGGESTIONS.md`.
+
+**Decisions:**
+
+- Fix the example's constructor shape rather than changing
+  `PlasmaCumtrapz` to reallocate silently. Its scratch layout is intentionally
+  fixed at setup; a direct diagnostic catches future misuse without adding hot
+  loop allocation.
+- Keep modal plasma on the correct Julia fallback. This work proves the
+  supported Julia path; it does not widen resident-native eligibility.
+- Treat the macOS failure as a host-cache problem first. The crashing call is
+  plain Julia `RK45.solve` with FFTW closures, not `solve_precon`, FFI, or Rust.
+  Disabling only scratchspace restore tests the strongest lead without
+  weakening assertions or discarding every Julia cache.
+- Preserve dated PORT_LOG/inbox narratives as provenance while correcting
+  their live status pages.
+
+**Gotchas:**
+
+- Cubature catches and rethrows callback exceptions, so its frame at the top
+  of a stack trace does not establish that the integration algorithm is at
+  fault. Trace the callback body and its captured response state.
+- `PlasmaCumtrapz(t, E, ...)` uses `similar(E)` for all plasma scratch arrays;
+  its example field is a shape contract, not just sample data.
+- The macOS physics crash occurred in two of three runs at the same plain-Julia
+  solve and logs showed restored FFTW wisdom immediately beforehand. If it
+  recurs with scratchspace restore disabled, investigate in-place FFT
+  alignment or earlier memory corruption rather than touching native code.
+
+**Tests:**
+
+- Existing modal npol=2 focused test: 3/3 pass for `full=false` and
+  `full=true` Kerr controls.
+- New `test_transmodal_vector_plasma.jl`: 8/8 pass; malformed construction
+  reports the focused error and the plasma-vs-Kerr control effect is asserted
+  `>1e-8`.
+- Corrected example, Julia fallback forced, plotting removed, 5 mm length:
+  completed end-to-end in 39 accepted steps / 0 repeats (55.848 s).
+- `cargo build --release` in `amalthea/`: pass.
+- `LUNA_TEST_GROUP=sim-multimode julia --project test/runtests.jl`: 41/41
+  pass (712.3 s).
+- `LUNA_TEST_GROUP=examples julia --project test/runtests.jl`: 20/20 pass
+  (181.5 s).
+- `python3 test/run_full_gate.py`: exit 0 in 1170.2 s — physics 1657/1657,
+  rust 42252/42253 (one existing broken test, zero failures),
+  sim_multimode 41/41, sim_interface 314/314, sim_propagation 18/18,
+  io 2302/2302, fields 334/334.
+- Workflow YAML parses locally. GitHub matrix and repeated macOS executions
+  are pending this branch's push.
+
+**Next:** Push the integration branch, require the full GitHub Actions matrix
+to pass, and rerun its macOS physics job twice. If all three executions are
+green, record the run/job IDs, merge to `main`, and require the final
+`main` test and documentation workflows to pass.
