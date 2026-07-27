@@ -2087,3 +2087,11 @@ if its macOS physics job passes, two same-commit job reruns. If this still
 signals, the remaining experiment is to make `test_rk45.jl`'s two plans
 explicitly `FFTW.UNALIGNED`; FFTW.jl already checks new-array alignment before
 execution, so that is lower probability than the platform thread pool.
+
+**Result: accepted and closed.** Run `30293434654` passed all 16 matrix jobs.
+The macOS physics job passed three consecutive executions on the exact
+`3c3eadf` commit: jobs `90068647392`, `90074181421`, and `90075895290`
+(6m07s, 6m06s, and 6m25s). The prior branch had failed despite fresh wisdom,
+so the evidence supports the macOS FFTW thread pool/oversubscription as the
+operative factor. The `FFTW.UNALIGNED` experiment remains only a reopen path,
+not current work.

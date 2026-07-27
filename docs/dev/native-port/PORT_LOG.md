@@ -1704,3 +1704,39 @@ so the faster result is not reduced work or a weakened assertion.
 **Next:** Push this follow-up and require its full matrix plus three
 consecutive green macOS physics executions (initial job + two reruns). If it
 still signals, test `FFTW.UNALIGNED` on `test_rk45.jl`'s two plans next.
+
+## 2026-07-27 — CI item 11 — GitHub validation complete — Codex (GPT-5)
+
+**Status:** complete
+
+**Did:** Closed the intermittent macOS physics `SIGBUS` after a full green
+matrix and three consecutive green executions of the formerly failing job on
+one commit.
+
+**How:** Branch commit `3c3eadf` kept `JULIA_NUM_THREADS=auto` but pinned FFTW
+to one thread on macOS through `test/runtests.jl`; the workflow also continued
+to exclude scratchspaces from the macOS physics Julia cache. No production
+solver, FFI symbol, tolerance, or physics assertion changed.
+
+**Decisions:** Accept only after the predeclared repeated-run gate, not after
+the first green result. Retain the cache exclusion as defence-in-depth even
+though run `30291822719` proved that fresh wisdom alone did not prevent the
+thread-pool crash.
+
+**Gotchas:** `gh run rerun --job` creates a new job ID and increments the run
+attempt while keeping the same run ID. Record all three job IDs rather than
+mistaking the latest attempt for the original matrix execution.
+
+**Tests:** GitHub Actions run `30293434654`, commit `3c3eadf`:
+
+- attempt 1: full **16/16-job matrix success**; macOS physics job
+  `90068647392` success in 6m07s;
+- attempt 2: macOS physics job `90074181421` success in 6m06s;
+- attempt 3: macOS physics job `90075895290` success in 6m25s.
+
+Together with the local full gate (1170.2s), examples 20/20, focused modal
+plasma 8/8, and corrected end-to-end example recorded above, all requested
+implementation gates are green.
+
+**Next:** Merge `test-discovery-claude-exclusion` into `main`, push, and
+require both the final `main` test matrix and Documentation workflow to pass.

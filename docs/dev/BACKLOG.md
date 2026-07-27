@@ -111,8 +111,8 @@ or "verified" inside a superseded narrative do not outrank this list.
 
 ### New items raised by the 2026-07-26 CI repair
 
-11. 🟡 **macOS CI `Bus error: 10` — first mitigation falsified; second
-    bounded mitigation ready 2026-07-27.** `physics -
+11. 🟢 **macOS CI `Bus error: 10` — FIXED and repeatedly verified
+    2026-07-27.** `physics -
     macos-latest` died with `signal 10 (1): Bus error: 10`, "in expression
     starting at `test/test_rk45.jl:64`", in **2 of 3** runs on 2026-07-26
     (fail `30209977981`, pass `30210333905`, fail `30212265976`). Same file,
@@ -152,9 +152,12 @@ or "verified" inside a superseded narrative do not outrank this list.
     `JULIA_NUM_THREADS=auto`, which otherwise makes Amalthea request 12 FFTW
     threads for this repeatedly-executed 1024-point in-place transform.
     Julia threads remain enabled and production defaults are unchanged.
-    Acceptance still requires the full matrix plus two same-commit macOS
-    physics reruns. If it recurs, test explicit `FFTW.UNALIGNED` plans next,
-    then prior memory corruption.
+    Branch run `30293434654` passed the full 16-job matrix; its macOS physics
+    job then passed three consecutive executions on commit `3c3eadf`:
+    attempt 1 job `90068647392` (6m07s), attempt 2 job `90074181421`
+    (6m06s), and attempt 3 job `90075895290` (6m25s). This closes the
+    reproducing 2-of-3 failure. If it ever recurs, test explicit
+    `FFTW.UNALIGNED` plans next, then prior memory corruption.
 
 ### New items raised by the 2026-07-25 wave
 
