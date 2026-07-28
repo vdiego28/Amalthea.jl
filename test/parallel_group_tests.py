@@ -29,6 +29,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TEST_DIR = REPO_ROOT / "test"
 BUCKET_RUNNER = TEST_DIR / "run_group_bucket.jl"
+TEST_ROOTS_FILE = TEST_DIR / "test_roots.txt"
 DEFAULT_MAX_WORKERS = 10
 
 
@@ -63,16 +64,38 @@ def tag_sym(group):
     return group.replace("-", "_")
 
 
+def test_roots():
+    roots = []
+    for line in TEST_ROOTS_FILE.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            root = (REPO_ROOT / line).resolve()
+            if not root.is_dir():
+                raise RuntimeError(f"Test root from {TEST_ROOTS_FILE} does not exist: {root}")
+            roots.append(root)
+    return roots
+
+
+def manifest_name(path):
+    if path.parent == TEST_DIR:
+        # Preserve the historical timing-file keys for the primary root.
+        return path.name
+    return path.relative_to(REPO_ROOT).as_posix()
+
+
 def discover_group_files(group):
     tag = tag_sym(group)
     needle = f":{tag}"
     files = []
-    for path in sorted(TEST_DIR.glob("*.jl")):
-        if path.name in ("run_group_bucket.jl", "run_rust_bucket.jl"):
-            continue
-        text = path.read_text()
-        if re.search(rf"tags\s*=\s*\[[^\]]*{re.escape(needle)}\b", text):
-            files.append(path.name)
+    for root in test_roots():
+        for path in sorted(root.rglob("*.jl")):
+            if path.parent == TEST_DIR and path.name in (
+                "run_group_bucket.jl", "run_rust_bucket.jl"
+            ):
+                continue
+            text = path.read_text()
+            if re.search(rf"tags\s*=\s*\[[^\]]*{re.escape(needle)}\b", text):
+                files.append(manifest_name(path))
     return files
 
 
@@ -314,7 +337,13 @@ def main():
                      help="Re-measure each file's duration individually "
                           "(one file per process) and overwrite the "
                           "group's timings file before scheduling.")
+    ap.add_argument("--list-files", action="store_true",
+                    help="Print the discovered manifest names and exit.")
     args = ap.parse_args()
+
+    if args.list_files:
+        print("\n".join(discover_group_files(args.group)))
+        return 0
 
     rc, total_pass, total_all, elapsed = run_group(
         args.group, args.max_workers, Path(args.log_dir), args.update_timings

@@ -183,7 +183,7 @@ coincidence of regime, not immunity to the same mechanism).
 | 6 | ✅ done | free-space 3-D FFT (RealGrid, const_norm_free, Kerr-only) | `test/test_native_free.jl` | 7.05e-18 (achieved) | 5.01e-17 (achieved; fixed dt) |
 | 7 | ✅ done | z-dependent linop (mode-avg, graded-core, two-point pressure gradient) | `test/test_native_zdep_linop.jl` | <1e-9 (β1 vs BigFloat truth, achieved); ~1e-12 (`dtn`/`err`, achieved) | <1e-3 tier (measured ~2.7e-7 post-Phase-8-precision-fix, deliberate-divergence, see §2) |
 | 8 | ✅ done | default-flip: existing suite green with native as default | `test/test_native_phase8.jl` + full suite | — | 46590 pass / 0 fail / 0 error / 12 broken (pre-existing), 46602 total |
-| S5.3 | ✅ done | order-5 dense output + deferred FSAL carry on Julia/native, all geometries | `test/test_native_dense_order5.jl` | observed order → 5; native-vs-Julia ~1e-17 | full seven-group gate green |
+| S5.3 | ✅ done | order-5 dense output + deferred FSAL carry on Julia/CPU-native; measured CUDA order-4 fallback | `test/test_native_dense_order5.jl` | CPU order → 5; CUDA order → 4; native-vs-Julia ~1e-17 | full gate green |
 
 Phase 5's single-step tier is documented looser (~1e-10) than the FFTW-only
 phases, not because cubature node placement is algorithm-dependent — it binds
@@ -233,9 +233,9 @@ that tier on any future test failure, check first whether both sides of the
 comparison are actually eligible for the same backend; if they are, a
 failure is a real bug, not a tolerance problem.
 
-**GPU-specific acceptance rule (current blocker).** A self-skipping CUDA test
-passing on a CPU-only CI runner proves only that the skip guard works. Closing
-BACKLOG S3 item 0 requires all of:
+**GPU-specific acceptance rule.** A self-skipping CUDA test passing on a
+CPU-only CI runner proves only that the skip guard works. Every GPU correctness
+slice requires all of:
 
 1. a CPU-native and Julia-oracle control showing the intended nonlinear effect;
 2. a GPU stage-derivative check whose scale is comparable to CPU native, not
@@ -244,26 +244,36 @@ BACKLOG S3 item 0 requires all of:
 4. a recorded run on real CUDA hardware; and
 5. eventually, a standing CUDA CI job so the path cannot rot silently.
 
+Adaptive-controller changes additionally require a deliberately rejected
+trial whose field remains unchanged, a controller-selected retry, and an
+adaptive trajectory against CPU native/Julia. The 2026-07-27
+`test_native_cuda.jl` extension is the reference: both Kerr and Kerr+PPT reject
+and retry, with full adaptive trajectory differences of `5.42e-15` and
+`2.24e-15` on the RTX 5060 Ti.
+
 ## 5. Commands
 
 ```bash
 # Build the library first (required for any :rust test to run, else it skips)
-cd amalthea && cargo build --release
+(cd amalthea && cargo build --release)
 
 # Run only the Rust/native equivalence group
 LUNA_TEST_GROUP=rust julia --project test/runtests.jl
 
 # Rust unit tests
-cd amalthea && cargo test
+(cd amalthea && cargo test)
+
+# Required-hardware CUDA gate (initialization/dispatch failures cannot skip)
+(cd amalthea && AMALTHEA_REQUIRE_CUDA_TESTS=1 cargo test)
+AMALTHEA_REQUIRE_CUDA_TESTS=1 LUNA_TEST_GROUP=rust julia --project test/runtests.jl
 
 # Full Julia suite (Phase 8 gate)
 julia --project -e 'using Pkg; Pkg.test("Luna")'
 ```
 
 Main-gate `LUNA_TEST_GROUP` values: `physics`, `rust`, `sim-interface`,
-`sim-multimode`, `sim-propagation`, `io`, `fields`, `All` (default).
-`examples` is a supplemental CI smoke group and is not yet part of
-`test/run_full_gate.py`'s seven-group default.
+`sim-multimode`, `sim-propagation`, `io`, `fields`, `examples`, `All`
+(default). `test/run_full_gate.py` runs all eight maintained groups.
 
 ## 6. Definition of done for a native work item
 

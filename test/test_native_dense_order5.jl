@@ -358,7 +358,9 @@ end
     import LinearAlgebra: norm
 
     libpath = RK45._LIBAMALTHEA_RK45
+    require_cuda = get(ENV, "AMALTHEA_REQUIRE_CUDA_TESTS", "0") == "1"
     if !isfile(libpath)
+        require_cuda && error("CUDA tests are required, but the Rust library was not found")
         @test_skip "Rust library not found"
     else
         # `CudaNativeSim` doesn't implement `compute_extra_stages` (returns
@@ -435,20 +437,57 @@ end
                 end
             end
 
-            # NOT asserted here: the dense-output *convergence order* on the
-            # GPU path, which is what would empirically confirm the FSAL fix
-            # (`cuda_native.rs` step 0) for this backend the way the CPU
-            # testsets above do. It cannot be measured while the GPU-resident
-            # RHS contributes no nonlinearity at all — measured `max|kᵢ|` is
-            # 3.5e-13 against the CPU backend's 12225 for this exact config,
-            # and the GPU's accepted step equals pure linear propagation to
-            # 15 digits. With `kᵢ ≈ 0` the interpolant is exact whichever
-            # stage sits in slot 0, so the measurement is blind. Tracked as an
-            # open item in `docs/dev/BACKLOG.md` / `VANILLA_LUNA_ISSUES.md` §5;
-            # re-enable an order check here once it is fixed.
-            @test_skip "GPU dense-output convergence order — blocked on the missing GPU-resident nonlinearity (BACKLOG S3)"
+            @testset "GPU order-4 fallback: local defect scales ~h^5" begin
+                # `CudaNativeSim` intentionally returns -1 from
+                # `compute_extra_stages`, so `interpolate` uses the original
+                # quartic `interpC` polynomial. The GPU nonlinearity is now
+                # non-vacuous; measure the fallback against a much finer
+                # CPU-native order-5 reference instead of retaining the stale
+                # unconditional skip that predated that repair.
+                θs = (0.15, 0.35, 0.55, 0.75, 0.9)
+                hs = (0.04, 0.02, 0.01)
+
+                function cpu_reference_at(ti, dt_fine)
+                    withenv("AMALTHEA_NATIVE_GPU" => "off") do
+                        s = RustNativeStepper(transform, linop, copy(Eω), t0, dt_fine;
+                                              rtol=1e-6, atol=1e-10,
+                                              max_dt=dt_fine, min_dt=dt_fine)
+                        while s.tn < ti
+                            @assert step!(s)
+                        end
+                        copy(interpolate(s, ti))
+                    end
+                end
+
+                errs4 = Float64[]
+                for h4 in hs
+                    s4 = RustNativeStepper(transform, linop, copy(Eω), t0, h4;
+                                           rtol=1e-6, atol=1e-10,
+                                           max_dt=h4, min_dt=h4)
+                    @assert step!(s4)
+                    max_err = 0.0
+                    for θ in θs
+                        ti = t0 + θ*h4
+                        yi = interpolate(s4, ti)
+                        yref = cpu_reference_at(ti, h4/32)
+                        max_err = max(max_err, norm(yi .- yref)/norm(yref))
+                    end
+                    push!(errs4, max_err)
+                    println("GPU order-4 dense output: h=$h4 max local err=$max_err")
+                end
+
+                @test errs4[1] > 1e-8
+                ratios4 = [errs4[i-1]/errs4[i] for i in 2:length(errs4)]
+                println("GPU order-4 dense-output ratios (expect ~2^5=32): ", ratios4)
+                for ratio in ratios4
+                    @test 16 < ratio < 64
+                end
+            end
         end
 
-        gpu_available || @test_skip "CUDA GPU/toolkit not available on this machine: $gpu_error"
+        if !gpu_available
+            require_cuda && error("CUDA tests are required, but GPU setup failed: $gpu_error")
+            @test_skip "CUDA GPU/toolkit not available on this machine: $gpu_error"
+        end
     end
 end

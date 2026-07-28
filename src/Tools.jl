@@ -54,7 +54,7 @@ end
 
 "Get soliton order"
 function getN(P0, τfw, γ, β2; shape=:sech)
-    sqrt(Ld(τfw, β2, shape=:sech)/Lnl(P0, γ))
+    sqrt(Ld(τfw, β2, shape=shape)/Lnl(P0, γ))
 end
 
 function E_to_P0(E, τfw; shape=:sech)

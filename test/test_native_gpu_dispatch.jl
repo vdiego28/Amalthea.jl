@@ -30,10 +30,12 @@ using TestItems
         # At/above the threshold — trange=4e-12 -> n=16385.
         kw_large = (; λ0, λlims, trange=4e-12, raman=false, plasma=false, kerr=true,
                       shotnoise=false, energy=1e-6, τfwhm=30e-15)
-        # Plasma present, large enough to clear the size threshold anyway —
-        # :auto must still reject it (no measured crossover with plasma).
-        kw_plasma = (; λ0, λlims, trange=4e-12, raman=false, plasma=true, kerr=true,
-                       shotnoise=false, energy=1e-6, τfwhm=30e-15)
+        # PPT uses its own measured threshold after the parallel prefix-scan
+        # work: n=4097 is below it; n=8193 is above it.
+        kw_plasma_small = (; λ0, λlims, trange=1e-12, raman=false, plasma=true,
+                             kerr=true, shotnoise=false, energy=1e-6, τfwhm=30e-15)
+        kw_plasma_large = (; λ0, λlims, trange=2e-12, raman=false, plasma=true,
+                             kerr=true, shotnoise=false, energy=1e-6, τfwhm=30e-15)
 
         Eω_small, _, linop_small, transform_small, _, _ = with_logger(NullLogger()) do
             Interface.prop_capillary_args(args...; kw_small...)
@@ -41,9 +43,17 @@ using TestItems
         Eω_large, _, linop_large, transform_large, _, _ = with_logger(NullLogger()) do
             Interface.prop_capillary_args(args...; kw_large...)
         end
-        Eω_plasma, _, linop_plasma, transform_plasma, _, _ = with_logger(NullLogger()) do
-            Interface.prop_capillary_args(args...; kw_plasma...)
-        end
+        Eω_plasma_small, _, linop_plasma_small, transform_plasma_small, _, _ =
+            with_logger(NullLogger()) do
+                Interface.prop_capillary_args(args...; kw_plasma_small...)
+            end
+        Eω_plasma_large, _, linop_plasma_large, transform_plasma_large, _, _ =
+            with_logger(NullLogger()) do
+                Interface.prop_capillary_args(args...; kw_plasma_large...)
+            end
+
+        @test length(Eω_plasma_small) < RK45._GPU_PPT_N_THRESHOLD
+        @test length(Eω_plasma_large) >= RK45._GPU_PPT_N_THRESHOLD
 
         @test length(Eω_small) < RK45._GPU_KERR_ONLY_N_THRESHOLD
         @test length(Eω_large) >= RK45._GPU_KERR_ONLY_N_THRESHOLD
@@ -66,6 +76,9 @@ using TestItems
                 withenv("AMALTHEA_NATIVE_GPU" => "on") do
                     @test RK45._gpu_native_eligible(transform_small, linop_small, length(Eω_small))
                     @test RK45._gpu_native_eligible(transform_large, linop_large, length(Eω_large))
+                    @test RK45._gpu_native_eligible(transform_plasma_small,
+                                                    linop_plasma_small,
+                                                    length(Eω_plasma_small))
                 end
             end
 
@@ -74,10 +87,12 @@ using TestItems
                     @test Amalthea.Config.backend_config().gpu_dispatch === :auto
                     @test !RK45._gpu_native_eligible(transform_small, linop_small, length(Eω_small))
                     @test RK45._gpu_native_eligible(transform_large, linop_large, length(Eω_large))
-                    # plasma-bearing config: rejected under :auto even though
-                    # it clears the size threshold (no measured GPU win with
-                    # plasma present, at any tested size).
-                    @test !RK45._gpu_native_eligible(transform_plasma, linop_plasma, length(Eω_plasma))
+                    @test !RK45._gpu_native_eligible(transform_plasma_small,
+                                                     linop_plasma_small,
+                                                     length(Eω_plasma_small))
+                    @test RK45._gpu_native_eligible(transform_plasma_large,
+                                                    linop_plasma_large,
+                                                    length(Eω_plasma_large))
                 end
                 withenv("AMALTHEA_NATIVE_GPU" => "auto") do
                     @test !RK45._gpu_native_eligible(transform_small, linop_small, length(Eω_small))

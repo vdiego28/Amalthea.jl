@@ -20,15 +20,18 @@ set_fftw_mode(:estimate)
 tag_sym = Symbol(ENV["LUNA_BUCKET_TAG"])
 targets = Set(split(ENV["LUNA_BUCKET_FILES"], "\n"))
 
-# `@run_package_tests` walks the package root recursively, which sweeps in
-# any git worktree living under `.claude/worktrees/<name>/test/`. Those hold
-# their own copies of every test file, so a bucket matching only on
-# `basename` would run each item once per checkout (inflating assertion
-# counts 2-3x) and would fail on worktrees that never built amalthea. Pin
-# the bucket to *this* checkout's test directory.
+# Resolve the checkout-relative manifest names emitted by
+# `parallel_group_tests.py`. Historical entries for files directly under
+# `test/` remain basenames; secondary/nested roots use repository-relative
+# names so cross-root filename collisions cannot alias.
 const THIS_TEST_DIR = @__DIR__
-in_this_checkout(f) = dirname(abspath(String(f))) == THIS_TEST_DIR
+const REPO_ROOT = normpath(joinpath(THIS_TEST_DIR, ".."))
+target_path(name) = normpath(joinpath(
+    occursin('/', name) || occursin('\\', name) ? REPO_ROOT : THIS_TEST_DIR,
+    name,
+))
+const TARGET_PATHS = Set(target_path(name) for name in targets)
+is_target(f) = normpath(abspath(String(f))) in TARGET_PATHS
 
 @run_package_tests filter=ti->(tag_sym in ti.tags &&
-                              basename(String(ti.filename)) in targets &&
-                              in_this_checkout(ti.filename))
+                              is_target(ti.filename))

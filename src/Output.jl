@@ -92,7 +92,7 @@ function (o::MemoryOutput)(y, t, dt, yfun)
             o.data[o.tname][o.saved+1] = ts
         end
         o.saved += 1
-        save, ts = o.save_cond(y, t, dt, o.saved)
+        save, ts = next_save(o.save_cond, y, t, dt, o.saved)
     end
 end
 
@@ -359,7 +359,7 @@ function (o::HDF5Output)(y, t, dt, yfun)
                 end
                 file[o.tname][o.saved+1] = ts
                 o.saved += 1
-                save, ts = o.save_cond(y, t, dt, o.saved)
+                save, ts = next_save(o.save_cond, y, t, dt, o.saved)
             end
             append_stats!(file["stats"], o.stats_tmp)
             o.stats_tmp = Vector{Dict{String, Any}}()
@@ -516,23 +516,32 @@ function (cond::GridCondition)(y, t, dt, saved)
     return save, save ? cond.grid[saved+1] : 0
 end
 
+# Built-in native-point predicates describe the accepted point itself and
+# must not be reevaluated before the solver advances. Unknown/custom
+# conditions retain the historical repeated-evaluation contract.
+next_save(cond::GridCondition, y, t, dt, saved) = cond(y, t, dt, saved)
+next_save(cond, y, t, dt, saved) = cond(y, t, dt, saved)
+
 "Condition which saves every native point of the propagation"
 function always(y, t, dt, saved)
     return true, t
 end
+next_save(::typeof(always), y, t, dt, saved) = (false, t)
 
 "Condition which saves every nth native point"
-function every_nth(n)
-    i = 0
-    cond = let i = i, n = n
-        function condition(y, t, dt, saved)
-            save = i % n == 0
-            i += 1
-            return save, t
-        end
-    end
-    return cond
+mutable struct EveryNthCondition
+    n::Int
+    i::Int
 end
+
+function (cond::EveryNthCondition)(y, t, dt, saved)
+    save = cond.i % cond.n == 0
+    cond.i += 1
+    return save, t
+end
+
+every_nth(n) = EveryNthCondition(n, 0)
+next_save(::EveryNthCondition, y, t, dt, saved) = (false, t)
 
 """Making initial array dimensions.
 For a GridCondition, we know in advance how many points there will be.

@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Run all 7 CI test groups, each load-balanced across parallel workers.
+"""Run all 8 maintained CI test groups, each load-balanced across parallel workers.
 
-Groups run one at a time (not concurrently with each other) so each gets
-the full worker budget (--max-workers, default 10) without oversubscribing
-the machine's cores — running two groups' worker pools simultaneously would
-mean 20 Julia processes competing for e.g. 12 cores.
+Large groups run alone; smaller groups are batched while the combined worker
+count stays near the machine's core count.
 
 Usage: python3 test/run_full_gate.py [--max-workers N] [--update-timings]
 
@@ -24,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 GROUPS = [
     "physics", "rust", "sim_interface", "sim_multimode",
-    "sim_propagation", "io", "fields",
+    "sim_propagation", "io", "fields", "examples",
 ]
 
 # Batches of groups to run *concurrently* (one batch at a time, batches
@@ -34,17 +32,17 @@ GROUPS = [
 # `os.cpu_count()`.
 #
 # physics and rust each already saturate DEFAULT_MAX_WORKERS (10) workers
-# on their own, so they stay solo. The other five groups have few enough
+# on their own, so they stay solo. The other six groups have few enough
 # files that their worker counts (2-6) sum well within a 12-core budget:
 # sim-multimode's single 334s file dominates its group's wall-clock
 # regardless of pairing (its other 3 workers finish in under 130s), so
 # running sim-interface and sim-propagation alongside it is close to free
-# — and io+fields is the pairing suggested directly by the user.
+# — and the single-file examples group fits alongside io+fields.
 DEFAULT_BATCHES = [
     ["physics"],
     ["rust"],
     ["sim_multimode", "sim_interface", "sim_propagation"],
-    ["io", "fields"],
+    ["io", "fields", "examples"],
 ]
 
 
@@ -66,7 +64,7 @@ def main():
     ap.add_argument("--log-dir", default=str(REPO_ROOT / ".rust_test_logs"))
     ap.add_argument("--update-timings", action="store_true")
     ap.add_argument("--groups", nargs="+", default=GROUPS,
-                     help="Subset of groups to run (default: all 7).")
+                     help="Subset of groups to run (default: all 8).")
     ap.add_argument("--no-batch", action="store_true",
                      help="Run every requested group sequentially and solo "
                           "instead of using DEFAULT_BATCHES' concurrent pairing.")

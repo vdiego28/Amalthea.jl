@@ -187,13 +187,16 @@ extern "C" __global__ void rk45_accumulate_error_kernel(
     yerr[idx] = make_cuDoubleComplex(re, im);
 }
 
-// Weaknorm reduction (part 1: element-wise square)
+// Weaknorm reduction (part 1): emit the three squared-magnitude arrays used
+// by native.rs::weaknorm_c64. The tolerance is global, not an element-wise
+// `(atol + rtol*max(abs(y0[i]),abs(y1[i])))` weight.
 extern "C" __global__ void weaknorm_elem_kernel(
     const cuDoubleComplex* yerr,
     const cuDoubleComplex* y0,
     const cuDoubleComplex* y1,
-    double rtol, double atol,
-    double* out_sq,
+    double* yerr_sq,
+    double* y0_sq,
+    double* y1_sq,
     int n
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -206,14 +209,9 @@ extern "C" __global__ void weaknorm_elem_kernel(
     double y1_re = y1[idx].x;
     double y1_im = y1[idx].y;
     
-    double sq_y0 = y0_re * y0_re + y0_im * y0_im;
-    double sq_y1 = y1_re * y1_re + y1_im * y1_im;
-    double max_sq = sq_y0 > sq_y1 ? sq_y0 : sq_y1;
-    
-    double tol = atol + rtol * sqrt(max_sq);
-    double err_sq = (err_re * err_re + err_im * err_im) / (tol * tol);
-    
-    out_sq[idx] = err_sq;
+    yerr_sq[idx] = err_re * err_re + err_im * err_im;
+    y0_sq[idx] = y0_re * y0_re + y0_im * y0_im;
+    y1_sq[idx] = y1_re * y1_re + y1_im * y1_im;
 }
 
 // Mode average real kerr. Deliberately does NOT apply `towin` (unlike its
@@ -311,30 +309,83 @@ extern "C" __global__ void finalize_spectrum_kernel(
     ks_out[idx] = make_cuDoubleComplex(re * w, im * w);
 }
 
-// Plasma ionization fraction: fused cumtrapz(rate)*dt + rho transform.
-// Reproduces native.rs's apply_plasma_real steps 2-3 (Maths.cumtrapz! then
-// `preionfrac + 1 - exp(-integral)`) in one single-thread sequential pass —
-// cumtrapz is an inherently sequential prefix sum (each element depends on
-// the previous), and n_time is small enough (~2^13-2^16) that a single
-// thread looping over it is negligible next to this step's FFT/kernel-launch
-// cost; not the work-efficient parallel prefix scan GPU.md's original design
-// sketch mentions; a fine V1 tradeoff at this problem size; a parallel scan
-// would matter at radial's much larger N=n_time*n_r plasma-state size, not
-// implemented here.
-extern "C" __global__ void plasma_fraction_kernel(
-    const double* rate,
-    double* fraction,
-    double preionfrac,
+// Two-level trapezoidal prefix scan used by all three PPT cumulative
+// integrals. Each 256-thread block performs a work-efficient Blelloch scan
+// of q[0]=0, q[i]=0.5*(x[i-1]+x[i])*dt and records one block total. A tiny
+// follow-up kernel scans those totals; the physics-specific finalizers below
+// add the preceding-block offset in parallel.
+extern "C" __global__ void plasma_scan_blocks_kernel(
+    const double* input,
+    double* local_prefix,
+    double* block_sums,
     double dt,
     int n_time
 ) {
+    extern __shared__ double temp[];
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + tid;
+
+    double q = 0.0;
+    if (idx > 0 && idx < n_time) {
+        q = 0.5 * (input[idx - 1] + input[idx]) * dt;
+    }
+    temp[tid] = q;
+    __syncthreads();
+
+    // Upsweep: total lands in temp[blockDim.x-1].
+    for (int offset = 1; offset < blockDim.x; offset <<= 1) {
+        int ai = (tid + 1) * offset * 2 - 1;
+        if (ai < blockDim.x) {
+            temp[ai] += temp[ai - offset];
+        }
+        __syncthreads();
+    }
+
+    if (tid == 0) {
+        block_sums[blockIdx.x] = temp[blockDim.x - 1];
+        temp[blockDim.x - 1] = 0.0;
+    }
+    __syncthreads();
+
+    // Downsweep: convert the block scan to exclusive form.
+    for (int offset = blockDim.x >> 1; offset > 0; offset >>= 1) {
+        int ai = (tid + 1) * offset * 2 - 1;
+        if (ai < blockDim.x) {
+            double left = temp[ai - offset];
+            temp[ai - offset] = temp[ai];
+            temp[ai] += left;
+        }
+        __syncthreads();
+    }
+
+    if (idx < n_time) {
+        local_prefix[idx] = temp[tid] + q;
+    }
+}
+
+extern "C" __global__ void plasma_scan_block_sums_kernel(
+    double* block_sums,
+    int n_blocks
+) {
     if (blockIdx.x != 0 || threadIdx.x != 0) return;
     double acc = 0.0;
-    fraction[0] = preionfrac + 1.0 - exp(-acc);
-    for (int i = 1; i < n_time; i++) {
-        acc += 0.5 * (rate[i - 1] + rate[i]) * dt;
-        fraction[i] = preionfrac + 1.0 - exp(-acc);
+    for (int i = 0; i < n_blocks; i++) {
+        acc += block_sums[i];
+        block_sums[i] = acc;
     }
+}
+
+extern "C" __global__ void plasma_fraction_finalize_kernel(
+    double* fraction,
+    const double* block_sums,
+    double preionfrac,
+    int n_time
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n_time) return;
+    double offset = blockIdx.x == 0 ? 0.0 : block_sums[blockIdx.x - 1];
+    double acc = fraction[idx] + offset;
+    fraction[idx] = preionfrac + 1.0 - exp(-acc);
 }
 
 // Plasma phase: phase[i] = fraction[i] * e_ratio * eto[i] — elementwise,
@@ -351,53 +402,36 @@ extern "C" __global__ void plasma_phase_kernel(
     phase[idx] = fraction[idx] * e_ratio * eto[idx];
 }
 
-// Free-electron current: fused cumtrapz(phase)*dt + ionization-loss-current
-// add-in. Reproduces native.rs steps 5-6 (`cumtrapz(J, phase, dt)` then
-// `J[i] += Ip*W[i]*(1-rho[i])/E[i]`) in one sequential pass, same rationale
-// as plasma_fraction_kernel above.
-extern "C" __global__ void plasma_current_kernel(
-    const double* phase,
+// Finalize cumtrapz(phase)*dt with the ionization-loss-current add-in.
+extern "C" __global__ void plasma_current_finalize_kernel(
+    double* current,
+    const double* block_sums,
     const double* rate,
     const double* fraction,
     const double* eto,
     double ionpot,
-    double dt,
-    double* current,
     int n_time
 ) {
-    if (blockIdx.x != 0 || threadIdx.x != 0) return;
-    double acc = 0.0;
-    for (int i = 0; i < n_time; i++) {
-        if (i > 0) {
-            acc += 0.5 * (phase[i - 1] + phase[i]) * dt;
-        }
-        double e = eto[i];
-        double loss = (e != 0.0) ? ionpot * rate[i] * (1.0 - fraction[i]) / e : 0.0;
-        current[i] = acc + loss;
-    }
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n_time) return;
+    double offset = blockIdx.x == 0 ? 0.0 : block_sums[blockIdx.x - 1];
+    double e = eto[idx];
+    double loss = (e != 0.0) ? ionpot * rate[idx] * (1.0 - fraction[idx]) / e : 0.0;
+    current[idx] += offset + loss;
 }
 
-// Plasma polarisation: fused cumtrapz(current)*dt + accumulate into Pto.
-// Reproduces native.rs steps 7-8 (`cumtrapz(P, J, dt)` then
-// `pto[i] += density * P[i]`) in one sequential pass, same rationale as
-// plasma_fraction_kernel above. Writes directly into the shared `pto`
-// buffer that rhs_mode_avg_real_kernel already populated with the Kerr
-// contribution — additive, matches native.rs's `self.pto[i] += ...`.
-extern "C" __global__ void plasma_polarization_kernel(
-    const double* current,
+// Finalize cumtrapz(current)*dt and accumulate into the shared Kerr Pto.
+extern "C" __global__ void plasma_polarization_finalize_kernel(
+    const double* polarization_prefix,
+    const double* block_sums,
     double* pto,
     double density,
-    double dt,
     int n_time
 ) {
-    if (blockIdx.x != 0 || threadIdx.x != 0) return;
-    double acc = 0.0;
-    for (int i = 0; i < n_time; i++) {
-        if (i > 0) {
-            acc += 0.5 * (current[i - 1] + current[i]) * dt;
-        }
-        pto[i] += density * acc;
-    }
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n_time) return;
+    double offset = blockIdx.x == 0 ? 0.0 : block_sums[blockIdx.x - 1];
+    pto[idx] += density * (polarization_prefix[idx] + offset);
 }
 
 // Mode average env kerr
@@ -430,21 +464,18 @@ extern "C" __global__ void weaknorm_reduce_kernel(
     int tid = threadIdx.x;
     int i = blockIdx.x * (blockDim.x * 2) + threadIdx.x;
     
-    double myMax = 0.0;
-    if (i < n) myMax = in[i];
+    double sum = 0.0;
+    if (i < n) sum = in[i];
     if (i + blockDim.x < n) {
-        double other = in[i + blockDim.x];
-        if (other > myMax) myMax = other;
+        sum += in[i + blockDim.x];
     }
     
-    sdata[tid] = myMax;
+    sdata[tid] = sum;
     __syncthreads();
     
     for (int s = blockDim.x / 2; s > 0; s >>= 1) {
         if (tid < s) {
-            if (sdata[tid + s] > sdata[tid]) {
-                sdata[tid] = sdata[tid + s];
-            }
+            sdata[tid] += sdata[tid + s];
         }
         __syncthreads();
     }

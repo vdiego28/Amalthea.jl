@@ -1,0 +1,3 @@
+# TestItemRunner roots, relative to the repository root.
+test
+amalthea/tests

@@ -1069,17 +1069,29 @@ rather than at the exact crossover, since GPU time isn't a clean monotonic
 function of n at these small sizes (compare n=2,049 vs. n=16,385 above —
 launch/sync overhead noise, not throughput, dominates down there).
 
-**This threshold does NOT apply when a plasma response is present.** The
-same sweep repeated with `plasma=true` (PPT, `gas=:Ar`) showed the GPU path
-consistently 20-30x *slower* than CPU at every size up to n=131,073,
-*worsening* with n rather than improving —
-`plasma_fraction_kernel`/`plasma_current_kernel`/`plasma_polarization_kernel`
-are documented single-GPU-thread sequential scans (BACKLOG.md S3 item 2/4/6,
-a deliberate V1 tradeoff), which don't benefit from n the way cuFFT does. No
-crossover was found in the tested range, so `:auto` dispatch excludes any
-plasma-bearing config entirely rather than guessing an unsupported threshold.
+PPT-bearing configs use a separate threshold below; their former
+single-GPU-thread cumulative kernels had a completely different performance
+curve.
 """
 const _GPU_KERR_ONLY_N_THRESHOLD = 16384
+
+"""
+    _GPU_PPT_N_THRESHOLD
+
+Minimum `length(y0)` for `:auto` dispatch of the supported mode-averaged PPT
+plasma path after its three serial cumtrapz kernels were replaced by
+two-level parallel prefix scans (PLANS.md §8.2). RTX 5060 Ti measurements:
+
+| n | GPU speedup over CPU |
+|---:|---:|
+| 2,049 | 0.82x |
+| 4,097 | 1.08x |
+| 8,193 | 2.94x |
+
+8192 deliberately skips the marginal crossover and selects the first measured
+substantial win. The CUDA master opt-in remains required.
+"""
+const _GPU_PPT_N_THRESHOLD = 8192
 
 """
     _gpu_native_eligible(f!, linop, n)
@@ -1094,9 +1106,9 @@ default `:auto`) selects GPU for this exact config:
 - `:on` — always, whenever the kernel supports it (the old unconditional
   behavior — useful to force GPU on a small config, e.g. to reproduce a
   specific benchmark/test run regardless of the measured threshold).
-- `:auto` (default) — GPU only for a plasma-free config with
-  `n >= _GPU_KERR_ONLY_N_THRESHOLD`; see that constant's docstring for the
-  measured data this is based on.
+- `:auto` (default) — GPU for a plasma-free config at
+  `n >= _GPU_KERR_ONLY_N_THRESHOLD`, or a supported PPT config at
+  `n >= _GPU_PPT_N_THRESHOLD`; see those constants for measured data.
 
 Also requires the `AMALTHEA_USE_RUST_CUDA_NATIVE=1` master opt-in
 (`cuda_native` field) regardless of `gpu_dispatch` — Rust's
@@ -1110,9 +1122,9 @@ function _gpu_native_eligible(f!, linop, n::Integer)
     _gpu_kernel_supports(f!, linop) || return false
     cfg.gpu_dispatch === :off && return false
     cfg.gpu_dispatch === :on && return true
-    # :auto — plasma-free and large enough (see _GPU_KERR_ONLY_N_THRESHOLD)
-    any(r -> r isa Amalthea.Nonlinear.PlasmaCumtrapz, f!.resp) && return false
-    n >= _GPU_KERR_ONLY_N_THRESHOLD
+    has_plasma = any(r -> r isa Amalthea.Nonlinear.PlasmaCumtrapz, f!.resp)
+    threshold = has_plasma ? _GPU_PPT_N_THRESHOLD : _GPU_KERR_ONLY_N_THRESHOLD
+    n >= threshold
 end
 
 function RustNativeStepper(f!, linop, y0, t, dt;
@@ -2229,9 +2241,10 @@ function RustNativeStepper(f!, linop, y0, t, dt;
     end
 
     # Copy initial field to Rust
-    ccall((:set_field, _LIBAMALTHEA_RK45), Cint,
-          (Ptr{Cvoid}, Ptr{ComplexF64}, Csize_t),
-          handle.ptr, pointer(y0), Csize_t(n))
+    rc = ccall((:set_field, _LIBAMALTHEA_RK45), Cint,
+               (Ptr{Cvoid}, Ptr{ComplexF64}, Csize_t),
+               handle.ptr, pointer(y0), Csize_t(n))
+    check_ffi(rc, "set_field")
 
     # docs/dev/BACKLOG.md S1 item 1: save accumulated planner wisdom (every plan this
     # construction created, across all the `native_set_*_params` calls

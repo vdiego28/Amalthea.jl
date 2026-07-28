@@ -557,14 +557,24 @@ wigner(t, A::Vector{<:Real}; kwargs...) = wigner(t, hilbert(A); kwargs...)
 
 Compute the Hilbert transform, i.e. find the analytic signal from a real signal.
 """
-function hilbert(x::Array{T,N}; dim = 1) where T <: Real where N
-    xf = FFTW.fft(x, dim)
-    n1 = size(xf, dim)÷2
-    n2 = size(xf, dim)
+function _analytic_signal_mask!(xf, dim)
+    n = size(xf, dim)
     idxlo = CartesianIndices(size(xf)[1:dim - 1])
     idxhi = CartesianIndices(size(xf)[dim + 1:end])
-    xf[idxlo, 2:n1, idxhi] .*= 2
-    xf[idxlo, (n1+1):n2, idxhi] .= 0
+    positive_end = iseven(n) ? n÷2 : (n+1)÷2
+    negative_start = iseven(n) ? n÷2 + 2 : (n+3)÷2
+    if positive_end >= 2
+        xf[idxlo, 2:positive_end, idxhi] .*= 2
+    end
+    if negative_start <= n
+        xf[idxlo, negative_start:n, idxhi] .= 0
+    end
+    return xf
+end
+
+function hilbert(x::Array{T,N}; dim = 1) where T <: Real where N
+    xf = FFTW.fft(x, dim)
+    _analytic_signal_mask!(xf, dim)
     return FFTW.ifft(xf, dim)
 end
 
@@ -580,16 +590,11 @@ function plan_hilbert!(x; dim=1)
     FT = FFTW.plan_fft(copy(x), dim, flags=Amalthea.settings["fftw_flag"])
     saveFFTwisdom()
     xf = Array{ComplexF64}(undef, size(FT))
-    idxlo = CartesianIndices(size(xf)[1:dim - 1])
-    idxhi = CartesianIndices(size(xf)[dim + 1:end])
-    n1 = size(xf, dim)÷2
-    n2 = size(xf, dim)
     xc = complex(x)
     function hilbert!(out, x)
         copyto!(xc, x)
         mul!(xf, FT, xc)
-        xf[idxlo, 2:n1, idxhi] .*= 2
-        xf[idxlo, (n1+1):n2, idxhi] .= 0
+        _analytic_signal_mask!(xf, dim)
         ldiv!(out, FT, xf)
     end
     return hilbert!
@@ -648,6 +653,9 @@ function oversample(t, x::Array{<:Real, N}; factor::Int=4, dim=1) where N
     idxlo = CartesianIndices(size(xfo)[1:dim - 1])
     idxhi = CartesianIndices(size(xfo)[dim + 1:end])
     xfo[idxlo, 1:len, idxhi] .= factor .* xf
+    if iseven(length(t))
+        xfo[idxlo, len, idxhi] ./= 2
+    end
     return to, FFTW.irfft(xfo, newlen_t, dim)
 end
 

@@ -21,6 +21,8 @@ pub struct CudaNativeSim {
     pub ystage_d: GpuBuffer,
     pub yerr_d: GpuBuffer,
     pub out_sq_d: GpuBuffer,
+    pub y0_sq_d: GpuBuffer,
+    pub y1_sq_d: GpuBuffer,
     pub reduced_d: GpuBuffer,
 
     // `eto_d`/`pto_d` are real, length `n_time_over` (oversampled real-space
@@ -73,6 +75,7 @@ pub struct CudaNativeSim {
     pub plas_fraction_d: GpuBuffer,
     pub plas_phase_d: GpuBuffer,
     pub plas_current_d: GpuBuffer,
+    pub plas_scan_sums_d: GpuBuffer,
 
     // cuFFT plans are transform-type-specific — a `CUFFT_D2Z` (forward,
     // real->complex) plan cannot be reused for `cufftExecZ2D` (inverse,
@@ -117,8 +120,11 @@ impl CudaNativeSim {
         let ystage_d = GpuBuffer::alloc(n * 16)?;
         let yerr_d = GpuBuffer::alloc(n * 16)?;
         let out_sq_d = GpuBuffer::alloc(n * 8)?;
-
-        let reduced_d = GpuBuffer::alloc(1024 * 8)?;
+        let y0_sq_d = GpuBuffer::alloc(n * 8)?;
+        let y1_sq_d = GpuBuffer::alloc(n * 8)?;
+        // Full-sized so reduction passes can safely ping-pong between the
+        // metric array and scratch at arbitrary n.
+        let reduced_d = GpuBuffer::alloc(n * 8)?;
 
         let eto_d = GpuBuffer::alloc(8)?;
         let pto_d = GpuBuffer::alloc(8)?;
@@ -133,6 +139,7 @@ impl CudaNativeSim {
         let plas_fraction_d = GpuBuffer::alloc(8)?;
         let plas_phase_d = GpuBuffer::alloc(8)?;
         let plas_current_d = GpuBuffer::alloc(8)?;
+        let plas_scan_sums_d = GpuBuffer::alloc(8)?;
 
         Ok(Self {
             n,
@@ -145,6 +152,8 @@ impl CudaNativeSim {
             ystage_d,
             yerr_d,
             out_sq_d,
+            y0_sq_d,
+            y1_sq_d,
             reduced_d,
             eto_d,
             pto_d,
@@ -174,6 +183,7 @@ impl CudaNativeSim {
             plas_fraction_d,
             plas_phase_d,
             plas_current_d,
+            plas_scan_sums_d,
             fft_r2c: 0,
             fft_c2r: 0,
         })
@@ -235,7 +245,107 @@ unsafe fn launch_checked(
     }
 }
 
+/// Reduces one `n`-element device array of `f64` values to a host scalar.
+/// The source and full-sized scratch buffers alternate roles on successive
+/// passes, avoiding the old in-place alias when more than two passes were
+/// required.
+unsafe fn reduce_sum(
+    driver: &crate::cuda::CudaDriverApi,
+    reduce_fn: crate::cuda::CUfunction,
+    input_dptr: u64,
+    scratch_dptr: u64,
+    n: usize,
+    block_size: u32,
+    label: &str,
+) -> Result<f64, String> {
+    unsafe {
+        let mut current_n = n;
+        let mut in_dptr = input_dptr;
+        let mut out_dptr = scratch_dptr;
+
+        while current_n > 1 {
+            let next_n = current_n.div_ceil(2 * block_size as usize);
+            let mut reduce_args: [*mut libc::c_void; 3] = [
+                &mut in_dptr as *mut _ as *mut _,
+                &mut out_dptr as *mut _ as *mut _,
+                &mut current_n as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                reduce_fn,
+                next_n as u32,
+                block_size,
+                block_size * 8,
+                &mut reduce_args,
+                &format!("{label}(n={current_n})"),
+            )?;
+            std::mem::swap(&mut in_dptr, &mut out_dptr);
+            current_n = next_n;
+        }
+
+        let mut sum = [0.0f64];
+        let rc = (driver.cuMemcpyDtoH_v2)(sum.as_mut_ptr() as *mut _, in_dptr, 8);
+        if rc != 0 {
+            return Err(format!("cuMemcpyDtoH_v2({label}) failed ({rc})"));
+        }
+        Ok(sum[0])
+    }
+}
+
 impl CudaNativeSim {
+    /// Parallel trapezoidal prefix scan for the PPT cumulative integrals.
+    /// The first launch scans 256-element blocks; the second scans the much
+    /// smaller block-total array in place. A physics-specific finalizer adds
+    /// the preceding-block offset.
+    unsafe fn plasma_scan(
+        &mut self,
+        input_dptr: u64,
+        output_dptr: u64,
+        label: &str,
+    ) -> Result<(), String> {
+        unsafe {
+            let ctx = get_gpu_context().ok_or_else(|| "GPU context not initialized".to_string())?;
+            let driver = get_driver_api()?;
+            let block_size = 256u32;
+            let n_blocks = self.n_time_over.div_ceil(block_size as usize);
+            let mut input = input_dptr;
+            let mut output = output_dptr;
+            let mut dt = self.plasma_dt;
+            let mut n_time = self.n_time_over as c_int;
+            let mut scan_args: [*mut libc::c_void; 5] = [
+                &mut input as *mut _ as *mut _,
+                &mut output as *mut _ as *mut _,
+                &mut self.plas_scan_sums_d.dptr as *mut _ as *mut _,
+                &mut dt as *mut _ as *mut _,
+                &mut n_time as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.plasma_scan_blocks_fn,
+                n_blocks as u32,
+                block_size,
+                block_size * 8,
+                &mut scan_args,
+                &format!("{label}:blocks"),
+            )?;
+
+            let mut n_blocks_i = n_blocks as c_int;
+            let mut sums_args: [*mut libc::c_void; 2] = [
+                &mut self.plas_scan_sums_d.dptr as *mut _ as *mut _,
+                &mut n_blocks_i as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.plasma_scan_block_sums_fn,
+                1,
+                1,
+                0,
+                &mut sums_args,
+                &format!("{label}:block_sums"),
+            )
+        }
+    }
+
     /// Full CPU-oracle RHS pipeline — mirrors
     /// `CpuNativeSim::rhs_mode_avg_real` (`native.rs:897-971`) Steps 1-7
     /// exactly, step-numbered in the comments below for cross-checking.
@@ -382,23 +492,25 @@ impl CudaNativeSim {
                     "plasma_rate",
                 )?;
 
+                // Parallel cumtrapz(rate) then rho transform.
+                let rate_dptr = self.plas_rate_d.dptr;
+                let fraction_dptr = self.plas_fraction_d.dptr;
+                self.plasma_scan(rate_dptr, fraction_dptr, "plasma_fraction_scan")?;
                 let mut preionfrac = self.plasma_preionfrac;
-                let mut plasma_dt = self.plasma_dt;
-                let mut fraction_args: [*mut libc::c_void; 5] = [
-                    &mut self.plas_rate_d.dptr as *mut _ as *mut _,
+                let mut fraction_args: [*mut libc::c_void; 4] = [
                     &mut self.plas_fraction_d.dptr as *mut _ as *mut _,
+                    &mut self.plas_scan_sums_d.dptr as *mut _ as *mut _,
                     &mut preionfrac as *mut _ as *mut _,
-                    &mut plasma_dt as *mut _ as *mut _,
                     &mut n_time_over_i as *mut _ as *mut _,
                 ];
                 launch_checked(
                     driver,
-                    ctx.plasma_fraction_fn,
-                    1,
-                    1,
+                    ctx.plasma_fraction_finalize_fn,
+                    grid_size_t,
+                    block_size,
                     0,
                     &mut fraction_args,
-                    "plasma_fraction",
+                    "plasma_fraction_finalize",
                 )?;
 
                 let mut e_ratio = self.plasma_e_ratio;
@@ -419,43 +531,52 @@ impl CudaNativeSim {
                     "plasma_phase",
                 )?;
 
+                // Parallel cumtrapz(phase), then add the ionization-loss
+                // current term elementwise.
+                let phase_dptr = self.plas_phase_d.dptr;
+                let current_dptr = self.plas_current_d.dptr;
+                self.plasma_scan(phase_dptr, current_dptr, "plasma_current_scan")?;
                 let mut ionpot = self.plasma_ionpot;
-                let mut current_args: [*mut libc::c_void; 8] = [
-                    &mut self.plas_phase_d.dptr as *mut _ as *mut _,
+                let mut current_args: [*mut libc::c_void; 7] = [
+                    &mut self.plas_current_d.dptr as *mut _ as *mut _,
+                    &mut self.plas_scan_sums_d.dptr as *mut _ as *mut _,
                     &mut self.plas_rate_d.dptr as *mut _ as *mut _,
                     &mut self.plas_fraction_d.dptr as *mut _ as *mut _,
                     &mut self.eto_d.dptr as *mut _ as *mut _,
                     &mut ionpot as *mut _ as *mut _,
-                    &mut plasma_dt as *mut _ as *mut _,
-                    &mut self.plas_current_d.dptr as *mut _ as *mut _,
                     &mut n_time_over_i as *mut _ as *mut _,
                 ];
                 launch_checked(
                     driver,
-                    ctx.plasma_current_fn,
-                    1,
-                    1,
+                    ctx.plasma_current_finalize_fn,
+                    grid_size_t,
+                    block_size,
                     0,
                     &mut current_args,
-                    "plasma_current",
+                    "plasma_current_finalize",
                 )?;
 
+                // `plas_phase_d` is no longer needed after the current has
+                // been formed, so reuse it for cumtrapz(current).
+                let current_dptr = self.plas_current_d.dptr;
+                let polarization_dptr = self.plas_phase_d.dptr;
+                self.plasma_scan(current_dptr, polarization_dptr, "plasma_polarization_scan")?;
                 let mut density = self.plasma_density;
                 let mut polarization_args: [*mut libc::c_void; 5] = [
-                    &mut self.plas_current_d.dptr as *mut _ as *mut _,
+                    &mut self.plas_phase_d.dptr as *mut _ as *mut _,
+                    &mut self.plas_scan_sums_d.dptr as *mut _ as *mut _,
                     &mut self.pto_d.dptr as *mut _ as *mut _,
                     &mut density as *mut _ as *mut _,
-                    &mut plasma_dt as *mut _ as *mut _,
                     &mut n_time_over_i as *mut _ as *mut _,
                 ];
                 launch_checked(
                     driver,
-                    ctx.plasma_polarization_fn,
-                    1,
-                    1,
+                    ctx.plasma_polarization_finalize_fn,
+                    grid_size_t,
+                    block_size,
                     0,
                     &mut polarization_args,
-                    "plasma_polarization",
+                    "plasma_polarization_finalize",
                 )?;
             }
 
@@ -513,9 +634,14 @@ impl CudaNativeSim {
 
 impl NativeBackend for CudaNativeSim {
     unsafe fn set_field(&mut self, data: *const c_double, n: size_t) -> i32 {
+        if data.is_null() || n != self.n {
+            return -1;
+        }
         unsafe {
             let slice = std::slice::from_raw_parts(data as *const Complex<f64>, n);
-            self.field_d.copy_to_device(slice).unwrap();
+            if self.field_d.copy_to_device(slice).is_err() {
+                return -1;
+            }
             // Seed ks_d[0] with the true FSAL stage-0 derivative for this
             // initial condition — mirrors `CpuNativeSim::set_field`'s
             // `rhs_mode_avg_real(0, &field)` call. Without this, `ks_d[0]`
@@ -541,30 +667,42 @@ impl NativeBackend for CudaNativeSim {
         // ran backwards (device -> host, aliasing `data` through an
         // unsound `*const` -> `*mut` cast) and silently discarded every
         // windowing update since Phase 8 made native the default.
+        if data.is_null() || n != self.n {
+            return -1;
+        }
         unsafe {
             let slice = std::slice::from_raw_parts(data as *const Complex<f64>, n);
-            self.field_d.copy_to_device(slice).unwrap();
+            if self.field_d.copy_to_device(slice).is_err() {
+                return -1;
+            }
         }
         0
     }
 
     unsafe fn get_field(&self, data: *mut c_double, n: size_t) -> i32 {
+        if data.is_null() || n != self.n {
+            return -1;
+        }
         unsafe {
             let slice = std::slice::from_raw_parts_mut(data as *mut Complex<f64>, n);
-            self.field_d.copy_to_host(slice).unwrap();
+            if self.field_d.copy_to_host(slice).is_err() {
+                return -1;
+            }
         }
         0
     }
 
     unsafe fn get_ks_stage(&self, idx: size_t, data: *mut c_double, n: size_t) -> i32 {
-        if idx < 7 {
+        if data.is_null() || idx >= 7 || n != self.n {
+            -1
+        } else {
             unsafe {
                 let slice = std::slice::from_raw_parts_mut(data as *mut Complex<f64>, n);
-                self.ks_d[idx].copy_to_host(slice).unwrap();
+                if self.ks_d[idx].copy_to_host(slice).is_err() {
+                    return -1;
+                }
             }
             0
-        } else {
-            -1
         }
     }
 
@@ -726,6 +864,7 @@ impl NativeBackend for CudaNativeSim {
         self.plas_fraction_d = GpuBuffer::alloc(n_time_over * 8).unwrap();
         self.plas_phase_d = GpuBuffer::alloc(n_time_over * 8).unwrap();
         self.plas_current_d = GpuBuffer::alloc(n_time_over * 8).unwrap();
+        self.plas_scan_sums_d = GpuBuffer::alloc(n_time_over.div_ceil(256).max(1) * 8).unwrap();
 
         // towin: length n_time_over — matches `CpuNativeSim`'s own
         // `set_mode_avg_params` (`s.towin = ...from_raw_parts(towin,
@@ -1281,32 +1420,57 @@ impl NativeBackend for CudaNativeSim {
                     "rk45_accumulate_error",
                 )?;
 
-                let mut rtol_d = _rtol;
-                let mut atol_d = _atol;
-                // `weaknorm_elem_kernel`'s actual signature (kernels.cu) is
-                // `(yerr, y0, y1, rtol, atol, out_sq, n)` — 7 parameters. The
-                // previous 6-element array here (wrong count *and* wrong order, and
-                // missing `y1`/the trial new-field pointer entirely) made
-                // `cuLaunchKernel` read a 7th "argument" pointer past the end of
-                // this array — undefined stack memory — which the kernel then
-                // dereferenced as `y1`, an illegal memory access (see docs/dev/BACKLOG.md's
-                // GPU-resident stepper entry). `step()` doesn't have a trial
-                // post-step field to use for `y1` (that's only computed afterward,
-                // once the step is already known to be accepted) — passing
-                // `field_d` for both `y0` and `y1` matches this kernel's own
-                // max(|y0|,|y1|) error-weight formula closely enough for a
-                // fixed-step (`max_dt=min_dt=dt`) config, where `err`'s exact value
-                // no longer affects the accepted step-size sequence (only whether
-                // `err<=1`, and this config's steps are always well within
-                // tolerance). Computing a true pre-acceptance trial solution is an
-                // adaptive-step correctness concern, out of scope here.
+                // Form the genuine fifth-order trial state *before* the
+                // acceptance decision, exactly like CpuNativeSim::step.
+                // `ystage_d` is dead after the seven RK stages, so it doubles
+                // as a transactional trial buffer: rejection leaves
+                // `field_d` untouched; acceptance propagates and swaps this
+                // buffer into the resident field.
+                self.ystage_d.copy_from_device(&self.field_d)?;
+                if _locextrap != 0 {
+                    let mut b5 = crate::native::DP_B5;
+                    let mut trial_args: [*mut libc::c_void; 18] = [
+                        &mut self.ystage_d.dptr as *mut _ as *mut _,
+                        &mut self.field_d.dptr as *mut _ as *mut _,
+                        &mut self.ks_d[0].dptr as *mut _ as *mut _,
+                        &mut self.ks_d[1].dptr as *mut _ as *mut _,
+                        &mut self.ks_d[2].dptr as *mut _ as *mut _,
+                        &mut self.ks_d[3].dptr as *mut _ as *mut _,
+                        &mut self.ks_d[4].dptr as *mut _ as *mut _,
+                        &mut self.ks_d[5].dptr as *mut _ as *mut _,
+                        &mut self.ks_d[6].dptr as *mut _ as *mut _,
+                        &mut b5[0] as *mut _ as *mut _,
+                        &mut b5[1] as *mut _ as *mut _,
+                        &mut b5[2] as *mut _ as *mut _,
+                        &mut b5[3] as *mut _ as *mut _,
+                        &mut b5[4] as *mut _ as *mut _,
+                        &mut b5[5] as *mut _ as *mut _,
+                        &mut b5[6] as *mut _ as *mut _,
+                        &mut self.n as *mut _ as *mut _,
+                        &mut dt as *mut _ as *mut _,
+                    ];
+                    launch_checked(
+                        driver,
+                        ctx.rk45_accumulate_stage_fn,
+                        grid_size,
+                        block_size,
+                        0,
+                        &mut trial_args,
+                        "rk45_accumulate_stage(trial)",
+                    )?;
+                }
+
+                // Emit the three squared-magnitude arrays required by
+                // native.rs::weaknorm_c64. The former kernel used an
+                // element-wise tolerance (a different norm entirely) and
+                // also received `field_d` for both old and trial states.
                 let mut weaknorm_elem_args: [*mut libc::c_void; 7] = [
                     &mut self.yerr_d.dptr as *mut _ as *mut _,
                     &mut self.field_d.dptr as *mut _ as *mut _,
-                    &mut self.field_d.dptr as *mut _ as *mut _,
-                    &mut rtol_d as *mut _ as *mut _,
-                    &mut atol_d as *mut _ as *mut _,
+                    &mut self.ystage_d.dptr as *mut _ as *mut _,
                     &mut self.out_sq_d.dptr as *mut _ as *mut _,
+                    &mut self.y0_sq_d.dptr as *mut _ as *mut _,
+                    &mut self.y1_sq_d.dptr as *mut _ as *mut _,
                     &mut self.n as *mut _ as *mut _,
                 ];
                 launch_checked(
@@ -1319,36 +1483,35 @@ impl NativeBackend for CudaNativeSim {
                     "weaknorm_elem",
                 )?;
 
-                let mut current_n = self.n;
-                let mut in_dptr = self.out_sq_d.dptr;
-                let mut out_dptr = self.reduced_d.dptr;
-
-                while current_n > 1 {
-                    let next_n = current_n.div_ceil(block_size as usize);
-                    let mut reduce_args: [*mut libc::c_void; 3] = [
-                        &mut in_dptr as *mut _ as *mut _,
-                        &mut out_dptr as *mut _ as *mut _,
-                        &mut current_n as *mut _ as *mut _,
-                    ];
-                    launch_checked(
-                        driver,
-                        ctx.weaknorm_reduce_fn,
-                        next_n as u32,
-                        block_size,
-                        block_size * 8,
-                        &mut reduce_args,
-                        &format!("weaknorm_reduce(n={current_n})"),
-                    )?;
-                    in_dptr = out_dptr;
-                    current_n = next_n;
-                }
-
-                let mut err_sq = [0.0f64];
-                let rc = (driver.cuMemcpyDtoH_v2)(err_sq.as_mut_ptr() as *mut _, in_dptr, 8);
-                if rc != 0 {
-                    return Err(format!("cuMemcpyDtoH_v2(err_sq) failed ({rc})"));
-                }
-                let err = (err_sq[0] / (self.n as f64)).sqrt();
+                let syerr = reduce_sum(
+                    driver,
+                    ctx.weaknorm_reduce_fn,
+                    self.out_sq_d.dptr,
+                    self.reduced_d.dptr,
+                    self.n,
+                    block_size,
+                    "weaknorm_reduce(yerr)",
+                )?;
+                let sy = reduce_sum(
+                    driver,
+                    ctx.weaknorm_reduce_fn,
+                    self.y0_sq_d.dptr,
+                    self.reduced_d.dptr,
+                    self.n,
+                    block_size,
+                    "weaknorm_reduce(y0)",
+                )?;
+                let syn = reduce_sum(
+                    driver,
+                    ctx.weaknorm_reduce_fn,
+                    self.y1_sq_d.dptr,
+                    self.reduced_d.dptr,
+                    self.n,
+                    block_size,
+                    "weaknorm_reduce(y1)",
+                )?;
+                let errwt = f64::max(f64::max(sy.sqrt(), syn.sqrt()), _atol);
+                let err = syerr.sqrt() / _rtol / errwt;
                 let ok = err <= 1.0;
 
                 let (dtn_new, errlast_new, ok_final) = crate::native::stepcontrol_pi(
@@ -1366,49 +1529,12 @@ impl NativeBackend for CudaNativeSim {
                     tn_new = t + dt;
                     // FSAL k7→k1 is NOT done here — see step 0 above.
 
-                    // Final 5th-order solution: field_d += dt * Σ DP_B5[i] * ks_d[i] (in place —
-                    // safe: each thread reads its own field_d[idx] into a local before writing it
-                    // back). This mirrors CpuNativeSim::step's `let b0 = dt * DP_B5[0]; ...` block
-                    // (native.rs ~line 2521), which the GPU path was previously missing entirely —
-                    // it used to just re-propagate the untouched old field, silently dropping the
-                    // whole nonlinear RK contribution on every accepted step.
-                    if _locextrap != 0 {
-                        let mut b5 = crate::native::DP_B5;
-                        let mut final_args: [*mut libc::c_void; 18] = [
-                            &mut self.field_d.dptr as *mut _ as *mut _,
-                            &mut self.field_d.dptr as *mut _ as *mut _,
-                            &mut self.ks_d[0].dptr as *mut _ as *mut _,
-                            &mut self.ks_d[1].dptr as *mut _ as *mut _,
-                            &mut self.ks_d[2].dptr as *mut _ as *mut _,
-                            &mut self.ks_d[3].dptr as *mut _ as *mut _,
-                            &mut self.ks_d[4].dptr as *mut _ as *mut _,
-                            &mut self.ks_d[5].dptr as *mut _ as *mut _,
-                            &mut self.ks_d[6].dptr as *mut _ as *mut _,
-                            &mut b5[0] as *mut _ as *mut _,
-                            &mut b5[1] as *mut _ as *mut _,
-                            &mut b5[2] as *mut _ as *mut _,
-                            &mut b5[3] as *mut _ as *mut _,
-                            &mut b5[4] as *mut _ as *mut _,
-                            &mut b5[5] as *mut _ as *mut _,
-                            &mut b5[6] as *mut _ as *mut _,
-                            &mut self.n as *mut _ as *mut _,
-                            &mut dt as *mut _ as *mut _,
-                        ];
-                        launch_checked(
-                            driver,
-                            ctx.rk45_accumulate_stage_fn,
-                            grid_size,
-                            block_size,
-                            0,
-                            &mut final_args,
-                            "rk45_accumulate_stage(final)",
-                        )?;
-                    }
-
-                    // apply prop on field_d by tn_new - t
+                    // The accepted trial is still in the interaction
+                    // picture. Propagate it to `tn_new`, then make it the
+                    // resident field with an O(1) ownership swap.
                     let mut dt_fin = tn_new - t;
                     let mut apply_args_fin: [*mut libc::c_void; 4] = [
-                        &mut self.field_d.dptr as *mut _ as *mut _,
+                        &mut self.ystage_d.dptr as *mut _ as *mut _,
                         &mut self.linop_d.dptr as *mut _ as *mut _,
                         &mut self.n as *mut _ as *mut _,
                         &mut dt_fin as *mut _ as *mut _,
@@ -1420,12 +1546,17 @@ impl NativeBackend for CudaNativeSim {
                         block_size,
                         0,
                         &mut apply_args_fin,
-                        "apply_prop(field, final)",
+                        "apply_prop(trial, final)",
                     )?;
-                    self.get_field(yn as *mut c_double, self.n); // sync accepted step to host
+                    std::mem::swap(&mut self.field_d, &mut self.ystage_d);
+                    if self.get_field(yn as *mut c_double, self.n) != 0 {
+                        return Err("get_field failed after accepted CUDA step".to_string());
+                    }
                 } else {
                     tn_new = _t_new;
-                    self.get_field(yn as *mut c_double, self.n); // return untouched field
+                    if self.get_field(yn as *mut c_double, self.n) != 0 {
+                        return Err("get_field failed after rejected CUDA step".to_string());
+                    }
                 }
 
                 (*result).ok = ok_final as i32;
@@ -1464,5 +1595,115 @@ impl Drop for CudaNativeSim {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cuda_or_skip(test_name: &str) -> bool {
+        if let Err(e) = crate::cuda::init_gpu_context() {
+            assert!(
+                !crate::cuda::tests_require_cuda(),
+                "{test_name}: CUDA is required but unavailable: {e}"
+            );
+            eprintln!("Skipping {test_name}: {e}");
+            return false;
+        }
+        true
+    }
+
+    #[test]
+    fn plasma_scan_matches_sequential_across_partial_blocks() {
+        if !cuda_or_skip("CUDA plasma scan test") {
+            return;
+        }
+
+        // 513 spans two full 256-sample blocks plus one sample, so this
+        // catches both missing block offsets and partial-final-block errors.
+        let n = 513usize;
+        let dt = 0.125;
+        let linop = [Complex::new(0.0, 0.0)];
+        let mut sim = CudaNativeSim::new(1, &linop).expect("CudaNativeSim::new");
+        sim.n_time_over = n;
+        sim.plasma_dt = dt;
+        sim.plas_scan_sums_d = GpuBuffer::alloc(n.div_ceil(256) * 8).unwrap();
+
+        let input: Vec<f64> = (0..n)
+            .map(|i| ((i * 37 + 11) % 101) as f64 / 100.0)
+            .collect();
+        let input_d = GpuBuffer::alloc(n * 8).unwrap();
+        let output_d = GpuBuffer::alloc(n * 8).unwrap();
+        input_d.copy_to_device(&input).unwrap();
+
+        unsafe {
+            sim.plasma_scan(input_d.dptr, output_d.dptr, "test_plasma_scan")
+                .unwrap();
+        }
+
+        let mut got = vec![0.0; n];
+        output_d.copy_to_host(&mut got).unwrap();
+        let mut block_sums = vec![0.0; n.div_ceil(256)];
+        sim.plas_scan_sums_d.copy_to_host(&mut block_sums).unwrap();
+        for (i, value) in got.iter_mut().enumerate() {
+            if i / 256 > 0 {
+                *value += block_sums[i / 256 - 1];
+            }
+        }
+
+        let mut expected = vec![0.0; n];
+        for i in 1..n {
+            expected[i] = expected[i - 1] + 0.5 * (input[i - 1] + input[i]) * dt;
+        }
+        let max_abs = got
+            .iter()
+            .zip(&expected)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f64, f64::max);
+        assert!(max_abs < 1e-12, "max_abs={max_abs:e}");
+    }
+
+    #[test]
+    fn field_transfers_reject_invalid_ffi_arguments() {
+        if !cuda_or_skip("CUDA field-transfer contract test") {
+            return;
+        }
+
+        let n = 4usize;
+        let linop = vec![Complex::new(0.0, 0.0); n];
+        let mut sim = CudaNativeSim::new(n, &linop).expect("CudaNativeSim::new");
+        let input: Vec<Complex<f64>> = (0..n)
+            .map(|i| Complex::new(i as f64, -(i as f64)))
+            .collect();
+        let mut output = vec![Complex::new(0.0, 0.0); n];
+
+        unsafe {
+            assert_eq!(sim.set_field(std::ptr::null(), n), -1);
+            assert_eq!(sim.set_field(input.as_ptr() as *const c_double, n + 1), -1);
+            assert_eq!(sim.resync_field(std::ptr::null(), n), -1);
+            assert_eq!(
+                sim.resync_field(input.as_ptr() as *const c_double, n + 1),
+                -1
+            );
+            assert_eq!(sim.get_field(std::ptr::null_mut(), n), -1);
+            assert_eq!(
+                sim.get_field(output.as_mut_ptr() as *mut c_double, n + 1),
+                -1
+            );
+            assert_eq!(sim.get_ks_stage(0, std::ptr::null_mut(), n), -1);
+            assert_eq!(
+                sim.get_ks_stage(7, output.as_mut_ptr() as *mut c_double, n),
+                -1
+            );
+            assert_eq!(
+                sim.get_ks_stage(0, output.as_mut_ptr() as *mut c_double, n + 1),
+                -1
+            );
+
+            assert_eq!(sim.resync_field(input.as_ptr() as *const c_double, n), 0);
+            assert_eq!(sim.get_field(output.as_mut_ptr() as *mut c_double, n), 0);
+        }
+        assert_eq!(output, input);
     }
 }

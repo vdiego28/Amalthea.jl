@@ -17,9 +17,8 @@ portable low-value combinations, or arbitrary user closures — a genuine
 barrier).
 
 The geometry tables describe the production/default **CPU resident backend**.
-The CUDA layer is called out separately under Cross-cutting notes and is
-currently unusable because its nonlinear RHS is missing, even for a
-configuration that passes `_gpu_native_eligible`.
+The narrower, opt-in CUDA layer is called out separately under Cross-cutting
+notes.
 
 Legend: ✅ native · ⚠️ native with a restriction (see note) · ❌ falls back
 (Julia `PreconStepper`, correct but slower) · — not applicable / no such
@@ -92,12 +91,13 @@ see the Modal table below).
 - **GPU (`CudaNativeSim`, `AMALTHEA_USE_RUST_CUDA_NATIVE=1`)** is a much
   narrower slice layered on top of all of the above: mode-averaged RealGrid
   only, Kerr + PPT plasma only (no Raman, no ADK, no radial/modal/free-space).
-  See `GPU.md` and `BACKLOG.md` S3. **Status 2026-07-25:** the 2026-07-23
-  defect that made its resident RHS contribute *no nonlinearity at all* is
-  fixed and hardware-verified, so this row now describes working scope. It
-  remains 🟡 rather than 🟢 for one reason: there is no GPU CI, so nothing
-  re-measures it automatically between manual runs. `BACKLOG.md` S3 items 0
-  and 2.
+  See `GPU.md` and `BACKLOG.md` S3. **Status 2026-07-27:** the nonlinear RHS,
+  adaptive error/acceptance path, and parallel PPT prefix scans are
+  hardware-verified. The supported Kerr and Kerr+PPT configurations agree
+  with the CPU resident backend through deliberate rejected-step retries and
+  adaptive trajectories. It remains 🟡 rather than 🟢 because there is no GPU
+  CI to re-measure it automatically between manual runs. `BACKLOG.md` S3
+  items 0 and 2.
 - **Arbitrary low-level closures** (a bare `f!` that isn't
   `TransModeAvg`/`TransRadial`/`TransModal`/`TransFree`, or a `densityfun`/
   mode-field that isn't one of the recognized transferable shapes — splines,

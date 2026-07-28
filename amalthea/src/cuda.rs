@@ -4,6 +4,11 @@
 use std::ffi::CString;
 use std::sync::OnceLock;
 
+#[cfg(test)]
+pub(crate) fn tests_require_cuda() -> bool {
+    std::env::var("AMALTHEA_REQUIRE_CUDA_TESTS").is_ok_and(|value| value == "1")
+}
+
 // CUDA types
 pub type CUresult = libc::c_int;
 pub type CUdevice = libc::c_int;
@@ -315,10 +320,12 @@ pub struct GpuContext {
     pub rhs_mode_avg_real_fn: CUfunction,
     pub rhs_mode_avg_env_fn: CUfunction,
     pub apply_time_window_fn: CUfunction,
-    pub plasma_fraction_fn: CUfunction,
+    pub plasma_scan_blocks_fn: CUfunction,
+    pub plasma_scan_block_sums_fn: CUfunction,
+    pub plasma_fraction_finalize_fn: CUfunction,
     pub plasma_phase_fn: CUfunction,
-    pub plasma_current_fn: CUfunction,
-    pub plasma_polarization_fn: CUfunction,
+    pub plasma_current_finalize_fn: CUfunction,
+    pub plasma_polarization_finalize_fn: CUfunction,
     /// Step 1 (zero-pad + scale spectrum into the oversampled buffer) —
     /// BACKLOG.md S3 item 0.
     pub expand_spectrum_fn: CUfunction,
@@ -522,14 +529,42 @@ pub fn init_gpu_context() -> Result<&'static GpuContext, String> {
                     return Err("cuModuleGetFunction apply_time_window_kernel failed".to_string());
                 }
 
-                let mut plasma_fraction_fn = std::ptr::null_mut();
+                let mut plasma_scan_blocks_fn = std::ptr::null_mut();
                 res = (driver.cuModuleGetFunction)(
-                    &mut plasma_fraction_fn,
+                    &mut plasma_scan_blocks_fn,
                     module,
-                    CString::new("plasma_fraction_kernel").unwrap().as_ptr(),
+                    CString::new("plasma_scan_blocks_kernel").unwrap().as_ptr(),
                 );
                 if res != 0 {
-                    return Err("cuModuleGetFunction plasma_fraction_kernel failed".to_string());
+                    return Err("cuModuleGetFunction plasma_scan_blocks_kernel failed".to_string());
+                }
+
+                let mut plasma_scan_block_sums_fn = std::ptr::null_mut();
+                res = (driver.cuModuleGetFunction)(
+                    &mut plasma_scan_block_sums_fn,
+                    module,
+                    CString::new("plasma_scan_block_sums_kernel")
+                        .unwrap()
+                        .as_ptr(),
+                );
+                if res != 0 {
+                    return Err(
+                        "cuModuleGetFunction plasma_scan_block_sums_kernel failed".to_string()
+                    );
+                }
+
+                let mut plasma_fraction_finalize_fn = std::ptr::null_mut();
+                res = (driver.cuModuleGetFunction)(
+                    &mut plasma_fraction_finalize_fn,
+                    module,
+                    CString::new("plasma_fraction_finalize_kernel")
+                        .unwrap()
+                        .as_ptr(),
+                );
+                if res != 0 {
+                    return Err(
+                        "cuModuleGetFunction plasma_fraction_finalize_kernel failed".to_string()
+                    );
                 }
 
                 let mut plasma_phase_fn = std::ptr::null_mut();
@@ -542,24 +577,33 @@ pub fn init_gpu_context() -> Result<&'static GpuContext, String> {
                     return Err("cuModuleGetFunction plasma_phase_kernel failed".to_string());
                 }
 
-                let mut plasma_current_fn = std::ptr::null_mut();
+                let mut plasma_current_finalize_fn = std::ptr::null_mut();
                 res = (driver.cuModuleGetFunction)(
-                    &mut plasma_current_fn,
+                    &mut plasma_current_finalize_fn,
                     module,
-                    CString::new("plasma_current_kernel").unwrap().as_ptr(),
+                    CString::new("plasma_current_finalize_kernel")
+                        .unwrap()
+                        .as_ptr(),
                 );
                 if res != 0 {
-                    return Err("cuModuleGetFunction plasma_current_kernel failed".to_string());
+                    return Err(
+                        "cuModuleGetFunction plasma_current_finalize_kernel failed".to_string()
+                    );
                 }
 
-                let mut plasma_polarization_fn = std::ptr::null_mut();
+                let mut plasma_polarization_finalize_fn = std::ptr::null_mut();
                 res = (driver.cuModuleGetFunction)(
-                    &mut plasma_polarization_fn,
+                    &mut plasma_polarization_finalize_fn,
                     module,
-                    CString::new("plasma_polarization_kernel").unwrap().as_ptr(),
+                    CString::new("plasma_polarization_finalize_kernel")
+                        .unwrap()
+                        .as_ptr(),
                 );
                 if res != 0 {
-                    return Err("cuModuleGetFunction plasma_polarization_kernel failed".to_string());
+                    return Err(
+                        "cuModuleGetFunction plasma_polarization_finalize_kernel failed"
+                            .to_string(),
+                    );
                 }
 
                 let mut expand_spectrum_fn = std::ptr::null_mut();
@@ -607,10 +651,12 @@ pub fn init_gpu_context() -> Result<&'static GpuContext, String> {
                     rhs_mode_avg_real_fn,
                     rhs_mode_avg_env_fn,
                     apply_time_window_fn,
-                    plasma_fraction_fn,
+                    plasma_scan_blocks_fn,
+                    plasma_scan_block_sums_fn,
+                    plasma_fraction_finalize_fn,
                     plasma_phase_fn,
-                    plasma_current_fn,
-                    plasma_polarization_fn,
+                    plasma_current_finalize_fn,
+                    plasma_polarization_finalize_fn,
                     expand_spectrum_fn,
                     scale_real_fn,
                     finalize_spectrum_fn,
@@ -655,7 +701,12 @@ impl GpuBuffer {
         activate_context()?;
         let driver = get_driver_api()?;
         let bytes = std::mem::size_of_val(src);
-        assert!(bytes <= self.size);
+        if bytes > self.size {
+            return Err(format!(
+                "host-to-device copy ({bytes} bytes) exceeds GPU buffer ({} bytes)",
+                self.size
+            ));
+        }
         let res = unsafe {
             (driver.cuMemcpyHtoD_v2)(self.dptr, src.as_ptr() as *const libc::c_void, bytes)
         };
@@ -669,7 +720,12 @@ impl GpuBuffer {
         activate_context()?;
         let driver = get_driver_api()?;
         let bytes = std::mem::size_of_val(dst);
-        assert!(bytes <= self.size);
+        if bytes > self.size {
+            return Err(format!(
+                "device-to-host copy ({bytes} bytes) exceeds GPU buffer ({} bytes)",
+                self.size
+            ));
+        }
         let res = unsafe {
             (driver.cuMemcpyDtoH_v2)(dst.as_mut_ptr() as *mut libc::c_void, self.dptr, bytes)
         };
