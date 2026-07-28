@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785243124568,
+  "lastUpdate": 1785258420260,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -666,6 +666,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.917278,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "distinct": true,
+          "id": "0c8c5e86db8f3682b94bc8ccc739f9bbfd1e6cc2",
+          "message": "Start v1.0.2 development after release",
+          "timestamp": "2026-07-28T12:54:11-04:00",
+          "tree_id": "fb9d63bbaca4b97009dbebabf806f0d769a3501c",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/0c8c5e86db8f3682b94bc8ccc739f9bbfd1e6cc2"
+        },
+        "date": 1785258419409,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.889544,
             "unit": "ms/step"
           }
         ]
