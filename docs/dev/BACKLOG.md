@@ -7,7 +7,7 @@ Deferred work and known issues for Amalthea.jl. Severity: 🔴 correctness · �
 > [`ARCHIVE.md`](ARCHIVE.md) with its section names unchanged. Cross-references
 > below to a phase, to S1/S4, or to "Done (recent)" resolve there.
 
-## Start here — current resume queue (2026-07-27)
+## Start here — current resume queue (2026-07-28)
 
 This is the authoritative short queue. The long sections below retain design
 history and measured evidence, but older words such as "next", "not started",
@@ -92,9 +92,10 @@ or "verified" inside a superseded narrative do not outrank this list.
    are far ahead of it. `deps/build.jl` now refuses the download entirely for
    a source checkout (`_is_source_checkout()`, `.git` present — registered
    `Pkg.add` installs keep the fast path), and both workflows set
-   `AMALTHEA_RUST_SKIP_DOWNLOAD=1` at workflow level. **Open:** bump
-   `Project.toml` to a `-DEV` version after each release, or the same trap
-   re-arms after the next tag for source tarballs. See
+   `AMALTHEA_RUST_SKIP_DOWNLOAD=1` at workflow level. **Closed
+   2026-07-28:** immediately after tagging `v1.0.1`, `main` moved to
+   `Project.toml` version `1.0.2-DEV` (and Python `1.0.2.dev0`), so source
+   tarballs no longer identify themselves as the preceding release. See
    `docs/dev/native-port/portlog-inbox/prebuilt-asset-compat.md` §7.
 5. ⚪ **Short-kernel Raman convolution — measured 2026-07-25, RECOMMEND
    AGAINST, closed.** This **reverses Phase J.6(c)'s prior "recommend"**,
@@ -173,11 +174,17 @@ or "verified" inside a superseded narrative do not outrank this list.
    finite, nonzero full=true/npol=2/plasma transform whose plasma control
    effect exceeds 1e-8. Focused test 8/8, `sim-multimode` 41/41, and the
    corrected shortened end-to-end example completed in 39 accepted steps.
-7. ⚪ **Prepare and publish `v1.0.1`.** Chosen over republishing `v1.0.0`'s
-   assets. `release.yml` already emits canonical `libamalthea-*` names, so
-   the whole remaining job is: bump `Project.toml` `version` to `1.0.1`, tag
-   `v1.0.1`, and push. Left entirely to the lead — it is outward-facing, and
-   once item 4's fallback is in place nothing is broken while it waits.
+7. 🟢 **Prepare and publish `v1.0.1` — RELEASED 2026-07-28.** Release commit
+   `b991d7c` passed the 16/16-job test matrix (`30360587278`) and
+   documentation (`30360585023`) before tagging. Release workflow
+   `30379620216` built and published canonical Linux x86_64, Apple Silicon,
+   and Windows x86_64 `libamalthea-*` assets. The initially assembled
+   checksum manifest exposed a Windows formatting defect (single separator
+   space plus CRLF): the Julia installer's whitespace parser accepted it,
+   but GNU `sha256sum -c` skipped that line. The published manifest was
+   replaced with a two-space/LF form verified against all three downloaded
+   binaries, and `release.yml` now generates that portable form directly.
+   Release: <https://github.com/vdiego28/Amalthea.jl/releases/tag/v1.0.1>.
 8. ⚪ **GPU `err` estimate uses a placeholder.** `weaknorm_elem_kernel` passes
    `field_d` as both the "old" and "trial new" field because `step()` has no
    pre-acceptance trial solution. Harmless under fixed-step (`stepcontrol_pi`

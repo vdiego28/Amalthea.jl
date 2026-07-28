@@ -1740,3 +1740,52 @@ implementation gates are green.
 
 **Next:** Merge `test-discovery-claude-exclusion` into `main`, push, and
 require both the final `main` test matrix and Documentation workflow to pass.
+
+## 2026-07-28 — Release 1.0.1 — publication and checksum hardening — Codex (GPT-5)
+
+**Status:** complete
+
+**Did:** Published `v1.0.1` from release commit `b991d7c`, with synchronized
+Julia/Python `1.0.1` metadata, changelog notes, and canonical prebuilt
+`libamalthea-*` assets for Linux x86_64, Apple Silicon, and Windows x86_64.
+After publication, moved development metadata to `1.0.2-DEV` /
+`1.0.2.dev0`, corrected the Windows checksum-manifest writer, and updated the
+README/live backlog.
+
+**How:** The release commit changed only `Project.toml`,
+`python/pyproject.toml`, and `CHANGELOG.md`; no solver or FFI symbol changed.
+Lightweight tag `v1.0.1` points to `b991d7c4709055713186c03bfd825dc53b518656`.
+`.github/workflows/release.yml` now uses
+``System.IO.File.WriteAllText(..., "$hash  <asset>`n", ASCII)`` for the Windows
+checksum line, giving the same two-space/LF format as the Unix `shasum`
+outputs. The first published manifest was replaced in place; all binary
+assets were left unchanged.
+
+**Decisions:** Gate the tag on the release commit's full main-branch Actions,
+not only the preceding `main` run. Keep the existing lightweight-tag style.
+Advance both package surfaces immediately after the tag so development
+archives cannot impersonate `v1.0.1`. Normalize and replace the manifest
+rather than accepting an installer-specific file: checksum assets should
+also work with standard `sha256sum -c`.
+
+**Gotchas:** `gh repo view` follows the upstream-tracking default in this
+checkout and reports `LupoLab/Luna.jl`; release commands must name
+`vdiego28/Amalthea.jl` explicitly. PowerShell `Out-File` produced one space
+and CRLF, while the publish job blindly concatenated per-platform files.
+Amalthea's `split(line)` parser tolerated that, so only an external
+`sha256sum -c` audit exposed it. The isolated `/tmp` worktree can disappear
+between turns and leave prunable Git metadata; recreate it only after
+`git worktree prune`.
+
+**Tests:** Local TOML assertions confirmed both tag versions were `1.0.1`;
+portable `cargo build --release` passed and compiled CUDA PTX. Pre-tag GitHub
+run `30360587278` passed all 16 test/benchmark/Python jobs and documentation
+run `30360585023` passed. Release run `30379620216` passed all three portable
+build jobs plus publication. The corrected manifest was downloaded back from
+GitHub and `sha256sum -c` reported `OK` for all three assets:
+`1866f555…3848` (macOS), `52e2cf19…4985` (Windows), and
+`d08e2725…e315` (Linux).
+
+**Next:** Standing CUDA CI remains the immediate robustness task. The
+uncommitted `gpu-adaptive-error-and-expansion` branch stays isolated until
+post-release review and merge.
