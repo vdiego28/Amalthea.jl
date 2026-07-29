@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Run any CI test group as load-balanced parallel worker processes.
 
-Splits a group's tagged test files across at most 10 worker processes using
+Splits a group's tagged test items across at most 10 worker processes using
 LPT (longest-processing-time-first) bin packing, keyed on historical
-per-file durations in test/<group>_test_timings.txt, so workers finish at
+per-item durations in test/<group>_test_timings.txt, so workers finish at
 roughly the same time instead of one long file straggling behind many short
-ones. Each worker runs its assigned files in one julia process via
+ones. Each worker runs its assigned items in one Julia process via
 run_group_bucket.jl (required: @run_package_tests resolves the package root
 from its own file location, so it must live in test/, not a scratch dir).
 
@@ -14,11 +14,14 @@ little benefit from this — parallelism is capped at the file count, not
 --max-workers.
 
 Usage: julia --project must be runnable from the repo root.
-    python3 test/parallel_group_tests.py --group rust [--max-workers N] [--update-timings]
+    python3 test/parallel_group_tests.py --group rust [--max-workers N] [--ci]
+        [--update-timings | --update-timings-only]
 
 Exit code is 0 iff every worker's Pass == Total (no failures/errors).
 """
 import argparse
+import hashlib
+import json
 import os
 import re
 import subprocess
@@ -31,6 +34,7 @@ TEST_DIR = REPO_ROOT / "test"
 BUCKET_RUNNER = TEST_DIR / "run_group_bucket.jl"
 TEST_ROOTS_FILE = TEST_DIR / "test_roots.txt"
 DEFAULT_MAX_WORKERS = 10
+ITEM_SEPARATOR = "::"
 
 
 # Julia's OpenBLAS defaults to using half the machine's cores per process
@@ -38,7 +42,7 @@ DEFAULT_MAX_WORKERS = 10
 # sibling worker processes are running concurrently. With N concurrent
 # workers that's N*6 BLAS threads fighting over `os.cpu_count()` cores —
 # e.g. sim-multimode's 4 workers oversubscribed a 12-core machine 2x, and
-# its single 334s-standalone file measured 417s wall-clock under that
+# its single long standalone item measured 417s wall-clock under that
 # contention. Capping OPENBLAS_NUM_THREADS (also read by the Rust QDHT
 # BLAS-3 path, same OpenBLAS binary) to cpu_count // n_workers keeps total
 # BLAS threads across all concurrent workers near the core count.
@@ -83,20 +87,46 @@ def manifest_name(path):
     return path.relative_to(REPO_ROOT).as_posix()
 
 
-def discover_group_files(group):
+_TESTITEM_RE = re.compile(
+    r'^\s*@testitem\s+"([^"\n]+)"\s+tags\s*=\s*\[([^\]\n]*)\]\s+begin\b',
+    re.MULTILINE,
+)
+
+
+def _testitems_in(path):
+    """Return `(name, tags)` for standardized executable @testitem lines."""
+    out = []
+    for match in _TESTITEM_RE.finditer(path.read_text()):
+        tags = set(re.findall(r":([A-Za-z0-9_]+)", match.group(2)))
+        out.append((match.group(1), tags))
+    return out
+
+
+def item_file(identity):
+    return identity.split(ITEM_SEPARATOR, 1)[0]
+
+
+def discover_group_items(group):
     tag = tag_sym(group)
-    needle = f":{tag}"
-    files = []
+    items = []
     for root in test_roots():
         for path in sorted(root.rglob("*.jl")):
             if path.parent == TEST_DIR and path.name in (
                 "run_group_bucket.jl", "run_rust_bucket.jl"
             ):
                 continue
-            text = path.read_text()
-            if re.search(rf"tags\s*=\s*\[[^\]]*{re.escape(needle)}\b", text):
-                files.append(manifest_name(path))
-    return files
+            matches = [name for name, tags in _testitems_in(path) if tag in tags]
+            file_id = manifest_name(path)
+            if len(matches) == 1:
+                # Retain historical timing keys for the common one-item file.
+                items.append(file_id)
+            else:
+                items.extend(f"{file_id}{ITEM_SEPARATOR}{name}" for name in matches)
+    return items
+
+
+def discover_group_files(group):
+    return sorted(set(item_file(item) for item in discover_group_items(group)))
 
 
 def load_timings(timings_file):
@@ -126,18 +156,73 @@ def lpt_bins(files, timings, max_workers):
     return bins, loads
 
 
-def run_bucket(group, bucket_id, files, log_path, n_workers=1):
+def resolved_item_timings(items, timings):
+    """Map every item to an estimate, preserving legacy whole-file timings.
+
+    A file containing several independently schedulable test items used to
+    have one whole-file timing. Split that value evenly until item-specific
+    measurements replace it.
+    """
+    counts = {}
+    for item in items:
+        path = item_file(item)
+        counts[path] = counts.get(path, 0) + 1
+    fallback_values = sorted(timings.values())
+    median = fallback_values[len(fallback_values) // 2] if fallback_values else 10.0
+    return {
+        item: (
+            timings[item]
+            if item in timings
+            else timings[item_file(item)] / counts[item_file(item)]
+            if item_file(item) in timings
+            else median
+        )
+        for item in items
+    }
+
+
+def safe_log_stem(identity):
+    """Filesystem-safe, collision-resistant stem for a manifest identity."""
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", identity).strip("._")[:80] or "test"
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
+    return f"{slug}-{digest}"
+
+
+def julia_bucket_command(log_path, ci=False):
+    """Build the Julia invocation for one bucket.
+
+    CI mode preserves the safety and coverage flags previously supplied by
+    julia-actions/julia-runtest. Each worker receives a distinct LCOV path,
+    avoiding concurrent writes to Julia's default per-source `.cov` files.
+    """
+    cmd = ["julia", "--project"]
+    if ci:
+        coverage_path = Path(log_path).with_suffix(".coverage.info").resolve()
+        cmd.extend([
+            "--check-bounds=yes",
+            "--depwarn=yes",
+            "--compiled-modules=yes",
+            "--inline=yes",
+            "--code-coverage=user",
+            f"--code-coverage={coverage_path}",
+        ])
+    cmd.append(str(BUCKET_RUNNER))
+    return cmd
+
+
+def run_bucket(group, bucket_id, items, log_path, n_workers=1, ci=False):
     blas_threads = str(_blas_threads_for(n_workers))
     env = {
         **os.environ,
         "LUNA_BUCKET_TAG": tag_sym(group),
-        "LUNA_BUCKET_FILES": "\n".join(files),
+        "LUNA_BUCKET_ITEMS": "\n".join(items),
+        "JULIA_NUM_THREADS": blas_threads,
         "OPENBLAS_NUM_THREADS": blas_threads,
         "OMP_NUM_THREADS": blas_threads,
     }
     with open(log_path, "w") as log:
         proc = subprocess.run(
-            ["julia", "--project", str(BUCKET_RUNNER)],
+            julia_bucket_command(log_path, ci),
             cwd=REPO_ROOT,
             stdout=log,
             stderr=subprocess.STDOUT,
@@ -191,8 +276,8 @@ def write_timings(timings_file, durations):
 
 
 def update_timings(group, files, max_workers, log_dir, timings_file):
-    """Re-measure each file's wall-clock duration in its own process (one
-    file per bucket, run up to max_workers at a time), then overwrite the
+    """Re-measure each item's wall-clock duration in its own process (one
+    item per bucket, run up to max_workers at a time), then overwrite the
     group's timings file. Run on an otherwise-idle machine for stable
     numbers — measurements are wall-clock, so contention from other bins
     running concurrently inflates them."""
@@ -202,31 +287,44 @@ def update_timings(group, files, max_workers, log_dir, timings_file):
     blas_threads = str(_blas_threads_for(max_workers))
 
     def run_one(name):
-        log_path = log_dir / f"timing_{name}.log"
+        log_path = log_dir / f"timing_{safe_log_stem(name)}.log"
         env = {
             **os.environ,
             "LUNA_BUCKET_TAG": tag_sym(group),
-            "LUNA_BUCKET_FILES": name,
+            "LUNA_BUCKET_ITEMS": name,
+            "JULIA_NUM_THREADS": blas_threads,
             "OPENBLAS_NUM_THREADS": blas_threads,
             "OMP_NUM_THREADS": blas_threads,
         }
         start = time.time()
         with open(log_path, "w") as log:
-            subprocess.run(
+            proc = subprocess.run(
                 ["julia", "--project", str(BUCKET_RUNNER)],
                 cwd=REPO_ROOT,
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 env=env,
             )
-        return name, time.time() - start
+        return name, time.time() - start, proc.returncode, log_path
 
+    failures = []
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futs = {pool.submit(run_one, f): f for f in files}
         for fut in as_completed(futs):
-            name, dur = fut.result()
+            name, dur, rc, log_path = fut.result()
             durations[name] = dur
-            print(f"  measured {name}: {dur:.1f}s")
+            if rc == 0:
+                print(f"  measured {name}: {dur:.1f}s")
+            else:
+                failures.append((name, rc, log_path))
+                print(f"  FAILED {name}: rc={rc} (log: {log_path})")
+
+    if failures:
+        details = ", ".join(f"{name} (rc={rc}, {path})" for name, rc, path in failures)
+        raise RuntimeError(
+            "Timing refresh did not update the manifest because test items failed: "
+            + details
+        )
 
     write_timings(timings_file, durations)
     print(f"Updated {timings_file} with {len(durations)} fresh timings.")
@@ -235,32 +333,33 @@ def update_timings(group, files, max_workers, log_dir, timings_file):
 
 def prepare_group_bins(group, max_workers, log_dir, do_update_timings):
     """Discover a group's tagged files and LPT-bin-pack them. Returns
-    `bins` (list of file-lists, len <= max_workers) or None if the group
+    `bins` (list of item-lists, len <= max_workers) or None if the group
     has no tagged files."""
     log_dir.mkdir(parents=True, exist_ok=True)
     timings_file = timings_file_for(group)
 
-    files = discover_group_files(group)
-    if not files:
+    items = discover_group_items(group)
+    if not items:
         print(f"No {group!r}-tagged test files found.", file=sys.stderr)
         return None
 
     if do_update_timings:
-        print(f"[{group}] Re-measuring {len(files)} files individually "
+        print(f"[{group}] Re-measuring {len(items)} test items individually "
               f"(max {max_workers} concurrent)...")
-        timings = update_timings(group, files, max_workers, log_dir, timings_file)
+        timings = update_timings(group, items, max_workers, log_dir, timings_file)
     else:
         timings = load_timings(timings_file)
-    bins, loads = lpt_bins(files, timings, max_workers)
+    timings = resolved_item_timings(items, timings)
+    bins, loads = lpt_bins(items, timings, max_workers)
 
-    print(f"[{group}] Distributing {len(files)} files across {len(bins)} workers "
+    print(f"[{group}] Distributing {len(items)} test items across {len(bins)} workers "
           f"(max {max_workers}):")
     for i, (b, load) in enumerate(zip(bins, loads)):
-        print(f"  worker {i}: {len(b)} files, est. {load:.1f}s")
+        print(f"  worker {i}: {len(b)} items, est. {load:.1f}s")
     return bins
 
 
-def run_groups(group_bins, log_dir):
+def run_groups(group_bins, log_dir, ci=False):
     """Execute one or more groups' pre-computed bins in a single shared
     worker pool, so groups can run concurrently instead of one-at-a-time.
     `group_bins`: dict {group: bins}. Every bucket across every group is
@@ -286,7 +385,7 @@ def run_groups(group_bins, log_dir):
         futs = {
             pool.submit(
                 run_bucket, group, i, files,
-                log_dir / f"{group}_worker{i}.log", total_workers,
+                log_dir / f"{group}_worker{i}.log", total_workers, ci,
             ): (group, i)
             for group, i, files in tasks
         }
@@ -317,13 +416,13 @@ def run_groups(group_bins, log_dir):
     return out, elapsed
 
 
-def run_group(group, max_workers, log_dir, do_update_timings):
+def run_group(group, max_workers, log_dir, do_update_timings, ci=False):
     """Single-group convenience wrapper around prepare_group_bins/run_groups
     (kept for parallel_rust_tests.py and standalone --group usage)."""
     bins = prepare_group_bins(group, max_workers, log_dir, do_update_timings)
     if bins is None:
         return 1, 0, 0, 0.0
-    results, elapsed = run_groups({group: bins}, log_dir)
+    results, elapsed = run_groups({group: bins}, log_dir, ci)
     rc, total_pass, total_all = results[group]
     return rc, total_pass, total_all, elapsed
 
@@ -334,19 +433,62 @@ def main():
     ap.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
     ap.add_argument("--log-dir", default=str(REPO_ROOT / ".rust_test_logs"))
     ap.add_argument("--update-timings", action="store_true",
-                     help="Re-measure each file's duration individually "
-                          "(one file per process) and overwrite the "
+                     help="Re-measure each item's duration individually "
+                          "(one item per process) and overwrite the "
                           "group's timings file before scheduling.")
+    ap.add_argument("--update-timings-only", action="store_true",
+                    help="Refresh item timings and exit without a second "
+                         "full-group execution.")
+    ap.add_argument("--ci", action="store_true",
+                    help="Preserve julia-runtest's bounds/deprecation/coverage "
+                         "flags, with a separate LCOV trace per worker.")
     ap.add_argument("--list-files", action="store_true",
                     help="Print the discovered manifest names and exit.")
+    ap.add_argument("--list-items", action="store_true",
+                    help="Print the independently schedulable item identities and exit.")
+    ap.add_argument("--list-bins", action="store_true",
+                    help="Print the LPT execution plan as JSON and exit.")
     args = ap.parse_args()
 
     if args.list_files:
         print("\n".join(discover_group_files(args.group)))
         return 0
+    if args.list_items:
+        print("\n".join(discover_group_items(args.group)))
+        return 0
+    if args.list_bins:
+        items = discover_group_items(args.group)
+        timings = resolved_item_timings(
+            items, load_timings(timings_file_for(args.group))
+        )
+        bins, loads = lpt_bins(items, timings, args.max_workers)
+        print(json.dumps({
+            "group": args.group,
+            "bins": [
+                {"index": i, "estimated_seconds": load, "items": bucket}
+                for i, (bucket, load) in enumerate(zip(bins, loads))
+            ],
+        }, indent=2))
+        return 0
+    if args.update_timings_only:
+        items = discover_group_items(args.group)
+        if not items:
+            print(f"No {args.group!r}-tagged test items found.", file=sys.stderr)
+            return 1
+        log_dir = Path(args.log_dir)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        update_timings(
+            args.group,
+            items,
+            args.max_workers,
+            log_dir,
+            timings_file_for(args.group),
+        )
+        return 0
 
     rc, total_pass, total_all, elapsed = run_group(
-        args.group, args.max_workers, Path(args.log_dir), args.update_timings
+        args.group, args.max_workers, Path(args.log_dir), args.update_timings,
+        args.ci,
     )
     return rc
 

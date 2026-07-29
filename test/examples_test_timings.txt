@@ -1,0 +1,4 @@
+# Historical per-item wall-clock durations (seconds) for the `examples`
+# group, measured 2026-07-28 via parallel_group_tests.py
+# --group examples --update-timings-only.
+test_examples_smoke.jl 151.8

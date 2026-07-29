@@ -1,0 +1,9 @@
+# Maintained TestItemRunner group tags, one per line.
+physics
+rust
+sim_interface
+sim_multimode
+sim_propagation
+io
+fields
+examples

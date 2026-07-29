@@ -1,12 +1,9 @@
-# Historical per-file wall-clock durations (seconds) for the `sim_multimode` test
-# group, one file per process (measured 2026-07-11, via
-# parallel_group_tests.py --group sim_multimode --update-timings). Used by
-# parallel_group_tests.py to load-balance files across worker processes
-# via LPT (longest-processing-time-first) bin packing. Files not listed
-# here (new test files) fall back to the median duration below. Stale
-# entries are harmless — they only affect scheduling, never correctness.
-# Re-measure periodically with --update-timings.
-test_multimode.jl 334.1
-test_polarisation.jl 14.6
-test_polarisation_env.jl 25.2
-test_polarisation_field.jl 129.2
+# Historical per-item wall-clock durations (seconds) for the `sim_multimode`
+# group, one item per process (measured 2026-07-28 via
+# parallel_group_tests.py --group sim-multimode --update-timings-only). Used
+# by the local and GitHub LPT schedulers.
+test_multimode.jl 257.1
+test_polarisation.jl 15.4
+test_polarisation_env.jl 31.6
+test_polarisation_field.jl 200.7
+test_transmodal_vector_plasma.jl 19.8

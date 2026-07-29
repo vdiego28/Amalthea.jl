@@ -429,6 +429,45 @@ or "verified" inside a superseded narrative do not outrank this list.
     keyword and both defining-formula regressions pass. The deliberately
     separate `E_to_P0` policy was not broadened.
 
+20. 🟢 **Make coverage assignment and load balancing identical locally and
+    in GitHub Actions — DONE 2026-07-28.** The eight maintained groups
+    currently cover every executable `@testitem`, but only the Rust group's
+    serial/parallel file set has a regression guard. The workflow still runs
+    every group in one serial Julia process, so the 2026-07-28 `main` run was
+    gated by `sim-interface` (22m48s) and Linux `rust` (21m16s), while several
+    jobs finished in 5-10 minutes. Local LPT balancing is not yet reused by
+    CI, its timing data is missing 15 Rust files, the new multimode-plasma
+    file, and the examples file, and timing refreshes cannot safely name log
+    files for secondary-root identities containing `/`. The bucket runner
+    also omits the Windows/macOS one-thread FFTW guard from `runtests.jl`.
+    Define the maintained group list once; guard every discovered test item,
+    every group, workflow inclusion, and timing coverage; schedule individual
+    test items so the monolithic interface suite can be divided; carry the
+    platform safety setup into bucket workers; and invoke the same bounded
+    LPT runner from GitHub Actions. Keep macOS physics serial because of the
+    historical SIGBUS, and do not weaken or remove any test to improve time.
+    The two current macOS annotations are unrelated runner-image noise:
+    Rust setup invokes `brew install bash`, and Homebrew ignores GitHub's
+    unused, untrusted `aws/tap`; both jobs pass, so trusting the tap or
+    disabling Homebrew's trust check is explicitly out of scope.
+    `test/test_groups.txt` now owns the group list, and the expanded
+    336-assertion manifest meta-test independently checks every executable
+    test item's assignment, Python discovery, workflow inclusion, external
+    CUDA test, and exact-or-legacy timing coverage. All 112 scheduled item
+    memberships have timings. The scheduler can address individual
+    `file::item` identities, uses collision-safe log names, and refuses to
+    publish a partial timing refresh; the monolithic interface item is split
+    into seven unchanged assertion units. Local batches cap their combined
+    worker count at 10, while GitHub uses two workers on Linux/Windows and one
+    for macOS/examples. Bucket workers now mirror platform FFTW/HDF5 setup,
+    and CI mode preserves the replaced action's bounds, deprecation,
+    compiled-module, inlining, and user-coverage flags with a distinct LCOV
+    trace per worker. Strict two-worker Rust passed 42640/42640 in 434.0s
+    (22.7% below the prior 561.6s strict serial gate); interface passed
+    314/314 in 217.9s. Physics, multimode, propagation, I/O, fields, and
+    examples also passed through the new scheduler. The first pushed Actions
+    run remains the authoritative hosted-runner timing comparison.
+
 Explicitly parked, and therefore **not** resume points without a new user need:
 multi-mode `StepIndexMode` (no consumer), the full SoA conversion (~1% ceiling),
 the cold-start standalone CLI (porting all Julia setup has negative ROI), and

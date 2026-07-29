@@ -2386,3 +2386,78 @@ machine-readable listing. Make the maintained `examples` group part of
 `run_full_gate.py`'s default schedule: a command named “full gate” should not
 silently omit an active CI group. This changes the documented default from
 seven to eight groups rather than renaming the gate.
+
+## 10. 2026-07-28 coverage and test-balancing follow-up
+
+### 10.1 One maintained group manifest and complete assignment guard
+
+Add `test/test_groups.txt` as the canonical eight-group list. The local full
+gate reads it instead of hard-coding a second copy. Extend
+`test_test_manifest.jl` to enumerate every syntactically valid `@testitem`
+declaration under `test/test_roots.txt`, assert that each item has at least one
+maintained group tag, compare Julia's independently enumerated identities with
+Python discovery for every group, and verify that every maintained group
+appears in `.github/workflows/run_tests.yml`. Standalone scripts such as
+`benchmark_native_default.jl` contain no executable `@testitem` declaration
+and remain covered by their dedicated jobs.
+
+The meta-test also requires a timing entry (exact item identity or documented
+file fallback) for every scheduled item. New tests can no longer silently
+degrade balancing until somebody notices a straggler.
+
+### 10.2 Schedule test items, not only files
+
+Extend `parallel_group_tests.py` to discover the repository's standardized
+single-line `@testitem "name" tags=[...]` declarations. Use the checkout-
+relative file identity plus the test-item name as the scheduling key when a
+file contains multiple items; retain the basename identity for single-item
+files so existing timing history remains useful. `run_group_bucket.jl`
+filters on both exact path and item name.
+
+If an item-specific timing is absent, divide the legacy whole-file timing
+among that file's items rather than charging the full duration to each.
+Timing-log filenames must be generated from a sanitized stem plus a stable
+digest so secondary-root paths and item names cannot create directories or
+collide. Keep `--list-files` for compatibility and add machine-readable
+`--list-items`/bin-listing output for coverage tests and CI diagnostics.
+
+Split the single 500-line `Interface` test item into independent items at its
+existing top-level testset boundaries. Do not change assertions or physics;
+the purpose is to expose units that the item-level scheduler can balance.
+
+### 10.3 Reuse the bounded LPT runner in GitHub Actions
+
+Replace the workflow's serial `julia-runtest` step with
+`parallel_group_tests.py` for the same group. Use two worker processes for
+Linux and Windows jobs with more than one item, one worker for examples, and
+one worker for both macOS jobs. Keeping macOS serial preserves the
+BACKLOG-item-11 SIGBUS mitigation; the warning about the runner's unused
+`aws/tap` is harmless and should not be “fixed” by trusting the tap or
+disabling Homebrew security.
+
+Each bucket sets Julia, OpenBLAS, and OMP thread counts from one CPU budget so
+concurrent processes do not multiply `JULIA_NUM_THREADS=auto` across the
+runner. Mirror `runtests.jl`'s Windows/macOS `set_fftw_threads(1)` and Windows
+HDF5-locking setup in `run_group_bucket.jl`.
+
+The replaced `julia-actions/julia-runtest` invocation also supplied
+`--check-bounds=yes`, `--depwarn=yes`, `--compiled-modules=yes`,
+`--inline=yes`, and user-code coverage. Preserve those semantics behind an
+explicit scheduler `--ci` mode instead of silently weakening the hosted gate.
+Give each worker its own LCOV trace file beside its log so parallel buckets
+cannot race while writing coverage. Local timing and full-gate runs retain
+their existing lower-overhead command unless `--ci` is requested.
+
+### 10.4 Verification
+
+Before changing expected CI wall time:
+
+1. unit-test discovery, legacy timing fallback, exact item filtering, safe log
+   names, CI command flags, and LPT bin balance without launching Julia;
+2. refresh timings for every maintained group on an otherwise-idle machine;
+3. run the split interface group and manifest meta-test through the bucket
+   runner, proving no duplicate or omitted assertions;
+4. run representative two-worker Rust/physics groups locally and compare
+   counts with serial baselines;
+5. validate workflow YAML and inspect printed CI bins. The first pushed run,
+   not local estimates, supplies the authoritative hosted-runner improvement.

@@ -260,6 +260,16 @@ and retry, with full adaptive trajectory differences of `5.42e-15` and
 # Run only the Rust/native equivalence group
 LUNA_TEST_GROUP=rust julia --project test/runtests.jl
 
+# Run one group through the timing-aware item scheduler (same path as CI)
+python3 test/parallel_group_tests.py --group rust --max-workers 2
+
+# Run the balanced eight-group local gate
+python3 test/run_full_gate.py
+
+# Refresh one group's item timings without immediately rerunning the group
+python3 test/parallel_group_tests.py --group rust --max-workers 10 \
+    --update-timings-only
+
 # Rust unit tests
 (cd amalthea && cargo test)
 
@@ -273,7 +283,21 @@ julia --project -e 'using Pkg; Pkg.test("Luna")'
 
 Main-gate `LUNA_TEST_GROUP` values: `physics`, `rust`, `sim-interface`,
 `sim-multimode`, `sim-propagation`, `io`, `fields`, `examples`, `All`
-(default). `test/run_full_gate.py` runs all eight maintained groups.
+(default). `test/test_groups.txt` is the canonical maintained-group list.
+`test/run_full_gate.py` and GitHub Actions both use the same item-level LPT
+scheduler; the serial `runtests.jl` command remains the simplest oracle when
+checking aggregate assertion counts.
+
+GitHub Actions adds the scheduler's `--ci` option, which preserves the former
+`julia-actions/julia-runtest` bounds-check, deprecation-warning,
+compiled-module, inlining, and user-code-coverage settings. Each worker writes
+a distinct LCOV trace beside its log. Local timing and full-gate runs omit
+`--ci` to retain their existing lower-overhead command; add it locally only
+when reproducing the hosted Julia invocation:
+
+```bash
+python3 test/parallel_group_tests.py --group physics --max-workers 2 --ci
+```
 
 ## 6. Definition of done for a native work item
 

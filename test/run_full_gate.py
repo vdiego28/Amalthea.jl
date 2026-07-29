@@ -19,10 +19,12 @@ from parallel_group_tests import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+GROUPS_FILE = REPO_ROOT / "test" / "test_groups.txt"
 
 GROUPS = [
-    "physics", "rust", "sim_interface", "sim_multimode",
-    "sim_propagation", "io", "fields", "examples",
+    line.strip()
+    for line in GROUPS_FILE.read_text().splitlines()
+    if line.strip() and not line.lstrip().startswith("#")
 ]
 
 # Batches of groups to run *concurrently* (one batch at a time, batches
@@ -31,19 +33,26 @@ GROUPS = [
 # batching is safe as long as the sum of workers across a batch stays near
 # `os.cpu_count()`.
 #
-# physics and rust each already saturate DEFAULT_MAX_WORKERS (10) workers
-# on their own, so they stay solo. The other six groups have few enough
-# files that their worker counts (2-6) sum well within a 12-core budget:
-# sim-multimode's single 334s file dominates its group's wall-clock
-# regardless of pairing (its other 3 workers finish in under 130s), so
-# running sim-interface and sim-propagation alongside it is close to free
-# — and the single-file examples group fits alongside io+fields.
+# physics and rust each saturate DEFAULT_MAX_WORKERS on their own. Item-level
+# scheduling exposes eight interface items, so the concurrent batches also
+# need per-group caps; otherwise the third batch would launch 19 Julia
+# processes on the 12-core reference machine. The measured two-/four-worker
+# caps below keep each combined batch at 10 or fewer processes while their LPT
+# loads finish at roughly the same time.
 DEFAULT_BATCHES = [
     ["physics"],
     ["rust"],
     ["sim_multimode", "sim_interface", "sim_propagation"],
     ["io", "fields", "examples"],
 ]
+DEFAULT_BATCH_WORKERS = {
+    "sim_multimode": 4,
+    "sim_interface": 2,
+    "sim_propagation": 4,
+    "io": 4,
+    "fields": 4,
+    "examples": 1,
+}
 
 
 def _batches_for(groups):
@@ -79,7 +88,12 @@ def main():
     for batch in batches:
         group_bins = {}
         for group in batch:
-            bins = prepare_group_bins(group, args.max_workers, log_dir, args.update_timings)
+            worker_limit = (
+                args.max_workers
+                if args.no_batch or len(batch) == 1
+                else min(args.max_workers, DEFAULT_BATCH_WORKERS.get(group, args.max_workers))
+            )
+            bins = prepare_group_bins(group, worker_limit, log_dir, args.update_timings)
             if bins is not None:
                 group_bins[group] = bins
         if not group_bins:

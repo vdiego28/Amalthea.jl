@@ -2024,3 +2024,76 @@ the lead-deferred standing CUDA runner (set
 Before integration, reconcile this pre-release-based GPU branch with
 post-release `main`; do not commit or push these changes without the lead's
 explicit request.
+
+## 2026-07-28 — Backlog 20 — Coverage parity and balanced gates — Codex (GPT-5)
+
+**Status:** complete
+
+**Did:** Made the maintained test inventory self-checking and moved both the
+local full gate and GitHub's 16-job matrix onto one timing-aware,
+item-level scheduler. Refreshed every missing timing, split the monolithic
+interface test into independently schedulable units without changing its
+assertions, and validated all eight maintained groups through the new path.
+
+**How:** The design is recorded in `docs/dev/native-port/PLANS.md:2398`.
+`test/test_groups.txt` is the canonical group list.
+`test/parallel_group_tests.py:109,191,278,362` discovers exact
+`file::item` identities, emits collision-safe timing logs, refuses partial
+timing-manifest updates, balances with LPT, budgets Julia/BLAS/OMP threads,
+and provides a CI mode. `test/run_group_bucket.jl:20-58` mirrors the
+Windows/macOS FFTW and Windows HDF5 safeguards and filters exact item
+identities across both maintained roots. `test/run_full_gate.py:48-94` caps
+combined local batches at ten processes.
+`.github/workflows/run_tests.yml:172-183` uses two buckets on Linux/Windows
+and one on macOS/examples. `test/test_test_manifest.jl:3-100` independently
+guards all assignments, Python discovery, timings, workflow groups, and the
+external CUDA dispatch test; `test/test_parallel_group_tests.py` covers the
+scheduler mechanics. No source FFI symbol or ABI changed.
+
+**Decisions:**
+
+- Keep both macOS jobs serial because the historical FFTW SIGBUS matters more
+  than cosmetic symmetry. The two current macOS annotations come from Rust
+  setup asking Homebrew for `bash` while Homebrew ignores the hosted image's
+  unused, untrusted `aws/tap`; both jobs pass, so no trust/security workaround
+  was added.
+- Preserve the old `julia-actions/julia-runtest` safety semantics explicitly:
+  CI buckets use bounds checks, deprecation warnings, compiled modules,
+  inlining, and user coverage. Each worker writes its own LCOV trace so
+  concurrent processes cannot race on coverage output. Local timing/gate runs
+  omit that instrumentation unless `--ci` is requested.
+- Use two hosted workers conservatively. The first pushed Actions run is the
+  authoritative speed measurement; local timing estimates are not presented
+  as hosted-runner guarantees.
+
+**Gotchas:** Julia's trace-file coverage option alone selects all-code
+instrumentation; preserving the former user-coverage behavior requires both
+`--code-coverage=user` and a second `--code-coverage=<worker>.info` argument.
+CI-mode precompilation also needs normal write access to Julia's cache; the
+first sandboxed smoke attempt failed only on that read-only cache. Timing
+files now contain item identities for multi-item files and repository-relative
+paths for secondary-root files. These changes are intentionally uncommitted;
+only the preceding bug-fix unit was committed as `5baa923`.
+
+**Tests:**
+
+- Scheduler unit suite: **7/7 pass**; Python byte compilation, Ruby workflow
+  YAML parsing, and `git diff --check`: pass.
+- Expanded manifest meta-test: **336/336 pass**, covering **112** maintained
+  group/item memberships with no missing timing.
+- Strict two-worker Rust gate with CUDA required: **42640/42640 pass in
+  434.0s**, versus the preceding strict serial **42306/42306 in 561.6s**
+  (22.7% lower wall time while adding 334 manifest assertions).
+- Two-worker interface: **314/314 in 217.9s**; two-worker multimode:
+  **41/41 in 168.7s**; two-worker physics: **1663/1663 in 98.7s**.
+- Remaining bounded full-gate batches: propagation **18/18 in 44.8s**;
+  I/O **2313/2313**, fields **339/339**, and examples **20/20** together in
+  **169.4s**.
+- Exact CI-mode bounds/deprecation/user-coverage smoke:
+  `test_greek_aliases.jl` **3/3 in 24.2s**, producing a distinct valid LCOV
+  trace.
+
+**Next:** Review the uncommitted coverage/balancing diff, then commit it only
+if the lead asks. After a push, compare the first complete hosted matrix with
+the 2026-07-28 baseline (especially `sim-interface`, Linux/Windows Rust, and
+both deliberately serial macOS jobs) before increasing any worker count.

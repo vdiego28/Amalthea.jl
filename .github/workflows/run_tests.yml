@@ -29,30 +29,40 @@ jobs:
           - os: ubuntu-latest
             julia-version: '1'
             group: physics
+            workers: 2
           - os: windows-2025-vs2026
             julia-version: '1'
             group: physics
+            workers: 2
           - os: macos-latest
             julia-version: '1'
             group: physics
+            # Keep serial: BACKLOG item 11 records an intermittent macOS
+            # FFTW SIGBUS even with fresh wisdom.
+            workers: 1
           # Physics group (other Julia versions on ubuntu-latest)
           - os: ubuntu-latest
             julia-version: 'lts'
             group: physics
+            workers: 2
           - os: ubuntu-latest
             julia-version: 'pre'
             group: physics
+            workers: 2
 
           # Rust FFI group (full OS matrix on stable Julia to verify FFI linking)
           - os: ubuntu-latest
             julia-version: '1'
             group: rust
+            workers: 2
           - os: windows-2025-vs2026
             julia-version: '1'
             group: rust
+            workers: 2
           - os: macos-latest
             julia-version: '1'
             group: rust
+            workers: 1
 
           # Simulation group — split into 3 parallel jobs to cut wall time:
           #   sim-interface    (~56 prop_capillary calls, the longest job)
@@ -61,22 +71,27 @@ jobs:
           - os: ubuntu-latest
             julia-version: '1'
             group: sim-interface
+            workers: 2
           - os: ubuntu-latest
             julia-version: '1'
             group: sim-multimode
+            workers: 2
           - os: ubuntu-latest
             julia-version: '1'
             group: sim-propagation
+            workers: 2
 
           # I/O group (ubuntu-latest only)
           - os: ubuntu-latest
             julia-version: '1'
             group: io
+            workers: 2
 
           # Fields group (ubuntu-latest only)
           - os: ubuntu-latest
             julia-version: '1'
             group: fields
+            workers: 2
 
           # Examples smoke group (ubuntu-latest only) — runs a representative
           # subset of examples/low_level_interface/ at a shrunk fibre length
@@ -87,6 +102,7 @@ jobs:
           - os: ubuntu-latest
             julia-version: '1'
             group: examples
+            workers: 1
 
     if: github.event.pull_request.draft == false
     steps:
@@ -156,11 +172,16 @@ jobs:
           $hdf5dir = Split-Path -Path $hdf5path -Parent
           echo "$hdf5dir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      - name: Run tests
-        uses: julia-actions/julia-runtest@v1
+      # Use the same timing-aware LPT scheduler as the local full gate. Each
+      # worker is a separate Julia process; the scheduler bounds Julia,
+      # OpenBLAS, and OMP threads against the shared CPU budget.
+      - name: Run tests (balanced ${{ matrix.workers }}-worker bucket)
+        run: >-
+          python test/parallel_group_tests.py
+          --group "${{ matrix.group }}"
+          --max-workers "${{ matrix.workers }}"
+          --ci
         env:
-          JULIA_NUM_THREADS: auto
-          LUNA_TEST_GROUP: ${{ matrix.group }}
           # Disable strict HDF5 file locking ONLY on Windows runners
           HDF5_USE_FILE_LOCKING: ${{ runner.os == 'Windows' && 'FALSE' || 'TRUE' }}
 
@@ -280,7 +301,7 @@ jobs:
 
       - name: Run Python API tests
         run: |
-          pytest python/tests/
+          pytest python/tests/ test/test_parallel_group_tests.py
         env:
           PYTHON_JULIAPKG_JULIA: julia
           # This job builds the Rust library and installs Julia above, so the
