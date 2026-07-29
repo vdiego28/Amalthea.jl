@@ -70,7 +70,7 @@ def tag_sym(group):
 
 def test_roots():
     roots = []
-    for line in TEST_ROOTS_FILE.read_text().splitlines():
+    for line in TEST_ROOTS_FILE.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line and not line.startswith("#"):
             root = (REPO_ROOT / line).resolve()
@@ -96,7 +96,7 @@ _TESTITEM_RE = re.compile(
 def _testitems_in(path):
     """Return `(name, tags)` for standardized executable @testitem lines."""
     out = []
-    for match in _TESTITEM_RE.finditer(path.read_text()):
+    for match in _TESTITEM_RE.finditer(path.read_text(encoding="utf-8")):
         tags = set(re.findall(r":([A-Za-z0-9_]+)", match.group(2)))
         out.append((match.group(1), tags))
     return out
@@ -132,7 +132,7 @@ def discover_group_files(group):
 def load_timings(timings_file):
     timings = {}
     if timings_file.exists():
-        for line in timings_file.read_text().splitlines():
+        for line in timings_file.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
@@ -250,7 +250,10 @@ def parse_summary(log_path):
     reports passed==total, physics included — the "1645/1657 + 12 broken"
     baseline quoted by older BACKLOG entries is historical, not current),
     but the tolerance is kept so reintroducing one doesn't fail the gate."""
-    lines = [_ANSI_RE.sub("", l) for l in log_path.read_text().splitlines()]
+    lines = [
+        _ANSI_RE.sub("", line)
+        for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    ]
     for i, line in enumerate(lines):
         if line.strip().startswith("Test Summary") and "|" in line:
             cols = line.split("|", 1)[1].split()
@@ -269,10 +272,14 @@ def parse_summary(log_path):
 
 
 def write_timings(timings_file, durations):
-    header = timings_file.read_text().splitlines() if timings_file.exists() else []
+    header = (
+        timings_file.read_text(encoding="utf-8").splitlines()
+        if timings_file.exists()
+        else []
+    )
     header = [l for l in header if l.strip().startswith("#")]
     lines = header + [f"{name} {secs:.1f}" for name, secs in sorted(durations.items())]
-    timings_file.write_text("\n".join(lines) + "\n")
+    timings_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def update_timings(group, files, max_workers, log_dir, timings_file):

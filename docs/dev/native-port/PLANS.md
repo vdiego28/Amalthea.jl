@@ -2461,3 +2461,20 @@ Before changing expected CI wall time:
    counts with serial baselines;
 5. validate workflow YAML and inspect printed CI bins. The first pushed run,
    not local estimates, supplies the authoritative hosted-runner improvement.
+
+### 10.5 Hosted Windows encoding follow-up (2026-07-29)
+
+The first pushed matrix reached the new scheduler on both Windows jobs but
+failed before test execution: Python 3.12 used the host's CP-1252 default for
+`Path.read_text()`, while the maintained Julia test files are UTF-8 and contain
+Unicode math identifiers. Discovery raised `UnicodeDecodeError` on byte
+`0x81` in both the physics and Rust jobs.
+
+Make UTF-8 part of the scheduler's explicit file-format contract rather than
+depending on the process locale. Pass `encoding="utf-8"` for maintained
+manifests, source declarations, timing files, and group lists; parse Julia
+worker logs as UTF-8 with replacement for a malformed diagnostic byte so log
+decoding can never hide the underlying test result. Keep child stdout pointed
+at the existing log files unchanged. Add a unit assertion that declaration
+discovery requests UTF-8 explicitly, rerun the local scheduler/meta/full gates,
+then push and require both Windows jobs to pass on the new hosted run.

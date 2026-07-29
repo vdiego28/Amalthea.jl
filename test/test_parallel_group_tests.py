@@ -21,6 +21,18 @@ FULL_GATE_SPEC.loader.exec_module(FULL_GATE)
 
 
 class SchedulerTests(unittest.TestCase):
+    def test_declaration_discovery_reads_utf8_explicitly(self):
+        source = '@testitem "Unicode ω" tags=[:physics] begin\nend\n'
+        path = Path("unicode_test.jl")
+
+        with mock.patch.object(Path, "read_text", return_value=source) as read_text:
+            self.assertEqual(
+                SCHEDULER._testitems_in(path),
+                [("Unicode ω", {"physics"})],
+            )
+
+        read_text.assert_called_once_with(encoding="utf-8")
+
     def test_multi_item_files_are_independently_schedulable(self):
         items = SCHEDULER.discover_group_items("sim-interface")
         interface_items = [
@@ -95,7 +107,7 @@ class SchedulerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             timings_path = tmp_path / "timings.txt"
-            timings_path.write_text("existing.jl 12.0\n")
+            timings_path.write_text("existing.jl 12.0\n", encoding="utf-8")
             failed = mock.Mock(returncode=1)
 
             with mock.patch.object(SCHEDULER.subprocess, "run", return_value=failed):
@@ -105,7 +117,10 @@ class SchedulerTests(unittest.TestCase):
                             "rust", ["broken.jl"], 1, tmp_path, timings_path
                         )
 
-            self.assertEqual(timings_path.read_text(), "existing.jl 12.0\n")
+            self.assertEqual(
+                timings_path.read_text(encoding="utf-8"),
+                "existing.jl 12.0\n",
+            )
 
     def test_default_local_batches_do_not_oversubscribe_reference_budget(self):
         for batch in FULL_GATE.DEFAULT_BATCHES:

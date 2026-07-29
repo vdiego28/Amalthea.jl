@@ -467,6 +467,13 @@ or "verified" inside a superseded narrative do not outrank this list.
     314/314 in 217.9s. Physics, multimode, propagation, I/O, fields, and
     examples also passed through the new scheduler. The first pushed Actions
     run remains the authoritative hosted-runner timing comparison.
+    **2026-07-29 first-push regression:** both Windows jobs failed before
+    launching Julia tests because Python decoded UTF-8 Julia sources with the
+    host CP-1252 default (`UnicodeDecodeError`, byte `0x81`). The bounded fix
+    makes UTF-8 explicit for scheduler manifests, source declarations,
+    timings, group lists, and worker-log parsing; an 8-test scheduler unit
+    suite and the 336-assertion manifest meta-test pass locally. Hosted
+    Windows re-verification is required before this follow-up is closed.
 
 Explicitly parked, and therefore **not** resume points without a new user need:
 multi-mode `StepIndexMode` (no consumer), the full SoA conversion (~1% ceiling),

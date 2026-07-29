@@ -2190,3 +2190,42 @@ run with direct device access.
 
 **Next:** Push the reconciled feature branch, merge it into `main`, push
 `main`, and inspect the first hosted matrix produced by the new scheduler.
+
+## 2026-07-29 — Backlog 20 follow-up — Windows scheduler UTF-8 — Codex (GPT-5)
+
+**Status:** in-progress
+
+**Did:** Diagnosed the first hosted balanced-matrix failure and prepared a
+bounded Windows portability fix. Both Windows jobs reached
+`parallel_group_tests.py` but failed during source discovery before launching
+any Julia test because Python used CP-1252 to decode UTF-8 Julia sources.
+
+**How:** The design is recorded in `docs/dev/native-port/PLANS.md` §10.5.
+`test/parallel_group_tests.py` now passes `encoding="utf-8"` for maintained
+manifests, test declarations, and timing files, and parses Julia worker logs
+as UTF-8 with replacement for malformed diagnostic bytes.
+`test/run_full_gate.py` reads the canonical group list as UTF-8.
+`test/test_parallel_group_tests.py` asserts declaration discovery requests
+UTF-8 explicitly. No source solver, FFI symbol, ABI, or test assertion changed.
+
+**Decisions:** Treat encoding as a file-format contract, not a runner-locale
+assumption. Keep log decoding tolerant only at the diagnostic boundary;
+repository-owned source/manifests remain strict UTF-8 so corruption fails
+clearly.
+
+**Gotchas:** The hosted failure is identical in physics and Rust because both
+die in shared discovery, not because either test group failed. A local
+`LC_ALL=C` end-to-end probe successfully passed Python discovery/log parsing
+but caused Julia/Pkg to attempt sandbox-blocked scratch-log writes; that
+artificial Julia-environment failure is not the Windows defect and is not a
+test result for the patch.
+
+**Tests:** Scheduler unit tests **8/8**, Python byte compilation, workflow YAML
+parse, `git diff --check`, explicit ASCII-locale physics item discovery, and
+the focused manifest meta-test **336/336**: pass. Original hosted run
+`30453384776` failed jobs `90580736952` (Windows physics) and `90580737061`
+(Windows Rust) at `Path.read_text()` with `UnicodeDecodeError`.
+
+**Next:** Commit and push `fix-windows-scheduler-utf8`, require both Windows
+jobs to pass on the new hosted run, then mark this entry complete and merge
+the hotfix into `main`.
