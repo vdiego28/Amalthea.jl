@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785258420260,
+  "lastUpdate": 1785329700590,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -695,6 +695,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.889544,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "distinct": true,
+          "id": "6ee363cbe7ae4f149feb66a77aff0fcf27467f75",
+          "message": "Merge branch 'gpu-adaptive-error-and-expansion'",
+          "timestamp": "2026-07-29T08:51:01-04:00",
+          "tree_id": "7db376a8da1ab952c54fdadca44824e1a5998b74",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/6ee363cbe7ae4f149feb66a77aff0fcf27467f75"
+        },
+        "date": 1785329699948,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 3.011102,
             "unit": "ms/step"
           }
         ]
