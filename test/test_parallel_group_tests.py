@@ -21,6 +21,20 @@ FULL_GATE_SPEC.loader.exec_module(FULL_GATE)
 
 
 class SchedulerTests(unittest.TestCase):
+    def test_failed_worker_log_is_emitted_in_full_as_utf8(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "worker.log"
+            log_path.write_text("first failure: λ ≠ β\nstack trace\n", encoding="utf-8")
+            output = io.StringIO()
+
+            with contextlib.redirect_stdout(output):
+                SCHEDULER.emit_failure_log(log_path)
+
+            emitted = output.getvalue()
+            self.assertIn(f"BEGIN FAILED WORKER LOG: {log_path}", emitted)
+            self.assertIn("first failure: λ ≠ β\nstack trace", emitted)
+            self.assertIn(f"END FAILED WORKER LOG: {log_path}", emitted)
+
     def test_declaration_discovery_reads_utf8_explicitly(self):
         source = '@testitem "Unicode ω" tags=[:physics] begin\nend\n'
         path = Path("unicode_test.jl")

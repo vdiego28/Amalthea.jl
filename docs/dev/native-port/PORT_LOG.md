@@ -2229,3 +2229,39 @@ the focused manifest meta-test **336/336**: pass. Original hosted run
 **Next:** Commit and push `fix-windows-scheduler-utf8`, require both Windows
 jobs to pass on the new hosted run, then mark this entry complete and merge
 the hotfix into `main`.
+
+## 2026-07-29 — Backlog 20 follow-up — hosted Windows Rust diagnostics — Codex (GPT-5)
+
+**Status:** in-progress
+
+**Did:** Verified the first UTF-8 hotfix matrix and added durable failed-bucket
+diagnostics after its Windows Rust job exposed a second, test-level failure.
+Fifteen jobs passed, including Windows physics and both non-Windows Rust jobs.
+Windows Rust completed both buckets, but worker 1 returned **42245/42357**
+with 112 non-passing assertions. The runner-local worker log was not retained,
+so the aggregate deficit does not identify a safe fix.
+
+**How:** Extended the design in `docs/dev/native-port/PLANS.md` §10.5.
+`test/parallel_group_tests.py:256` now emits a failed worker's complete,
+UTF-8-decoded TestItemRunner log to job stdout between stable begin/end
+markers; `run_groups` calls it only for a failed bucket. No passing-job output,
+test assertion, solver source, FFI symbol, or ABI changed.
+`test/test_parallel_group_tests.py` verifies both delimiters and Unicode log
+content without launching Julia.
+
+**Decisions:** Do not infer a test fix from the exact 112-assertion deficit,
+even though worker 1 includes the 112-membership manifest meta-test. Preserve
+the complete compact worker log rather than a tail so the first error and stack
+trace survive. Keep per-worker files for normal parallel output isolation.
+
+**Gotchas:** GitHub's completed job log and run-artifact API contained no
+`.rust_test_logs` files; runner-local paths are unusable after teardown. The
+run's Julia package cache is not a workspace artifact and cannot recover the
+log.
+
+**Tests:** Scheduler unit tests **9/9**, Python byte compilation, and
+`git diff --check`: pass. Hosted hotfix run `30454407921` passed 15/16 jobs;
+only Windows Rust job `90584183537` failed after **1723.3s**.
+
+**Next:** Push the diagnostic commit, inspect the next Windows Rust worker log,
+then implement and validate only the platform fix supported by that trace.

@@ -2478,3 +2478,17 @@ decoding can never hide the underlying test result. Keep child stdout pointed
 at the existing log files unchanged. Add a unit assertion that declaration
 discovery requests UTF-8 explicitly, rerun the local scheduler/meta/full gates,
 then push and require both Windows jobs to pass on the new hosted run.
+
+The UTF-8 patch's first hosted run proved discovery on Windows: physics passed
+and Rust launched both Julia buckets. The second Rust bucket later failed with
+112 non-passing assertions, but the scheduler printed only its aggregate
+summary and runner-local log path; Actions discarded that file when the job
+ended. Before changing any assertion or platform behavior, make a failed
+bucket's complete UTF-8-decoded worker log part of scheduler stdout, delimited
+with stable begin/end markers. Test this diagnostic without launching Julia.
+The worker logs are compact TestItemRunner output (kilobytes, not raw assertion
+streams), so emitting the complete file preserves the first error and stack
+trace without risking the ambiguity of a tail-only excerpt. Use the next
+hosted Windows Rust result to identify and then fix the platform-specific
+failure; the numerical deficit alone is not sufficient evidence for a code
+change.

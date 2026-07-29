@@ -271,6 +271,19 @@ def parse_summary(log_path):
     return None, None, False
 
 
+def emit_failure_log(log_path):
+    """Expose a failed worker's complete diagnostic in hosted-job stdout.
+
+    Worker stdout is normally kept in compact per-bucket files so concurrent
+    processes cannot interleave it. Those runner-local files disappear when a
+    hosted job ends, so a failure must copy its log into the durable job log.
+    """
+    content = log_path.read_text(encoding="utf-8", errors="replace")
+    print(f"--- BEGIN FAILED WORKER LOG: {log_path} ---")
+    print(content, end="" if content.endswith("\n") else "\n")
+    print(f"--- END FAILED WORKER LOG: {log_path} ---")
+
+
 def write_timings(timings_file, durations):
     header = (
         timings_file.read_text(encoding="utf-8").splitlines()
@@ -409,6 +422,8 @@ def run_groups(group_bins, log_dir, ci=False):
         ok = rc == 0 and passed is not None and summary_ok
         print(f"[{group}] worker {bucket_id}: rc={rc} pass={passed} total={total} "
               f"{'OK' if ok else 'FAIL'} (log: {log_path})")
+        if not ok:
+            emit_failure_log(log_path)
         if passed is not None:
             per_group[group][0] += passed
             per_group[group][1] += total
