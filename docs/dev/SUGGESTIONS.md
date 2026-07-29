@@ -4,7 +4,7 @@ This file preserves the original *why* behind the 17 suggestions. It is not a
 queue and some proposal text intentionally describes the pre-implementation
 state. Current execution status belongs to `BACKLOG.md`.
 
-Status snapshot (2026-07-27):
+Status snapshot (2026-07-28):
 
 | Idea | Outcome |
 |---|---|
@@ -20,7 +20,7 @@ Status snapshot (2026-07-27):
 | 10 Mixed precision | **Rejected after measurement** (~1.0–1.06×, below bar; numerically risky) |
 | 11 Deterministic mode | **Complete, re-scoped** to process-global BLAS eligibility |
 | 12 Order-5 dense output | **Complete 2026-07-23**, including the upstream FSAL/k1 bug fix |
-| 13 Prebuilt binaries | Workflow/install fallback **implemented and validated** for v1.0.0's legacy asset names; v1.0.1 publication remains a lead action |
+| 13 Prebuilt binaries | **Implemented and released in v1.0.1** with canonical asset names and a portable verified checksum manifest |
 | 14 Standalone CLI/WASM | **Parked.** Cold-start CLI has negative ROI; dump-and-replay is the only recommended variant |
 | 15 Direct error coefficients | **Do not pursue.** Both steppers already precompute the coefficient differences |
 | 16 Direct PPT | **Do not pursue.** BigFloat-quadrature tail is unsuitable for the hot loop; LUT hardening is already fixed |

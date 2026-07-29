@@ -64,7 +64,14 @@ jobs:
           $dest = "staging/libamalthea-${{ matrix.triple }}.dll"
           Copy-Item "amalthea/target/release/${{ matrix.libname }}" $dest
           $hash = (Get-FileHash -Algorithm SHA256 $dest).Hash.ToLower()
-          "$hash libamalthea-${{ matrix.triple }}.dll" | Out-File -Encoding ascii "$dest.sha256"
+          # GNU/BSD checksum manifests require two spaces before the filename.
+          # Write LF explicitly so concatenating this Windows-generated line
+          # with Unix-generated lines remains portable to `sha256sum -c`.
+          [System.IO.File]::WriteAllText(
+            "$dest.sha256",
+            "$hash  libamalthea-${{ matrix.triple }}.dll`n",
+            [System.Text.Encoding]::ASCII
+          )
 
       - uses: actions/upload-artifact@v7
         with:
