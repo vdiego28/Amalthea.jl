@@ -2492,3 +2492,13 @@ trace without risking the ambiguity of a tail-only excerpt. Use the next
 hosted Windows Rust result to identify and then fix the platform-specific
 failure; the numerical deficit alone is not sufficient evidence for a code
 change.
+
+The first diagnostic run reached the begin marker but exposed another Windows
+locale boundary: Python decoded the worker file as UTF-8, then CP-1252
+`sys.stdout` rejected TestItemRunner's `✓` character before any test detail was
+emitted. Render diagnostic content through the active stdout encoding with
+`backslashreplace` first. Representable text remains unchanged and unsupported
+characters become lossless `\u`/`\U` escapes, so emitting a diagnostic can
+never replace the underlying test failure with a console-encoding exception.
+Cover this specifically with a CP-1252 output-safety unit test before the next
+push.

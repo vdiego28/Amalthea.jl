@@ -2265,3 +2265,36 @@ only Windows Rust job `90584183537` failed after **1723.3s**.
 
 **Next:** Push the diagnostic commit, inspect the next Windows Rust worker log,
 then implement and validate only the platform fix supported by that trace.
+
+## 2026-07-29 — Backlog 20 follow-up — Windows diagnostic stdout — Codex (GPT-5)
+
+**Status:** in-progress
+
+**Did:** Hardened failed-worker log emission after the first diagnostic run
+showed that Windows CP-1252 stdout could not represent TestItemRunner's Unicode
+status glyphs. The underlying Rust bucket still failed **42245/42357**; this
+unit fixes only the diagnostic that masked its details.
+
+**How:** Extended `docs/dev/native-port/PLANS.md` §10.5.
+`test/parallel_group_tests.py:282` encodes the already UTF-8-decoded worker
+content through `sys.stdout.encoding` with `backslashreplace`, then decodes it
+back before printing. Characters supported by the console are unchanged;
+unsupported characters are rendered as ASCII `\u`/`\U` escapes.
+`test/test_parallel_group_tests.py` exercises the exact CP-1252 boundary with
+both `✓` and `λ`.
+
+**Decisions:** Preserve the host console encoding and escape unsupported
+diagnostic characters rather than globally reconfiguring stdout. This keeps
+passing scheduler output unchanged and avoids assuming how PowerShell or other
+callers consume UTF-8 bytes.
+
+**Gotchas:** Hosted diagnostic run `30499251746`, Windows Rust job
+`90735017011`, reached the failed-log begin marker and then raised
+`UnicodeEncodeError` for `\u2713` at the `print(content)` call. No worker detail
+survived that runner teardown.
+
+**Tests:** Scheduler unit tests **10/10**, Python byte compilation, and
+`git diff --check`: pass.
+
+**Next:** Push, wait for the Windows Rust bucket, and use its now
+console-safe complete trace to identify the original 112-assertion failure.

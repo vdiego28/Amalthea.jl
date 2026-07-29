@@ -279,6 +279,10 @@ def emit_failure_log(log_path):
     hosted job ends, so a failure must copy its log into the durable job log.
     """
     content = log_path.read_text(encoding="utf-8", errors="replace")
+    stdout_encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    content = content.encode(
+        stdout_encoding, errors="backslashreplace"
+    ).decode(stdout_encoding)
     print(f"--- BEGIN FAILED WORKER LOG: {log_path} ---")
     print(content, end="" if content.endswith("\n") else "\n")
     print(f"--- END FAILED WORKER LOG: {log_path} ---")

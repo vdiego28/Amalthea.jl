@@ -35,6 +35,20 @@ class SchedulerTests(unittest.TestCase):
             self.assertIn("first failure: λ ≠ β\nstack trace", emitted)
             self.assertIn(f"END FAILED WORKER LOG: {log_path}", emitted)
 
+    def test_failed_worker_log_is_safe_for_cp1252_stdout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "worker.log"
+            log_path.write_text("passed ✓; failed λ\n", encoding="utf-8")
+            raw_output = io.BytesIO()
+            cp1252_output = io.TextIOWrapper(raw_output, encoding="cp1252")
+
+            with contextlib.redirect_stdout(cp1252_output):
+                SCHEDULER.emit_failure_log(log_path)
+            cp1252_output.flush()
+            emitted = raw_output.getvalue().decode("cp1252")
+
+            self.assertIn(r"passed \u2713; failed \u03bb", emitted)
+
     def test_declaration_discovery_reads_utf8_explicitly(self):
         source = '@testitem "Unicode ω" tags=[:physics] begin\nend\n'
         path = Path("unicode_test.jl")
