@@ -1,7 +1,7 @@
 using TestItemRunner
-import Amalthea: set_fftw_mode
+import Amalthea: set_fftw_mode, set_fftw_threads
 
-# Runs the test items belonging to one or more files, filtered to a single
+# Runs one or more exact test items, filtered to a single
 # CI test-group tag, in this single process. Used by
 # `parallel_group_tests.py` to distribute any test group across several
 # load-balanced worker processes. Must live in `test/` (not e.g. a scratch
@@ -16,19 +16,46 @@ import Amalthea: set_fftw_mode
 # fail with "too many arguments" — confirmed via the `fields` group's
 # first run under this script.
 set_fftw_mode(:estimate)
+if Sys.iswindows() || Sys.isapple()
+    set_fftw_threads(1)
+end
+if Sys.iswindows()
+    ENV["HDF5_USE_FILE_LOCKING"] = "FALSE"
+end
 
 tag_sym = Symbol(ENV["LUNA_BUCKET_TAG"])
-targets = Set(split(ENV["LUNA_BUCKET_FILES"], "\n"))
+target_specs = filter(!isempty, split(
+    get(ENV, "LUNA_BUCKET_ITEMS", get(ENV, "LUNA_BUCKET_FILES", "")),
+    "\n",
+))
 
-# `@run_package_tests` walks the package root recursively, which sweeps in
-# any git worktree living under `.claude/worktrees/<name>/test/`. Those hold
-# their own copies of every test file, so a bucket matching only on
-# `basename` would run each item once per checkout (inflating assertion
-# counts 2-3x) and would fail on worktrees that never built amalthea. Pin
-# the bucket to *this* checkout's test directory.
+# Resolve the checkout-relative manifest names emitted by
+# `parallel_group_tests.py`. Historical entries for files directly under
+# `test/` remain basenames; secondary/nested roots use repository-relative
+# names so cross-root filename collisions cannot alias.
 const THIS_TEST_DIR = @__DIR__
-in_this_checkout(f) = dirname(abspath(String(f))) == THIS_TEST_DIR
+const REPO_ROOT = normpath(joinpath(THIS_TEST_DIR, ".."))
+target_path(name) = normpath(abspath(joinpath(
+    occursin('/', name) || occursin('\\', name) ? REPO_ROOT : THIS_TEST_DIR,
+    name,
+)))
+
+const TARGET_FILES = Set{String}()
+const TARGET_ITEMS = Set{Tuple{String,String}}()
+for spec in target_specs
+    parts = split(spec, "::"; limit=2)
+    path = target_path(parts[1])
+    if length(parts) == 1
+        push!(TARGET_FILES, path)
+    else
+        push!(TARGET_ITEMS, (path, parts[2]))
+    end
+end
+
+function is_target(ti)
+    path = normpath(abspath(String(ti.filename)))
+    path in TARGET_FILES || (path, String(ti.name)) in TARGET_ITEMS
+end
 
 @run_package_tests filter=ti->(tag_sym in ti.tags &&
-                              basename(String(ti.filename)) in targets &&
-                              in_this_checkout(ti.filename))
+                              is_target(ti))

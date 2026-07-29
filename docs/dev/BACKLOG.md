@@ -44,16 +44,27 @@ or "verified" inside a superseded narrative do not outrank this list.
    **1.25e-7**. Test tolerances tightened `1e-3`/`5e-2` → `1e-12`, with the
    config's nonlinear share (`rel_nl` ≈ 4.5e-4) now *measured in-test* and
    asserted to exceed the tolerance by >100× — the AGENTS.md §3 step 4 rule
-   whose absence let this ship. Still open: the `err` weak-norm placeholder
-   is demoted to a diagnostic rather than fixed (a real pre-acceptance trial
-   solution in `step()` is the honest fix), and GPU scope beyond
-   mode-averaged RealGrid Kerr(+PPT) is untouched.
+   whose absence let this ship. The `err` weak-norm placeholder and serial
+   PPT scans are now fixed too (items 8 and 12 below); GPU scope beyond
+   mode-averaged RealGrid Kerr(+PPT) is still untouched.
 2. 🟡 **Add standing GPU CI — deliberately deferred 2026-07-25 (lead's
    call).** A CUDA-equipped scheduled/dedicated runner must run the CUDA Rust
    tests and `test/test_native_cuda.jl`; until then every GPU change also
    requires a recorded manual hardware run. **Item 1 is the argument for
    this:** a zero-nonlinearity GPU backend survived over two weeks because
    nothing re-measured it automatically.
+   **2026-07-28 review addition:** a runner alone is insufficient. The Julia
+   CUDA tests catch any `RustNativeStepper` construction error and convert it
+   to `@test_skip`; the Rust GPU tests likewise return successfully on any
+   CUDA initialization error. On a machine that is expected to have CUDA, a
+   broken kernel load or backend regression can therefore produce a green
+   "skipped" job. **Required-hardware mode is implemented 2026-07-28:**
+   `AMALTHEA_REQUIRE_CUDA_TESTS=1` turns CUDA initialization, missing-library,
+   and GPU-dispatch fallback paths into failures in both Rust and Julia.
+   Strict real-hardware runs passed (`cargo test` 73/73; focused resident
+   CUDA+dense/dispatch Julia suite 104/104). The remaining work is the
+   lead-deferred runner itself: set this variable in that job and keep the
+   resident CUDA testitems in its required manifest.
 3. 🟢 **Repair the known-broken low-level examples — 7 of 7 DONE
    2026-07-27.** Both documented classes fixed (`linop` before assignment ×6;
    `norm_modal(grid.ω)` ×3) and re-audited across all 44 example files — the
@@ -185,11 +196,31 @@ or "verified" inside a superseded narrative do not outrank this list.
    replaced with a two-space/LF form verified against all three downloaded
    binaries, and `release.yml` now generates that portable form directly.
    Release: <https://github.com/vdiego28/Amalthea.jl/releases/tag/v1.0.1>.
-8. ⚪ **GPU `err` estimate uses a placeholder.** `weaknorm_elem_kernel` passes
-   `field_d` as both the "old" and "trial new" field because `step()` has no
-   pre-acceptance trial solution. Harmless under fixed-step (`stepcontrol_pi`
-   forces acceptance), and now printed as a diagnostic rather than asserted,
-   but unproven for adaptive stepping in general.
+8. 🟢 **GPU adaptive error estimate — FIXED and hardware-verified
+   2026-07-27.** `CudaNativeSim::step` now forms the fifth-order trial in
+   `ystage_d` before acceptance, evaluates the norm against old+trial, and
+   only propagates/swaps the trial into `field_d` when accepted; rejection
+   leaves the resident field bit-exact. Tracing the placeholder found two
+   further defects in the same block: the CUDA kernel implemented an
+   elementwise `normnorm`-style expression rather than Julia/Rust's global
+   `weaknorm`, and its reduction took a **maximum**, not a sum. The GPU now
+   reduces `Σ|yerr|²`, `Σ|y0|²`, and `Σ|y1|²` and assembles the exact CPU
+   formula. On the RTX 5060 Ti, Kerr and Kerr+PPT both deliberately reject,
+   preserve state, retry, and complete adaptive trajectories within
+   `5.42e-15` / `2.24e-15` of CPU native; fixed-step `err` matches the Julia
+   oracle to ~`3e-15` relative. Focused CUDA test 59/59.
+12. 🟢 **Parallelize GPU PPT cumulative integrals — DONE and
+   hardware-verified 2026-07-27.** Replaced the three one-thread scans with
+   deterministic two-level 256-sample Blelloch scans plus parallel physics
+   finalizers. A direct 513-sample Rust/CUDA test covers block offsets and a
+   partial final block. Same-hardware fixed-step benchmark (minimum of three
+   five-step batches): old→new GPU time is 75.82→1.520 ms/step at
+   `n_time_over=8192`, 153.92→2.121 at 16384, and 321.02→1.559 at 32768.
+   The new GPU/CPU speed is 0.82×, 1.08×, and 2.94× respectively, so `:auto`
+   now admits supported PPT configs at
+   `_GPU_PPT_N_THRESHOLD=8192` (`length(Eω)`), with margin above the
+   marginal n=4097 crossover. The explicit
+   `AMALTHEA_USE_RUST_CUDA_NATIVE=1` master opt-in remains mandatory.
 9. 🟢 **`AMALTHEA_NATIVE_GPU=on` process-wide silently reroutes CPU-native
    equivalence tests onto the GPU — FIXED and verified on hardware
    2026-07-26.** The five vulnerable files (`test_native_phase1.jl`,
@@ -281,6 +312,162 @@ or "verified" inside a superseded narrative do not outrank this list.
     throughout. Either prune stale worktrees before gating, run the gate from
     inside a worktree, or exclude `.claude/` from discovery.
 
+### New items raised by the 2026-07-28 backlog review
+
+13. 🟢 **Harden the CUDA backend's field-transfer FFI contract — DONE
+    2026-07-28.**
+    `CpuNativeSim::{set_field,resync_field,get_field,get_ks_stage}` validates
+    null pointers, `n == sim.n`, and the stage index before constructing a
+    slice. The corresponding `CudaNativeSim` methods
+    (`amalthea/src/cuda_native.rs:636-689`) construct host slices without the
+    null/length guards and call GPU copies with `.unwrap()`. Oversized copies
+    then hit `GpuBuffer`'s `assert!(bytes <= self.size)`
+    (`amalthea/src/cuda.rs:695-713`); null input reaches
+    `slice::from_raw_parts`/`from_raw_parts_mut`. This violates the shared
+    FFI documentation's “return `-1` on null/length mismatch” contract and can
+    abort or enter undefined behavior instead of reporting an error. Add the
+    same guards as CPU before any slice construction, replace copy
+    assertions/unwraps with returned errors at FFI-reachable seams, and run
+    the lifecycle mismatch tests against a real `CudaNativeSim` as well as
+    `CpuNativeSim`. Implemented exactly at that boundary: all four CUDA field
+    methods reject null/length/index errors before constructing slices,
+    transfer failures return `-1`, and `GpuBuffer` reports oversize copies as
+    `Err` instead of panicking. The new real-hardware invalid-argument and
+    valid round-trip regression passed inside strict `cargo test` (73/73).
+14. 🟢 **Re-enable and resolve GPU dense-output convergence coverage — DONE
+    2026-07-28, with the support claim narrowed to order 4.**
+    `test/test_native_dense_order5.jl:438-449` still skips the GPU convergence
+    assertion because the old backend had no nonlinear RHS. That premise was
+    fixed on 2026-07-25, but a real-hardware focused run on 2026-07-28 still
+    reports **40 pass / 1 broken** from this stale unconditional skip.
+    `CudaNativeSim` also still inherits the default
+    `compute_extra_stages -> -1`, so GPU interpolation deliberately falls
+    back to the order-4 extension while the Julia and CPU-native steppers use
+    order 5; this conflicts with the S5.3 status claim that order-5 dense
+    output covers all geometries. First replace the stale skip with a
+    non-vacuous measured-order test now that `max|kᵢ|` is physical, then
+    either implement the two extra stages on CUDA or explicitly narrow the
+    S5.3 support/status claim and keep the measured order-4 fallback.
+    The stale skip is now a non-vacuous real-hardware convergence test against
+    a fine CPU-native order-5 reference. Measured local defects were
+    `9.57e-7`, `3.22e-8`, and `1.02e-9` for `h=0.04,0.02,0.01`, giving
+    ratios **29.77 and 31.43** (the expected order-4 local ratio is 32).
+    CUDA therefore retains the correct order-4 fallback; fifth-order CUDA
+    interpolation remains an optional future expansion, not a current
+    support claim. Focused strict CUDA+dense/dispatch suite: 104/104, no
+    broken tests.
+15. 🟢 **Make serial CI and the local parallel/full gate use one test
+    manifest — DONE 2026-07-28.** Serial `test/runtests.jl` recursively discovers four
+    `tags=[:rust]` files under `amalthea/tests/`, while
+    `parallel_group_tests.py::discover_group_files` scans only
+    `test/*.jl` and `run_group_bucket.jl` rejects any file outside that exact
+    directory. Consequently `python3 test/run_full_gate.py` omits
+    `test_julia_ffi.jl`, `test_stepper_dispatch.jl`, `test_scans_io.jl`, and
+    `test_gpu_cuda.jl` even though project documentation calls them part of
+    the Rust safety net. The local “full” gate also omits the maintained
+    `examples` group by design. Define one explicit discovery manifest/root
+    set shared by serial and bucketed runners, add a meta-test comparing
+    their file sets, and decide whether the default full gate should include
+    `examples` or be renamed to make its narrower scope unmistakable.
+    `test/test_roots.txt` now defines the two maintained roots for both Julia
+    and Python. Bucket identities are repository-relative outside `test/`, so
+    the four `amalthea/tests` files are scheduled without basename aliasing,
+    while existing timing keys remain valid. A Rust-tagged meta-test compares
+    the independently enumerated Julia set with Python's `--list-files`
+    output, and a focused mixed-root bucket passed 3/3. The “full” gate now
+    includes `examples` and is documented as eight maintained groups.
+16. 🟢 **Preserve global scan indices in `RangeExec` — DONE 2026-07-28.**
+    `Scans.runscan(::Scan{RangeExec})` enumerates
+    `combos[scan.exec.r]`, which restarts `scanidx` at 1 instead of retaining
+    the selected points' original linear indices. A focused
+    `RangeExec(3:4)` reproduction returned `[(1, 30), (2, 40)]`, not
+    `[(3, 30), (4, 40)]`. Existing coverage uses only `1:6`, so it cannot
+    expose the offset. Callbacks commonly use `scanidx` for filenames,
+    `getvalue`, and save locations; separate range workers can therefore
+    label or overwrite another chunk's results. Iterate the requested
+    indices themselves (`for scanidx in scan.exec.r; args = combos[scanidx]`)
+    and add a non-1-based range regression covering both callback indices and
+    output isolation. The implementation now iterates the original indices;
+    the `3:4` regression returns `[(3,30),(4,40)]`.
+17. 🟢 **Fix the non-terminating `Output.always` save condition — DONE
+    2026-07-28.** Both
+    `MemoryOutput` and `HDF5Output` repeatedly call their save condition
+    inside `while save`, incrementing `saved` each time. `Output.always`
+    returns `(true, t)` for every `saved` value, so one output callback loops
+    forever: memory output grows without bound and HDF5 output continuously
+    extends/writes its datasets. No test or in-tree call site covers this
+    exported condition. The built-in native-point predicates now emit at most
+    one sample per accepted-step callback, while `GridCondition` and custom
+    predicates retain the historical repeated-evaluation contract. This also
+    fixes `every_nth`, whose closure counter was previously advanced repeatedly
+    inside one callback. Memory/HDF5 `always`, `every_nth`, and grid catch-up
+    regressions all pass.
+18. 🟢 **Correct Fourier edge-bin handling in `Maths.hilbert` and real
+    `Maths.oversample` — DONE 2026-07-28.** The direct and planned Hilbert implementations use
+    the same even/odd mask: for even lengths they zero the Nyquist bin (which
+    must be retained), and for odd lengths they also zero the highest
+    positive-frequency bin (which must be doubled). Focused N=8/N=9
+    edge-frequency signals both returned an analytic-signal norm effectively
+    zero and a real-part relative error of 1.0. Separately, real oversampling
+    copies an even-length input's unique Nyquist coefficient into an interior
+    bin without halving it; an N=8 Nyquist-only signal sampled back from a
+    4× oversample was exactly 2× the input. Add parity-specific edge-bin tests
+    for `hilbert`, `plan_hilbert!`, and `oversample`, then implement the
+    standard even/odd FFT masks and Nyquist split. Direct and planned
+    transforms now share one parity-correct mask, and even-length real
+    oversampling halves the relocated Nyquist coefficient. The N=8/N=9 edge
+    regressions and Nyquist round trip pass.
+19. 🟢 **Honor the `shape` keyword in `Tools.getN` — DONE 2026-07-28.** The public function
+    accepts `shape=:sech|:gauss`, and `Lfiss` forwards its own `shape`, but
+    `getN` hardcodes `Ld(..., shape=:sech)`. A focused calculation produced
+    identical soliton order for `:gauss` and `:sech`
+    (`2.0341464055716445`) instead of the Gaussian value
+    `2.1534237994413084`. Pass the caller's keyword through and add direct
+    `getN`/`Lfiss` tests for both pulse shapes; separately decide whether
+    `E_to_P0`/`params` should continue rejecting Gaussian pulses or gain the
+    corresponding energy-to-peak-power formula. `getN` now forwards the
+    keyword and both defining-formula regressions pass. The deliberately
+    separate `E_to_P0` policy was not broadened.
+
+20. 🟢 **Make coverage assignment and load balancing identical locally and
+    in GitHub Actions — DONE 2026-07-28.** The eight maintained groups
+    currently cover every executable `@testitem`, but only the Rust group's
+    serial/parallel file set has a regression guard. The workflow still runs
+    every group in one serial Julia process, so the 2026-07-28 `main` run was
+    gated by `sim-interface` (22m48s) and Linux `rust` (21m16s), while several
+    jobs finished in 5-10 minutes. Local LPT balancing is not yet reused by
+    CI, its timing data is missing 15 Rust files, the new multimode-plasma
+    file, and the examples file, and timing refreshes cannot safely name log
+    files for secondary-root identities containing `/`. The bucket runner
+    also omits the Windows/macOS one-thread FFTW guard from `runtests.jl`.
+    Define the maintained group list once; guard every discovered test item,
+    every group, workflow inclusion, and timing coverage; schedule individual
+    test items so the monolithic interface suite can be divided; carry the
+    platform safety setup into bucket workers; and invoke the same bounded
+    LPT runner from GitHub Actions. Keep macOS physics serial because of the
+    historical SIGBUS, and do not weaken or remove any test to improve time.
+    The two current macOS annotations are unrelated runner-image noise:
+    Rust setup invokes `brew install bash`, and Homebrew ignores GitHub's
+    unused, untrusted `aws/tap`; both jobs pass, so trusting the tap or
+    disabling Homebrew's trust check is explicitly out of scope.
+    `test/test_groups.txt` now owns the group list, and the expanded
+    336-assertion manifest meta-test independently checks every executable
+    test item's assignment, Python discovery, workflow inclusion, external
+    CUDA test, and exact-or-legacy timing coverage. All 112 scheduled item
+    memberships have timings. The scheduler can address individual
+    `file::item` identities, uses collision-safe log names, and refuses to
+    publish a partial timing refresh; the monolithic interface item is split
+    into seven unchanged assertion units. Local batches cap their combined
+    worker count at 10, while GitHub uses two workers on Linux/Windows and one
+    for macOS/examples. Bucket workers now mirror platform FFTW/HDF5 setup,
+    and CI mode preserves the replaced action's bounds, deprecation,
+    compiled-module, inlining, and user-coverage flags with a distinct LCOV
+    trace per worker. Strict two-worker Rust passed 42640/42640 in 434.0s
+    (22.7% below the prior 561.6s strict serial gate); interface passed
+    314/314 in 217.9s. Physics, multimode, propagation, I/O, fields, and
+    examples also passed through the new scheduler. The first pushed Actions
+    run remains the authoritative hosted-runner timing comparison.
+
 Explicitly parked, and therefore **not** resume points without a new user need:
 multi-mode `StepIndexMode` (no consumer), the full SoA conversion (~1% ceiling),
 the cold-start standalone CLI (porting all Julia setup has negative ROI), and
@@ -368,15 +555,18 @@ S3 and the release/example remainders of S6 stay live below; S2 closed
    n=4096 configuration measured 0.98×, and projected end-to-end improvement
    was ~0.99-1.05×, below the >1.4× gate. The prototype was reverted.
 5. 🟢 **Phase S5.3 — order-5 dense-output continuous extension: done
-   2026-07-23.** The Calvo-Montijano-Rández (1990) order-5 tableau, wired
-   into both steppers (extra-stage FFI + shared `interpC5`/
+   2026-07-23 for Julia and CPU-native backends.** The
+   Calvo-Montijano-Rández (1990) order-5 tableau, wired into those two
+   steppers (extra-stage FFI + shared `interpC5`/
    `_dp5_extra_stages!` helpers). The 2026-07-22 attempt's blocker — order-4
    *and* order-5 interpolants both degrading as O(h²) — was **not** a test
    artifact: `step!` performed the FSAL carry k7→k1 at accept time, so
    `interpolate` was handed k7 in place of the finished interval's k1 and
    the continuous extension collapsed to first order. Inherited from
    upstream Luna and re-ported into all three Rust steppers; fixed in all
-   four by deferring the carry to the top of the next step. The WIP's test
+   four by deferring the carry to the top of the next step. CUDA does not
+   implement the two extra stages and deliberately retains its measured,
+   correct order-4 fallback (item 14 above). The WIP's test
    additionally ran at h=2e-3, where the order-5 defect is already at the FP
    floor and no ratio means anything. Full postmortem, tableau provenance
    and measured orders: `native-port/portlog-inbox/dense-order5.md`.
@@ -694,7 +884,8 @@ implemented), verified on real hardware, wired behind
    should eventually match §4, which it never needs to. No code changed;
    documentation-only.
 2. 🟡 **PPT plasma done 2026-07-11 (mode-avg only); Raman, radial/modal/
-   free-space, ADK still open.** Added to `CudaNativeSim`
+   free-space, ADK still open.** The single-thread scan description below is
+   historical and was superseded by resume item 12 on 2026-07-27. Added to `CudaNativeSim`
    (`cuda_native.rs`/`kernels.cu`/`cuda.rs`): `set_plasma_params` uploads
    the same `SplineSegment` LUT format `PptIonizationRate::rate_vector_gpu`
    already uses (reused directly, no new upload format), then `step()`
@@ -790,19 +981,26 @@ implemented), verified on real hardware, wired behind
      `n`). Full measured table and reasoning live in
      `RK45._GPU_KERR_ONLY_N_THRESHOLD`'s docstring, next to the code it
      justifies. Both existing `test_native_cuda.jl` GPU-vs-CPU equivalence
-     tests now explicitly set `AMALTHEA_NATIVE_GPU=on` (they test raw kernel
-     correctness at deliberately small/known configs, independent of the
-     dispatch heuristic — including the Kerr+plasma test, which
-     intentionally still drives the known-slow path for numerical
-     verification). New `test/test_native_gpu_dispatch.jl` covers the
-     `:off`/`:on`/`:auto` decision matrix directly (pure Julia-side logic,
-     no `ccall`, so it runs without GPU hardware, unlike the sibling
-     equivalence tests).
-4. Raman ADE kernel, ADK plasma kernel, radial/modal/free-space geometries
-   — or explicit `NativeIneligible`-style eligibility split keeping those
-   configs on CPU for GPU v1, documented as such. A work-efficient parallel
-   prefix scan for cumtrapz (superseding item 2's single-thread kernels)
-   would matter here, at radial's much larger per-column plasma-state size.
+   tests now explicitly set `AMALTHEA_NATIVE_GPU=on` (they test raw kernel
+   correctness at deliberately small/known configs, independent of the
+   dispatch heuristic — including the Kerr+plasma test, which forces the raw
+   GPU path for numerical verification). New
+   `test/test_native_gpu_dispatch.jl` covers the
+   `:off`/`:on`/`:auto` decision matrix directly (pure Julia-side logic,
+   no `ccall`, so it runs without GPU hardware, unlike the sibling
+   equivalence tests).
+   **2026-07-27 update:** item 12's parallel scans invalidate only the PPT
+   half of the original measurement. New GPU/CPU speed is 0.82× at n=2049,
+   1.08× at n=4097, and 2.94× at n=8193, so supported PPT configs now use
+   their own conservative `_GPU_PPT_N_THRESHOLD=8192`. The Kerr-only
+   threshold is unchanged.
+4. 🟡 **Broader physics/geometries remain open; the prefix-scan prerequisite
+   is DONE 2026-07-27.** Raman ADE kernel, ADK plasma kernel, and
+   radial/modal/free-space geometries remain on CPU through the explicit
+   eligibility split. The three PPT cumtrapz operations now use two-level
+   work-efficient block scans; radial support would still need a
+   segmented/batched extension over columns rather than reusing the
+   one-dimensional mode-averaged launch unchanged.
 5. `test/test_native_gpu.jl`-style coverage of the above, mirroring the
    phase-test structure used throughout the CPU native port.
 6. The `n_time`-vs-`n_time_over` Kerr/plasma buffer-sizing fidelity gap

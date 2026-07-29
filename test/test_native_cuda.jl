@@ -8,7 +8,9 @@ using TestItems
     import LinearAlgebra: norm
 
     libpath = RK45._LIBAMALTHEA_RK45
+    require_cuda = get(ENV, "AMALTHEA_REQUIRE_CUDA_TESTS", "0") == "1"
     if !isfile(libpath)
+        require_cuda && error("CUDA tests are required, but the Rust library was not found")
         @test_skip "Rust library not found"
     else
         # ── Test Geometry & Setup ─────────────────────────────────────────────
@@ -167,6 +169,60 @@ using TestItems
                 @test maxk_gpu > 100.0
             end
 
+            @testset "Adaptive rejection is transactional (GPU vs CPU-native)" begin
+                # dt=0.1 is deliberately above this config's acceptance
+                # range (measured err≈6). Unlike the fixed-step checks, the
+                # controller is free to reject and reduce dt.
+                dt_reject = 0.1
+                s_cpu_adapt = withenv("AMALTHEA_USE_RUST_CUDA_NATIVE" => "0",
+                                      "AMALTHEA_NATIVE_GPU" => "off") do
+                    RustNativeStepper(transform, linop, copy(Eω), t0, dt_reject,
+                                      rtol=1e-6, atol=1e-10,
+                                      max_dt=0.2, min_dt=0.0)
+                end
+                s_gpu_adapt = RustNativeStepper(transform, linop, copy(Eω), t0, dt_reject,
+                                                rtol=1e-6, atol=1e-10,
+                                                max_dt=0.2, min_dt=0.0)
+                field_before = copy(s_gpu_adapt.yn)
+
+                @test !step!(s_cpu_adapt)
+                @test !step!(s_gpu_adapt)
+                # Rejection must not mutate the resident field. This is the
+                # behavioral reason the pre-acceptance y5 lives in
+                # `ystage_d` and is only swapped into `field_d` on accept.
+                @test s_gpu_adapt.yn == field_before
+                @test s_gpu_adapt.tn == t0
+                @test s_gpu_adapt.err > 1
+                @test isapprox(s_gpu_adapt.err, s_cpu_adapt.err; rtol=1e-11)
+                @test isapprox(s_gpu_adapt.dtn, s_cpu_adapt.dtn; rtol=1e-11)
+
+                # Retry with the controller-selected dt, then continue a
+                # genuinely adaptive trajectory. This exercises accepted
+                # trial-buffer swapping and deferred FSAL after a rejection.
+                accepted_retry = false
+                for _ in 1:5
+                    cpu_ok = step!(s_cpu_adapt)
+                    gpu_ok = step!(s_gpu_adapt)
+                    @test gpu_ok == cpu_ok
+                    @test isapprox(s_gpu_adapt.err, s_cpu_adapt.err; rtol=1e-10)
+                    if cpu_ok
+                        accepted_retry = true
+                        break
+                    end
+                end
+                @test accepted_retry
+                @test isapprox(s_gpu_adapt.err, s_cpu_adapt.err; rtol=1e-10)
+                @test norm(s_gpu_adapt.yn - s_cpu_adapt.yn) /
+                      norm(s_cpu_adapt.yn) < 1e-12
+
+                solve(s_cpu_adapt, flength)
+                solve(s_gpu_adapt, flength)
+                rel_adaptive = norm(s_gpu_adapt.yn - s_cpu_adapt.yn) /
+                               norm(s_cpu_adapt.yn)
+                println("GPU adaptive rejection/trajectory rel diff: ", rel_adaptive)
+                @test rel_adaptive < 1e-6
+            end
+
             @testset "Full-solve equivalence (fixed step size)" begin
                 solve(s_jl, flength)
                 solve(s_ru, flength)
@@ -197,27 +253,13 @@ using TestItems
                 @test rel_solve < 1e-12
                 @test rel_nl > 100 * 1e-12
                 @test s_ru.ok
-                # NOT `s_ru.err < 1.0`, unlike the pre-fix version of this
-                # test: `err` comes from `weaknorm_elem_kernel`'s placeholder
-                # (`field_d` for both the "old" and "trial new" field — see
-                # its comment in cuda_native.rs) computed from the *real*
-                # stage derivatives now, and there is no reason a real
-                # nonlinear RHS's weak-norm error estimate should sit below 1
-                # relative to `rtol`/`atol` at this step size — measured
-                # ≈0.93 here (`s_jl` — the Julia `PreconStepper` oracle,
-                # which has a real pre-acceptance trial solution, not
-                # `field_d` in both slots — reports its own `err` below for
-                # comparison). Under fixed-step (`max_dt=min_dt=dt`),
-                # `stepcontrol_pi` (native.rs) clamps `dtn` to `min_dt` and
-                # forces `ok_final=true` regardless of `err`'s value, so `err`
-                # never affects the accepted trajectory that `rel_solve`
-                # above actually checks — only `s_ru.ok` does, which the
-                # assertion above covers (and which `stepcontrol_pi`'s
-                # `max(0.1, ...)` floor makes true unconditionally under
-                # fixed-step, so it is not meaningful coverage on its own).
-                # Kept as a printed diagnostic, not a pass/fail gate.
-                println("err diagnostic (does not gate fixed-step acceptance) — s_ru.err=",
-                        s_ru.err, " s_jl.err=", s_jl.err)
+                # The GPU now forms the true fifth-order trial before
+                # acceptance and evaluates the same global weak norm as the
+                # CPU/Julia oracle. Keep the fixed-step value diagnostic
+                # here; the adaptive test above is the actual rejection gate.
+                println("err diagnostic — s_ru.err=", s_ru.err,
+                        " s_jl.err=", s_jl.err)
+                @test isapprox(s_ru.err, s_jl.err; rtol=1e-10)
             end
 
             @testset "Luna.run / dense-output equivalence (adaptive stepping)" begin
@@ -275,7 +317,10 @@ using TestItems
             end
         end
 
-        gpu_available || @test_skip "CUDA GPU/toolkit not available on this machine: $gpu_error"
+        if !gpu_available
+            require_cuda && error("CUDA tests are required, but GPU setup failed: $gpu_error")
+            @test_skip "CUDA GPU/toolkit not available on this machine: $gpu_error"
+        end
     end
 end
 
@@ -287,7 +332,9 @@ end
     import LinearAlgebra: norm
 
     libpath = RK45._LIBAMALTHEA_RK45
+    require_cuda = get(ENV, "AMALTHEA_REQUIRE_CUDA_TESTS", "0") == "1"
     if !isfile(libpath)
+        require_cuda && error("CUDA tests are required, but the Rust library was not found")
         @test_skip "Rust library not found"
     else
         # docs/dev/BACKLOG.md S3 item 2 (first slice, 2026-07-11): plasma support on
@@ -356,12 +403,10 @@ end
         local s_ru
         gpu_available = true
         gpu_error = nothing
-        # `AMALTHEA_NATIVE_GPU=on` forces GPU despite `:auto`'s policy of
-        # never selecting GPU for a plasma-bearing config (measured
-        # 20-30x slower than CPU in that regime — BACKLOG.md S3 item 3) —
-        # this test intentionally drives that known-slow path to verify
-        # numerical correctness, not to claim it's a good idea to run this
-        # way by default.
+        # `AMALTHEA_NATIVE_GPU=on` forces GPU independently of `:auto`'s
+        # size threshold. This deliberately small case is for numerical
+        # correctness; the parallel PPT scans and dispatch crossover are
+        # benchmarked separately (BACKLOG.md S3 items 3 and 12).
         withenv("AMALTHEA_USE_RUST_CUDA_NATIVE" => "1", "AMALTHEA_USE_RUST_IONISATION" => "1",
                 "AMALTHEA_NATIVE_GPU" => "on") do
             try
@@ -375,6 +420,42 @@ end
 
             @testset "GPU handle actually used (not silently CPU)" begin
                 @test RK45._gpu_native_eligible(transform, linop, length(Eω))
+            end
+
+            @testset "Adaptive Kerr+PPT rejection and retry" begin
+                # At the fixed-step test's dt this plasma-sensitive config
+                # has err≈1.82. With min_dt=0 it must reject, preserve the
+                # field, and accept the controller-selected retry.
+                s_cpu_adapt = withenv("AMALTHEA_USE_RUST_CUDA_NATIVE" => "0",
+                                      "AMALTHEA_NATIVE_GPU" => "off") do
+                    RustNativeStepper(transform, linop, copy(Eω), t0, dt,
+                                      rtol=1e-6, atol=1e-10,
+                                      max_dt=0.02, min_dt=0.0)
+                end
+                s_gpu_adapt = RustNativeStepper(transform, linop, copy(Eω), t0, dt,
+                                                rtol=1e-6, atol=1e-10,
+                                                max_dt=0.02, min_dt=0.0)
+                field_before = copy(s_gpu_adapt.yn)
+
+                @test !step!(s_cpu_adapt)
+                @test !step!(s_gpu_adapt)
+                @test s_gpu_adapt.yn == field_before
+                @test s_gpu_adapt.err > 1
+                @test isapprox(s_gpu_adapt.err, s_cpu_adapt.err; rtol=1e-11)
+                @test isapprox(s_gpu_adapt.dtn, s_cpu_adapt.dtn; rtol=1e-11)
+
+                @test step!(s_cpu_adapt)
+                @test step!(s_gpu_adapt)
+                @test norm(s_gpu_adapt.yn - s_cpu_adapt.yn) /
+                      norm(s_cpu_adapt.yn) < 1e-12
+
+                solve(s_cpu_adapt, flength)
+                solve(s_gpu_adapt, flength)
+                rel_adaptive = norm(s_gpu_adapt.yn - s_cpu_adapt.yn) /
+                               norm(s_cpu_adapt.yn)
+                println("GPU Kerr+PPT adaptive trajectory rel diff: ", rel_adaptive)
+                @test rel_adaptive < 1e-6
+                @test rel_nl > 100 * 1e-6
             end
 
             @testset "Full-solve equivalence (fixed step size)" begin
@@ -403,24 +484,15 @@ end
                 @test rel_solve < 1e-12
                 @test rel_nl > 100 * 1e-12
                 @test s_ru.ok
-                # NOT `s_ru.err < 1.0` — see the Kerr-only sibling test's
-                # identical note. Measured ≈195 here (plasma's ionisation
-                # rate is far more sensitive to the trial field than a cubic
-                # Kerr term, so the placeholder weak-norm estimate is larger
-                # still than the Kerr-only config's ≈0.93) — legitimately
-                # large now that the RHS is real, and does not affect the
-                # fixed-step accepted trajectory (`stepcontrol_pi` forces
-                # `ok_final=true` when `dtn` clamps to `min_dt`). `s_jl.err`
-                # (the Julia oracle, which has a real pre-acceptance trial
-                # solution, not the GPU path's `field_d`-for-both-slots
-                # placeholder) printed alongside for comparison — see the
-                # measured values in the PORT_LOG inbox entry for what this
-                # comparison showed for this config.
-                println("err diagnostic (does not gate fixed-step acceptance) — s_ru.err=",
-                        s_ru.err, " s_jl.err=", s_jl.err)
+                println("err diagnostic — s_ru.err=", s_ru.err,
+                        " s_jl.err=", s_jl.err)
+                @test isapprox(s_ru.err, s_jl.err; rtol=1e-10)
             end
         end
 
-        gpu_available || @test_skip "CUDA GPU/toolkit not available on this machine: $gpu_error"
+        if !gpu_available
+            require_cuda && error("CUDA tests are required, but GPU setup failed: $gpu_error")
+            @test_skip "CUDA GPU/toolkit not available on this machine: $gpu_error"
+        end
     end
 end

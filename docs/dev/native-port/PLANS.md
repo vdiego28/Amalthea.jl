@@ -2095,3 +2095,369 @@ The macOS physics job passed three consecutive executions on the exact
 so the evidence supports the macOS FFTW thread pool/oversubscription as the
 operative factor. The `FFTW.UNALIGNED` experiment remains only a reopen path,
 not current work.
+
+## 8. GPU adaptive acceptance and PPT cumulative scans (2026-07-27)
+
+This plan covers two bounded changes on the isolated
+`gpu-adaptive-error-and-expansion` branch. It does **not** widen GPU physics
+eligibility: mode-averaged RealGrid Kerr plus optional PPT plasma remains the
+whole supported CUDA scope. Raman, ADK, radial, modal, free-space,
+z-dependent linops, and shot noise continue to return `NativeIneligible` and
+use `CpuNativeSim`.
+
+Standing GPU CI is still the preferred long-term guard. Until it exists, both
+changes below require a recorded manual run on the repository's RTX 5060 Ti,
+in addition to CPU-only build and regression gates.
+
+### 8.1 Correct pre-acceptance trial state for the GPU weak norm
+
+**Defects.** `CudaNativeSim::step` currently computes the embedded error vector
+correctly, but calls `weaknorm_elem_kernel(yerr, field, field, ...)`.
+`CpuNativeSim::step` instead forms the fifth-order interaction-picture trial
+state
+
+```
+y5 = field + dt * Σᵢ DP_B5[i] * kᵢ
+```
+
+before calling `weaknorm_c64(yerr, field, y5, ...)`. The GPU only forms `y5`
+after `stepcontrol_pi` says the step was accepted, in place on `field_d`.
+Consequently, the GPU's tolerance denominator is wrong and adaptive rejection
+is unproven.
+
+Source tracing found a second discrepancy in the same block:
+`weaknorm_elem_kernel` computes
+
+```
+sqrt(mean(abs2(yerr[i]) / (atol + rtol*max(abs(y0[i]),abs(y1[i])))^2))
+```
+
+which is Julia's `normnorm`-style elementwise weighting, not the actual
+`weaknorm` selected by `RustNativeStepper`. The CPU/Julia oracle computes
+
+```
+sy    = Σ abs2(y0[i])
+syn   = Σ abs2(y1[i])
+syerr = Σ abs2(yerr[i])
+errwt = max(sqrt(sy), sqrt(syn), atol)
+err   = sqrt(syerr) / rtol / errwt.
+```
+
+Correcting only the trial pointer would therefore still leave the adaptive
+controller on a different norm.
+
+**Design.**
+
+1. Reuse `ystage_d` as the pre-acceptance trial buffer after all seven stages
+   have been evaluated; no additional VRAM allocation is needed.
+2. Seed `ystage_d` from `field_d`. When `locextrap != 0`, launch the existing
+   `rk45_accumulate_stage_kernel` with `DP_B5` so it writes
+   `field + dt·Σ B5ᵢkᵢ` into `ystage_d`. With `locextrap == 0`, the copied
+   field is the trial, matching `CpuNativeSim`.
+3. Replace the elementwise-tolerance kernel with a kernel that emits the
+   three squared-magnitude arrays for `yerr`, `field_d`, and `ystage_d`.
+   Replace the existing reduction kernel's **maximum** operation with a
+   deterministic sum (the old kernel was not suitable for either the prior
+   RMS expression or the real global weak norm), reduce all three arrays,
+   then assemble the exact `weaknorm_c64` formula on the host. Allocate two
+   additional `n`-double arrays for the old/trial magnitudes and resize the
+   reduction scratch to `n` doubles so each reduction can alternate between
+   its source array and scratch safely at arbitrary `n` (the old fixed
+   1024-double scratch could alias input/output on deeper reductions).
+4. Run `stepcontrol_pi` without mutating `field_d`.
+5. On acceptance, apply the final interaction-picture propagator to
+   `ystage_d`, then swap `field_d` and `ystage_d`. On rejection, leave
+   `field_d` untouched and discard the trial. This makes rejection
+   transactional and removes the old post-acceptance in-place accumulation.
+6. Preserve deferred FSAL behavior: `ks_d[6]` remains the accepted interval's
+   final stage, and the existing next-call carry still happens only when
+   `t_new > t_old`.
+
+Swapping is preferred to a device-to-device copy after acceptance: both
+buffers have identical size and ownership, and the rejected path performs no
+state restoration. Julia's host-visible `yn` is copied from `field_d` only
+after that decision, as today.
+
+**Acceptance tests.**
+
+- On real CUDA hardware, construct equivalent GPU and CPU/Julia steppers with
+  adaptive bounds (`min_dt < max_dt`).
+- Force at least one rejected trial. Assert the GPU reports rejection, its
+  resident/host field is unchanged, and its `err`/next-`dt` agree with the
+  CPU-native or Julia oracle within a tolerance justified by the GPU
+  reduction order.
+- Retry with the returned `dt` and require acceptance plus close state/error
+  agreement.
+- Run a genuinely adaptive multi-step Kerr and Kerr+PPT trajectory; require
+  CPU/Julia agreement at the normal full-solve tier and independently assert
+  that the nonlinear/PPT controls change the oracle by more than that tier.
+- Retain the existing fixed-step non-vacuous stage and full-solve checks.
+
+### 8.2 Replace the three single-thread PPT cumulative kernels
+
+**Why this is the first scope-adjacent GPU item.** The existing PPT backend is
+20-30× slower than CPU across the measured size range because
+`plasma_fraction_kernel`, `plasma_current_kernel`, and
+`plasma_polarization_kernel` each scan all `n_time_over` samples on one GPU
+thread. This is already the dominant documented GPU performance defect and
+would become worse before any radial expansion. Fixing it improves supported
+physics without adding a new physical model or eligibility branch.
+
+Each cumulative operation is a trapezoidal prefix sum. Define
+
+```
+q[0] = 0
+q[i] = 0.5 * (x[i-1] + x[i]) * dt,  i > 0
+prefix[i] = Σⱼ₌₀ⁱ q[j].
+```
+
+The three consumers then apply, respectively:
+
+```
+fraction[i] = preionfrac + 1 - exp(-prefix_rate[i])
+current[i]  = prefix_phase[i] + ionpot*rate[i]*(1-fraction[i])/eto[i]
+pto[i]     += density * prefix_current[i].
+```
+
+**Design.**
+
+1. Add a work-efficient Blelloch scan kernel over fixed 256-element blocks.
+   Each block loads its trapezoidal increments into shared memory, performs
+   an exclusive upsweep/downsweep, writes the local inclusive prefix, and
+   records one block total.
+2. Scan the much smaller block-total array in order with one device thread.
+   This leaves at most `ceil(n_time_over/256)` serial additions (513 at the
+   largest previously benchmarked 131,073-sample grid) rather than
+   `n_time_over` serial nonlinear operations.
+3. Add parallel finalizer kernels that add the preceding-block offset and
+   perform the fraction transform, loss-current term, or polarization
+   accumulation.
+4. Allocate one reusable `plas_scan_sums_d` buffer at
+   `ceil(n_time_over/256)` doubles. Reuse existing plasma arrays for the
+   local-prefix outputs: fraction in `plas_fraction_d`, current in
+   `plas_current_d`, and polarization scratch in `plas_phase_d` after phase
+   has been consumed.
+5. Keep the scan launch order deterministic. A parallel prefix necessarily
+   changes floating-point association from the CPU's left-to-right
+   `cumtrapz!`; this is a documented method/reassociation difference, not a
+   reason to loosen the end-to-end test beyond the tightest measured safe
+   tier.
+
+This two-level design is intentionally simpler than recursive arbitrary-depth
+scan machinery. It covers the current one-dimensional mode-averaged buffers;
+radial support would need a segmented/batched extension and remains out of
+scope.
+
+**Acceptance tests and performance gate.**
+
+- Existing Kerr+PPT fixed-step GPU-vs-Julia equivalence remains non-vacuous
+  and green. Record the new measured tolerance; do not preserve the current
+  `1e-12` assertion blindly if the justified parallel-reassociation floor is
+  slightly higher.
+- Add or extend a direct small-size case that crosses block boundaries
+  (including a partial final block) so block offsets cannot be omitted while
+  the full-solve test still passes by weak physics.
+- Benchmark the supported Kerr+PPT `native_step` path on real hardware before
+  and after at representative `n_time_over` sizes. Keep the change only if it
+  is a genuine improvement at production-shaped sizes; otherwise revert the
+  scan implementation and retain this record as a negative result.
+- `cargo test`, the focused CUDA Julia tests on hardware, and the full
+  `LUNA_TEST_GROUP=rust` regression group must pass.
+
+**Measured result and dispatch decision (RTX 5060 Ti, driver 610.43.02).**
+Identical fixed-step Kerr+PPT benchmark, minimum of three five-step batches
+after one warmup step:
+
+| `length(Eω)` | `n_time_over` | old GPU ms/step | parallel GPU ms/step | CPU ms/step | new GPU/CPU |
+|---:|---:|---:|---:|---:|---:|
+| 2,049 | 8,192  | 75.82  | 1.520 | 1.245 | 0.82× |
+| 4,097 | 16,384 | 153.92 | 2.121 | 2.289 | 1.08× |
+| 8,193 | 32,768 | 321.02 | 1.559 | 4.584 | 2.94× |
+
+The parallel implementation clears the keep/revert gate by roughly 50-206×
+against the old GPU path. It also invalidates the old dispatch premise that
+PPT has no crossover. Add `_GPU_PPT_N_THRESHOLD = 8192` in `RK45.jl` and let
+`:auto` select supported PPT configs at or above it. This deliberately leaves
+margin above the marginal n=4,097 result and selects the first measured point
+with a substantial win (n=8,193). The
+`AMALTHEA_USE_RUST_CUDA_NATIVE=1` master opt-in remains mandatory, and `:off`
+and `:on` retain their existing meanings. Extend the pure dispatch test with
+small/large PPT cases so this policy remains hardware-independent and
+explicit.
+
+## 9. 2026-07-28 confirmed-bug repair plan
+
+This section records the implementation design for the concrete defects found
+by the post-release review. The fixes are intentionally narrow: repair the
+observed behavior, add a regression that fails on the old implementation, and
+avoid broadening native/GPU physics support while doing so.
+
+### 9.1 Preserve source indices in `RangeExec`
+
+`runscan(::Scan{RangeExec})` currently enumerates the selected slice, so a
+request for `3:4` reports scan indices `1:2`. Iterate the requested indices
+directly and index the flattened Cartesian-product array with each original
+index. Existing bounds behavior is retained. Add a non-one-based range
+regression that checks both the reported index and selected values.
+
+### 9.2 Make native-point output conditions single-shot
+
+Both output handlers repeatedly evaluate every true save condition in a
+`while` loop. That loop is required only for `GridCondition`, whose returned
+time advances through a prescribed grid and may need to catch up several
+samples in one solver callback. Native-point predicates such as `always`,
+`every_nth`, and user functions describe whether the current accepted point
+is saved; reevaluating them without advancing the solver state either loops
+forever or mutates their counters multiple times.
+
+Introduce internal condition dispatch that stops the two built-in native-point
+conditions after one save. `every_nth` becomes a callable state object so the
+handler can identify it without changing its public constructor. Preserve the
+historical repeated-evaluation contract for unknown/custom conditions, and
+retain `GridCondition` catch-up. Apply the same rule to `MemoryOutput` and
+`HDF5Output`. Regressions must cover terminating `always`, the expected cadence
+of `every_nth`, and multi-sample catch-up for `GridCondition`.
+
+### 9.3 Correct analytic-signal and real-oversampling edge bins
+
+Use one shared analytic-signal mask for direct and planned Hilbert transforms.
+For even lengths, keep DC and Nyquist unchanged, double only bins
+`2:N/2`, and zero bins after Nyquist. For odd lengths, keep DC, double bins
+`2:(N+1)/2`, and zero the remaining negative-frequency bins. Explicit bounds
+guards cover the degenerate short arrays.
+
+For real FFT zero-padding, an even-length input's Nyquist coefficient becomes
+an ordinary positive-frequency coefficient in the longer transform. Halve
+that copied edge coefficient after applying the length scale so the inverse
+real transform does not double a pure-Nyquist signal. Odd-length input has no
+standalone Nyquist coefficient and needs no adjustment. Add even- and
+odd-length highest-bin Hilbert regressions plus an even-Nyquist oversampling
+round-trip regression.
+
+### 9.4 Forward `shape` through `Tools.getN`
+
+`getN(...; shape=...)` currently hard-codes `:sech` when computing the
+dispersion length. Pass the caller's shape through to `Ld`. Test `:sech` and
+`:gauss` against the defining formula and verify that `Lfiss`, which delegates
+to `getN`, inherits the correction.
+
+### 9.5 Harden CUDA field-transfer FFI contracts
+
+Mirror the CPU-native validation in the CUDA implementation before creating
+Rust slices: reject null pointers, mismatched lengths, and invalid stage
+indices. Replace transfer-path `unwrap`/size assertions with returned errors
+so malformed FFI input produces `-1` rather than a Rust panic across the ABI.
+Add hardware-gated Rust regressions for each rejected argument class and keep
+the valid transfer round trip covered.
+
+### 9.6 Make required-CUDA test runs fail instead of skip
+
+Add the opt-in test-only contract
+`AMALTHEA_REQUIRE_CUDA_TESTS=1`. With it set, CUDA initialization or
+availability failures in the Julia and Rust GPU test suites are test failures;
+without it, developer machines without usable CUDA retain the existing skip
+behavior. This provides a strict mode for a future standing GPU runner without
+changing normal CPU-only test execution.
+
+### 9.7 Replace stale dense-output GPU skip with measured coverage
+
+The GPU stage path is now implemented, so the old unconditional skip no longer
+documents the real limitation. The CUDA backend still lacks the two extra
+dense-output stages and therefore intentionally uses the existing fourth-order
+fallback. Replace the stale skip with a hardware-gated, non-vacuous convergence
+test that measures this fallback. Do not claim fifth-order GPU interpolation
+until `compute_extra_stages` is implemented and a corresponding order test
+passes.
+
+### 9.8 Unify serial and bucketed test discovery
+
+Store the allowed test roots in one plain-text manifest shared by Julia and
+Python: `test/` and `amalthea/tests/`. Serial discovery continues to use
+`@run_package_tests` but filters every discovered item to those exact roots;
+the Python sharder scans the same roots and passes checkout-relative file
+identities to the bucket runner. Keep historical timing keys as basenames for
+files directly under `test/`, while using repository-relative names for the
+secondary root so existing timing data remains useful and cross-root filename
+collisions cannot alias.
+
+Add a Rust-tagged meta-test that independently enumerates tagged files under
+the shared roots and compares that set with the Python discovery command's
+machine-readable listing. Make the maintained `examples` group part of
+`run_full_gate.py`'s default schedule: a command named “full gate” should not
+silently omit an active CI group. This changes the documented default from
+seven to eight groups rather than renaming the gate.
+
+## 10. 2026-07-28 coverage and test-balancing follow-up
+
+### 10.1 One maintained group manifest and complete assignment guard
+
+Add `test/test_groups.txt` as the canonical eight-group list. The local full
+gate reads it instead of hard-coding a second copy. Extend
+`test_test_manifest.jl` to enumerate every syntactically valid `@testitem`
+declaration under `test/test_roots.txt`, assert that each item has at least one
+maintained group tag, compare Julia's independently enumerated identities with
+Python discovery for every group, and verify that every maintained group
+appears in `.github/workflows/run_tests.yml`. Standalone scripts such as
+`benchmark_native_default.jl` contain no executable `@testitem` declaration
+and remain covered by their dedicated jobs.
+
+The meta-test also requires a timing entry (exact item identity or documented
+file fallback) for every scheduled item. New tests can no longer silently
+degrade balancing until somebody notices a straggler.
+
+### 10.2 Schedule test items, not only files
+
+Extend `parallel_group_tests.py` to discover the repository's standardized
+single-line `@testitem "name" tags=[...]` declarations. Use the checkout-
+relative file identity plus the test-item name as the scheduling key when a
+file contains multiple items; retain the basename identity for single-item
+files so existing timing history remains useful. `run_group_bucket.jl`
+filters on both exact path and item name.
+
+If an item-specific timing is absent, divide the legacy whole-file timing
+among that file's items rather than charging the full duration to each.
+Timing-log filenames must be generated from a sanitized stem plus a stable
+digest so secondary-root paths and item names cannot create directories or
+collide. Keep `--list-files` for compatibility and add machine-readable
+`--list-items`/bin-listing output for coverage tests and CI diagnostics.
+
+Split the single 500-line `Interface` test item into independent items at its
+existing top-level testset boundaries. Do not change assertions or physics;
+the purpose is to expose units that the item-level scheduler can balance.
+
+### 10.3 Reuse the bounded LPT runner in GitHub Actions
+
+Replace the workflow's serial `julia-runtest` step with
+`parallel_group_tests.py` for the same group. Use two worker processes for
+Linux and Windows jobs with more than one item, one worker for examples, and
+one worker for both macOS jobs. Keeping macOS serial preserves the
+BACKLOG-item-11 SIGBUS mitigation; the warning about the runner's unused
+`aws/tap` is harmless and should not be “fixed” by trusting the tap or
+disabling Homebrew security.
+
+Each bucket sets Julia, OpenBLAS, and OMP thread counts from one CPU budget so
+concurrent processes do not multiply `JULIA_NUM_THREADS=auto` across the
+runner. Mirror `runtests.jl`'s Windows/macOS `set_fftw_threads(1)` and Windows
+HDF5-locking setup in `run_group_bucket.jl`.
+
+The replaced `julia-actions/julia-runtest` invocation also supplied
+`--check-bounds=yes`, `--depwarn=yes`, `--compiled-modules=yes`,
+`--inline=yes`, and user-code coverage. Preserve those semantics behind an
+explicit scheduler `--ci` mode instead of silently weakening the hosted gate.
+Give each worker its own LCOV trace file beside its log so parallel buckets
+cannot race while writing coverage. Local timing and full-gate runs retain
+their existing lower-overhead command unless `--ci` is requested.
+
+### 10.4 Verification
+
+Before changing expected CI wall time:
+
+1. unit-test discovery, legacy timing fallback, exact item filtering, safe log
+   names, CI command flags, and LPT bin balance without launching Julia;
+2. refresh timings for every maintained group on an otherwise-idle machine;
+3. run the split interface group and manifest meta-test through the bucket
+   runner, proving no duplicate or omitted assertions;
+4. run representative two-worker Rust/physics groups locally and compare
+   counts with serial baselines;
+5. validate workflow YAML and inspect printed CI bins. The first pushed run,
+   not local estimates, supplies the authoritative hosted-runner improvement.

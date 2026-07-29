@@ -299,7 +299,8 @@ end
 function runscan(f, scan::Scan{RangeExec})
     out = Any[]
     combos = vec(collect(Iterators.product(scan.arrays...)))
-    for (scanidx, args) in enumerate(combos[scan.exec.r])
+    for scanidx in scan.exec.r
+        args = combos[scanidx]
         logiter(scan, scanidx, args)
         try
             push!(out, f(scanidx, args...))

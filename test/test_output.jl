@@ -99,6 +99,47 @@ end
     @test "src" == o.data["meta"]["meta2"]
 end
 
+@testset "Native-point save conditions" begin
+    y = ComplexF64[1]
+    yfun(t) = ComplexF64[t]
+
+    always_out = Output.MemoryOutput(Output.always, "y", "t")
+    for t in 0.0:2.0
+        always_out(y, t, 1.0, yfun)
+    end
+    @test always_out.saved == 3
+    @test always_out["t"] == [0.0, 1.0, 2.0]
+
+    nth_out = Output.MemoryOutput(Output.every_nth(2), "y", "t")
+    for t in 0.0:4.0
+        nth_out(y, t, 1.0, yfun)
+    end
+    @test nth_out.saved == 3
+    @test nth_out["t"] == [0.0, 2.0, 4.0]
+
+    grid_out = Output.MemoryOutput(0.0, 1.0, 3)
+    grid_out(y, 1.0, 1.0, yfun)
+    @test grid_out.saved == 3
+    @test grid_out["z"] == [0.0, 0.5, 1.0]
+
+    custom_cond(y, t, dt, saved) = (saved < 3, Float64(saved))
+    custom_out = Output.MemoryOutput(custom_cond, "y", "t")
+    custom_out(y, 1.0, 1.0, yfun)
+    @test custom_out.saved == 3
+    @test custom_out["t"] == [0.0, 1.0, 2.0]
+
+    import HDF5
+    dirpath = tempname()
+    fpath = joinpath(dirpath, "always.h5")
+    hdf5_out = Output.HDF5Output(
+        fpath, Output.always, "y", "t", Output.nostats, false, nothing, false)
+    hdf5_out(y, 0.0, 1.0, yfun)
+    hdf5_out(y, 1.0, 1.0, yfun)
+    @test hdf5_out.saved == 2
+    @test hdf5_out["t"] == [0.0, 1.0]
+    rm(dirpath, recursive=true)
+end
+
 dirpath = tempname()
 fpath = joinpath(dirpath, "test.h5")
 fpath_comp = joinpath(dirpath, "test_comp.h5")

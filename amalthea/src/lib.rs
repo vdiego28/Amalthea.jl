@@ -35,6 +35,18 @@ mod tests {
     use super::stepper::Dopri5Stepper;
     use num_complex::Complex;
 
+    fn cuda_available_or_skip(test_name: &str) -> bool {
+        if let Err(err) = crate::cuda::init_gpu_context() {
+            assert!(
+                !crate::cuda::tests_require_cuda(),
+                "{test_name}: CUDA is required but unavailable: {err}"
+            );
+            println!("Skipping {test_name}: GPU context not available: {err}");
+            return false;
+        }
+        true
+    }
+
     #[test]
     fn test_inplace_processing() {
         let mut data = vec![Complex::new(1.0, 2.0), Complex::new(3.0, 4.0)];
@@ -441,15 +453,17 @@ mod tests {
 
         let n = 256;
         let linop = vec![Complex::new(0.0, 0.0); n];
-        let sim_res = CudaNativeSim::new(n, &linop);
-        if sim_res.is_err() {
-            println!(
-                "Skipping CUDA test (no GPU or CUDA toolkit available): {:?}",
-                sim_res.err()
-            );
-            return;
-        }
-        let mut sim = sim_res.unwrap();
+        let mut sim = match CudaNativeSim::new(n, &linop) {
+            Ok(sim) => sim,
+            Err(err) => {
+                assert!(
+                    !crate::cuda::tests_require_cuda(),
+                    "CUDA native simulation test requires CUDA: {err}"
+                );
+                println!("Skipping CUDA native simulation test: {err}");
+                return;
+            }
+        };
 
         let initial_field = vec![Complex::new(1.0, 0.0); n];
         unsafe {
@@ -515,6 +529,10 @@ mod tests {
         // Null if this machine genuinely has no GPU/CUDA toolkit; must not panic or crash
         // either way now that opt-in is granted.
         let p2 = unsafe { crate::native::init_cuda_native_sim(linop_ptr, n) };
+        assert!(
+            !crate::cuda::tests_require_cuda() || !p2.is_null(),
+            "CUDA native FFI test requires a usable CUDA backend"
+        );
         if !p2.is_null() {
             unsafe {
                 crate::native::free_native_sim(p2);
@@ -529,6 +547,14 @@ mod tests {
     fn test_simulation_engine_dispatch() {
         let engine = SimulationEngine::initialize(HardwarePath::Auto);
         println!("Auto-selected hardware path: {:?}", engine.active_path);
+        if crate::cuda::tests_require_cuda() {
+            let cuda = SimulationEngine::initialize(HardwarePath::GpuCuda);
+            assert_eq!(
+                cuda.active_path,
+                HardwarePath::GpuCuda,
+                "strict CUDA tests must not accept dispatch fallback"
+            );
+        }
 
         let portable = SimulationEngine::initialize(HardwarePath::CpuPortable);
         assert_eq!(portable.active_path, HardwarePath::CpuPortable);
@@ -616,8 +642,7 @@ mod tests {
 
     #[test]
     fn test_gpu_qdht_numerical_equivalence() {
-        if let Err(err) = crate::cuda::init_gpu_context() {
-            println!("Skipping GPU QDHT test: GPU context not available: {}", err);
+        if !cuda_available_or_skip("GPU QDHT test") {
             return;
         }
 
@@ -657,11 +682,7 @@ mod tests {
 
     #[test]
     fn test_gpu_raman_numerical_equivalence() {
-        if let Err(err) = crate::cuda::init_gpu_context() {
-            println!(
-                "Skipping GPU Raman test: GPU context not available: {}",
-                err
-            );
+        if !cuda_available_or_skip("GPU Raman test") {
             return;
         }
 
@@ -1270,11 +1291,7 @@ mod tests {
 
     #[test]
     fn test_gpu_ionization_numerical_equivalence() {
-        if let Err(err) = crate::cuda::init_gpu_context() {
-            println!(
-                "Skipping GPU Ionization test: GPU context not available: {}",
-                err
-            );
+        if !cuda_available_or_skip("GPU ionization test") {
             return;
         }
 

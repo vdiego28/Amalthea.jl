@@ -72,6 +72,23 @@ end
     out = hilbert(Et)
     @test all(out .≈ EtA)
 
+    # DC and (for even lengths) Nyquist are neither doubled nor discarded.
+    Et_nyquist = (-1.0).^(0:7)
+    EtA_nyquist = Maths.hilbert(Et_nyquist)
+    @test real(EtA_nyquist) ≈ Et_nyquist
+    @test imag(EtA_nyquist) ≈ zeros(8) atol=1e-14
+    hilbert_nyquist = Maths.plan_hilbert(Et_nyquist)
+    @test hilbert_nyquist(Et_nyquist) ≈ EtA_nyquist
+
+    n_odd = 9
+    k_high = (n_odd - 1) ÷ 2
+    phase = 2π .* k_high .* (0:n_odd-1) ./ n_odd
+    Et_high = cos.(phase)
+    EtA_high = exp.(1im .* phase)
+    @test Maths.hilbert(Et_high) ≈ EtA_high atol=1e-13
+    hilbert_high = Maths.plan_hilbert(Et_high)
+    @test hilbert_high(Et_high) ≈ EtA_high atol=1e-13
+
     t = collect(range(-10, stop=10, length=512))
     Et = Maths.gauss.(t, fwhm=4).*cos.(4*t)
     to, Eto = Maths.oversample(t, Et, factor=4)
@@ -82,6 +99,11 @@ end
     to, Etco = Maths.oversample(t, Etc, factor=4)
     @test 4*size(Etc)[1] == size(Etco)[1]
     @test all(isapprox.(Etco[1:4:end], Etc, rtol=1e-6))
+
+    t_nyquist = collect(0.0:7.0)
+    Et_nyquist = (-1.0).^(0:7)
+    _, Eto_nyquist = Maths.oversample(t_nyquist, Et_nyquist, factor=4)
+    @test Eto_nyquist[1:4:end] ≈ Et_nyquist atol=1e-14
 end
 
 @testset "integration" begin

@@ -26,8 +26,8 @@ def main():
     ap.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
     ap.add_argument("--log-dir", default=str(REPO_ROOT / ".rust_test_logs"))
     ap.add_argument("--update-timings", action="store_true",
-                     help="Re-measure each file's duration individually "
-                          "(one file per process) and overwrite "
+                     help="Re-measure each item's duration individually "
+                          "(one item per process) and overwrite "
                           "rust_test_timings.txt before scheduling.")
     args = ap.parse_args()
 

@@ -1,53 +1,72 @@
-# Historical per-file wall-clock durations (seconds) for the `rust` test
-# group, one file per process (measured 2026-07-11, via
-# parallel_rust_tests.py --update-timings). Used by
-# parallel_rust_tests.py to load-balance files across worker processes via
-# LPT (longest-processing-time-first) bin packing. Files not listed here
-# (new test files) fall back to the median duration below. Stale entries are
-# harmless — they only affect scheduling, never correctness. Re-measure
-# periodically by running parallel_rust_tests.py --update-timings.
-test_dispersion_rust.jl 31.2
-test_ionisation_rust.jl 24.9
-test_native_adk_ionisation.jl 33.4
-test_native_cuda.jl 25.2
-test_native_default_workload.jl 49.8
-test_native_density_guard.jl 28.4
-test_native_envgrid_shotnoise.jl 40.6
-test_native_fftw_wisdom.jl 28.7
-test_native_free.jl 43.8
-test_native_free_env.jl 39.3
-test_native_free_plasma.jl 80.2
-test_native_free_raman.jl 79.0
-test_native_free_zdep.jl 46.6
-test_native_ineligible_guards.jl 36.5
-test_native_kerr_thg_guard.jl 36.5
-test_native_mixture.jl 30.8
-test_native_modal.jl 34.9
-test_native_modal_env.jl 37.5
-test_native_modal_full.jl 118.0
-test_native_modal_general_order.jl 34.1
-test_native_modal_npol2.jl 33.5
-test_native_modal_raman.jl 33.7
-test_native_modal_taper.jl 41.5
-test_native_modal_threading.jl 45.0
-test_native_multipoint_gradient.jl 43.2
-test_native_phase0.jl 27.8
-test_native_phase1.jl 32.1
-test_native_phase2.jl 35.4
-test_native_phase8.jl 29.4
-test_native_radial.jl 33.0
-test_native_radial_env.jl 38.6
-test_native_radial_mixture.jl 40.5
-test_native_radial_plasma.jl 78.6
-test_native_radial_raman.jl 69.8
-test_native_radial_shotnoise.jl 39.0
-test_native_raman.jl 34.5
+# Historical per-item wall-clock durations (seconds) for the `rust` test
+# group, one item per process (measured 2026-07-28 via
+# parallel_group_tests.py --group rust --update-timings-only). Used by the
+# local and GitHub LPT schedulers. Single-item files retain their basename;
+# multi-item files use `file::item name`.
+amalthea/tests/test_gpu_cuda.jl 19.6
+amalthea/tests/test_julia_ffi.jl 18.4
+amalthea/tests/test_scans_io.jl 19.2
+amalthea/tests/test_stepper_dispatch.jl 17.9
+test_backend_config.jl 26.7
+test_dispersion_rust.jl::Rust MarcatiliMode dispersion equivalence 26.2
+test_dispersion_rust.jl::Rust Zeisberger dispersion equivalence 27.7
+test_ionisation_rust.jl 20.6
+test_native_adk_ionisation.jl 27.8
+test_native_cuda.jl::Native-Rust GPU-resident stepper (CUDA, mode-avg Kerr) 25.9
+test_native_cuda.jl::Native-Rust GPU-resident stepper (CUDA, mode-avg Kerr+plasma) 31.4
+test_native_default_workload.jl 39.7
+test_native_dense_order5.jl::Native-Rust dense output: GPU-resident backend (BACKLOG S5 item 3) 28.4
+test_native_dense_order5.jl::Native-Rust dense output: order-5 continuous extension (BACKLOG S5 item 3) 27.9
+test_native_dense_order5.jl::Native-Rust dense output: order-5 extra stages in every geometry (BACKLOG S5 item 3) 48.6
+test_native_density_guard.jl 23.8
+test_native_deterministic.jl 31.0
+test_native_envgrid_shotnoise.jl::Native-Rust Phase I item 1 (mode-averaged shot noise, EnvGrid) 26.2
+test_native_envgrid_shotnoise.jl::Native-Rust Phase I item 1 (radial shot noise, EnvGrid) 34.1
+test_native_fftw_wisdom.jl 25.8
+test_native_free.jl 36.8
+test_native_free_env.jl 38.4
+test_native_free_mixture.jl 45.5
+test_native_free_plasma.jl 77.9
+test_native_free_raman.jl 77.2
+test_native_free_threading.jl 84.1
+test_native_free_zdep.jl 48.1
+test_native_gpu_dispatch.jl 21.5
+test_native_ineligible_guards.jl 33.8
+test_native_kerr_thg_guard.jl 37.7
+test_native_mixture.jl 23.4
+test_native_modal.jl 34.0
+test_native_modal_env.jl 38.4
+test_native_modal_full.jl 116.1
+test_native_modal_general_order.jl 35.3
+test_native_modal_mixture.jl 40.3
+test_native_modal_npol2.jl 40.6
+test_native_modal_raman.jl 43.2
+test_native_modal_taper.jl 44.1
+test_native_modal_threading.jl 57.5
+test_native_modal_zv.jl::Native-Rust Phase I.5a (modal, multi-mode VincettiMode) 30.9
+test_native_modal_zv.jl::Native-Rust Phase I.5a (modal, multi-mode ZeisbergerMode) 35.6
+test_native_multipoint_gradient.jl 37.8
+test_native_phase0.jl 23.0
+test_native_phase1.jl 24.6
+test_native_phase2.jl::Native-Rust Phase 2a (mode-avg Kerr, EnvGrid) 28.8
+test_native_phase2.jl::Native-Rust Phase 2b (plasma, RealGrid) 31.5
+test_native_phase8.jl 33.5
+test_native_radial.jl 35.8
+test_native_radial_env.jl 39.9
+test_native_radial_env_raman.jl 50.6
+test_native_radial_mixture.jl 37.7
+test_native_radial_plasma.jl 64.8
+test_native_radial_raman.jl 63.7
+test_native_radial_shotnoise.jl 35.5
+test_native_raman.jl 26.6
 test_native_raman_env_rotational.jl 38.5
-test_native_raman_nothg.jl 66.9
-test_native_raman_sio2.jl 64.3
-test_native_shotnoise.jl 37.0
-test_native_zdep_linop.jl 44.3
-test_qdht_rust.jl 44.0
-test_raman_rust.jl 31.1
-test_rust_ffi.jl 28.0
-test_stepper_rust.jl 30.9
+test_native_raman_nothg.jl 63.1
+test_native_raman_sio2.jl 51.3
+test_native_shotnoise.jl 27.4
+test_native_zdep_linop.jl 35.1
+test_qdht_rust.jl 39.9
+test_raman_rust.jl 24.9
+test_rust_ffi.jl 23.3
+test_scan_native_write.jl 25.0
+test_stepper_rust.jl 26.3
+test_test_manifest.jl 22.2

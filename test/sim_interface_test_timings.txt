@@ -1,10 +1,12 @@
-# Historical per-file wall-clock durations (seconds) for the `sim_interface` test
-# group, one file per process (measured 2026-07-11, via
-# parallel_group_tests.py --group sim_interface --update-timings). Used by
-# parallel_group_tests.py to load-balance files across worker processes
-# via LPT (longest-processing-time-first) bin packing. Files not listed
-# here (new test files) fall back to the median duration below. Stale
-# entries are harmless — they only affect scheduling, never correctness.
-# Re-measure periodically with --update-timings.
-test_greek_aliases.jl 18.4
-test_interface.jl 161.7
+# Historical per-item wall-clock durations (seconds) for the `sim_interface`
+# group, one item per process (measured 2026-07-28 via
+# parallel_group_tests.py --group sim-interface --update-timings). Used by
+# the local and GitHub LPT schedulers.
+test_greek_aliases.jl 22.2
+test_interface.jl::Interface LunaPulse 65.8
+test_interface.jl::Interface defaults 40.1
+test_interface.jl::Interface modal pulse inputs 205.2
+test_interface.jl::Interface non-Marcatili modes 34.0
+test_interface.jl::Interface polarisation and pulse power 100.7
+test_interface.jl::Interface propagators and Gaussian beam pulses 39.5
+test_interface.jl::Interface temperature 29.2

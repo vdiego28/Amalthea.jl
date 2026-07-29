@@ -14,9 +14,11 @@
 > read uninitialized device memory.
 >
 > **Remaining caveats:** scope is still only mode-averaged RealGrid Kerr +
-> PPT plasma (everything else returns `-1` and falls back); there is still no
-> GPU CI, so every GPU change needs a recorded manual hardware run; and the
-> `err` weak-norm estimate is still a placeholder (BACKLOG S3 item 8).
+> PPT plasma (everything else returns `-1` and falls back), and there is still
+> no GPU CI, so every GPU change needs a recorded manual hardware run.
+> **2026-07-27:** adaptive acceptance now uses a real pre-acceptance trial and
+> the same global weak norm as CPU/Julia; the three PPT cumtrapz operations
+> are parallel prefix scans, and PPT `:auto` dispatch has a measured threshold.
 > Sections below that describe the defect in the present tense are retained
 > for provenance — BACKLOG S3 item 0 and
 > `portlog-inbox/gpu-nonlinearity.md` are authoritative.
@@ -80,11 +82,13 @@ cost and is not a cleanup item.
 The landed slice has CUDA kernels for:
 
 1. **RK45 Fusion:** Fusing the stage accumulations (replicating the S1 optimization but in PTX).
-2. **Error Estimation:** Computing the embedded error norm.
+2. **Error Estimation:** Computing the embedded error norm against a
+   transactional fifth-order trial buffer, using the same global weak norm as
+   `CpuNativeSim`.
 3. **Exp-Linop:** The `exp(L * dt)` application.
 4. **Kerr/Norm Broadcasts:** Applying the windowing and nonlinear scale.
-5. **Cumtrapz:** PPT plasma, currently implemented as single-thread sequential
-   scans rather than a work-efficient prefix scan.
+5. **Cumtrapz:** PPT plasma, implemented as deterministic two-level
+   256-sample Blelloch prefix scans plus parallel physics finalizers.
 
 The 2026-07-25 correctness repair completed the surrounding pipeline: input
 normalization, oversampled FFT sizing/cropping, spectral `pre/β`
@@ -143,7 +147,8 @@ Concretely, eligible configs are: `TransModeAvg`, `RealGrid`, a constant
 exactly one plain Kerr response, and at most one plasma response using PPT
 ionisation (`IonRatePPTAccel` — ADK still returns `-1`).
 
-**Plasma support added 2026-07-11** (BACKLOG.md S3 item 2): PPT ionisation
+**Plasma support added 2026-07-11** (BACKLOG.md S3 item 2; scan implementation
+superseded 2026-07-27): PPT ionisation
 rate lookup (reuses `ppt_ionization_kernel`, the same kernel and
 `SplineSegment` upload format the standalone `AMALTHEA_USE_RUST_IONISATION`
 path already uses) → a 3-stage cumtrapz sequence (ionisation fraction,
@@ -181,7 +186,11 @@ Kerr+plasma), each constructing a GPU-backed stepper via
 actually returned `true` and check full-solve field agreement against
 `PreconStepper`. The 2026-07-25 replacement tightens the Kerr/full-solve
 tolerances to 1e-12, checks stage scale, and independently measures the
-nonlinear control effect so a zero-nonlinearity backend cannot pass.
+nonlinear control effect so a zero-nonlinearity backend cannot pass. The
+2026-07-27 extension deliberately rejects and retries both Kerr and Kerr+PPT,
+asserts rejection leaves the field bit-exact, compares `err`/`dtn` against
+CPU native, and completes adaptive trajectories at `5.42e-15` / `2.24e-15`
+relative agreement. Focused hardware result: 59/59.
 `amalthea/src/lib.rs`
 and `amalthea/tests/test_gpu_cuda.jl` also self-skip without a GPU —
 **still true in CI today**: no CI runner has a GPU, so none of this
@@ -198,10 +207,13 @@ manual runs, not a standing CI job.
    remain unimplemented and should continue routing to CPU until individually
    designed and tested.
 
-The problem-size dispatch policy is already complete:
-`AMALTHEA_NATIVE_GPU=off/on/auto`, with `auto` selecting only Kerr-only
-problems at `length(y0) ≥ 16384`; PPT never auto-selects because measured GPU
-performance was worse across the tested range.
+The problem-size dispatch policy is:
+`AMALTHEA_NATIVE_GPU=off/on/auto`, with `auto` selecting Kerr-only problems at
+`length(y0) ≥ 16384` and supported PPT problems at `length(y0) ≥ 8192`.
+The PPT threshold was remeasured after parallelizing the scans: GPU/CPU is
+0.82× at n=2049, 1.08× at n=4097, and 2.94× at n=8193, so 8192 deliberately
+skips the marginal crossover. Both policies remain behind the explicit
+`AMALTHEA_USE_RUST_CUDA_NATIVE=1` master opt-in.
 
 ---
 

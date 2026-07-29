@@ -1,14 +1,13 @@
 using TestItems
 
-@testitem "Interface" tags=[:sim_interface] begin
+@testitem "Interface polarisation and pulse power" tags=[:sim_interface] begin
 using Amalthea
-import Amalthea.Capillary: besselj, get_unm
-import Amalthea.Modes: hquadrature
 import Test: @test, @testset, @test_throws
 import Logging
 
 logger = Logging.SimpleLogger(stdout, Logging.Warn)
 old_logger = Logging.global_logger(logger)
+try
 
 @testset "Polarisation" begin
     args = (100e-6, 0.1, :He, 1)
@@ -83,6 +82,20 @@ end
 end
 
 ##
+finally
+    Logging.global_logger(old_logger)
+end
+end
+
+@testitem "Interface modal pulse inputs" tags=[:sim_interface] begin
+using Amalthea
+import Test: @test, @testset
+import Logging
+
+logger = Logging.SimpleLogger(stdout, Logging.Warn)
+old_logger = Logging.global_logger(logger)
+try
+
 prop!(Eω, grid) = nothing # do-nothing propagator
 @testset "Input into higher-order modes" begin
     @testset "propagator $prop" for prop in (nothing, prop!)
@@ -153,6 +166,22 @@ end
 end
 
 ##
+finally
+    Logging.global_logger(old_logger)
+end
+end
+
+@testitem "Interface propagators and Gaussian beam pulses" tags=[:sim_interface] begin
+using Amalthea
+import Amalthea.Capillary: besselj, get_unm
+import Amalthea.Modes: hquadrature
+import Test: @test, @testset
+import Logging
+
+logger = Logging.SimpleLogger(stdout, Logging.Warn)
+old_logger = Logging.global_logger(logger)
+try
+
 @testset "propagators" begin
     # passing ϕ keyword argument and an equivalent propagator function should yield
     # the same result.
@@ -247,6 +276,20 @@ end
 end
 
 ##
+finally
+    Logging.global_logger(old_logger)
+end
+end
+
+@testitem "Interface defaults" tags=[:sim_interface] begin
+using Amalthea
+import Test: @test, @testset
+import Logging
+
+logger = Logging.SimpleLogger(stdout, Logging.Warn)
+old_logger = Logging.global_logger(logger)
+try
+
 @testset "Defaults" begin
     @testset "Envelope propagation: $env" for env in [false, true]
         @testset "Defaults for $gas" for gas in PhysData.gas
@@ -264,6 +307,20 @@ end
 end
 
 ##
+finally
+    Logging.global_logger(old_logger)
+end
+end
+
+@testitem "Interface LunaPulse" tags=[:sim_interface] begin
+using Amalthea
+import Test: @test, @testset, @test_throws
+import Logging
+
+logger = Logging.SimpleLogger(stdout, Logging.Warn)
+old_logger = Logging.global_logger(logger)
+try
+
 @testset "LunaPulse" begin
     # single-mode
     args = (100e-6, 0.1, :He, 1)
@@ -399,6 +456,20 @@ end
 end
 
 ##
+finally
+    Logging.global_logger(old_logger)
+end
+end
+
+@testitem "Interface temperature" tags=[:sim_interface] begin
+using Amalthea
+import Test: @test, @testset
+import Logging
+
+logger = Logging.SimpleLogger(stdout, Logging.Warn)
+old_logger = Logging.global_logger(logger)
+try
+
 @testset "Temperature" begin
     # test that changing temperature changes results
     args = (100e-6, 0.1, :He, 1)
@@ -437,6 +508,20 @@ end
 end
 
 ##
+finally
+    Logging.global_logger(old_logger)
+end
+end
+
+@testitem "Interface non-Marcatili modes" tags=[:sim_interface] begin
+using Amalthea
+import Test: @test, @testset, @test_throws
+import Logging
+
+logger = Logging.SimpleLogger(stdout, Logging.Warn)
+old_logger = Logging.global_logger(logger)
+try
+
 @testset "Non-Marcatili modes via prop_capillary/prop_stepindex" begin
     # docs/dev/BACKLOG.md Phase I item 5 — ZeisbergerMode/VincettiMode/
     # StepIndexMode are now reachable through the high-level API by passing
@@ -526,6 +611,7 @@ end
 end
 
 ##
-Logging.global_logger(old_logger)
-
+finally
+    Logging.global_logger(old_logger)
+end
 end

@@ -17,6 +17,21 @@ p = Tools.capillary_params(6e-9, 20e-15, 800e-9, 14e-6, :Kr, P=15.0)
 @test isapprox(p.zdw, 7.693023014958748e-7, rtol=1e-7)
 end
 
+@testset "Soliton shape forwarding" begin
+    P0 = 2.5e9
+    τfw = 30e-15
+    γ = 1.2e-6
+    β2 = -2.3e-26
+    for shape in (:sech, :gauss)
+        N = sqrt(Tools.Ld(τfw, β2, shape=shape)/Tools.Lnl(P0, γ))
+        @test Tools.getN(P0, τfw, γ, β2, shape=shape) ≈ N
+        @test Tools.Lfiss(P0, τfw, γ, β2, shape=shape) ≈
+              Tools.Ld(τfw, β2, shape=shape)/N
+    end
+    @test Tools.getN(P0, τfw, γ, β2, shape=:gauss) !=
+          Tools.getN(P0, τfw, γ, β2, shape=:sech)
+end
+
 @testset "RDW phasematching" begin
 a = 125e-6
 gas = :He

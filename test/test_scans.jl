@@ -66,6 +66,16 @@ end
 end
 
 ##
+@testset "RangeExec preserves global scan indices" begin
+    v = collect(10:10:50)
+    scan = Scan("scantest_range_indices", Scans.RangeExec(3:4); var=v)
+    seen = runscan(scan) do scanidx, vi
+        (scanidx, vi)
+    end
+    @test seen == Any[(3, 30), (4, 40)]
+end
+
+##
 try
 @testset "scansave" begin
 scan = Scan("scantest_scansave", Scans.LocalExec())

@@ -1741,6 +1741,363 @@ implementation gates are green.
 **Next:** Merge `test-discovery-claude-exclusion` into `main`, push, and
 require both the final `main` test matrix and Documentation workflow to pass.
 
+## 2026-07-27 — S3 items 8/12 — GPU adaptive acceptance and parallel PPT scans — Codex (GPT-5)
+
+**Status:** complete on `gpu-adaptive-error-and-expansion`; intentionally
+uncommitted, unpushed, and unmerged so `v1.0.1` can be published from `main`
+first.
+
+**Did:** Fixed `CudaNativeSim`'s adaptive error estimate and transactional
+accept/reject behavior, then replaced all three single-thread PPT cumulative
+integrals with two-level parallel CUDA scans. Added deliberate reject/retry
+and adaptive-trajectory tests for Kerr and Kerr+PPT, a direct cross-block scan
+test, and a measured PPT `:auto` dispatch threshold. Reconciled the live
+backlog, GPU/testing/support docs, project guide, and runtime scope warning.
+
+**How:** `amalthea/src/cuda_native.rs:1208` now builds the fifth-order trial
+in `ystage_d` before error control and swaps it into `field_d` only after
+acceptance. `reduce_sum` (`cuda_native.rs:252`) and
+`weaknorm_elem_kernel`/`weaknorm_reduce_kernel`
+(`kernels.cu:193,457`) compute the same global
+`weaknorm_c64` quantities as CPU native instead of the old elementwise
+expression and maximum reduction. `plasma_scan` (`cuda_native.rs:300`)
+drives `plasma_scan_blocks_kernel`, `plasma_scan_block_sums_kernel`, and the
+three parallel finalizers (`kernels.cu:317-424`); `cuda.rs:477-649` loads the
+new PTX functions. `src/RK45.jl:1079-1126` adds
+`_GPU_PPT_N_THRESHOLD=8192` while preserving the explicit CUDA master opt-in.
+`test/test_native_cuda.jl:170,418` covers rollback/retry/trajectory and
+`cuda_native.rs:1585` covers 513 samples across two full blocks plus a partial
+block. No FFI export or opaque-handle ABI changed.
+
+**Decisions:**
+
+- Reuse `ystage_d` as a transaction buffer and swap on acceptance: no extra
+  field-sized allocation or rejected-step restoration is required.
+- Port the exact global CPU weak norm rather than making the placeholder
+  internally consistent; the controller must compare the same mathematical
+  quantity on both backends.
+- Use deterministic 256-sample Blelloch block scans plus a serial scan only
+  over block totals. This bounds the serial work while staying simpler than a
+  recursive arbitrary-depth scan; broader radial/modal GPU work would require
+  a segmented/batched design.
+- Set the supported-PPT auto threshold to 8192 complex spectral samples. The
+  n=4097 crossover is only marginal (1.08×), while n=8193 is a measured 2.94×
+  win. Keep the Kerr-only threshold at 16384 and keep
+  `AMALTHEA_USE_RUST_CUDA_NATIVE=1` mandatory.
+- Do not widen GPU physics eligibility in this unit. Raman, ADK, radial,
+  modal, free-space, z-dependent, and shot-noise cases remain explicit CPU
+  fallbacks.
+
+**Gotchas:** The adaptive placeholder concealed three separate defects: it
+passed the old field as both norm references, implemented an elementwise
+`normnorm`-style denominator rather than the selected global weak norm, and
+reduced with maximum instead of sum. The previous 1024-double reduction
+scratch was also unsafe for deeper ping-pong reductions, so scratch now spans
+the whole field. Parallel scan association differs from Julia's left-to-right
+`cumtrapz!`, but measured fixed/adaptive end-to-end differences remain near
+machine precision. `launch_checked` still synchronizes every CUDA launch, so
+small problems remain launch-bound. Standing GPU CI is still absent; manual
+hardware evidence remains mandatory. `main` is the release source; do not
+merge this branch before the requested `v1.0.1` publication.
+
+**Tests:**
+
+- `cargo build --release`: pass; CUDA PTX compiled.
+- `cargo test`: 72/72 pass on the RTX 5060 Ti.
+- Direct 513-sample partial-block CUDA scan test: pass; reconstructed prefixes
+  agree with the sequential reference to `<1e-12`.
+- Focused `test_native_cuda.jl`: 59/59 pass on hardware. Deliberate fixed
+  trials reject with Kerr `err=0.00014301344998774612` versus Julia
+  `0.00014301344998811081`, and Kerr+PPT `err=1.820024799195` versus Julia
+  `1.8200247991950123`; rejection preserves the field and the
+  controller-selected retries accept. Adaptive CPU/GPU trajectory relative
+  differences are `5.42e-15` (Kerr) and `2.24e-15` (Kerr+PPT).
+- `test_native_gpu_dispatch.jl`: 17/17 pass without GPU dependence.
+- `LUNA_TEST_GROUP=rust julia --project test/runtests.jl`: 42301 pass, one
+  expected broken, zero failures (42302 total; 9m27.6s).
+- `python3 test/run_full_gate.py`: exit 0 in 785.4s — physics 1657/1657,
+  rust 42284/42285 (one expected broken), sim_multimode 41/41,
+  sim_interface 314/314, sim_propagation 18/18, io 2302/2302, fields
+  334/334.
+- Identical fixed-step PPT benchmark, minimum of three five-step batches after
+  warmup: at `length(Eω)=2049/4097/8193`, old GPU
+  `75.82/153.92/321.02 ms`, parallel GPU `1.520/2.121/1.559 ms`, and CPU
+  `1.245/2.289/4.584 ms`; new GPU/CPU speed is `0.82×/1.08×/2.94×`.
+
+**Next:** Publish `v1.0.1` from release-ready `main` (`0abaa32`) before
+committing, pushing, reviewing, or merging this isolated branch. After the
+release, the immediate GPU robustness task is standing CUDA CI; later scope
+expansion remains Raman/ADK and segmented scans for additional geometries.
+
+## 2026-07-28 — Project review — backlog and bug-hunt refresh — Codex (GPT-5)
+
+**Status:** complete (documentation-only review; no source changed)
+
+**Did:** Reviewed the live backlog, native/CUDA FFI boundary, output/scan
+utilities, Fourier helpers, and serial/parallel test discovery. Added seven
+evidence-backed backlog items (13-19), strengthened the standing-GPU-CI item
+with a strict-required-hardware requirement, and synchronized the live queue
+with the completed `v1.0.1` release now present on `main`.
+
+**How:** A dedicated read-only bug-hunting agent independently surveyed the
+tree; every retained finding was then checked against source or reproduced by
+the lead agent. `docs/dev/BACKLOG.md:313-395` now records:
+
+- CUDA field-transfer contract violations in
+  `CudaNativeSim::{set_field,resync_field,get_field,get_ks_stage}`
+  (`amalthea/src/cuda_native.rs:636-689`) versus the guarded CPU
+  implementations (`amalthea/src/native.rs:3679-3748`);
+- the stale GPU dense-output skip
+  (`test/test_native_dense_order5.jl:438-449`) and the remaining order-4
+  fallback;
+- serial/parallel Rust test-file drift
+  (`test/parallel_group_tests.py:66-76`,
+  `test/run_group_bucket.jl:29-34`);
+- `RangeExec` restarting selected scan indices
+  (`src/Scans.jl:299-313`);
+- `Output.always` remaining true inside both handlers' `while save` loops
+  (`src/Output.jl:80-96,336-363,519-522`);
+- incorrect even/odd edge-bin masks in direct/planned Hilbert transforms and
+  the unsplit real-input Nyquist coefficient in oversampling
+  (`src/Maths.jl:560-568,578-594,626-651`);
+- `Tools.getN` hardcoding `shape=:sech`
+  (`src/Tools.jl:55-58`).
+
+The GPU-CI queue item (`docs/dev/BACKLOG.md:50-63`) now requires a mode such
+as `AMALTHEA_REQUIRE_CUDA_TESTS=1`, because current Julia and Rust GPU tests
+turn every initialization failure—not only genuine no-hardware absence—into
+a successful skip. No FFI symbol was added or changed.
+
+**Decisions:**
+
+- Add only confirmed defects or precisely demonstrated coverage gaps; generic
+  TODO comments, already parked work, and speculative cleanup were not
+  promoted.
+- Treat malformed CUDA lifecycle inputs as a correctness/safety issue, not
+  ordinary robustness: the public FFI promises `-1`, while the CUDA methods
+  can construct invalid slices or panic across `extern "C"`.
+- Treat the GPU dense-output item as measure-first. The obsolete skip must be
+  removed now, but the measured result should decide between porting the two
+  order-5 stages and explicitly documenting an order-4 CUDA exception.
+- Keep this unit documentation-only because the worktree already contains the
+  isolated, uncommitted adaptive-error/parallel-scan GPU implementation.
+
+**Gotchas:** This branch is still based at pre-release `0abaa32`, while
+`main` is `0c8c5e8` after `v1.0.1`; the release-status wording copied into
+the live backlog is already present on `main`, but the branches still need
+normal post-release integration. A future CUDA runner is not a real guard
+unless it fails on unexpected initialization/kernel-load errors. Do not test
+the malformed CUDA pointer case by actually passing null into the current
+implementation; source inspection already establishes that slice
+construction occurs before validation.
+
+**Tests:**
+
+- `cargo test`: 72/72 pass on the RTX 5060 Ti.
+- Focused `test_native_dense_order5.jl` on real CUDA hardware: 40 pass,
+  1 broken; the broken count is the stale unconditional GPU convergence skip.
+- `RangeExec(3:4)` focused reproduction: callback results
+  `[(1,30),(2,40)]`, confirming index renumbering.
+- `Output.always` focused predicate check: returns `(true,t)` before and
+  after `saved` increments, confirming the surrounding `while save` cannot
+  terminate.
+- Hilbert edge checks at N=8 and N=9: real-part relative error `1.0` and
+  analytic-signal norm effectively zero for the affected highest-frequency
+  modes. N=8 real 4× oversampling sampled back at original points: exactly
+  `2.0 .* input`.
+- `Tools.getN` check: `shape=:gauss` and `:sech` both returned
+  `2.0341464055716445`; the Gaussian formula gives `2.1534237994413084`.
+- `git diff --check`: pass before the documentation additions; a final diff
+  check follows this entry.
+
+**Next:** Integrate the post-release `main` changes into the isolated GPU
+branch, then write the per-item implementation/test designs before touching
+source. Highest-value order: strict-mode standing GPU CI plus item 13's CUDA
+FFI guards; items 16-19 are bounded Julia correctness fixes that can proceed
+independently on a clean branch; item 14 starts with the now-unblocked GPU
+dense-order measurement.
+
+## 2026-07-28 — Backlog 13-19 — Bug-hunt repairs and gate parity — Codex (GPT-5)
+
+**Status:** complete
+
+**Did:** Implemented all seven findings retained by the 2026-07-28 review:
+CUDA transfer-contract guards and strict required-hardware testing, measured
+CUDA dense-output coverage, shared serial/parallel test discovery, preserved
+`RangeExec` indices, terminating native-point output conditions, correct
+Fourier edge bins, and `Tools.getN` shape forwarding. The dedicated bug-hunt
+agent then re-reviewed the changes; its adjacent findings (unchecked initial
+`set_field`, ignored final CUDA `get_field`, strict dispatch fallback, and
+custom-output compatibility) were closed before the final gate.
+
+**How:** Designs were recorded first in
+`docs/dev/native-port/PLANS.md:2295-2388`.
+
+- `src/Scans.jl:299` indexes the full Cartesian-product array with the
+  requested `RangeExec` indices instead of enumerating a sliced array.
+- `src/Output.jl:95,362,522-544` distinguishes single-shot built-in
+  native-point predicates (`always`, `EveryNthCondition`) from grid/custom
+  predicates, preserving the latter's multi-save catch-up behavior.
+- `src/Maths.jl:560-597,657` shares one parity-aware analytic-signal mask and
+  halves an even input's relocated real-FFT Nyquist coefficient;
+  `src/Tools.jl:56` forwards `shape` to `Ld`.
+- `amalthea/src/cuda.rs:704-730` returns oversize-copy errors.
+  `amalthea/src/cuda_native.rs:636-708` validates all field-transfer pointers,
+  lengths, and stage indices before slice construction and maps transfer
+  failures to `-1`; `amalthea/src/cuda_native.rs:1553-1558` propagates final
+  device-to-host failures. `src/RK45.jl:2243-2248` now checks the initial
+  `set_field` return code. No FFI symbol or ABI changed.
+- `AMALTHEA_REQUIRE_CUDA_TESTS=1` is enforced by the Rust and Julia CUDA
+  suites (`amalthea/src/cuda.rs:8`, `amalthea/src/lib.rs:36-47,550-557`,
+  `test/test_native_cuda.jl:11-13,321-324`,
+  `test/test_native_dense_order5.jl:361-364,489-492`, and
+  `amalthea/tests/test_gpu_cuda.jl:4-42`). In strict mode, initialization,
+  missing-library, and explicit-CUDA dispatch fallback all fail.
+- `test/test_native_dense_order5.jl:440-485` replaces the stale broken test
+  with a real-hardware, non-vacuous order-4 convergence measurement against a
+  fine CPU-native order-5 reference. The support matrix and testing guide now
+  state the measured CUDA order-4 fallback rather than claiming order 5.
+- `test/test_roots.txt`, `test/parallel_group_tests.py:32,67-99,340-347`,
+  `test/run_group_bucket.jl:25-36`, and `test/runtests.jl:29-49` define and
+  consume one two-root test manifest. `test/test_test_manifest.jl:3-37`
+  independently checks discovery parity, including the secondary-root CUDA
+  dispatch test. `test/run_full_gate.py:23-43` now includes the maintained
+  `examples` group in the eight-group gate.
+
+**Decisions:**
+
+- Preserve repeated evaluation for `GridCondition` and unknown/custom output
+  predicates; only built-ins that describe the current accepted point are
+  single-shot. This fixes `always` and the counter semantics of `every_nth`
+  without silently changing the exported custom-predicate contract.
+- Keep CUDA dense interpolation on its existing quartic extension. Measured
+  local-error ratios are consistent with order 4, so the honest repair is
+  coverage plus a narrowed support claim; two extra CUDA stages remain an
+  optional expansion rather than a correctness prerequisite.
+- Keep CPU-only developer behavior unchanged. Strict CUDA is opt-in so the
+  future standing runner can forbid skips without making ordinary machines
+  require NVIDIA hardware.
+- Preserve timing-file basenames for top-level `test/` files and use
+  repository-relative identities for secondary roots, avoiding collisions
+  while retaining existing scheduler history. A command named “full gate”
+  now covers all eight maintained groups, including examples.
+
+**Gotchas:** The GPU is hidden inside the normal sandbox; hardware validation
+must run with direct device access. This branch remains based on pre-release
+`0abaa32` and contains the lead's pre-existing, uncommitted adaptive-error and
+parallel-PPT-scan work in `cuda.rs`, `cuda_native.rs`, `kernels.cu`,
+`native.rs`, `RK45.jl`, and related docs/tests; none was discarded or
+committed. Whole-crate `cargo fmt --check` still reports unrelated pre-existing
+format drift in `io.rs` and `native.rs`; a child-skipping rustfmt check of the
+changed Rust modules is clean.
+
+**Tests:**
+
+- `cargo build --release`: pass.
+- `AMALTHEA_REQUIRE_CUDA_TESTS=1 cargo test`: **73/73 pass** on the RTX
+  5060 Ti, including invalid CUDA FFI arguments, valid field round-trip, GPU
+  scan, and strict dispatch.
+- Focused strict Julia CUDA/dense/dispatch selection
+  (`test_native_cuda.jl`, `test_native_dense_order5.jl`,
+  `amalthea/tests/test_gpu_cuda.jl`): **104/104 pass**. CUDA dense local
+  defects at `h=0.04,0.02,0.01` were `9.572e-7`, `3.216e-8`, `1.023e-9`;
+  ratios **29.765, 31.428** versus the order-4 local expectation of 32.
+  Adaptive GPU-vs-CPU trajectory differences were `5.42e-15` (Kerr) and
+  `2.24e-15` (Kerr+PPT).
+- `AMALTHEA_REQUIRE_CUDA_TESTS=1 LUNA_TEST_GROUP=rust julia --project
+  test/runtests.jl`: **42306/42306 pass** in **9m21.6s**, with real CUDA
+  required and no skips.
+- Focused `test_scans.jl`, `test_output.jl`, `test_maths.jl`, and
+  `test_tools.jl` TestItemRunner selection: **429/429 pass**; the final
+  compatibility-adjusted `test_output.jl` rerun was **81/81**.
+- Mixed-root bucket containing `test_test_manifest.jl` and
+  `amalthea/tests/test_julia_ffi.jl`: **3/3 pass**.
+- `python3 test/run_full_gate.py --groups examples --max-workers 1`:
+  **20/20 pass** in **130.5s**.
+- Python AST parsing, `git diff --check`, and
+  `rustfmt --edition 2024 --check --config skip_children=true` on
+  `cuda.rs`, `cuda_native.rs`, and `lib.rs`: pass.
+
+**Next:** The seven reviewed findings are closed. The live queue returns to
+the lead-deferred standing CUDA runner (set
+`AMALTHEA_REQUIRE_CUDA_TESTS=1`) and later broader GPU physics/geometries.
+Before integration, reconcile this pre-release-based GPU branch with
+post-release `main`; do not commit or push these changes without the lead's
+explicit request.
+
+## 2026-07-28 — Backlog 20 — Coverage parity and balanced gates — Codex (GPT-5)
+
+**Status:** complete
+
+**Did:** Made the maintained test inventory self-checking and moved both the
+local full gate and GitHub's 16-job matrix onto one timing-aware,
+item-level scheduler. Refreshed every missing timing, split the monolithic
+interface test into independently schedulable units without changing its
+assertions, and validated all eight maintained groups through the new path.
+
+**How:** The design is recorded in `docs/dev/native-port/PLANS.md:2398`.
+`test/test_groups.txt` is the canonical group list.
+`test/parallel_group_tests.py:109,191,278,362` discovers exact
+`file::item` identities, emits collision-safe timing logs, refuses partial
+timing-manifest updates, balances with LPT, budgets Julia/BLAS/OMP threads,
+and provides a CI mode. `test/run_group_bucket.jl:20-58` mirrors the
+Windows/macOS FFTW and Windows HDF5 safeguards and filters exact item
+identities across both maintained roots. `test/run_full_gate.py:48-94` caps
+combined local batches at ten processes.
+`.github/workflows/run_tests.yml:172-183` uses two buckets on Linux/Windows
+and one on macOS/examples. `test/test_test_manifest.jl:3-100` independently
+guards all assignments, Python discovery, timings, workflow groups, and the
+external CUDA dispatch test; `test/test_parallel_group_tests.py` covers the
+scheduler mechanics. No source FFI symbol or ABI changed.
+
+**Decisions:**
+
+- Keep both macOS jobs serial because the historical FFTW SIGBUS matters more
+  than cosmetic symmetry. The two current macOS annotations come from Rust
+  setup asking Homebrew for `bash` while Homebrew ignores the hosted image's
+  unused, untrusted `aws/tap`; both jobs pass, so no trust/security workaround
+  was added.
+- Preserve the old `julia-actions/julia-runtest` safety semantics explicitly:
+  CI buckets use bounds checks, deprecation warnings, compiled modules,
+  inlining, and user coverage. Each worker writes its own LCOV trace so
+  concurrent processes cannot race on coverage output. Local timing/gate runs
+  omit that instrumentation unless `--ci` is requested.
+- Use two hosted workers conservatively. The first pushed Actions run is the
+  authoritative speed measurement; local timing estimates are not presented
+  as hosted-runner guarantees.
+
+**Gotchas:** Julia's trace-file coverage option alone selects all-code
+instrumentation; preserving the former user-coverage behavior requires both
+`--code-coverage=user` and a second `--code-coverage=<worker>.info` argument.
+CI-mode precompilation also needs normal write access to Julia's cache; the
+first sandboxed smoke attempt failed only on that read-only cache. Timing
+files now contain item identities for multi-item files and repository-relative
+paths for secondary-root files. These changes are intentionally uncommitted;
+only the preceding bug-fix unit was committed as `5baa923`.
+
+**Tests:**
+
+- Scheduler unit suite: **7/7 pass**; Python byte compilation, Ruby workflow
+  YAML parsing, and `git diff --check`: pass.
+- Expanded manifest meta-test: **336/336 pass**, covering **112** maintained
+  group/item memberships with no missing timing.
+- Strict two-worker Rust gate with CUDA required: **42640/42640 pass in
+  434.0s**, versus the preceding strict serial **42306/42306 in 561.6s**
+  (22.7% lower wall time while adding 334 manifest assertions).
+- Two-worker interface: **314/314 in 217.9s**; two-worker multimode:
+  **41/41 in 168.7s**; two-worker physics: **1663/1663 in 98.7s**.
+- Remaining bounded full-gate batches: propagation **18/18 in 44.8s**;
+  I/O **2313/2313**, fields **339/339**, and examples **20/20** together in
+  **169.4s**.
+- Exact CI-mode bounds/deprecation/user-coverage smoke:
+  `test_greek_aliases.jl` **3/3 in 24.2s**, producing a distinct valid LCOV
+  trace.
+
+**Next:** Review the uncommitted coverage/balancing diff, then commit it only
+if the lead asks. After a push, compare the first complete hosted matrix with
+the 2026-07-28 baseline (especially `sim-interface`, Linux/Windows Rust, and
+both deliberately serial macOS jobs) before increasing any worker count.
+
 ## 2026-07-28 — Release 1.0.1 — publication and checksum hardening — Codex (GPT-5)
 
 **Status:** complete
@@ -1789,3 +2146,47 @@ GitHub and `sha256sum -c` reported `OK` for all three assets:
 **Next:** Standing CUDA CI remains the immediate robustness task. The
 uncommitted `gpu-adaptive-error-and-expansion` branch stays isolated until
 post-release review and merge.
+
+## 2026-07-29 — Integration — GPU repairs and balanced CI — Codex (GPT-5)
+
+**Status:** complete
+
+**Did:** Reviewed and committed the completed coverage/load-balancing unit,
+then reconciled `gpu-adaptive-error-and-expansion` with post-release `main`.
+The merge retained both the `v1.0.1` publication record and the later GPU,
+bug-hunt, and scheduler completion records. No solver or FFI implementation
+changed during integration.
+
+**How:** Committed the scheduler/CI work as `12978eb` and merged `main`
+(`0c8c5e8`) into the feature branch as `21e54bf`. The only merge conflicts
+were completed-vs-stale status text in `docs/dev/BACKLOG.md` and independently
+appended entries in this log; both were resolved by keeping the completed GPU
+status and both historical records. No FFI symbol or ABI changed.
+
+**Decisions:** Preserve merge history rather than rebase the long-lived,
+pre-release-based GPU branch. Keep the measured CUDA order-4 dense-output
+fallback and the lead-deferred standing GPU runner unchanged; this integration
+does not broaden GPU physics or deployment scope.
+
+**Gotchas:** Whole-crate `cargo fmt --all -- --check` still reports the
+documented pre-existing formatting drift in unrelated benches, `io.rs`, and
+`native.rs`. Targeted formatting for the changed GPU modules is clean. CUDA
+hardware is hidden inside the normal sandbox, so required-hardware gates must
+run with direct device access.
+
+**Tests:**
+
+- Scheduler unit tests **7/7**, Python byte compilation, workflow YAML parse,
+  `git diff --check`, and targeted Rust formatting: pass.
+- `AMALTHEA_REQUIRE_CUDA_TESTS=1 cargo test`: **73/73 pass** on the RTX
+  5060 Ti.
+- Strict two-worker Rust/Julia gate with CUDA required:
+  **42640/42640 pass in 430.5s**.
+- Post-merge eight-group `python3 test/run_full_gate.py`: exit 0 in
+  **767.8s** — physics **1663/1663**, rust **42640/42640**,
+  sim-multimode **41/41**, sim-interface **314/314**,
+  sim-propagation **18/18**, I/O **2313/2313**, fields **339/339**, and
+  examples **20/20**.
+
+**Next:** Push the reconciled feature branch, merge it into `main`, push
+`main`, and inspect the first hosted matrix produced by the new scheduler.
