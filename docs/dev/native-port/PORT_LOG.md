@@ -2146,3 +2146,47 @@ GitHub and `sha256sum -c` reported `OK` for all three assets:
 **Next:** Standing CUDA CI remains the immediate robustness task. The
 uncommitted `gpu-adaptive-error-and-expansion` branch stays isolated until
 post-release review and merge.
+
+## 2026-07-29 — Integration — GPU repairs and balanced CI — Codex (GPT-5)
+
+**Status:** complete
+
+**Did:** Reviewed and committed the completed coverage/load-balancing unit,
+then reconciled `gpu-adaptive-error-and-expansion` with post-release `main`.
+The merge retained both the `v1.0.1` publication record and the later GPU,
+bug-hunt, and scheduler completion records. No solver or FFI implementation
+changed during integration.
+
+**How:** Committed the scheduler/CI work as `12978eb` and merged `main`
+(`0c8c5e8`) into the feature branch as `21e54bf`. The only merge conflicts
+were completed-vs-stale status text in `docs/dev/BACKLOG.md` and independently
+appended entries in this log; both were resolved by keeping the completed GPU
+status and both historical records. No FFI symbol or ABI changed.
+
+**Decisions:** Preserve merge history rather than rebase the long-lived,
+pre-release-based GPU branch. Keep the measured CUDA order-4 dense-output
+fallback and the lead-deferred standing GPU runner unchanged; this integration
+does not broaden GPU physics or deployment scope.
+
+**Gotchas:** Whole-crate `cargo fmt --all -- --check` still reports the
+documented pre-existing formatting drift in unrelated benches, `io.rs`, and
+`native.rs`. Targeted formatting for the changed GPU modules is clean. CUDA
+hardware is hidden inside the normal sandbox, so required-hardware gates must
+run with direct device access.
+
+**Tests:**
+
+- Scheduler unit tests **7/7**, Python byte compilation, workflow YAML parse,
+  `git diff --check`, and targeted Rust formatting: pass.
+- `AMALTHEA_REQUIRE_CUDA_TESTS=1 cargo test`: **73/73 pass** on the RTX
+  5060 Ti.
+- Strict two-worker Rust/Julia gate with CUDA required:
+  **42640/42640 pass in 430.5s**.
+- Post-merge eight-group `python3 test/run_full_gate.py`: exit 0 in
+  **767.8s** — physics **1663/1663**, rust **42640/42640**,
+  sim-multimode **41/41**, sim-interface **314/314**,
+  sim-propagation **18/18**, I/O **2313/2313**, fields **339/339**, and
+  examples **20/20**.
+
+**Next:** Push the reconciled feature branch, merge it into `main`, push
+`main`, and inspect the first hosted matrix produced by the new scheduler.
