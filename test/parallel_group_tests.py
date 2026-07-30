@@ -35,6 +35,7 @@ BUCKET_RUNNER = TEST_DIR / "run_group_bucket.jl"
 TEST_ROOTS_FILE = TEST_DIR / "test_roots.txt"
 DEFAULT_MAX_WORKERS = 10
 ITEM_SEPARATOR = "::"
+CI_HEARTBEAT_SECONDS = 60.0
 
 
 # Julia's OpenBLAS defaults to using half the machine's cores per process
@@ -271,6 +272,28 @@ def parse_summary(log_path):
     return None, None, False
 
 
+def console_safe(text, encoding=None):
+    """Return text representable by the active console encoding."""
+    encoding = encoding or getattr(sys.stdout, "encoding", None) or "utf-8"
+    return text.encode(encoding, errors="backslashreplace").decode(encoding)
+
+
+def worker_activity(log_path, max_chars=240):
+    """Return `(byte_count, latest_nonempty_line)` for a live worker log."""
+    try:
+        byte_count = log_path.stat().st_size
+        content = log_path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return 0, ""
+    latest = next(
+        (line.strip() for line in reversed(content.splitlines()) if line.strip()),
+        "",
+    )
+    if len(latest) > max_chars:
+        latest = "…" + latest[-(max_chars - 1):]
+    return byte_count, console_safe(latest)
+
+
 def emit_failure_log(log_path):
     """Expose a failed worker's complete diagnostic in hosted-job stdout.
 
@@ -279,10 +302,7 @@ def emit_failure_log(log_path):
     hosted job ends, so a failure must copy its log into the durable job log.
     """
     content = log_path.read_text(encoding="utf-8", errors="replace")
-    stdout_encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
-    content = content.encode(
-        stdout_encoding, errors="backslashreplace"
-    ).decode(stdout_encoding)
+    content = console_safe(content)
     print(f"--- BEGIN FAILED WORKER LOG: {log_path} ---")
     print(content, end="" if content.endswith("\n") else "\n")
     print(f"--- END FAILED WORKER LOG: {log_path} ---")
@@ -402,9 +422,19 @@ def run_groups(group_bins, log_dir, ci=False):
     ]
     total_workers = len(tasks)
 
+    if ci:
+        for group, bucket_id, items in tasks:
+            print(
+                f"[{group}] worker {bucket_id} assigned {len(items)} items:",
+                flush=True,
+            )
+            for item in items:
+                print(f"  - {item}", flush=True)
+
     start = time.time()
     results = []
     from concurrent.futures import ThreadPoolExecutor, as_completed
+    from threading import Event, Thread
     with ThreadPoolExecutor(max_workers=total_workers) as pool:
         futs = {
             pool.submit(
@@ -413,10 +443,46 @@ def run_groups(group_bins, log_dir, ci=False):
             ): (group, i)
             for group, i, files in tasks
         }
-        for fut in as_completed(futs):
-            group, bucket_id = futs[fut]
-            _, rc = fut.result()
-            results.append((group, bucket_id, rc))
+        reporter_stop = Event()
+
+        def report_live_workers():
+            while not reporter_stop.wait(CI_HEARTBEAT_SECONDS):
+                elapsed = time.time() - start
+                for fut, (group, bucket_id) in sorted(
+                    futs.items(), key=lambda item: item[1]
+                ):
+                    if fut.done():
+                        continue
+                    log_path = log_dir / f"{group}_worker{bucket_id}.log"
+                    byte_count, latest = worker_activity(log_path)
+                    activity = (
+                        f"; latest: {latest}" if latest else "; no worker output yet"
+                    )
+                    print(
+                        f"[{group}] worker {bucket_id}: still running after "
+                        f"{elapsed:.0f}s; log={byte_count} bytes{activity}",
+                        flush=True,
+                    )
+
+        reporter = None
+        if ci:
+            reporter = Thread(target=report_live_workers, daemon=True)
+            reporter.start()
+        try:
+            for fut in as_completed(futs):
+                group, bucket_id = futs[fut]
+                _, rc = fut.result()
+                results.append((group, bucket_id, rc))
+                if ci:
+                    print(
+                        f"[{group}] worker {bucket_id}: process completed "
+                        f"rc={rc} after {time.time() - start:.1f}s",
+                        flush=True,
+                    )
+        finally:
+            reporter_stop.set()
+            if reporter is not None:
+                reporter.join()
     elapsed = time.time() - start
 
     per_group = {group: [0, 0, False] for group in group_bins}
@@ -425,7 +491,7 @@ def run_groups(group_bins, log_dir, ci=False):
         passed, total, summary_ok = parse_summary(log_path)
         ok = rc == 0 and passed is not None and summary_ok
         print(f"[{group}] worker {bucket_id}: rc={rc} pass={passed} total={total} "
-              f"{'OK' if ok else 'FAIL'} (log: {log_path})")
+              f"{'OK' if ok else 'FAIL'} (log: {log_path})", flush=True)
         if not ok:
             emit_failure_log(log_path)
         if passed is not None:
@@ -438,7 +504,7 @@ def run_groups(group_bins, log_dir, ci=False):
         print(f"[{group}] TOTAL: {total_pass}/{total_all}")
         out[group] = (1 if any_fail else 0, total_pass, total_all)
     print(f"Batch [{', '.join(group_bins)}] TOTAL in {elapsed:.1f}s wall-clock "
-          f"across {total_workers} workers\n")
+          f"across {total_workers} workers\n", flush=True)
     return out, elapsed
 
 

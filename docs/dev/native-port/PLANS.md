@@ -2514,3 +2514,22 @@ handling already used for repository manifests. Add an explicit synthetic
 CRLF assertion to the meta-test and use the helper for both group discovery
 and the final secondary-root Rust membership check. No scheduler output format
 or test membership changes.
+
+### 10.6 Preserve live CI visibility under parallel buckets
+
+Redirecting each Julia worker to a private log prevents interleaved output, but
+the current `as_completed` loop produces no durable Actions output until every
+worker exits. GitHub can therefore say only that the step is in progress; a
+reviewer cannot distinguish a healthy long test from a hung process or see
+which tests a bucket owns.
+
+Keep the non-interleaved worker logs and existing bucket granularity. In CI
+mode, print each worker's complete assigned item list before launch and flush
+it immediately. While futures remain active, run a reporter that wakes once
+per minute and prints, with flushing, each active worker's elapsed wall time,
+current log byte count, and most recent non-empty log line (console-safe and
+length-bounded). Report process completion as soon as its future resolves;
+retain the existing final parsed summaries and complete failed-log emission.
+Test activity extraction and formatting without launching Julia. This restores
+live evidence without serializing items, duplicating worker output, or claiming
+an exact current test when TestItemRunner has not emitted such an event.

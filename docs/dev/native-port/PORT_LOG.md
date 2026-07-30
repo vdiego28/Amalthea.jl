@@ -2334,3 +2334,42 @@ CRLF. The trace itself was emitted successfully with Unicode represented as
 **Next:** Commit and push the CRLF parser fix, require the hosted Windows Rust
 job and complete matrix to pass, then close the UTF-8/CRLF follow-up and merge
 the hotfix into `main`.
+
+## 2026-07-30 — Backlog 20 follow-up — live parallel-CI visibility — Codex (GPT-5)
+
+**Status:** in-progress
+
+**Did:** Restored live Actions visibility for parallel test buckets after the
+lead correctly observed that an `in_progress` step did not prove which tests
+were assigned, advancing, failing, or hung. The CRLF verification job remained
+opaque beyond 37 minutes, so it is not treated as evidence of correct progress.
+
+**How:** Added the design in `docs/dev/native-port/PLANS.md` §10.6.
+In CI mode, `test/parallel_group_tests.py:403` prints and immediately flushes
+each worker's complete item assignment before launch. A reporter thread wakes
+every 60 seconds while futures remain active and prints elapsed time, current
+worker-log byte count, and the latest non-empty UTF-8 line after console-safe
+escaping and a 240-character bound. Worker process completion is reported as
+soon as its future resolves; existing parsed totals and full failure logs
+remain unchanged. Local non-CI gate output does not gain the item listing or
+reporter.
+
+**Decisions:** Keep Julia workers' stdout isolated to avoid unreadable
+interleaving. Report the latest emitted log line as activity, not as an exact
+“currently running test” claim: TestItemRunner does not expose a current-item
+event to the parent scheduler. Flush every live message so Python's piped
+stdout buffering cannot defer it until job completion.
+
+**Gotchas:** Actions timestamps on prior runs showed even the pre-launch
+distribution lines only at process exit because Python stdout was block
+buffered. Adding heartbeat text without `flush=True` would therefore leave the
+original observability defect intact.
+
+**Tests:** Scheduler unit tests **12/12**, including a simulated CI future that
+proves assignment, heartbeat/latest-line, immediate completion, and final
+summary output; Python byte compilation and `git diff --check`: pass. The
+focused CRLF manifest item remains **337/337** from the preceding unit.
+
+**Next:** Push the visibility commit, inspect its one-minute Windows Rust
+heartbeats, require the complete matrix to pass, then close and merge the
+hotfix.

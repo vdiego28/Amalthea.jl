@@ -475,8 +475,11 @@ or "verified" inside a superseded narrative do not outrank this list.
     trace exposed CRLF retained by the Julia meta-test when it split Python
     stdout on bare `\n`; it now uses `readlines(IOBuffer(...))` and directly
     regresses synthetic CRLF. Failed worker logs are also copied into durable
-    Actions output with console-safe escaping. A 10-test scheduler unit suite
-    and the 337-assertion manifest meta-test pass locally. Hosted Windows
+    Actions output with console-safe escaping. CI workers now print their
+    assigned items before launch and emit one-minute flushed heartbeats with
+    elapsed time, log size, and the latest available log line, so a long
+    parallel bucket is no longer opaque. A 12-test scheduler unit suite and
+    the 337-assertion manifest meta-test pass locally. Hosted Windows
     re-verification is required before this follow-up is closed.
 
 Explicitly parked, and therefore **not** resume points without a new user need:

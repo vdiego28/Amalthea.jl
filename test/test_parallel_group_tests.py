@@ -5,6 +5,7 @@ import importlib.util
 import io
 from pathlib import Path
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -21,6 +22,54 @@ FULL_GATE_SPEC.loader.exec_module(FULL_GATE)
 
 
 class SchedulerTests(unittest.TestCase):
+    def test_ci_run_prints_assignments_heartbeats_and_completion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_dir = Path(tmp)
+
+            def fake_run_bucket(
+                group, bucket_id, items, log_path, n_workers=1, ci=False
+            ):
+                log_path.write_text(
+                    "working on test_visible.jl\n"
+                    "Test Summary: | Pass Total\n"
+                    "Package       | 1    1\n",
+                    encoding="utf-8",
+                )
+                time.sleep(0.05)
+                return bucket_id, 0
+
+            output = io.StringIO()
+            with mock.patch.object(SCHEDULER, "run_bucket", fake_run_bucket):
+                with mock.patch.object(
+                    SCHEDULER, "CI_HEARTBEAT_SECONDS", 0.01
+                ):
+                    with contextlib.redirect_stdout(output):
+                        results, _ = SCHEDULER.run_groups(
+                            {"rust": [["test_visible.jl"]]}, log_dir, ci=True
+                        )
+
+            emitted = output.getvalue()
+            self.assertEqual(results["rust"], (0, 1, 1))
+            self.assertIn("worker 0 assigned 1 items", emitted)
+            self.assertIn("still running after", emitted)
+            self.assertIn("latest: Package       | 1    1", emitted)
+            self.assertIn("worker 0: process completed rc=0", emitted)
+
+    def test_live_worker_activity_reports_latest_bounded_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "worker.log"
+            log_path.write_text(
+                "completed setup\n\ncurrently testing " + "x" * 300 + "\n",
+                encoding="utf-8",
+            )
+
+            byte_count, latest = SCHEDULER.worker_activity(log_path, max_chars=80)
+
+            self.assertEqual(byte_count, log_path.stat().st_size)
+            self.assertEqual(len(latest), 80)
+            self.assertTrue(latest.startswith("…"))
+            self.assertTrue(latest.endswith("x" * 79))
+
     def test_failed_worker_log_is_emitted_in_full_as_utf8(self):
         with tempfile.TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "worker.log"
