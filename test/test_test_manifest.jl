@@ -20,6 +20,9 @@ using TestItems
         replace(relpath(path, repo_root), '\\' => '/')
     end
 
+    output_lines(output) = Set(filter(!isempty, readlines(IOBuffer(output))))
+    @test output_lines("first\r\nsecond\r\n") == Set(["first", "second"])
+
     item_re = r"(?m)^\s*@testitem\s+\"([^\"]+)\"\s+tags\s*=\s*\[([^\]\n]*)\]\s+begin\b"
     item_start_re = r"(?m)^\s*@testitem\b"
     declarations = Dict{String,Vector{Tuple{String,Set{String}}}}()
@@ -64,7 +67,7 @@ using TestItems
         end
 
         output = read(`python3 $discovery --group $group --list-items`, String)
-        scheduled = Set(filter(!isempty, split(chomp(output), '\n')))
+        scheduled = output_lines(output)
         @testset "$group discovery parity" begin
             @test scheduled == expected
         end
@@ -93,6 +96,8 @@ using TestItems
     )
     @test groups ⊆ workflow_groups
 
-    rust_items = read(`python3 $discovery --group rust --list-items`, String)
-    @test "amalthea/tests/test_gpu_cuda.jl" in split(chomp(rust_items), '\n')
+    rust_items = output_lines(
+        read(`python3 $discovery --group rust --list-items`, String)
+    )
+    @test "amalthea/tests/test_gpu_cuda.jl" in rust_items
 end

@@ -451,7 +451,7 @@ or "verified" inside a superseded narrative do not outrank this list.
     unused, untrusted `aws/tap`; both jobs pass, so trusting the tap or
     disabling Homebrew's trust check is explicitly out of scope.
     `test/test_groups.txt` now owns the group list, and the expanded
-    336-assertion manifest meta-test independently checks every executable
+    337-assertion manifest meta-test independently checks every executable
     test item's assignment, Python discovery, workflow inclusion, external
     CUDA test, and exact-or-legacy timing coverage. All 112 scheduled item
     memberships have timings. The scheduler can address individual
@@ -471,9 +471,13 @@ or "verified" inside a superseded narrative do not outrank this list.
     launching Julia tests because Python decoded UTF-8 Julia sources with the
     host CP-1252 default (`UnicodeDecodeError`, byte `0x81`). The bounded fix
     makes UTF-8 explicit for scheduler manifests, source declarations,
-    timings, group lists, and worker-log parsing; an 8-test scheduler unit
-    suite and the 336-assertion manifest meta-test pass locally. Hosted
-    Windows re-verification is required before this follow-up is closed.
+    timings, group lists, and worker-log parsing. The subsequent hosted Rust
+    trace exposed CRLF retained by the Julia meta-test when it split Python
+    stdout on bare `\n`; it now uses `readlines(IOBuffer(...))` and directly
+    regresses synthetic CRLF. Failed worker logs are also copied into durable
+    Actions output with console-safe escaping. A 10-test scheduler unit suite
+    and the 337-assertion manifest meta-test pass locally. Hosted Windows
+    re-verification is required before this follow-up is closed.
 
 Explicitly parked, and therefore **not** resume points without a new user need:
 multi-mode `StepIndexMode` (no consumer), the full SoA conversion (~1% ceiling),

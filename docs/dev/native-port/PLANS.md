@@ -2502,3 +2502,15 @@ characters become lossless `\u`/`\U` escapes, so emitting a diagnostic can
 never replace the underlying test failure with a console-encoding exception.
 Cover this specifically with a CP-1252 output-safety unit test before the next
 push.
+
+The console-safe trace then identified the original test failure precisely.
+Python's Windows text stdout writes CRLF; the Julia manifest meta-test used
+`split(..., '\n')`, leaving `\r` on every non-final scheduled identity. Hosted
+assertions showed values such as `"test_grid.jl\r"` compared with
+`"test_grid.jl"`, causing discovery and timing checks to fail across every
+maintained group. Parse Python subprocess output with
+`readlines(IOBuffer(output))` for the same platform-independent newline
+handling already used for repository manifests. Add an explicit synthetic
+CRLF assertion to the meta-test and use the helper for both group discovery
+and the final secondary-root Rust membership check. No scheduler output format
+or test membership changes.

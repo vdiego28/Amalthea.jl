@@ -2298,3 +2298,39 @@ survived that runner teardown.
 
 **Next:** Push, wait for the Windows Rust bucket, and use its now
 console-safe complete trace to identify the original 112-assertion failure.
+
+## 2026-07-30 — Backlog 20 follow-up — Windows CRLF manifest output — Codex (GPT-5)
+
+**Status:** in-progress
+
+**Did:** Identified and fixed the original Windows Rust assertion failure.
+The durable worker trace showed Python subprocess identities ending in `\r`
+(for example `"test_grid.jl\r"`), producing 112 manifest failures while all
+physics/native assertions in the same bucket passed.
+
+**How:** Recorded the confirmed design in
+`docs/dev/native-port/PLANS.md` §10.5. `test/test_test_manifest.jl:18` adds
+`output_lines(output)`, backed by `readlines(IOBuffer(output))`, and uses it
+for every scheduler discovery result and the final external-CUDA membership
+check. Unlike splitting on bare `\n`, Julia's line reader removes both LF and
+CRLF terminators. A synthetic CRLF assertion makes the platform contract
+executable. No scheduler identity, timing, test assignment, solver source,
+FFI symbol, or ABI changed.
+
+**Decisions:** Fix the consumer at its line-oriented parsing boundary instead
+of forcing Python to emit Unix newlines on Windows. `readlines` is the same
+cross-platform abstraction already used for repository manifests and remains
+correct for Linux/macOS output.
+
+**Gotchas:** Console-safe diagnostic run `30500651407`, Windows Rust job
+`90739350328`, proved the failure: every non-final subprocess line retained
+`\r`; the final line in each group passed because `chomp` removed its complete
+CRLF. The trace itself was emitted successfully with Unicode represented as
+`\u` escapes where CP-1252 could not encode it.
+
+**Tests:** Scheduler unit tests **10/10**, Python byte compilation,
+`git diff --check`, and the focused Rust manifest item **337/337**: pass.
+
+**Next:** Commit and push the CRLF parser fix, require the hosted Windows Rust
+job and complete matrix to pass, then close the UTF-8/CRLF follow-up and merge
+the hotfix into `main`.
