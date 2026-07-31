@@ -36,6 +36,10 @@ using TestItems
                              kerr=true, shotnoise=false, energy=1e-6, τfwhm=30e-15)
         kw_plasma_large = (; λ0, λlims, trange=2e-12, raman=false, plasma=true,
                              kerr=true, shotnoise=false, energy=1e-6, τfwhm=30e-15)
+        kw_adk_small = (; λ0, λlims, trange=1e-12, raman=false, plasma=:ADK,
+                         kerr=true, shotnoise=false, energy=1.6e-3, τfwhm=30e-15)
+        kw_adk_large = (; λ0, λlims, trange=2e-12, raman=false, plasma=:ADK,
+                         kerr=true, shotnoise=false, energy=1.6e-3, τfwhm=30e-15)
 
         Eω_small, _, linop_small, transform_small, _, _ = with_logger(NullLogger()) do
             Interface.prop_capillary_args(args...; kw_small...)
@@ -51,9 +55,39 @@ using TestItems
             with_logger(NullLogger()) do
                 Interface.prop_capillary_args(args...; kw_plasma_large...)
             end
+        Eω_adk_small, _, linop_adk_small, transform_adk_small, _, _ =
+            with_logger(NullLogger()) do
+                Interface.prop_capillary_args(args...; kw_adk_small...)
+            end
+        Eω_adk_large, _, linop_adk_large, transform_adk_large, _, _ =
+            with_logger(NullLogger()) do
+                Interface.prop_capillary_args(args...; kw_adk_large...)
+            end
+
+        # `threshold=false` intentionally retains the Julia/CPU ADK formula's
+        # zero-field behavior (which can yield NaN); CUDA's pointwise kernel
+        # therefore must never be selected for it. Build this response by hand
+        # rather than changing Interface's public default (`threshold=true`).
+        adk_unthresholded = Ionisation.IonRateADK(
+            PhysData.ionisation_potential(:He); threshold=false)
+        plasma_unthresholded = Nonlinear.PlasmaCumtrapz(
+            transform_adk_large.grid.to, transform_adk_large.grid.to,
+            adk_unthresholded, PhysData.ionisation_potential(:He))
+        transform_adk_unthresholded = NonlinearRHS.TransModeAvg(
+            transform_adk_large.Pto, transform_adk_large.Eto,
+            transform_adk_large.Eωo, transform_adk_large.Pωo,
+            transform_adk_large.FT,
+            (transform_adk_large.resp[1], plasma_unthresholded),
+            transform_adk_large.grid, transform_adk_large.densityfun,
+            transform_adk_large.norm!, transform_adk_large.aeff,
+            transform_adk_large.Et_noise, transform_adk_large.Et_nl)
 
         @test length(Eω_plasma_small) < RK45._GPU_PPT_N_THRESHOLD
         @test length(Eω_plasma_large) >= RK45._GPU_PPT_N_THRESHOLD
+        @test length(Eω_adk_small) < RK45._GPU_ADK_N_THRESHOLD
+        @test length(Eω_adk_large) >= RK45._GPU_ADK_N_THRESHOLD
+        @test RK45._GPU_ADK_N_THRESHOLD == 8193
+        @test !transform_adk_unthresholded.resp[2].ratefunc.threshold
 
         @test length(Eω_small) < RK45._GPU_KERR_ONLY_N_THRESHOLD
         @test length(Eω_large) >= RK45._GPU_KERR_ONLY_N_THRESHOLD
@@ -79,6 +113,24 @@ using TestItems
                     @test RK45._gpu_native_eligible(transform_plasma_small,
                                                     linop_plasma_small,
                                                     length(Eω_plasma_small))
+                    @test RK45._gpu_native_eligible(transform_adk_small,
+                                                    linop_adk_small,
+                                                    length(Eω_adk_small))
+                    @test !RK45._gpu_kernel_supports(transform_adk_unthresholded,
+                                                      linop_adk_large)
+                    @test !RK45._gpu_native_eligible(transform_adk_unthresholded,
+                                                       linop_adk_large,
+                                                       length(Eω_adk_large))
+                    # Construction succeeds through the CPU fallback even
+                    # though GPU dispatch was explicitly forced on; the two
+                    # false eligibility checks above are the observable
+                    # dispatch decision (the opaque handle exposes no backend
+                    # type query).
+                    s_cpu_fallback = RustNativeStepper(
+                        transform_adk_unthresholded, linop_adk_large,
+                        copy(Eω_adk_large), 0.0, 0.005;
+                        rtol=1e-6, atol=1e-10, max_dt=0.005, min_dt=0.005)
+                    @test s_cpu_fallback isa RustNativeStepper
                 end
             end
 
@@ -93,6 +145,21 @@ using TestItems
                     @test RK45._gpu_native_eligible(transform_plasma_large,
                                                     linop_plasma_large,
                                                     length(Eω_plasma_large))
+                    @test !RK45._gpu_native_eligible(transform_adk_small,
+                                                     linop_adk_small,
+                                                     length(Eω_adk_small))
+                    @test RK45._gpu_native_eligible(transform_adk_large,
+                                                    linop_adk_large,
+                                                    length(Eω_adk_large))
+                    @test !RK45._gpu_native_eligible(transform_adk_unthresholded,
+                                                     linop_adk_large,
+                                                     length(Eω_adk_large))
+                    # The benchmark measured only 8193, so 8192 must not be
+                    # silently rounded into the first automatic GPU size.
+                    @test !RK45._gpu_native_eligible(transform_adk_large,
+                                                     linop_adk_large, 8192)
+                    @test RK45._gpu_native_eligible(transform_adk_large,
+                                                    linop_adk_large, 8193)
                 end
                 withenv("AMALTHEA_NATIVE_GPU" => "auto") do
                     @test !RK45._gpu_native_eligible(transform_small, linop_small, length(Eω_small))

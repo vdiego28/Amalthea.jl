@@ -5,6 +5,91 @@ use crate::native::{NativeBackend, NativeStepResult};
 use libc::size_t;
 use num_complex::Complex;
 use std::ffi::{c_char, c_double, c_int, c_uint};
+#[cfg(test)]
+use std::sync::Mutex;
+#[cfg(test)]
+use std::sync::atomic::{AtomicU8, Ordering};
+
+#[cfg(test)]
+static MODE_AVG_SETUP_FAIL_POINT: AtomicU8 = AtomicU8::new(0);
+#[cfg(test)]
+static MODE_AVG_SETUP_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+const MODE_AVG_FAIL_ALLOC: u8 = 1;
+const MODE_AVG_FAIL_COPY: u8 = 2;
+const MODE_AVG_FAIL_SECOND_PLAN: u8 = 3;
+
+/// Test seam for deterministic failures at each transactional boundary. In
+/// production this is an inline no-op; hardware tests can select an exact
+/// stage without relying on allocator or cuFFT resource exhaustion.
+#[inline]
+fn mode_avg_setup_failpoint(point: u8) -> Result<(), String> {
+    #[cfg(test)]
+    if MODE_AVG_SETUP_FAIL_POINT.load(Ordering::SeqCst) == point {
+        return Err(format!(
+            "injected mode-averaged setup failure at point {point}"
+        ));
+    }
+    let _ = point;
+    Ok(())
+}
+
+/// Fully prepared replacement for the mode-averaged device configuration.
+/// It owns every allocation and cuFFT handle until `commit_mode_avg_setup`
+/// swaps it into the live simulation, so an allocation/copy/planning error
+/// cannot damage a configuration which is still usable by the caller.
+struct ModeAvgSetup {
+    n_time: usize,
+    n_time_over: usize,
+    n_spec_over: usize,
+    eto_d: Option<GpuBuffer>,
+    pto_d: Option<GpuBuffer>,
+    eoo_d: Option<GpuBuffer>,
+    poo_d: Option<GpuBuffer>,
+    towin_d: Option<GpuBuffer>,
+    norm_pre_beta_d: Option<GpuBuffer>,
+    owin_d: Option<GpuBuffer>,
+    plas_rate_d: Option<GpuBuffer>,
+    plas_fraction_d: Option<GpuBuffer>,
+    plas_phase_d: Option<GpuBuffer>,
+    plas_current_d: Option<GpuBuffer>,
+    plas_scan_sums_d: Option<GpuBuffer>,
+    kerr_fac: c_double,
+    scale_fwd: c_double,
+    scale_inv: c_double,
+    inv_nto_sc: c_double,
+    nlscale: c_double,
+    sqrt_aeff: c_double,
+    fft_r2c: cufftHandle,
+    fft_c2r: cufftHandle,
+}
+
+impl Drop for ModeAvgSetup {
+    fn drop(&mut self) {
+        if let Ok(cufft) = get_cufft_api() {
+            unsafe {
+                if self.fft_r2c != 0 {
+                    (cufft.cufftDestroy)(self.fft_r2c);
+                }
+                if self.fft_c2r != 0 {
+                    (cufft.cufftDestroy)(self.fft_c2r);
+                }
+            }
+        }
+    }
+}
+
+fn checked_bytes(elements: usize, element_size: usize) -> Result<usize, String> {
+    elements
+        .checked_mul(element_size)
+        .ok_or_else(|| "mode-averaged CUDA buffer size overflow".to_string())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PlasmaRateKind {
+    Ppt,
+    Adk,
+}
 
 pub struct CudaNativeSim {
     pub n: usize,
@@ -57,15 +142,24 @@ pub struct CudaNativeSim {
     /// `CpuNativeSim::owin`. Length `n` (=`n_spec`), real.
     pub owin_d: GpuBuffer,
 
-    // Plasma (mode-averaged, PPT only — see docs/dev/BACKLOG.md S3 item 2; ADK
-    // still returns -1 from set_plasma_params_adk). Buffers sized
+    // Plasma (mode-averaged PPT or ADK). Buffers sized
     // `n_time_over` (set in set_mode_avg_params), matching `eto_d`/`pto_d`.
     pub has_plasma: bool,
+    plasma_rate_kind: PlasmaRateKind,
     pub plasma_segments_d: GpuBuffer,
     pub plasma_num_segments: usize,
     pub plasma_e_min: c_double,
     pub plasma_e_max: c_double,
     pub plasma_strict: c_int,
+    // ADK's seven Julia-precomputed constants.  They are copied verbatim from
+    // `AdkIonizationRate`, keeping the CUDA formula tied to the CPU oracle.
+    plasma_adk_occupancy: c_double,
+    plasma_adk_omega_p: c_double,
+    plasma_adk_cn_sq: c_double,
+    plasma_adk_nstar: c_double,
+    plasma_adk_omega_t_prefac: c_double,
+    plasma_adk_thr: c_double,
+    plasma_adk_avfac: c_double,
     pub plasma_ionpot: c_double,
     pub plasma_e_ratio: c_double,
     pub plasma_preionfrac: c_double,
@@ -169,11 +263,19 @@ impl CudaNativeSim {
             norm_pre_beta_d,
             owin_d,
             has_plasma: false,
+            plasma_rate_kind: PlasmaRateKind::Ppt,
             plasma_segments_d,
             plasma_num_segments: 0,
             plasma_e_min: 0.0,
             plasma_e_max: 0.0,
             plasma_strict: 0,
+            plasma_adk_occupancy: 0.0,
+            plasma_adk_omega_p: 0.0,
+            plasma_adk_cn_sq: 0.0,
+            plasma_adk_nstar: 0.0,
+            plasma_adk_omega_t_prefac: 0.0,
+            plasma_adk_thr: 0.0,
+            plasma_adk_avfac: 1.0,
             plasma_ionpot: 0.0,
             plasma_e_ratio: 0.0,
             plasma_preionfrac: 0.0,
@@ -187,6 +289,226 @@ impl CudaNativeSim {
             fft_r2c: 0,
             fft_c2r: 0,
         })
+    }
+}
+
+impl CudaNativeSim {
+    /// Stage all resources for a replacement mode-averaged configuration.
+    /// Nothing in `self` is changed here; callers may therefore return an
+    /// error at any point without invalidating the active setup.
+    unsafe fn stage_mode_avg_setup(
+        &self,
+        n_time: usize,
+        n_time_over: usize,
+        towin: *const c_double,
+        owin: *const c_double,
+        sidx: *const u8,
+        pre_re: *const c_double,
+        pre_im: *const c_double,
+        beta: *const c_double,
+        kerr_fac: c_double,
+        nlscale: c_double,
+        sqrt_aeff: c_double,
+    ) -> Result<ModeAvgSetup, String> {
+        let n_spec = self.n;
+        if n_time == 0
+            || n_time_over < n_time
+            || n_spec != n_time / 2 + 1
+            || n_spec < 2
+            || (pre_re.is_null() != pre_im.is_null())
+            || !nlscale.is_finite()
+            || !sqrt_aeff.is_finite()
+            || nlscale == 0.0
+            || sqrt_aeff == 0.0
+            || !kerr_fac.is_finite()
+        {
+            return Err("invalid mode-averaged CUDA dimensions or pre pair".to_string());
+        }
+        let n_spec_over = n_time_over
+            .checked_div(2)
+            .and_then(|n| n.checked_add(1))
+            .ok_or_else(|| "mode-averaged CUDA spectral dimension overflow".to_string())?;
+        let n_time_over_i32 = i32::try_from(n_time_over)
+            .map_err(|_| "mode-averaged CUDA time dimension exceeds cuFFT i32 range".to_string())?;
+        let sc = nlscale * sqrt_aeff;
+        if !sc.is_finite() || sc == 0.0 {
+            return Err("nlscale*sqrt_aeff must be nonzero".to_string());
+        }
+
+        // All pointer-based host reads happen only after every dimension and
+        // optional-pair condition has been checked.
+        let towin_vec = if towin.is_null() {
+            vec![1.0; n_time_over]
+        } else {
+            unsafe { std::slice::from_raw_parts(towin, n_time_over) }.to_vec()
+        };
+        let sidx_vec: Vec<bool> = if sidx.is_null() {
+            vec![true; n_spec]
+        } else {
+            unsafe { std::slice::from_raw_parts(sidx, n_spec) }
+                .iter()
+                .map(|&x| x != 0)
+                .collect()
+        };
+        let mut owin_vec = if owin.is_null() {
+            vec![1.0; n_spec]
+        } else {
+            unsafe { std::slice::from_raw_parts(owin, n_spec) }.to_vec()
+        };
+        let pre_vec: Vec<Complex<f64>> = if pre_re.is_null() {
+            vec![Complex::new(0.0, 0.0); n_spec]
+        } else {
+            let re = unsafe { std::slice::from_raw_parts(pre_re, n_spec) };
+            let im = unsafe { std::slice::from_raw_parts(pre_im, n_spec) };
+            re.iter()
+                .zip(im.iter())
+                .map(|(&re, &im)| Complex::new(re, im))
+                .collect()
+        };
+        let beta_vec = if beta.is_null() {
+            vec![1.0; n_spec]
+        } else {
+            unsafe { std::slice::from_raw_parts(beta, n_spec) }.to_vec()
+        };
+        if (0..n_spec).any(|i| {
+            sidx_vec[i]
+                && (!pre_vec[i].re.is_finite()
+                    || !pre_vec[i].im.is_finite()
+                    || !beta_vec[i].is_finite()
+                    || beta_vec[i] == 0.0)
+        }) {
+            return Err("non-finite active mode-averaged coefficient".to_string());
+        }
+        let norm_pre_beta_vec = (0..n_spec)
+            .map(|i| {
+                if sidx_vec[i] {
+                    pre_vec[i] / beta_vec[i] * sqrt_aeff
+                } else {
+                    owin_vec[i] = 1.0;
+                    Complex::new(1.0, 0.0)
+                }
+            })
+            .collect::<Vec<_>>();
+
+        mode_avg_setup_failpoint(MODE_AVG_FAIL_ALLOC)?;
+        let eto_d = GpuBuffer::alloc(checked_bytes(n_time_over, 8)?)?;
+        let pto_d = GpuBuffer::alloc(checked_bytes(n_time_over, 8)?)?;
+        let eoo_d = GpuBuffer::alloc(checked_bytes(n_spec_over, 16)?)?;
+        let poo_d = GpuBuffer::alloc(checked_bytes(n_spec_over, 16)?)?;
+        let towin_d = GpuBuffer::alloc(checked_bytes(n_time_over, 8)?)?;
+        let norm_pre_beta_d = GpuBuffer::alloc(checked_bytes(n_spec, 16)?)?;
+        let owin_d = GpuBuffer::alloc(checked_bytes(n_spec, 8)?)?;
+        let plas_rate_d = GpuBuffer::alloc(checked_bytes(n_time_over, 8)?)?;
+        let plas_fraction_d = GpuBuffer::alloc(checked_bytes(n_time_over, 8)?)?;
+        let plas_phase_d = GpuBuffer::alloc(checked_bytes(n_time_over, 8)?)?;
+        let plas_current_d = GpuBuffer::alloc(checked_bytes(n_time_over, 8)?)?;
+        let scan_len = n_time_over.div_ceil(256).max(1);
+        let plas_scan_sums_d = GpuBuffer::alloc(checked_bytes(scan_len, 8)?)?;
+
+        mode_avg_setup_failpoint(MODE_AVG_FAIL_COPY)?;
+        towin_d.copy_to_device(&towin_vec)?;
+        owin_d.copy_to_device(&owin_vec)?;
+        norm_pre_beta_d.copy_to_device(&norm_pre_beta_vec)?;
+
+        let cufft = get_cufft_api()?;
+        let mut fft_r2c = 0;
+        let rc = unsafe { (cufft.cufftPlan1d)(&mut fft_r2c, n_time_over_i32, CUFFT_D2Z, 1) };
+        if rc != 0 {
+            return Err(format!("cufftPlan1d (D2Z) failed: {rc}"));
+        }
+        let mut fft_c2r = 0;
+        if let Err(e) = mode_avg_setup_failpoint(MODE_AVG_FAIL_SECOND_PLAN) {
+            unsafe { (cufft.cufftDestroy)(fft_r2c) };
+            return Err(e);
+        }
+        let rc = unsafe { (cufft.cufftPlan1d)(&mut fft_c2r, n_time_over_i32, CUFFT_Z2D, 1) };
+        if rc != 0 {
+            unsafe { (cufft.cufftDestroy)(fft_r2c) };
+            return Err(format!("cufftPlan1d (Z2D) failed: {rc}"));
+        }
+
+        Ok(ModeAvgSetup {
+            n_time,
+            n_time_over,
+            n_spec_over,
+            eto_d: Some(eto_d),
+            pto_d: Some(pto_d),
+            eoo_d: Some(eoo_d),
+            poo_d: Some(poo_d),
+            towin_d: Some(towin_d),
+            norm_pre_beta_d: Some(norm_pre_beta_d),
+            owin_d: Some(owin_d),
+            plas_rate_d: Some(plas_rate_d),
+            plas_fraction_d: Some(plas_fraction_d),
+            plas_phase_d: Some(plas_phase_d),
+            plas_current_d: Some(plas_current_d),
+            plas_scan_sums_d: Some(plas_scan_sums_d),
+            kerr_fac,
+            scale_fwd: (n_spec_over as f64 - 1.0) / (n_spec as f64 - 1.0),
+            scale_inv: (n_spec as f64 - 1.0) / (n_spec_over as f64 - 1.0),
+            inv_nto_sc: (1.0 / n_time_over as f64) * (1.0 / sc),
+            nlscale,
+            sqrt_aeff,
+            fft_r2c,
+            fft_c2r,
+        })
+    }
+
+    fn commit_mode_avg_setup(&mut self, mut staged: ModeAvgSetup) {
+        let cufft = get_cufft_api().ok();
+        let old_r2c =
+            std::mem::replace(&mut self.fft_r2c, std::mem::replace(&mut staged.fft_r2c, 0));
+        let old_c2r =
+            std::mem::replace(&mut self.fft_c2r, std::mem::replace(&mut staged.fft_c2r, 0));
+        self.n_time = staged.n_time;
+        self.n_time_over = staged.n_time_over;
+        self.n_spec_over = staged.n_spec_over;
+        self.eto_d = staged.eto_d.take().expect("staged eto buffer");
+        self.pto_d = staged.pto_d.take().expect("staged pto buffer");
+        self.eoo_d = staged.eoo_d.take().expect("staged eoo buffer");
+        self.poo_d = staged.poo_d.take().expect("staged poo buffer");
+        self.towin_d = staged.towin_d.take().expect("staged towin buffer");
+        self.norm_pre_beta_d = staged
+            .norm_pre_beta_d
+            .take()
+            .expect("staged normalized-prefactor buffer");
+        self.owin_d = staged.owin_d.take().expect("staged owin buffer");
+        self.plas_rate_d = staged
+            .plas_rate_d
+            .take()
+            .expect("staged plasma-rate buffer");
+        self.plas_fraction_d = staged
+            .plas_fraction_d
+            .take()
+            .expect("staged plasma-fraction buffer");
+        self.plas_phase_d = staged
+            .plas_phase_d
+            .take()
+            .expect("staged plasma-phase buffer");
+        self.plas_current_d = staged
+            .plas_current_d
+            .take()
+            .expect("staged plasma-current buffer");
+        self.plas_scan_sums_d = staged
+            .plas_scan_sums_d
+            .take()
+            .expect("staged plasma-scan-sums buffer");
+        self.kerr_fac = staged.kerr_fac;
+        self.scale_fwd = staged.scale_fwd;
+        self.scale_inv = staged.scale_inv;
+        self.inv_nto_sc = staged.inv_nto_sc;
+        self.nlscale = staged.nlscale;
+        self.sqrt_aeff = staged.sqrt_aeff;
+        if let Some(cufft) = cufft {
+            unsafe {
+                if old_r2c != 0 {
+                    (cufft.cufftDestroy)(old_r2c);
+                }
+                if old_c2r != 0 {
+                    (cufft.cufftDestroy)(old_c2r);
+                }
+            }
+        }
     }
 }
 
@@ -461,36 +783,71 @@ impl CudaNativeSim {
                 "rhs_mode_avg_real(step3)",
             )?;
 
-            // ── Step 3b: plasma polarisation (PPT only), if enabled — same
-            // 5-kernel sequence as before, buffers now n_time_over-sized.
+            // ── Step 3b: plasma polarisation. PPT and ADK share the completed
+            // fraction/current/polarization scan/finalizer pipeline; only the
+            // pointwise rate kernel differs.
             if self.has_plasma {
-                let mut err_code_d = GpuBuffer::alloc(4)?;
-                let zero = [0i32];
-                err_code_d.copy_to_device(&zero)?;
-                let mut num_segments_val = self.plasma_num_segments as c_int;
-                let mut strict_val = self.plasma_strict;
-                let mut e_min = self.plasma_e_min;
-                let mut e_max = self.plasma_e_max;
-                let mut rate_args: [*mut libc::c_void; 9] = [
-                    &mut self.eto_d.dptr as *mut _ as *mut _,
-                    &mut self.plas_rate_d.dptr as *mut _ as *mut _,
-                    &mut self.plasma_segments_d.dptr as *mut _ as *mut _,
-                    &mut e_min as *mut _ as *mut _,
-                    &mut e_max as *mut _ as *mut _,
-                    &mut num_segments_val as *mut _ as *mut _,
-                    &mut n_time_over_i as *mut _ as *mut _,
-                    &mut err_code_d.dptr as *mut _ as *mut _,
-                    &mut strict_val as *mut _ as *mut _,
-                ];
-                launch_checked(
-                    driver,
-                    ctx.ppt_fn,
-                    grid_size_t,
-                    block_size,
-                    0,
-                    &mut rate_args,
-                    "plasma_rate",
-                )?;
+                match self.plasma_rate_kind {
+                    PlasmaRateKind::Ppt => {
+                        let mut err_code_d = GpuBuffer::alloc(4)?;
+                        let zero = [0i32];
+                        err_code_d.copy_to_device(&zero)?;
+                        let mut num_segments_val = self.plasma_num_segments as c_int;
+                        let mut strict_val = self.plasma_strict;
+                        let mut e_min = self.plasma_e_min;
+                        let mut e_max = self.plasma_e_max;
+                        let mut rate_args: [*mut libc::c_void; 9] = [
+                            &mut self.eto_d.dptr as *mut _ as *mut _,
+                            &mut self.plas_rate_d.dptr as *mut _ as *mut _,
+                            &mut self.plasma_segments_d.dptr as *mut _ as *mut _,
+                            &mut e_min as *mut _ as *mut _,
+                            &mut e_max as *mut _ as *mut _,
+                            &mut num_segments_val as *mut _ as *mut _,
+                            &mut n_time_over_i as *mut _ as *mut _,
+                            &mut err_code_d.dptr as *mut _ as *mut _,
+                            &mut strict_val as *mut _ as *mut _,
+                        ];
+                        launch_checked(
+                            driver,
+                            ctx.ppt_fn,
+                            grid_size_t,
+                            block_size,
+                            0,
+                            &mut rate_args,
+                            "plasma_rate_ppt",
+                        )?;
+                    }
+                    PlasmaRateKind::Adk => {
+                        let mut occupancy = self.plasma_adk_occupancy;
+                        let mut omega_p = self.plasma_adk_omega_p;
+                        let mut cn_sq = self.plasma_adk_cn_sq;
+                        let mut nstar = self.plasma_adk_nstar;
+                        let mut omega_t_prefac = self.plasma_adk_omega_t_prefac;
+                        let mut thr = self.plasma_adk_thr;
+                        let mut avfac = self.plasma_adk_avfac;
+                        let mut rate_args: [*mut libc::c_void; 10] = [
+                            &mut self.eto_d.dptr as *mut _ as *mut _,
+                            &mut self.plas_rate_d.dptr as *mut _ as *mut _,
+                            &mut occupancy as *mut _ as *mut _,
+                            &mut omega_p as *mut _ as *mut _,
+                            &mut cn_sq as *mut _ as *mut _,
+                            &mut nstar as *mut _ as *mut _,
+                            &mut omega_t_prefac as *mut _ as *mut _,
+                            &mut thr as *mut _ as *mut _,
+                            &mut avfac as *mut _ as *mut _,
+                            &mut n_time_over_i as *mut _ as *mut _,
+                        ];
+                        launch_checked(
+                            driver,
+                            ctx.adk_fn,
+                            grid_size_t,
+                            block_size,
+                            0,
+                            &mut rate_args,
+                            "plasma_rate_adk",
+                        )?;
+                    }
+                }
 
                 // Parallel cumtrapz(rate) then rho transform.
                 let rate_dptr = self.plas_rate_d.dptr;
@@ -825,156 +1182,30 @@ impl NativeBackend for CudaNativeSim {
         nlscale: c_double,
         sqrt_aeff: c_double,
     ) -> i32 {
-        // `n_spec` is the ODE state length (`self.n`), matching
-        // `CpuNativeSim::set_mode_avg_params`'s `s.n_spec = s.n`. All
-        // buffers below that used to be sized `n_time` (skipping the
-        // oversampling/anti-aliasing grid Julia/CPU both use for the
-        // nonlinear evaluation — BACKLOG.md S3 item 6) are now sized
-        // `n_time_over`, and the new `n_spec_over`-sized `eoo_d`/`poo_d`
-        // scratch (already existed as fields, previously left at their
-        // placeholder 16-byte allocation) close the crop/pad gap.
-        let n_spec = self.n;
-        self.n_time = n_time;
-        self.n_time_over = n_time_over;
-        self.n_spec_over = n_time_over / 2 + 1;
-        self.kerr_fac = kerr_fac;
-        self.nlscale = nlscale;
-        self.sqrt_aeff = sqrt_aeff;
-
-        let sc = nlscale * sqrt_aeff;
-        if sc == 0.0 {
-            eprintln!(
-                "Amalthea GPU error: nlscale*sqrt_aeff == 0 in set_mode_avg_params; \
-                 refusing to configure a divide-by-zero RHS scaling."
-            );
-            return -2;
-        }
-        // Combined Step 1 (cuFFT's unnormalized-inverse `1/n_time_over`) and
-        // Step 2 (`1/(nlscale*sqrt_aeff)`) scalar — see
-        // `compute_rhs_mode_avg`'s doc.
-        self.inv_nto_sc = (1.0 / n_time_over as f64) * (1.0 / sc);
-        self.scale_fwd = (self.n_spec_over as f64 - 1.0) / (n_spec as f64 - 1.0);
-        self.scale_inv = (n_spec as f64 - 1.0) / (self.n_spec_over as f64 - 1.0);
-
-        self.eto_d = GpuBuffer::alloc(n_time_over * 8).unwrap();
-        self.pto_d = GpuBuffer::alloc(n_time_over * 8).unwrap();
-        self.eoo_d = GpuBuffer::alloc(self.n_spec_over * 16).unwrap();
-        self.poo_d = GpuBuffer::alloc(self.n_spec_over * 16).unwrap();
-        self.plas_rate_d = GpuBuffer::alloc(n_time_over * 8).unwrap();
-        self.plas_fraction_d = GpuBuffer::alloc(n_time_over * 8).unwrap();
-        self.plas_phase_d = GpuBuffer::alloc(n_time_over * 8).unwrap();
-        self.plas_current_d = GpuBuffer::alloc(n_time_over * 8).unwrap();
-        self.plas_scan_sums_d = GpuBuffer::alloc(n_time_over.div_ceil(256).max(1) * 8).unwrap();
-
-        // towin: length n_time_over — matches `CpuNativeSim`'s own
-        // `set_mode_avg_params` (`s.towin = ...from_raw_parts(towin,
-        // n_time_over)`). Previously read as `n_time` elements here, which
-        // (for n_time_over > n_time, the normal oversampled case) silently
-        // read only a prefix of the true window and left the resident
-        // buffer sized for the wrong grid entirely.
-        let towin_vec: Vec<f64> = if !towin.is_null() {
-            unsafe { std::slice::from_raw_parts(towin, n_time_over) }.to_vec()
-        } else {
-            vec![1.0; n_time_over]
-        };
-        self.towin_d = GpuBuffer::alloc(n_time_over * 8).unwrap();
-        self.towin_d.copy_to_device(&towin_vec).unwrap();
-
-        // sidx: length n_spec — de-branch exactly like CpuNativeSim does
-        // (BACKLOG.md S1 item 4): fold sidx into owin/norm_pre_beta once
-        // here, host-side, so the GPU kernel is a plain vectorizable
-        // multiply with no per-element branch, identical in spirit to the
-        // CPU path's own `norm_pre_beta`/`owin` precomputation.
-        let sidx_vec: Vec<bool> = if !sidx.is_null() {
-            unsafe { std::slice::from_raw_parts(sidx, n_spec) }
-                .iter()
-                .map(|&x| x != 0)
-                .collect()
-        } else {
-            vec![true; n_spec]
-        };
-
-        let mut owin_vec: Vec<f64> = if !owin.is_null() {
-            unsafe { std::slice::from_raw_parts(owin, n_spec) }.to_vec()
-        } else {
-            vec![1.0; n_spec]
-        };
-        for i in 0..n_spec {
-            if !sidx_vec[i] {
-                owin_vec[i] = 1.0;
+        match unsafe {
+            self.stage_mode_avg_setup(
+                n_time,
+                n_time_over,
+                towin,
+                owin,
+                sidx,
+                pre_re,
+                pre_im,
+                beta,
+                kerr_fac,
+                nlscale,
+                sqrt_aeff,
+            )
+        } {
+            Ok(staged) => {
+                self.commit_mode_avg_setup(staged);
+                0
+            }
+            Err(e) => {
+                eprintln!("Amalthea GPU error: mode-averaged setup failed: {e}");
+                -1
             }
         }
-
-        let pre_vec: Vec<Complex<f64>> = if !pre_re.is_null() && !pre_im.is_null() {
-            let re = unsafe { std::slice::from_raw_parts(pre_re, n_spec) };
-            let im = unsafe { std::slice::from_raw_parts(pre_im, n_spec) };
-            re.iter()
-                .zip(im.iter())
-                .map(|(&r, &i)| Complex::new(r, i))
-                .collect()
-        } else {
-            vec![Complex::new(0.0, 0.0); n_spec]
-        };
-        let beta_vec: Vec<f64> = if !beta.is_null() {
-            unsafe { std::slice::from_raw_parts(beta, n_spec) }.to_vec()
-        } else {
-            vec![1.0; n_spec]
-        };
-        let norm_pre_beta_vec: Vec<Complex<f64>> = (0..n_spec)
-            .map(|i| {
-                if sidx_vec[i] {
-                    pre_vec[i] / beta_vec[i] * sqrt_aeff
-                } else {
-                    Complex::new(1.0, 0.0)
-                }
-            })
-            .collect();
-
-        self.owin_d = GpuBuffer::alloc(n_spec * 8).unwrap();
-        self.owin_d.copy_to_device(&owin_vec).unwrap();
-        self.norm_pre_beta_d = GpuBuffer::alloc(n_spec * 16).unwrap();
-        self.norm_pre_beta_d
-            .copy_to_device(&norm_pre_beta_vec)
-            .unwrap();
-
-        if let Ok(cufft) = get_cufft_api() {
-            unsafe {
-                if self.fft_r2c != 0 {
-                    (cufft.cufftDestroy)(self.fft_r2c);
-                    self.fft_r2c = 0;
-                }
-                if self.fft_c2r != 0 {
-                    (cufft.cufftDestroy)(self.fft_c2r);
-                    self.fft_c2r = 0;
-                }
-                // Both cufftPlan1d return codes are now checked (previously
-                // discarded) — a silent plan failure used to leave
-                // `fft_r2c`/`fft_c2r` at 0, which *did* disable the
-                // nonlinear block via the existing `!= 0` guard, but with
-                // no diagnostic distinguishing "plan failed" from
-                // "never configured".
-                let mut plan_d2z = 0;
-                let rc1 = (cufft.cufftPlan1d)(&mut plan_d2z, n_time_over as i32, CUFFT_D2Z, 1);
-                if rc1 != 0 {
-                    eprintln!("Amalthea GPU error: cufftPlan1d (D2Z) failed: {rc1}");
-                    return -1;
-                }
-                self.fft_r2c = plan_d2z;
-                let mut plan_z2d = 0;
-                let rc2 = (cufft.cufftPlan1d)(&mut plan_z2d, n_time_over as i32, CUFFT_Z2D, 1);
-                if rc2 != 0 {
-                    eprintln!("Amalthea GPU error: cufftPlan1d (Z2D) failed: {rc2}");
-                    (cufft.cufftDestroy)(self.fft_r2c);
-                    self.fft_r2c = 0;
-                    return -1;
-                }
-                self.fft_c2r = plan_z2d;
-            }
-        } else {
-            eprintln!("Warning: cuFFT not available, mode_avg_params will fail during step");
-            return -1;
-        }
-        0
     }
 
     // Never reached: `_gpu_native_eligible` (RK45.jl) is only checked after
@@ -1019,8 +1250,8 @@ impl NativeBackend for CudaNativeSim {
         -1
     }
 
-    // PPT only (docs/dev/BACKLOG.md S3 item 2, first slice — 2026-07-11). Mirrors
-    // native.rs's `CpuNativeSim::set_plasma_params`: uploads the same
+    // PPT branch of the shared plasma setup. Mirrors native.rs's
+    // `CpuNativeSim::set_plasma_params`: uploads the same
     // `SplineSegment` table `PptIonizationRate::rate_vector_gpu` already
     // uploads for the standalone `AMALTHEA_USE_RUST_IONISATION` path (identical
     // repr(C) layout, reused directly — no new upload format invented) and
@@ -1055,6 +1286,7 @@ impl NativeBackend for CudaNativeSim {
             return -1;
         }
         self.plasma_num_segments = segments.len();
+        self.plasma_rate_kind = PlasmaRateKind::Ppt;
         self.plasma_e_min = ion.e_min;
         self.plasma_e_max = ion.e_max;
         self.plasma_strict = if ion.strict { 1 } else { 0 };
@@ -1068,14 +1300,52 @@ impl NativeBackend for CudaNativeSim {
     }
     unsafe fn set_plasma_params_adk(
         &mut self,
-        _ion_ptr: *const crate::ionization::AdkIonizationRate,
-        _ionpot: c_double,
-        _e_ratio: c_double,
-        _preionfrac: c_double,
-        _dt: c_double,
-        _density: c_double,
+        ion_ptr: *const crate::ionization::AdkIonizationRate,
+        ionpot: c_double,
+        e_ratio: c_double,
+        preionfrac: c_double,
+        dt: c_double,
+        density: c_double,
     ) -> i32 {
-        -1
+        if self.n_time == 0 || ion_ptr.is_null() {
+            return -2;
+        }
+        let ion = unsafe { &*ion_ptr };
+        // The rate function's documented non-finite *field* handling belongs
+        // on the device. Parameter non-finites instead mean setup is invalid:
+        // accepting them would poison every later resident step.
+        if !ion.occupancy.is_finite()
+            || !ion.omega_p.is_finite()
+            || !ion.cn_sq.is_finite()
+            || !ion.nstar.is_finite()
+            || !ion.omega_t_prefac.is_finite()
+            || !ion.thr.is_finite()
+            || ion.thr <= 0.0
+            || !ion.avfac.is_finite()
+            || ion.omega_t_prefac == 0.0
+            || !ionpot.is_finite()
+            || !e_ratio.is_finite()
+            || !preionfrac.is_finite()
+            || !dt.is_finite()
+            || !density.is_finite()
+        {
+            return -2;
+        }
+        self.plasma_rate_kind = PlasmaRateKind::Adk;
+        self.plasma_adk_occupancy = ion.occupancy;
+        self.plasma_adk_omega_p = ion.omega_p;
+        self.plasma_adk_cn_sq = ion.cn_sq;
+        self.plasma_adk_nstar = ion.nstar;
+        self.plasma_adk_omega_t_prefac = ion.omega_t_prefac;
+        self.plasma_adk_thr = ion.thr;
+        self.plasma_adk_avfac = ion.avfac;
+        self.plasma_ionpot = ionpot;
+        self.plasma_e_ratio = e_ratio;
+        self.plasma_preionfrac = preionfrac;
+        self.plasma_dt = dt;
+        self.plasma_density = density;
+        self.has_plasma = true;
+        0
     }
 
     unsafe fn set_radial_params(
@@ -1341,6 +1611,16 @@ impl NativeBackend for CudaNativeSim {
                         &format!("rk45_accumulate_stage(ii={ii})"),
                     )?;
 
+                    // `compute_rhs_mode_avg` below propagates `ystage_d` in
+                    // place. When local extrapolation is disabled, preserve
+                    // the final interaction-picture stage before that
+                    // transform so it can become the trial state. `yerr_d`
+                    // is still dead here and is overwritten by the error
+                    // kernel immediately after the stage loop.
+                    if _locextrap == 0 && ii == 5 {
+                        self.yerr_d.copy_from_device(&self.ystage_d)?;
+                    }
+
                     // TODO: Z-Dependent Linear Operator: recalculate `linop_d` at `t + dt_prop` for tapered fibers.
                     // Currently assuming `linop_d` is static across the step.
 
@@ -1389,6 +1669,10 @@ impl NativeBackend for CudaNativeSim {
                     )?;
                 }
 
+                if _locextrap == 0 {
+                    self.ystage_d.copy_from_device(&self.yerr_d)?;
+                }
+
                 // Error accumulation
                 let mut e = crate::native::DP_ERREST;
                 let mut rk_err_args: [*mut libc::c_void; 17] = [
@@ -1426,8 +1710,8 @@ impl NativeBackend for CudaNativeSim {
                 // as a transactional trial buffer: rejection leaves
                 // `field_d` untouched; acceptance propagates and swaps this
                 // buffer into the resident field.
-                self.ystage_d.copy_from_device(&self.field_d)?;
                 if _locextrap != 0 {
+                    self.ystage_d.copy_from_device(&self.field_d)?;
                     let mut b5 = crate::native::DP_B5;
                     let mut trial_args: [*mut libc::c_void; 18] = [
                         &mut self.ystage_d.dptr as *mut _ as *mut _,
@@ -1459,6 +1743,10 @@ impl NativeBackend for CudaNativeSim {
                         "rk45_accumulate_stage(trial)",
                     )?;
                 }
+                // With local extrapolation disabled, the stage loop already
+                // left the final internal RK stage in `ystage_d`. Retain it
+                // as the transactional trial instead of replacing it with
+                // the old `field_d`; this mirrors Julia and the CPU backend.
 
                 // Emit the three squared-magnitude arrays required by
                 // native.rs::weaknorm_c64. The former kernel used an
@@ -1602,6 +1890,50 @@ impl Drop for CudaNativeSim {
 mod tests {
     use super::*;
 
+    fn adk_rate_for_test(fields: &[f64], ion: &crate::ionization::AdkIonizationRate) -> Vec<f64> {
+        let ctx = crate::cuda::activate_context().expect("activate CUDA context");
+        let driver = get_driver_api().expect("CUDA driver API");
+        let n = fields.len();
+        let mut fields_d = GpuBuffer::alloc(n * std::mem::size_of::<f64>()).unwrap();
+        let mut rates_d = GpuBuffer::alloc(n * std::mem::size_of::<f64>()).unwrap();
+        fields_d.copy_to_device(fields).unwrap();
+        let mut occupancy = ion.occupancy;
+        let mut omega_p = ion.omega_p;
+        let mut cn_sq = ion.cn_sq;
+        let mut nstar = ion.nstar;
+        let mut omega_t_prefac = ion.omega_t_prefac;
+        let mut thr = ion.thr;
+        let mut avfac = ion.avfac;
+        let mut n_i = i32::try_from(n).unwrap();
+        let mut args: [*mut libc::c_void; 10] = [
+            &mut fields_d.dptr as *mut _ as *mut _,
+            &mut rates_d.dptr as *mut _ as *mut _,
+            &mut occupancy as *mut _ as *mut _,
+            &mut omega_p as *mut _ as *mut _,
+            &mut cn_sq as *mut _ as *mut _,
+            &mut nstar as *mut _ as *mut _,
+            &mut omega_t_prefac as *mut _ as *mut _,
+            &mut thr as *mut _ as *mut _,
+            &mut avfac as *mut _ as *mut _,
+            &mut n_i as *mut _ as *mut _,
+        ];
+        unsafe {
+            launch_checked(
+                driver,
+                ctx.adk_fn,
+                (n as u32).div_ceil(256),
+                256,
+                0,
+                &mut args,
+                "test_adk_ionization",
+            )
+            .unwrap();
+        }
+        let mut result = vec![0.0; n];
+        rates_d.copy_to_host(&mut result).unwrap();
+        result
+    }
+
     fn cuda_or_skip(test_name: &str) -> bool {
         if let Err(e) = crate::cuda::init_gpu_context() {
             assert!(
@@ -1665,6 +1997,64 @@ mod tests {
     }
 
     #[test]
+    fn adk_ionization_kernel_matches_cpu_boundaries_signs_and_cycle_average() {
+        if !cuda_or_skip("CUDA ADK ionization kernel test") {
+            return;
+        }
+        let fields = [
+            0.0,
+            0.5,
+            -0.5,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            1.0_f64.next_down(),
+            1.0,
+            1.0_f64.next_up(),
+            -1.0,
+            1.75,
+            -1.75,
+        ];
+        let mut unaveraged_at_peak = 0.0;
+        let mut averaged_at_peak = 0.0;
+        for avfac in [1.0, 1.7] {
+            let ion = crate::ionization::AdkIonizationRate {
+                occupancy: 2.0,
+                omega_p: 1.3,
+                cn_sq: 0.8,
+                nstar: 1.2,
+                omega_t_prefac: 0.9,
+                thr: 1.0,
+                avfac,
+            };
+            let got = adk_rate_for_test(&fields, &ion);
+            for (&field, &gpu) in fields.iter().zip(&got) {
+                let cpu = ion.rate(field).unwrap();
+                if !field.is_finite() || field.abs() < ion.thr {
+                    assert_eq!(gpu, 0.0, "field={field:?}, avfac={avfac}");
+                } else {
+                    let scale = cpu.abs().max(1.0);
+                    assert!(
+                        (gpu - cpu).abs() / scale < 1e-13,
+                        "field={field}, avfac={avfac}: gpu={gpu:e}, cpu={cpu:e}"
+                    );
+                }
+            }
+            // ±E must produce the same rate, and the exact threshold is
+            // active while its predecessor is not.
+            assert_eq!(got[6], 0.0);
+            assert!((got[7] - got[9]).abs() < 1e-13);
+            assert!((got[10] - got[11]).abs() < 1e-13);
+            if avfac == 1.0 {
+                unaveraged_at_peak = got[10];
+            } else {
+                averaged_at_peak = got[10];
+            }
+        }
+        assert_ne!(averaged_at_peak, unaveraged_at_peak);
+    }
+
+    #[test]
     fn field_transfers_reject_invalid_ffi_arguments() {
         if !cuda_or_skip("CUDA field-transfer contract test") {
             return;
@@ -1705,5 +2095,85 @@ mod tests {
             assert_eq!(sim.get_field(output.as_mut_ptr() as *mut c_double, n), 0);
         }
         assert_eq!(output, input);
+    }
+
+    #[test]
+    fn mode_avg_setup_failures_preserve_the_active_cuda_configuration() {
+        if !cuda_or_skip("CUDA mode-averaged setup transaction test") {
+            return;
+        }
+        let _serial = MODE_AVG_SETUP_TEST_LOCK.lock().unwrap();
+        let n = 4usize; // RealGrid Nt=6 -> Nt/2+1 spectral bins.
+        let mut sim =
+            CudaNativeSim::new(n, &vec![Complex::new(0.0, 0.0); n]).expect("CudaNativeSim::new");
+        let towin = vec![1.0; 8];
+        let owin = vec![1.0; n];
+        let sidx = vec![1u8; n];
+        let pre = vec![0.0; n];
+        let beta = vec![1.0; n];
+        unsafe {
+            assert_eq!(
+                sim.set_mode_avg_params(
+                    6,
+                    8,
+                    towin.as_ptr(),
+                    owin.as_ptr(),
+                    sidx.as_ptr(),
+                    pre.as_ptr(),
+                    pre.as_ptr(),
+                    beta.as_ptr(),
+                    0.0,
+                    1.0,
+                    1.0,
+                ),
+                0
+            );
+        }
+        let field: Vec<Complex<f64>> = (0..n)
+            .map(|i| Complex::new(i as f64 + 1.0, -0.25 * i as f64))
+            .collect();
+        unsafe {
+            assert_eq!(sim.set_field(field.as_ptr() as *const c_double, n), 0);
+        }
+
+        for point in [
+            MODE_AVG_FAIL_ALLOC,
+            MODE_AVG_FAIL_COPY,
+            MODE_AVG_FAIL_SECOND_PLAN,
+        ] {
+            MODE_AVG_SETUP_FAIL_POINT.store(point, Ordering::SeqCst);
+            let rc = unsafe {
+                sim.set_mode_avg_params(
+                    6,
+                    8,
+                    towin.as_ptr(),
+                    owin.as_ptr(),
+                    sidx.as_ptr(),
+                    pre.as_ptr(),
+                    pre.as_ptr(),
+                    beta.as_ptr(),
+                    0.0,
+                    1.0,
+                    1.0,
+                )
+            };
+            MODE_AVG_SETUP_FAIL_POINT.store(0, Ordering::SeqCst);
+            assert_ne!(rc, 0, "fault point {point} must fail setup");
+
+            // The previous plans/buffers remain live: reseeding the field
+            // recomputes its RHS through the old configuration, then the
+            // resident field round-trips unchanged.
+            unsafe {
+                assert_eq!(sim.set_field(field.as_ptr() as *const c_double, n), 0);
+            }
+            let mut got = vec![Complex::new(0.0, 0.0); n];
+            unsafe {
+                assert_eq!(sim.get_field(got.as_mut_ptr() as *mut c_double, n), 0);
+            }
+            assert_eq!(
+                got, field,
+                "fault point {point} damaged active field/config"
+            );
+        }
     }
 }

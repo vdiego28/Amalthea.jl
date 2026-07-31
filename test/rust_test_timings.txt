@@ -12,6 +12,7 @@ test_dispersion_rust.jl::Rust MarcatiliMode dispersion equivalence 26.2
 test_dispersion_rust.jl::Rust Zeisberger dispersion equivalence 27.7
 test_ionisation_rust.jl 20.6
 test_native_adk_ionisation.jl 27.8
+test_native_cuda.jl::Native-Rust GPU-resident stepper (CUDA, mode-avg ADK plasma) 31.4
 test_native_cuda.jl::Native-Rust GPU-resident stepper (CUDA, mode-avg Kerr) 25.9
 test_native_cuda.jl::Native-Rust GPU-resident stepper (CUDA, mode-avg Kerr+plasma) 31.4
 test_native_default_workload.jl 39.7

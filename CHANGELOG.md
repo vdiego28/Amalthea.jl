@@ -4,6 +4,42 @@ All notable changes to Amalthea.jl are documented here. This project is a
 fork of [Luna.jl](https://github.com/LupoLab/Luna.jl); versions below are
 this fork's own, starting from the point the Rust backend was introduced.
 
+## [1.0.2]
+
+Correctness, safety, and GPU-physics update for the native backend.
+
+### Added
+- Thresholded ADK ionisation on the GPU-resident mode-averaged `RealGrid`
+  path, with automatic dispatch from the measured `n = 8193` threshold.
+- Strict required-CUDA build policy that rejects missing, dummy, or invalid
+  PTX, together with transactional CUDA setup and rollback coverage.
+- Stronger native-stepper regressions for non-default error norms, local
+  extrapolation, rejected steps, and ADK non-vacuity.
+- Item-level CI scheduling with balanced worker assignments, one-minute live
+  heartbeats, and complete console-safe worker logs on failure.
+
+### Changed
+- Unsupported custom RK45 norms now route to the Julia oracle instead of
+  silently using the Rust backend's `weaknorm` implementation.
+- GitHub Actions jobs use read-only permissions by default; write access is
+  isolated to documentation, benchmark, release, and upstream-issue jobs.
+- CUDA ADK automatic dispatch requires the exact first measured passing size,
+  `8193`; manually constructed `threshold=false` ADK remains on the CPU path.
+- CUDA PPT fraction/current/polarisation integration now uses parallel prefix
+  scans instead of the former serial device bottleneck.
+
+### Fixed
+- Corrected `locextrap=false` on legacy, CPU-resident, and CUDA-resident RK45
+  paths so accepted and rejected steps use the actual fourth-order trial.
+- Corrected CUDA adaptive error control to use the same global weak norm and
+  pre-acceptance trial state as the CPU/Julia implementations.
+- Hardened `native_step` pointer and panic handling, mode-averaged buffer
+  contracts, and CUDA reconfiguration against partial setup failures.
+- Removed project-owned CI and documentation warnings and made the CUDA kernel
+  symbol failure paths release their partially initialized resources.
+- Made the parallel test scheduler robust to Windows UTF-8, CRLF, and
+  console-encoding behavior while preserving actionable failure diagnostics.
+
 ## [1.0.1]
 
 Correctness, compatibility, and performance update for the native backend.

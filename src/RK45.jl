@@ -60,6 +60,11 @@ function solve_precon(f!, linop, y0, t, dt, tmax;
     use_rust = cfg.stepper
     # Phase 8: native is the default (AMALTHEA_USE_RUST_NATIVE=0 opts back out).
     use_native = cfg.native
+    # Both Rust steppers currently implement only Julia's default weak norm.
+    # Preserve the full `norm=` API by routing every other callable directly
+    # to the Julia oracle instead of silently applying a different norm in
+    # Rust (PLANS.md §11.1).
+    rust_norm_ok = norm === weaknorm
     # Constant linop (Phases 1-6) or the narrow z-dependent case Phase 7 supports
     # (graded-core, constant-radius MarcatiliMode — see Capillary.jl / MATH.md
     # §3.5). Any other z-dependent linop (a bare `Function`, e.g. multimode or
@@ -70,7 +75,8 @@ function solve_precon(f!, linop, y0, t, dt, tmax;
                 linop isa Amalthea.LinearOps.ZDepLinopFree ||
                 linop isa Amalthea.Capillary.ZDepLinopModalTaper
     stepper = nothing
-    if use_native && isfile(_LIBAMALTHEA_RK45) && eltype(y0) == ComplexF64 && native_ok
+    if use_native && rust_norm_ok && isfile(_LIBAMALTHEA_RK45) &&
+       eltype(y0) == ComplexF64 && native_ok
         # Any scope restriction accumulated across Phases 1-7 (EnvGrid
         # variants, full=true modal, thg=false Raman, an ineligible extra
         # response, ...) throws `NativeIneligible` from deep inside the
@@ -96,7 +102,8 @@ function solve_precon(f!, linop, y0, t, dt, tmax;
             end
         end
     end
-    if isnothing(stepper) && use_rust && isfile(_LIBAMALTHEA_RK45) && eltype(y0) == ComplexF64
+    if isnothing(stepper) && use_rust && rust_norm_ok &&
+       isfile(_LIBAMALTHEA_RK45) && eltype(y0) == ComplexF64
         stepper = RustPreconStepper(f!, linop, y0, t, dt,
                       rtol=rtol, atol=atol, safety=safety, max_dt=max_dt, min_dt=min_dt, locextrap=locextrap, norm=norm)
     elseif isnothing(stepper)
@@ -725,6 +732,9 @@ end
 function RustPreconStepper(f!, linop, y0, t, dt;
                             rtol=1e-6, atol=1e-10, safety=0.9, max_dt=Inf, min_dt=0,
                             locextrap=true, norm=weaknorm)
+    norm === weaknorm || throw(NativeIneligible(
+        "RustPreconStepper currently supports only norm === weaknorm; " *
+        "use PreconStepper for arbitrary error norms."))
     prop!  = make_prop!(linop, y0)
     fbar!  = make_fbar!(f!, prop!, y0)
     k1     = similar(y0)
@@ -1015,10 +1025,9 @@ True iff the experimental GPU-resident stepper (`CudaNativeSim`,
 `amalthea/src/cuda_native.rs`) can handle this exact config: mode-averaged
 (`TransModeAvg`), RealGrid, a constant (non-z-dependent) linop, a scalar
 (non-mixture) density, no shot noise, exactly one plain Kerr response, and
-at most one plasma response using PPT ionisation (`IonRatePPTAccel` —
-`CudaNativeSim::set_plasma_params_adk` still returns -1, ADK is not
-implemented on the GPU path yet; docs/dev/BACKLOG.md S3 item 2). No other response
-kind (e.g. Raman) is implemented on `CudaNativeSim` — every `set_*_params`
+at most one plasma response using PPT (`IonRatePPTAccel`) or analytic ADK
+(`IonRateADK`) ionisation. No other response kind (e.g. Raman) is implemented
+on `CudaNativeSim` — every `set_*_params`
 beyond `set_mode_avg_params`/`set_plasma_params` returns -1.
 
 Pure config-shape check: does not read the `cuda_native`/`gpu_dispatch`
@@ -1036,7 +1045,12 @@ function _gpu_kernel_supports(f!, linop)
     length(kerr_resps) == 1 || return false
     length(plasma_resps) + length(kerr_resps) == length(f!.resp) || return false
     length(plasma_resps) <= 1 || return false
-    isempty(plasma_resps) || plasma_resps[1].ratefunc isa Amalthea.Ionisation.IonRatePPTAccel || return false
+    isempty(plasma_resps) ||
+        plasma_resps[1].ratefunc isa Amalthea.Ionisation.IonRatePPTAccel ||
+        plasma_resps[1].ratefunc isa Amalthea.Ionisation.IonRateADK || return false
+    !isempty(plasma_resps) &&
+        plasma_resps[1].ratefunc isa Amalthea.Ionisation.IonRateADK &&
+        !plasma_resps[1].ratefunc.threshold && return false
     true
 end
 
@@ -1094,6 +1108,18 @@ substantial win. The CUDA master opt-in remains required.
 const _GPU_PPT_N_THRESHOLD = 8192
 
 """
+    _GPU_ADK_N_THRESHOLD
+
+Minimum `length(y0)` for `:auto` dispatch of the mode-averaged thresholded
+ADK plasma path. On the RTX 5060 Ti, the required production-shaped
+`n=8193`, `n_time_over=32768` benchmark (one warmup, minimum of three
+five-step batches) measured CPU 3.683 ms/step and GPU 1.716 ms/step: 2.15×.
+8193 is the first measured size clearing the documented 1.4× retention gate.
+The CUDA master opt-in remains mandatory.
+"""
+const _GPU_ADK_N_THRESHOLD = 8193
+
+"""
     _gpu_native_eligible(f!, linop, n)
 
 Full GPU dispatch decision for `RustNativeStepper`: `true` iff
@@ -1108,7 +1134,8 @@ default `:auto`) selects GPU for this exact config:
   specific benchmark/test run regardless of the measured threshold).
 - `:auto` (default) — GPU for a plasma-free config at
   `n >= _GPU_KERR_ONLY_N_THRESHOLD`, or a supported PPT config at
-  `n >= _GPU_PPT_N_THRESHOLD`; see those constants for measured data.
+  `n >= _GPU_PPT_N_THRESHOLD`, or a supported thresholded ADK config at
+  `n >= _GPU_ADK_N_THRESHOLD`.
 
 Also requires the `AMALTHEA_USE_RUST_CUDA_NATIVE=1` master opt-in
 (`cuda_native` field) regardless of `gpu_dispatch` — Rust's
@@ -1122,15 +1149,24 @@ function _gpu_native_eligible(f!, linop, n::Integer)
     _gpu_kernel_supports(f!, linop) || return false
     cfg.gpu_dispatch === :off && return false
     cfg.gpu_dispatch === :on && return true
-    has_plasma = any(r -> r isa Amalthea.Nonlinear.PlasmaCumtrapz, f!.resp)
-    threshold = has_plasma ? _GPU_PPT_N_THRESHOLD : _GPU_KERR_ONLY_N_THRESHOLD
-    n >= threshold
+    plasma = findfirst(r -> r isa Amalthea.Nonlinear.PlasmaCumtrapz, f!.resp)
+    isnothing(plasma) && return n >= _GPU_KERR_ONLY_N_THRESHOLD
+    ratefunc = f!.resp[plasma].ratefunc
+    if ratefunc isa Amalthea.Ionisation.IonRatePPTAccel
+        return n >= _GPU_PPT_N_THRESHOLD
+    elseif ratefunc isa Amalthea.Ionisation.IonRateADK
+        return n >= _GPU_ADK_N_THRESHOLD
+    end
+    false
 end
 
 function RustNativeStepper(f!, linop, y0, t, dt;
                             rtol=1e-6, atol=1e-10, safety=0.9, max_dt=Inf, min_dt=0,
                             locextrap=true, norm=weaknorm, flength=Inf,
                             native_threads::Integer=Threads.nthreads())
+    norm === weaknorm || throw(NativeIneligible(
+        "RustNativeStepper currently supports only norm === weaknorm; " *
+        "use PreconStepper for arbitrary error norms."))
     n = length(y0)
     is_zdep_mode_avg = linop isa Amalthea.Capillary.ZDepLinopMarcatili
     is_zdep_free_linop = linop isa Amalthea.LinearOps.ZDepLinopFree

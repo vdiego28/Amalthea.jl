@@ -166,6 +166,8 @@ pub struct CpuNativeSim {
     pub is_real: bool,
     pub fft_norm: f64,
     pub fft_norm_over: f64,
+    #[cfg(test)]
+    mock_mode_avg_plan_dims: Option<(usize, usize)>,
 
     // ── Phase 1: RealGrid mode-averaged RHS buffers ──────────────────────────────
     pub eto: Vec<f64>,
@@ -733,6 +735,8 @@ impl CpuNativeSim {
             is_real: false,
             fft_norm: 1.0,
             fft_norm_over: 1.0,
+            #[cfg(test)]
+            mock_mode_avg_plan_dims: None,
             eto: Vec::new(),
             pto: Vec::new(),
             eoo: Vec::new(),
@@ -1424,24 +1428,22 @@ impl CpuNativeSim {
                     .zip(inten.par_chunks_mut(chunk))
                     .zip(pol.par_chunks_mut(chunk))
                     .zip(scratch.into_par_iter())
-                    .for_each(
-                        |((((eto_c, pto_c), inten_c), pol_c), mut solver_opt)| {
-                            let ncol = eto_c.len() / n_time_over;
-                            for col in 0..ncol {
-                                let s = col * n_time_over;
-                                let e = s + n_time_over;
-                                for i in s..e {
-                                    inten_c[i] = 0.5 * eto_c[i].norm_sqr();
-                                }
-                                if let Some(ref mut solver) = solver_opt {
-                                    solver.solve(&inten_c[s..e], &mut pol_c[s..e]);
-                                }
-                                for i in s..e {
-                                    pto_c[i] += eto_c[i] * (rho * pol_c[i]);
-                                }
+                    .for_each(|((((eto_c, pto_c), inten_c), pol_c), mut solver_opt)| {
+                        let ncol = eto_c.len() / n_time_over;
+                        for col in 0..ncol {
+                            let s = col * n_time_over;
+                            let e = s + n_time_over;
+                            for i in s..e {
+                                inten_c[i] = 0.5 * eto_c[i].norm_sqr();
                             }
-                        },
-                    );
+                            if let Some(ref mut solver) = solver_opt {
+                                solver.solve(&inten_c[s..e], &mut pol_c[s..e]);
+                            }
+                            for i in s..e {
+                                pto_c[i] += eto_c[i] * (rho * pol_c[i]);
+                            }
+                        }
+                    });
             });
         } else {
             // Sequential path — bit-identical to pre-parallelization behavior.
@@ -2116,12 +2118,8 @@ impl CpuNativeSim {
         for m in 0..n_modes {
             let x = r * ro.modal_unm[m] / ro.modal_a;
             let base = jn(ro.modal_order[m], x) * ro.modal_inv_sqrt_n[m];
-            let (ax, ay) = mode_angle_xy(
-                ro.modal_kind[m],
-                ro.modal_order[m],
-                ro.modal_phi[m],
-                theta,
-            );
+            let (ax, ay) =
+                mode_angle_xy(ro.modal_kind[m], ro.modal_order[m], ro.modal_phi[m], theta);
             for (p, &sel) in ro.modal_pol_select.iter().enumerate() {
                 sc.ems[m * npol + p] = base * if sel == 0 { ax } else { ay };
             }
@@ -3674,6 +3672,8 @@ pub trait NativeBackend {
 }
 pub struct NativeSim {
     pub backend: Box<dyn NativeBackend>,
+    #[cfg(test)]
+    force_step_panic: bool,
 }
 impl NativeBackend for CpuNativeSim {
     unsafe fn set_field(&mut self, data: *const c_double, n: size_t) -> i32 {
@@ -3965,6 +3965,87 @@ impl NativeBackend for CpuNativeSim {
     ) -> i32 {
         let s = self;
 
+        // Validate every structural invariant before constructing a raw slice
+        // or resizing a resident buffer.  The state length is fixed at
+        // construction: RealGrid uses r2c's Nt/2+1 bins, while EnvGrid uses
+        // one complex bin per time sample.
+        if n_time == 0
+            || n_time_over < n_time
+            || (s.is_real && s.n != n_time / 2 + 1)
+            || (!s.is_real && s.n != n_time)
+            || (pre_re.is_null() != pre_im.is_null())
+            || !nlscale.is_finite()
+            || !sqrt_aeff.is_finite()
+            || nlscale == 0.0
+            || sqrt_aeff == 0.0
+            || !kerr_fac.is_finite()
+        {
+            return -1;
+        }
+
+        // The caller owns these arrays, but their values feed a division in
+        // every active nonlinear bin. Validate them before publishing any
+        // setup state; inactive bins retain their documented identity path.
+        let sidx_sl = (!sidx.is_null()).then(|| unsafe { std::slice::from_raw_parts(sidx, s.n) });
+        let pre_re_sl =
+            (!pre_re.is_null()).then(|| unsafe { std::slice::from_raw_parts(pre_re, s.n) });
+        let pre_im_sl =
+            (!pre_im.is_null()).then(|| unsafe { std::slice::from_raw_parts(pre_im, s.n) });
+        let beta_sl = (!beta.is_null()).then(|| unsafe { std::slice::from_raw_parts(beta, s.n) });
+        for i in 0..s.n {
+            if sidx_sl.is_none_or(|idx| idx[i] != 0)
+                && (!beta_sl.is_none_or(|v| v[i].is_finite() && v[i] != 0.0)
+                    || !pre_re_sl.is_none_or(|v| v[i].is_finite())
+                    || !pre_im_sl.is_none_or(|v| v[i].is_finite()))
+            {
+                return -1;
+            }
+        }
+
+        // The RHS will execute these exact plans immediately after setup.
+        // Rejecting an absent or mismatched plan here turns a later FFTW
+        // assertion/panic into an ordinary FFI error.
+        #[cfg(test)]
+        let plans_match = s.mock_mode_avg_plan_dims == Some((n_time, n_time_over))
+            || if s.is_real {
+                s.fftw_api.is_some()
+                    && s.fft_r2c
+                        .as_ref()
+                        .is_some_and(|plan| plan.nspec() == n_time / 2 + 1)
+                    && s.fft_r2c_over
+                        .as_ref()
+                        .is_some_and(|plan| plan.nspec() == n_time_over / 2 + 1)
+                    && s.fft_norm == 1.0 / n_time as f64
+                    && s.fft_norm_over == 1.0 / n_time_over as f64
+            } else {
+                s.fftw_api.is_some()
+                    && s.fft_c2c.is_some()
+                    && s.fft_c2c_over.is_some()
+                    && s.fft_norm == 1.0 / n_time as f64
+                    && s.fft_norm_over == 1.0 / n_time_over as f64
+            };
+        #[cfg(not(test))]
+        let plans_match = if s.is_real {
+            s.fftw_api.is_some()
+                && s.fft_r2c
+                    .as_ref()
+                    .is_some_and(|plan| plan.nspec() == n_time / 2 + 1)
+                && s.fft_r2c_over
+                    .as_ref()
+                    .is_some_and(|plan| plan.nspec() == n_time_over / 2 + 1)
+                && s.fft_norm == 1.0 / n_time as f64
+                && s.fft_norm_over == 1.0 / n_time_over as f64
+        } else {
+            s.fftw_api.is_some()
+                && s.fft_c2c.is_some()
+                && s.fft_c2c_over.is_some()
+                && s.fft_norm == 1.0 / n_time as f64
+                && s.fft_norm_over == 1.0 / n_time_over as f64
+        };
+        if !plans_match {
+            return -1;
+        }
+
         s.n_time = n_time;
         s.n_time_over = n_time_over;
         s.n_spec = s.n;
@@ -4159,6 +4240,10 @@ impl NativeBackend for CpuNativeSim {
     ) -> i32 {
         let s = self;
 
+        if ion_ptr.is_null() {
+            return -1;
+        }
+
         // Radial (Phase D.2): one independent plasma state per r-column, laid out
         // column-major `(n_time_over, n_r)` exactly like `radial_eto`/`radial_pto`
         // — `native_set_radial_params` must run first so `s.n_r` is already set.
@@ -4198,6 +4283,9 @@ impl NativeBackend for CpuNativeSim {
         density: c_double,
     ) -> i32 {
         let s = self;
+        if ion_ptr.is_null() {
+            return -1;
+        }
         let n = if s.is_radial {
             s.n_time_over * s.n_r
         } else if s.is_free {
@@ -5062,6 +5150,12 @@ impl NativeBackend for CpuNativeSim {
                     + b5 * k5.im
                     + b6 * k6.im;
             }
+        } else {
+            // Match Julia's `PreconStepper`: without local extrapolation the
+            // final internal RK stage is the trial solution. `s.ystage` still
+            // holds that stage after the loop; `yn_sl` otherwise still holds
+            // the old resident field copied at entry.
+            yn_sl.copy_from_slice(&s.ystage);
         }
 
         // Error estimate
@@ -5161,7 +5255,7 @@ impl NativeBackend for CpuNativeSim {
 }
 
 /// GPU-resident stepper V1 (`CudaNativeSim`) covers only mode-averaged
-/// RealGrid Kerr propagation with optional PPT plasma (see
+/// RealGrid Kerr propagation with optional PPT or thresholded ADK plasma (see
 /// `cuda_native.rs`'s `NativeBackend` impl — every other geometry/physics
 /// method returns -1). Verified against the CPU resident backend and Julia
 /// oracle on real CUDA hardware for that scope (docs/dev/BACKLOG.md's
@@ -5185,7 +5279,7 @@ pub unsafe extern "C" fn init_cuda_native_sim(linop: *const c_double, n: size_t)
     if std::env::var(CUDA_NATIVE_OPT_IN_VAR).as_deref() != Ok("1") {
         eprintln!(
             "Amalthea warning: GPU-resident stepper (CudaNativeSim) is experimental \
-             (mode-averaged RealGrid Kerr + optional PPT plasma) — refusing to initialize. \
+             (mode-averaged RealGrid Kerr + optional PPT/ADK plasma) — refusing to initialize. \
              Set {}=1 to opt in (see \
              docs/dev/BACKLOG.md).",
             CUDA_NATIVE_OPT_IN_VAR
@@ -5194,7 +5288,7 @@ pub unsafe extern "C" fn init_cuda_native_sim(linop: *const c_double, n: size_t)
     }
     eprintln!(
         "Amalthea warning: {}=1 — using the GPU-resident stepper (mode-averaged RealGrid \
-         Kerr + optional PPT plasma; any other geometry/physics is not implemented, not \
+         Kerr + optional PPT/ADK plasma; any other geometry/physics is not implemented, not \
          just unverified).",
         CUDA_NATIVE_OPT_IN_VAR
     );
@@ -5203,6 +5297,8 @@ pub unsafe extern "C" fn init_cuda_native_sim(linop: *const c_double, n: size_t)
         Ok(backend) => {
             let sim = NativeSim {
                 backend: Box::new(backend),
+                #[cfg(test)]
+                force_step_panic: false,
             };
             Box::into_raw(Box::new(sim))
         }
@@ -5235,6 +5331,8 @@ pub unsafe extern "C" fn init_native_sim(linop: *const c_double, n: size_t) -> *
     match result {
         Ok(h) => Box::into_raw(Box::new(NativeSim {
             backend: Box::new(h),
+            #[cfg(test)]
+            force_step_panic: false,
         })),
         Err(e) => {
             eprintln!("init_native_sim: panic: {:?}", e);
@@ -5571,19 +5669,21 @@ pub unsafe extern "C" fn native_export_fftw_wisdom(
 }
 
 /// Configure the mode-averaged (single spectral trace) RHS: windowing
-/// (`towin`/`owin`), the frequency-window mask `sidx` (length `n_time_over`,
+/// (`towin`/`owin`), the frequency-window mask `sidx` (length `sim.n`,
 /// nonzero = passband), the precomputed Kerr prefactor (`pre_re`/`pre_im`),
 /// the linear dispersion `beta`, and scalar Kerr/nonlinear-scale/effective-area
 /// constants. Must be called after [`native_set_fftw_plans`] (the plans this
 /// RHS uses must already exist).
 ///
-/// Returns 0 on success, -1 on null/length mismatch.
+/// Returns 0 on success, -1 on an invalid shape, unavailable/mismatched FFT
+/// plan, half-present prefactor, or non-finite/zero active coefficient.
 ///
 /// # Safety
 /// `sim` must be a valid, non-null pointer from `init_native_sim`/
-/// `init_cuda_native_sim`. `towin`/`beta` must be valid for `n_time` `f64`
-/// reads; `owin`/`sidx`/`pre_re`/`pre_im` must be valid for `n_time_over`
-/// reads of their respective element type.
+/// `init_cuda_native_sim`. `towin` must be valid for `n_time_over` `f64`
+/// reads. `owin`, `sidx`, `beta`, and a present `pre_re`/`pre_im` pair must
+/// each be valid for `sim.n` reads. `pre_re` and `pre_im` are optional only
+/// as a pair; null means the documented zero-prefactor default.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn native_set_mode_avg_params(
     sim: *mut NativeSim,
@@ -6562,15 +6662,23 @@ pub unsafe extern "C" fn native_step(
     locextrap: i32,
     result: *mut NativeStepResult,
 ) -> i32 {
-    if sim.is_null() {
+    if sim.is_null() || yn.is_null() || result.is_null() {
         return -1;
     }
     let s = unsafe { &mut *sim };
-    unsafe {
+    let stepped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        #[cfg(test)]
+        if std::mem::replace(&mut s.force_step_panic, false) {
+            panic!("forced native_step panic");
+        }
         s.backend.step(
             yn, t_old, t_new, dtn, rtol, atol, safety, max_dt, min_dt, errlast_in, locextrap,
             result,
         )
+    }));
+    match stepped {
+        Ok(rc) => rc,
+        Err(_) => -2,
     }
 }
 
@@ -6655,6 +6763,19 @@ mod tests {
         unsafe { init_native_sim(linop.as_ptr() as *const c_double, 4) }
     }
 
+    /// Hermetic CPU fixture with a test-only plan descriptor. It exercises
+    /// all post-setup FFI setters without dlopening a system FFTW library;
+    /// production still requires real, matching FFTW plans above.
+    fn configured_mode_avg_sim() -> *mut NativeSim {
+        let mut backend = CpuNativeSim::new(4, &vec![Complex::new(0.0, 0.0); 4]);
+        backend.is_real = true;
+        backend.mock_mode_avg_plan_dims = Some((6, 8));
+        Box::into_raw(Box::new(NativeSim {
+            backend: Box::new(backend),
+            force_step_panic: false,
+        }))
+    }
+
     #[test]
     fn init_native_sim_rejects_null_linop_and_zero_n() {
         assert!(unsafe { init_native_sim(std::ptr::null(), 4) }.is_null());
@@ -6681,7 +6802,10 @@ mod tests {
 
         unsafe {
             assert_eq!(set_field(std::ptr::null_mut(), buf.as_ptr(), 4), -1);
-            assert_eq!(native_resync_field(std::ptr::null_mut(), buf.as_ptr(), 4), -1);
+            assert_eq!(
+                native_resync_field(std::ptr::null_mut(), buf.as_ptr(), 4),
+                -1
+            );
             assert_eq!(get_field(std::ptr::null(), out.as_mut_ptr(), 4), -1);
             assert_eq!(get_ks_stage(std::ptr::null(), 0, out.as_mut_ptr(), 4), -1);
             assert_eq!(
@@ -7009,11 +7133,11 @@ mod tests {
         // towin/owin/sidx/pre/beta as "use the default" (all-ones/all-true/
         // zero) rather than an error — documented behavior, asserted here so
         // a future change can't silently flip it to `-1` unnoticed.
-        let sim = tiny_sim();
+        let sim = configured_mode_avg_sim();
         let rc = unsafe {
             native_set_mode_avg_params(
                 sim,
-                8,
+                6,
                 8,
                 std::ptr::null(),
                 std::ptr::null(),
@@ -7022,7 +7146,7 @@ mod tests {
                 std::ptr::null(),
                 std::ptr::null(),
                 0.0,
-                0.0,
+                1.0,
                 1.0,
             )
         };
@@ -7031,8 +7155,246 @@ mod tests {
     }
 
     #[test]
-    fn mode_avg_noise_rejects_null_and_length_mismatch() {
+    fn mode_avg_params_rejects_missing_plans() {
         let sim = tiny_sim();
+        assert_eq!(
+            unsafe {
+                native_set_mode_avg_params(
+                    sim,
+                    8,
+                    8,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    0.0,
+                    1.0,
+                    1.0,
+                )
+            },
+            -1
+        );
+        unsafe { free_native_sim(sim) };
+    }
+
+    #[test]
+    fn mode_avg_params_rejects_bad_dimensions_and_half_pre_pair() {
+        let sim = configured_mode_avg_sim();
+        let towin = vec![1.0f64; 8];
+        let spectral = vec![1.0f64; 4];
+        let sidx = vec![1u8; 4];
+        unsafe {
+            // `sim.n == 4` cannot describe a RealGrid with Nt=8.
+            assert_eq!(
+                native_set_mode_avg_params(
+                    sim,
+                    8,
+                    8,
+                    towin.as_ptr(),
+                    spectral.as_ptr(),
+                    sidx.as_ptr(),
+                    spectral.as_ptr(),
+                    spectral.as_ptr(),
+                    spectral.as_ptr(),
+                    0.0,
+                    1.0,
+                    1.0,
+                ),
+                -1
+            );
+            // A single half of the complex prefactor is never a default.
+            assert_eq!(
+                native_set_mode_avg_params(
+                    sim,
+                    6,
+                    8,
+                    towin.as_ptr(),
+                    spectral.as_ptr(),
+                    sidx.as_ptr(),
+                    spectral.as_ptr(),
+                    std::ptr::null(),
+                    spectral.as_ptr(),
+                    0.0,
+                    1.0,
+                    1.0,
+                ),
+                -1
+            );
+        }
+        unsafe { free_native_sim(sim) };
+    }
+
+    #[test]
+    fn mode_avg_params_rejects_nonfinite_active_coefficients() {
+        let sim = configured_mode_avg_sim();
+        let towin = vec![1.0; 8];
+        let sidx = vec![1u8; 4];
+        let good = vec![1.0; 4];
+        let mut bad = good.clone();
+        bad[0] = f64::NAN;
+        unsafe {
+            assert_eq!(
+                native_set_mode_avg_params(
+                    sim,
+                    6,
+                    8,
+                    towin.as_ptr(),
+                    good.as_ptr(),
+                    sidx.as_ptr(),
+                    bad.as_ptr(),
+                    good.as_ptr(),
+                    good.as_ptr(),
+                    0.0,
+                    1.0,
+                    1.0
+                ),
+                -1
+            );
+            assert_eq!(
+                native_set_mode_avg_params(
+                    sim,
+                    6,
+                    8,
+                    towin.as_ptr(),
+                    good.as_ptr(),
+                    sidx.as_ptr(),
+                    good.as_ptr(),
+                    good.as_ptr(),
+                    bad.as_ptr(),
+                    0.0,
+                    1.0,
+                    1.0
+                ),
+                -1
+            );
+            assert_eq!(
+                native_set_mode_avg_params(
+                    sim,
+                    6,
+                    8,
+                    towin.as_ptr(),
+                    good.as_ptr(),
+                    sidx.as_ptr(),
+                    good.as_ptr(),
+                    good.as_ptr(),
+                    good.as_ptr(),
+                    f64::INFINITY,
+                    1.0,
+                    1.0
+                ),
+                -1
+            );
+            let mut zero_beta = good.clone();
+            zero_beta[0] = 0.0;
+            assert_eq!(
+                native_set_mode_avg_params(
+                    sim,
+                    6,
+                    8,
+                    towin.as_ptr(),
+                    good.as_ptr(),
+                    sidx.as_ptr(),
+                    good.as_ptr(),
+                    good.as_ptr(),
+                    zero_beta.as_ptr(),
+                    0.0,
+                    1.0,
+                    1.0
+                ),
+                -1
+            );
+        }
+        unsafe { free_native_sim(sim) };
+    }
+
+    #[test]
+    fn native_step_rejects_null_outputs_and_contains_panics() {
+        let sim = configured_mode_avg_sim();
+        let mut yn = vec![Complex::new(0.0, 0.0); 4];
+        let mut result = std::mem::MaybeUninit::<NativeStepResult>::uninit();
+        unsafe {
+            assert_eq!(
+                native_step(
+                    std::ptr::null_mut(),
+                    yn.as_mut_ptr(),
+                    0.0,
+                    1.0,
+                    0.1,
+                    1e-6,
+                    1e-9,
+                    0.9,
+                    1.0,
+                    0.0,
+                    1.0,
+                    0,
+                    result.as_mut_ptr(),
+                ),
+                -1
+            );
+            assert_eq!(
+                native_step(
+                    sim,
+                    std::ptr::null_mut(),
+                    0.0,
+                    1.0,
+                    0.1,
+                    1e-6,
+                    1e-9,
+                    0.9,
+                    1.0,
+                    0.0,
+                    1.0,
+                    0,
+                    result.as_mut_ptr(),
+                ),
+                -1
+            );
+            assert_eq!(
+                native_step(
+                    sim,
+                    yn.as_mut_ptr(),
+                    0.0,
+                    1.0,
+                    0.1,
+                    1e-6,
+                    1e-9,
+                    0.9,
+                    1.0,
+                    0.0,
+                    1.0,
+                    0,
+                    std::ptr::null_mut(),
+                ),
+                -1
+            );
+            (*sim).force_step_panic = true;
+            assert_eq!(
+                native_step(
+                    sim,
+                    yn.as_mut_ptr(),
+                    0.0,
+                    1.0,
+                    0.1,
+                    1e-6,
+                    1e-9,
+                    0.9,
+                    1.0,
+                    0.0,
+                    1.0,
+                    0,
+                    result.as_mut_ptr(),
+                ),
+                -2
+            );
+        }
+        unsafe { free_native_sim(sim) };
+    }
+
+    #[test]
+    fn mode_avg_noise_rejects_null_and_length_mismatch() {
+        let sim = configured_mode_avg_sim();
         let towin = vec![1.0f64; 8];
         let owin = vec![1.0f64; 4];
         let sidx = vec![1u8; 4];
@@ -7041,7 +7403,7 @@ mod tests {
         unsafe {
             let rc = native_set_mode_avg_params(
                 sim,
-                8,
+                6,
                 8,
                 towin.as_ptr(),
                 owin.as_ptr(),
@@ -7050,7 +7412,7 @@ mod tests {
                 pre.as_ptr(),
                 beta.as_ptr(),
                 0.0,
-                0.0,
+                1.0,
                 1.0,
             );
             assert_eq!(rc, 0);
@@ -7107,7 +7469,9 @@ mod tests {
             );
             assert_eq!(rc, -3, "must be called after native_set_mode_avg_params");
         }
+        unsafe { free_native_sim(sim) };
 
+        let sim = configured_mode_avg_sim();
         let towin = vec![1.0f64; 8];
         let owin = vec![1.0f64; 4];
         let sidx = vec![1u8; 4];
@@ -7116,7 +7480,7 @@ mod tests {
         unsafe {
             let rc = native_set_mode_avg_params(
                 sim,
-                8,
+                6,
                 8,
                 towin.as_ptr(),
                 owin.as_ptr(),
@@ -7125,64 +7489,64 @@ mod tests {
                 pre.as_ptr(),
                 beta.as_ptr(),
                 0.0,
-                0.0,
+                1.0,
                 1.0,
             );
             assert_eq!(rc, 0);
-
-            let rc = native_set_zdep_mode_avg_params(
-                sim,
-                1, // n_z < 2
-                dummy.as_ptr(),
-                dummy.as_ptr(),
-                4,
-                dummy.as_ptr(),
-                dummy.as_ptr(),
-                dummy.as_ptr(),
-                dummy.as_ptr(),
-                dummy.as_ptr(),
-                dummy.as_ptr(),
-                dummy.as_ptr(),
-                0,
-                0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
+            assert_eq!(
+                native_set_zdep_mode_avg_params(
+                    sim,
+                    1,
+                    dummy.as_ptr(),
+                    dummy.as_ptr(),
+                    4,
+                    dummy.as_ptr(),
+                    dummy.as_ptr(),
+                    dummy.as_ptr(),
+                    dummy.as_ptr(),
+                    dummy.as_ptr(),
+                    dummy.as_ptr(),
+                    dummy.as_ptr(),
+                    0,
+                    0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ),
+                -4
             );
-            assert_eq!(rc, -4);
-
-            // n_z == 2 (valid) but z_pts is null -> -1, checked before any
-            // spline/array pointer is dereferenced.
-            let rc = native_set_zdep_mode_avg_params(
-                sim,
-                2,
-                std::ptr::null(),
-                dummy.as_ptr(),
-                4,
-                dummy.as_ptr(),
-                dummy.as_ptr(),
-                dummy.as_ptr(),
-                dummy.as_ptr(),
-                dummy.as_ptr(),
-                dummy.as_ptr(),
-                dummy.as_ptr(),
-                0,
-                0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
+            assert_eq!(
+                native_set_zdep_mode_avg_params(
+                    sim,
+                    2,
+                    std::ptr::null(),
+                    dummy.as_ptr(),
+                    4,
+                    dummy.as_ptr(),
+                    dummy.as_ptr(),
+                    dummy.as_ptr(),
+                    dummy.as_ptr(),
+                    dummy.as_ptr(),
+                    dummy.as_ptr(),
+                    dummy.as_ptr(),
+                    0,
+                    0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ),
+                -1
             );
-            assert_eq!(rc, -1);
         }
         unsafe { free_native_sim(sim) };
     }
@@ -7192,8 +7556,8 @@ mod tests {
         let sim = tiny_sim();
         // Before any of native_set_mode_avg_params/native_set_radial_params/
         // native_set_free_params, s.n_time_over == 0 and is_radial/is_free
-        // are both false, so plasma's derived buffer length is 0 -> -2,
-        // regardless of the (here null) ionization handle pointer.
+        // are both false. The FFI now rejects the null handle before any
+        // geometry-dependent sizing work.
         unsafe {
             assert_eq!(
                 native_set_plasma_params(
@@ -7205,7 +7569,7 @@ mod tests {
                     1e-15,
                     1e25
                 ),
-                -2
+                -1
             );
             assert_eq!(
                 native_set_plasma_params_adk(
@@ -7217,25 +7581,15 @@ mod tests {
                     1e-15,
                     1e25
                 ),
-                -2
+                -1
             );
         }
         unsafe { free_native_sim(sim) };
     }
 
     #[test]
-    fn plasma_params_stores_null_handle_without_crashing_the_setter_itself() {
-        // Found gap (documented in this module's header comment, not fixed
-        // here): once n_time_over > 0, `native_set_plasma_params(_adk)`
-        // stores whatever `ion_ptr` it's given without ever dereferencing
-        // it, so a null handle is silently "accepted" (rc == 0) by the
-        // setter — it would crash the first time `native_step` actually
-        // evaluated the plasma response. `src/RK45.jl` never reaches this in
-        // practice: it always gates on `!isnothing(irf.rust_handle) &&
-        // irf.rust_handle.ptr != C_NULL` before calling. This test pins down
-        // the setter's actual (permissive) behavior; it must not be extended
-        // to call `native_step` afterwards.
-        let sim = tiny_sim();
+    fn plasma_params_reject_null_handles_after_mode_avg_setup() {
+        let sim = configured_mode_avg_sim();
         let towin = vec![1.0f64; 8];
         let owin = vec![1.0f64; 4];
         let sidx = vec![1u8; 4];
@@ -7244,7 +7598,7 @@ mod tests {
         unsafe {
             let rc = native_set_mode_avg_params(
                 sim,
-                8,
+                6,
                 8,
                 towin.as_ptr(),
                 owin.as_ptr(),
@@ -7253,7 +7607,7 @@ mod tests {
                 pre.as_ptr(),
                 beta.as_ptr(),
                 0.0,
-                0.0,
+                1.0,
                 1.0,
             );
             assert_eq!(rc, 0);
@@ -7266,7 +7620,19 @@ mod tests {
                 1e-15,
                 1e25,
             );
-            assert_eq!(rc, 0);
+            assert_eq!(rc, -1);
+            assert_eq!(
+                native_set_plasma_params_adk(
+                    sim,
+                    std::ptr::null::<crate::ionization::AdkIonizationRate>(),
+                    1.0,
+                    1.0,
+                    0.0,
+                    1e-15,
+                    1e25,
+                ),
+                -1
+            );
         }
         unsafe { free_native_sim(sim) };
     }
@@ -7295,7 +7661,7 @@ mod tests {
 
     #[test]
     fn raman_params_rejects_null_oscillator_arrays() {
-        let sim = tiny_sim();
+        let sim = configured_mode_avg_sim();
         let towin = vec![1.0f64; 8];
         let owin = vec![1.0f64; 4];
         let sidx = vec![1u8; 4];
@@ -7305,7 +7671,7 @@ mod tests {
         unsafe {
             let rc = native_set_mode_avg_params(
                 sim,
-                8,
+                6,
                 8,
                 towin.as_ptr(),
                 owin.as_ptr(),
@@ -7314,11 +7680,10 @@ mod tests {
                 pre.as_ptr(),
                 beta.as_ptr(),
                 0.0,
-                0.0,
+                1.0,
                 1.0,
             );
-            assert_eq!(rc, 0); // sets n_time_over = 8, so the wrong-order guard no longer fires
-
+            assert_eq!(rc, 0);
             assert_eq!(
                 native_set_raman_params(
                     sim,
@@ -7364,7 +7729,7 @@ mod tests {
 
     #[test]
     fn raman_fft_params_rejects_null_arrays_zero_count_and_wrong_n_time() {
-        let sim = tiny_sim();
+        let sim = configured_mode_avg_sim();
         let towin = vec![1.0f64; 8];
         let owin = vec![1.0f64; 4];
         let sidx = vec![1u8; 4];
@@ -7374,7 +7739,7 @@ mod tests {
         unsafe {
             let rc = native_set_mode_avg_params(
                 sim,
-                8,
+                6,
                 8,
                 towin.as_ptr(),
                 owin.as_ptr(),
@@ -7383,12 +7748,10 @@ mod tests {
                 pre.as_ptr(),
                 beta.as_ptr(),
                 0.0,
-                0.0,
+                1.0,
                 1.0,
             );
-            assert_eq!(rc, 0); // sets n_time_over = 8
-
-            // n_time (3) != s.n_time_over (8) -> -2, checked first.
+            assert_eq!(rc, 0);
             assert_eq!(
                 native_set_raman_fft_params(
                     sim,
@@ -7400,11 +7763,10 @@ mod tests {
                     1.0,
                     1e-15,
                     3,
-                    1e25
+                    1e25,
                 ),
                 -2
             );
-            // n_time matches, but omega is null -> -1.
             assert_eq!(
                 native_set_raman_fft_params(
                     sim,
@@ -7420,7 +7782,6 @@ mod tests {
                 ),
                 -1
             );
-            // n_time matches, but n_osc == 0 -> -1.
             assert_eq!(
                 native_set_raman_fft_params(
                     sim,
@@ -7436,8 +7797,6 @@ mod tests {
                 ),
                 -1
             );
-            // Everything valid, but s.fftw_api was never set (no
-            // native_set_fftw_plans call) -> -2.
             assert_eq!(
                 native_set_raman_fft_params(
                     sim,

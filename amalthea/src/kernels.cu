@@ -107,6 +107,40 @@ extern "C" __global__ void ppt_ionization_kernel(
     double ln_rate = seg.a + dx * (seg.b + dx * (seg.c + dx * seg.d));
     rates[idx] = exp(ln_rate);
 }
+
+// Closed-form ADK rate, matching `AdkIonizationRate::rate` exactly. The
+// constants are precomputed on the Julia/CPU side and transferred verbatim;
+// unlike PPT this kernel needs no lookup table or error channel.
+extern "C" __global__ void adk_ionization_kernel(
+    const double* fields,
+    double* rates,
+    double occupancy,
+    double omega_p,
+    double cn_sq,
+    double nstar,
+    double omega_t_prefac,
+    double thr,
+    double avfac,
+    int N
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= N) return;
+
+    double abs_e = fabs(fields[idx]);
+    if (!isfinite(abs_e) || abs_e < thr) {
+        rates[idx] = 0.0;
+        return;
+    }
+
+    double x = 4.0 * omega_p / (omega_t_prefac * abs_e);
+    double rate = occupancy * omega_p * cn_sq *
+                  pow(x, 2.0 * nstar - 1.0) *
+                  exp((-4.0 / 3.0) * omega_p / (omega_t_prefac * abs_e));
+    if (avfac != 1.0) {
+        rate *= avfac * sqrt(abs_e);
+    }
+    rates[idx] = rate;
+}
 #include <cuComplex.h>
 
 extern "C" __global__ void apply_prop_kernel(cuDoubleComplex* y, const cuDoubleComplex* linop, int n, double dt) {

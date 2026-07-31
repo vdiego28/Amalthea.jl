@@ -7,11 +7,43 @@ Deferred work and known issues for Amalthea.jl. Severity: 🔴 correctness · �
 > [`ARCHIVE.md`](ARCHIVE.md) with its section names unchanged. Cross-references
 > below to a phase, to S1/S4, or to "Done (recent)" resolve there.
 
-## Start here — current resume queue (2026-07-28)
+## Start here — current resume queue (2026-07-31)
 
 This is the authoritative short queue. The long sections below retain design
 history and measured evidence, but older words such as "next", "not started",
 or "verified" inside a superseded narrative do not outrank this list.
+
+> **Current handoff:** `main` is `1fff51b` (`1.0.2-DEV`). The GPU adaptive
+> repair/parallel PPT scan branch and the Windows scheduler portability/
+> visibility hotfix are merged, and their remote branches were deleted after
+> ancestry checks. Main test run `30642534593` passed all **16/16** jobs and
+> documentation run `30642537095` passed. `origin` now has only `main` and the
+> required `gh-pages` deployment branch. The live queue is deliberately short:
+> standing required-CUDA CI remains deferred by the lead (item 2 below), and
+> broader GPU physics/geometries remain open under S3 item 4. Do not recreate a
+> completed integration branch as a resume step.
+
+> **Completed 2026-07-31 campaign — four bounded work units closed.** The lead
+> selected and completed:
+> (a) make `norm=` fallback and `locextrap=false` correct across Julia/legacy/
+> resident/CUDA steppers; (b) harden `native_step`, the mode-averaged length
+> contract, and transactional CUDA setup; (c) remove project-owned CI warnings,
+> require real PTX in strict-CUDA mode, apply least-privilege workflow
+> permissions, and restore this machine's local CUDA baseline without making it
+> a runner; (d) after that green baseline, implement mode-averaged RealGrid
+> thresholded ADK. The retained benchmark is **2.147×** at `n=8193`, so
+> `:auto` selects it at the exact `_GPU_ADK_N_THRESHOLD = 8193`.
+> `threshold=false` remains an explicit CPU fallback. `PLANS.md` §11 and the
+> appended `PORT_LOG.md` entries carry the full evidence. Standing GPU CI and
+> broader GPU geometries/physics remain the only live work; they were not
+> completed or implied by this campaign.
+
+> **Release `v1.0.2` — PUBLISHED 2026-07-31:** the reviewed Campaign 11
+> changes passed the prepared branch's 16-job hosted matrix, then tag-driven
+> release workflow `30658681539` built the canonical Linux/macOS/Windows
+> binaries. GitHub Release `v1.0.2` is public and its downloaded assets all
+> pass `sha256sum -c SHA256SUMS.txt`. Development metadata is now advancing to
+> `1.0.3-DEV` / `1.0.3.dev0` before the release branch is merged into `main`.
 
 > **2026-07-25 agent wave — four of the five queue items below were worked
 > and are resolved or closed.** Four agent branches merged with no conflicts.
@@ -525,6 +557,7 @@ fully executed, kept as provenance). Gate for every phase: full
 | S2 | Threading the native RHS (radial, modal, free-space) | ✅ closed 2026-07-22 |
 | S4 | Architecture cleanups (`BackendConfig`, `RK45.check_ffi`, explicit accessor seams) | ✅ gate closed 2026-07-11 |
 | S5 | Numerics options (mixed precision, deterministic mode, order-5 dense output) | ✅ all 3 items resolved, closed 2026-07-23 |
+| 2026-07-31 campaign | RK45 correctness, FFI/CUDA transaction safety, CI policy/strict PTX, mode-averaged thresholded ADK | ✅ complete; ADK `:auto` threshold retained at 8193 |
 
 S3 and the release/example remainders of S6 stay live below; S2 closed
 2026-07-22 and S5 on 2026-07-23.
@@ -829,7 +862,7 @@ then reproducing the crash directly:**
   must be **bit-identical**, not merely within tolerance — a stronger,
   more testable guarantee than typical parallel-code equivalence.
 
-### 🟡 S3 — GPU-resident propagation (suggestion 1) — the broken slice is fixed (item 0); scope beyond mode-averaged Kerr(+PPT) is still unbuilt
+### 🟡 S3 — GPU-resident propagation (suggestion 1) — mode-averaged Kerr(+PPT/+thresholded ADK) is supported; broader scope remains unbuilt
 *Large (5+ sessions). Plan's own stated dependency (GPU CI) is **still** not
 met — see "GPU CI coverage" below, and note that item 0 is precisely what
 that gap allowed to happen. This machine has real GPU hardware
@@ -900,8 +933,9 @@ implemented), verified on real hardware, wired behind
    than treated as a TODO to "fix" — the doc previously implied this
    should eventually match §4, which it never needs to. No code changed;
    documentation-only.
-2. 🟡 **PPT plasma done 2026-07-11 (mode-avg only); Raman, radial/modal/
-   free-space, ADK still open.** The single-thread scan description below is
+2. 🟡 **PPT plasma done 2026-07-11 (mode-avg only); Raman and radial/modal/
+   free-space remain open; ADK was then open and completed as the narrow
+   2026-07-31 slice.** The single-thread scan description below is
    historical and was superseded by resume item 12 on 2026-07-27. Added to `CudaNativeSim`
    (`cuda_native.rs`/`kernels.cu`/`cuda.rs`): `set_plasma_params` uploads
    the same `SplineSegment` LUT format `PptIonizationRate::rate_vector_gpu`
@@ -920,8 +954,8 @@ implemented), verified on real hardware, wired behind
    step's FFT/launch cost at mode-averaged scale; would matter more for
    radial's much larger per-column state, not in scope here. `_gpu_native_eligible`
    (`RK45.jl`) relaxed to allow exactly one plain Kerr response plus at
-   most one PPT-only plasma response (ADK still returns `-1` from
-   `set_plasma_params_adk`, unimplemented) — the shared FFI call
+   most one PPT-only plasma response (at that time ADK returned `-1` from
+   `set_plasma_params_adk`; it is now thresholded-only GPU support) — the shared FFI call
    (`native_set_plasma_params`) needed zero Julia-side changes beyond the
    eligibility gate, since it already dispatches through the same
    `Box<dyn NativeBackend>` handle both CPU and GPU sims share.
@@ -1011,18 +1045,24 @@ implemented), verified on real hardware, wired behind
    1.08× at n=4097, and 2.94× at n=8193, so supported PPT configs now use
    their own conservative `_GPU_PPT_N_THRESHOLD=8192`. The Kerr-only
    threshold is unchanged.
-4. 🟡 **Broader physics/geometries remain open; the prefix-scan prerequisite
-   is DONE 2026-07-27.** Raman ADE kernel, ADK plasma kernel, and
+4. 🟡 **Broader physics/geometries remain open; the first ADK slice is DONE
+   2026-07-31.** Mode-averaged RealGrid, constant-linop, scalar-density,
+   plain-Kerr plus at most one **thresholded** ADK `PlasmaCumtrapz` is now
+   supported. Its pointwise rate kernel reuses the completed two-level scans;
+   independent math/code reviews and strict CUDA integration passed. At
+   `n=8193` / `n_time_over=32768`, the retained benchmark is **2.147×**, so
+   automatic selection is exactly `_GPU_ADK_N_THRESHOLD=8193` (not 8192).
+   `threshold=false` deliberately remains CPU fallback. Raman ADE and
    radial/modal/free-space geometries remain on CPU through the explicit
-   eligibility split. The three PPT cumtrapz operations now use two-level
-   work-efficient block scans; radial support would still need a
+   eligibility split. Radial support would still need a
    segmented/batched extension over columns rather than reusing the
    one-dimensional mode-averaged launch unchanged.
 5. `test/test_native_gpu.jl`-style coverage of the above, mirroring the
    phase-test structure used throughout the CPU native port.
-6. The `n_time`-vs-`n_time_over` Kerr/plasma buffer-sizing fidelity gap
-   itself (GPU.md §8) — not fixed by item 2 above, which worked within the
-   existing buffer sizing rather than changing it.
+6. 🟢 **The `n_time`-vs-`n_time_over` Kerr/plasma buffer-sizing fidelity gap
+   is closed (2026-07-25).** Item 0's nonlinear-pipeline repair resized the
+   buffers/plans and added the required crop/pad path; the older item-2 text is
+   historical and does not reopen it.
 
 ### 🟢 S5 — Numerics options (suggestions 10, 11, 12) — COMPLETE (all 3 items, closed 2026-07-23)
 *Item 2 done 2026-07-11 (re-scoped). Items 1 and 3 investigated 2026-07-19
@@ -1509,7 +1549,10 @@ was a stale-documentation item, not an untested-code item.
 `amalthea/tests/test_gpu_cuda.jl` and the GPU numerical-equivalence tests in
 `amalthea/src/lib.rs` self-skip when no GPU/CUDA is present, so the GPU code paths
 (CUDA/Vulkan dispatch, GPU QDHT/Raman/ionization) are never exercised in CI.
-- **Fix:** add a GPU-equipped CI runner (or a scheduled job) that actually executes them.
+- **Deferred fix:** add a GPU-equipped CI runner (or a scheduled job) that runs
+  the strict `AMALTHEA_REQUIRE_CUDA_TESTS=1` CUDA Rust and resident CUDA items.
+  The strict local RTX 5060 Ti baseline is evidence, not a replacement for
+  standing CI.
 
 ### ⚪ Historical 2026-07-05 GPU-resident review — superseded
 

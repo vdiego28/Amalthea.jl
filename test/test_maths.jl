@@ -129,13 +129,13 @@ end
 end
 
 @testset "series" begin
-    sumfunc(x, n) = x + 1/factorial(n)
-    e, _, _ = Maths.aitken_accelerate(sumfunc, 0, rtol=1e-10)
-    e2, _, _ = Maths.converge_series(sumfunc, 0, rtol=1e-10)
+    exp_sumfunc(x, n) = x + 1/factorial(n)
+    e, _, _ = Maths.aitken_accelerate(exp_sumfunc, 0, rtol=1e-10)
+    e2, _, _ = Maths.converge_series(exp_sumfunc, 0, rtol=1e-10)
     @test isapprox(e, exp(1), rtol=1e-10)
     @test isapprox(e, e2, rtol=1e-10)
-    sumfunc(x, n) = x + 1/2^n
-    o, _, _ = Maths.aitken_accelerate(sumfunc, 0, n0=1, rtol=1e-10)
+    geometric_sumfunc(x, n) = x + 1/2^n
+    o, _, _ = Maths.aitken_accelerate(geometric_sumfunc, 0, n0=1, rtol=1e-10)
     @test isapprox(o, 1, rtol=1e-10)
     serfunc(x, n) = (x + 2/x)/2
     sqrt2, _, _ = Maths.aitken_accelerate(serfunc, 1, rtol=1e-10)
