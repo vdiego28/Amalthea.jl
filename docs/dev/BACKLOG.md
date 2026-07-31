@@ -38,11 +38,12 @@ or "verified" inside a superseded narrative do not outrank this list.
 > broader GPU geometries/physics remain the only live work; they were not
 > completed or implied by this campaign.
 
-> **Release preparation:** `release/1.0.2` contains the reviewed campaign,
-> `CHANGELOG.md` notes, and synchronized Julia/Python `1.0.2` metadata. It is
-> prepared for hosted validation only: no `v1.0.2` tag or GitHub/registry
-> release has been created. Wait for the lead's explicit post-test launch
-> instruction before publishing or merging the release.
+> **Release `v1.0.2` — PUBLISHED 2026-07-31:** the reviewed Campaign 11
+> changes passed the prepared branch's 16-job hosted matrix, then tag-driven
+> release workflow `30658681539` built the canonical Linux/macOS/Windows
+> binaries. GitHub Release `v1.0.2` is public and its downloaded assets all
+> pass `sha256sum -c SHA256SUMS.txt`. Development metadata is now advancing to
+> `1.0.3-DEV` / `1.0.3.dev0` before the release branch is merged into `main`.
 
 > **2026-07-25 agent wave — four of the five queue items below were worked
 > and are resolved or closed.** Four agent branches merged with no conflicts.

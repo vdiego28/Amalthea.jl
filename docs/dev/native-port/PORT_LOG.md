@@ -2658,3 +2658,40 @@ changelog consistency, and `git diff --check`; hosted branch tests are pending.
 that hosted tests finished. Only then merge/tag/publish `v1.0.2`, verify all
 three canonical binary assets and `SHA256SUMS.txt`, and advance development
 metadata.
+
+## 2026-07-31 — Release 1.0.2 — publication and development bump — Codex (GPT-5)
+
+**Status:** complete
+
+**Did:** Published `v1.0.2` from the fully tested release commit and advanced
+both package surfaces to development versions. The GitHub Release is public,
+non-draft, and non-prerelease with canonical Linux, macOS, and Windows assets.
+
+**How:** Lightweight tag `v1.0.2` points to `604e6147e7ff694ec490d5f27af3a08fec78404b`.
+Tag push triggered release workflow `30658681539`; all build and publication
+jobs passed. The release assembled `SHA256SUMS.txt` from the three platform
+manifests. After publication, `Project.toml` advances to `1.0.3-DEV` and
+`python/pyproject.toml` to `1.0.3.dev0`; no solver or FFI symbol changed in
+this post-release bump.
+
+**Decisions:** Publish only after the release branch's complete hosted matrix
+passed (**16/16 jobs**). Keep the established lightweight-tag style and the
+existing canonical asset names. Advance development metadata immediately so
+future source archives cannot identify themselves as `1.0.2`.
+
+**Gotchas:** The release workflow's `publish` job is gated on all three
+portable builds; a successful tag push alone is not asset verification. The
+public release contains exactly `libamalthea-aarch64-apple-darwin.dylib`,
+`libamalthea-x86_64-pc-windows-msvc.dll`,
+`libamalthea-x86_64-unknown-linux-gnu.so`, and `SHA256SUMS.txt`. Independent
+downloads to `/tmp/amalthea-release-eEXw5u` passed all three checksum lines.
+
+**Tests:** Prepared branch run `30654078934` passed all 16 jobs. Release run
+`30658681539` completed successfully. `gh release view v1.0.2` reports
+`isDraft=false` and `isPrerelease=false`; downloaded `sha256sum -c
+SHA256SUMS.txt` reported **OK** for Linux, macOS, and Windows assets.
+
+**Next:** Merge the post-release `1.0.3-DEV` metadata commit into `main`, push
+`main`, and require its test/documentation workflows to pass. The live queue
+then returns to the deliberately deferred standing GPU CI and broader GPU
+physics/geometries.
