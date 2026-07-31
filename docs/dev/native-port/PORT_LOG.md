@@ -2373,3 +2373,42 @@ focused CRLF manifest item remains **337/337** from the preceding unit.
 **Next:** Push the visibility commit, inspect its one-minute Windows Rust
 heartbeats, require the complete matrix to pass, then close and merge the
 hotfix.
+
+## 2026-07-31 — Backlog 20 follow-up — Windows scheduler closure — Codex (GPT-5)
+
+**Status:** complete
+
+**Did:** Closed the hosted Windows portability and parallel-CI visibility
+follow-up. The final hotfix branch matrix passed every job, including both
+Windows groups, and the retained Rust log proves that live assignments,
+one-minute heartbeats, independent worker completions, and final totals all
+reach durable Actions output.
+
+**How:** No implementation changed in this closure unit. The completed branch
+contains explicit UTF-8 scheduler I/O (`724acc4`), complete failed-worker logs
+(`da72df1`), console-safe diagnostics (`028da37`), CRLF-safe Julia subprocess
+parsing (`c43a7b9`), and live parallel-worker reporting (`41479a3`). No solver
+source, FFI symbol, or ABI changed across the hotfix.
+
+**Decisions:** Accept the reporter's latest emitted log line as honest live
+activity rather than claiming an exact current `@testitem`. Keep the 60-second
+interval requested by the lead. Preserve full failure-log emission even though
+the final run is green; it is now the durable diagnostic path for future
+bucket failures.
+
+**Gotchas:** GitHub's job-log API returns `BlobNotFound` while a job is active,
+although the Actions web UI streams flushed output. The retained post-job log
+is therefore the auditable source for exact heartbeat timestamps. Early
+heartbeats legitimately reported zero-byte worker logs while Julia compiled;
+later heartbeats showed growing files and propagation progress.
+
+**Tests:** Local scheduler unit tests **12/12**, Python byte compilation,
+`git diff --check`, and focused manifest item **337/337**: pass. Hosted run
+`30503817234`: **16/16 jobs pass**. Windows Rust job `90749235806` printed
+assignments at 00:52:41Z, heartbeats at 60-second intervals, worker 1 completion
+at 1202.3s, worker 0 completion at 1618.5s, and **42569/42569** total. Windows
+physics job `90749235858` also passed.
+
+**Next:** Commit this closure record, merge `fix-windows-scheduler-utf8` into
+`main`, push `main`, and require the resulting main test/documentation runs to
+pass before deleting or otherwise retiring branches.

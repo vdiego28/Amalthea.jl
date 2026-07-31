@@ -479,8 +479,11 @@ or "verified" inside a superseded narrative do not outrank this list.
     assigned items before launch and emit one-minute flushed heartbeats with
     elapsed time, log size, and the latest available log line, so a long
     parallel bucket is no longer opaque. A 12-test scheduler unit suite and
-    the 337-assertion manifest meta-test pass locally. Hosted Windows
-    re-verification is required before this follow-up is closed.
+    the 337-assertion manifest meta-test pass locally. Hosted run
+    `30503817234` passed all **16/16** jobs: Windows physics and Rust are green,
+    Windows Rust passed **42569/42569**, and its retained log proves assignments
+    were flushed before launch followed by one-minute live heartbeats. This
+    first-push portability/visibility follow-up is closed.
 
 Explicitly parked, and therefore **not** resume points without a new user need:
 multi-mode `StepIndexMode` (no consumer), the full SoA conversion (~1% ceiling),
