@@ -312,6 +312,7 @@ pub struct GpuContext {
     pub module: CUmodule,
     pub raman_fn: CUfunction,
     pub ppt_fn: CUfunction,
+    pub adk_fn: CUfunction,
     pub apply_prop_fn: CUfunction,
     pub rk45_accumulate_stage_fn: CUfunction,
     pub rk45_accumulate_error_fn: CUfunction,
@@ -438,7 +439,27 @@ pub fn init_gpu_context() -> Result<&'static GpuContext, String> {
                 let fn_name_ppt = CString::new("ppt_ionization_kernel").unwrap();
                 res = (driver.cuModuleGetFunction)(&mut ppt_fn, module, fn_name_ppt.as_ptr());
                 if res != 0 {
-                    return Err("cuModuleGetFunction failed".to_string());
+                    (driver.cuModuleUnload)(module);
+                    (cublas.cublasDestroy_v2)(cublas_handle);
+                    (driver.cuCtxDestroy_v2)(context);
+                    return Err(format!(
+                        "cuModuleGetFunction for ppt_ionization_kernel failed: {res}"
+                    ));
+                }
+
+                let mut adk_fn = std::ptr::null_mut();
+                res = (driver.cuModuleGetFunction)(
+                    &mut adk_fn,
+                    module,
+                    CString::new("adk_ionization_kernel").unwrap().as_ptr(),
+                );
+                if res != 0 {
+                    (driver.cuModuleUnload)(module);
+                    (cublas.cublasDestroy_v2)(cublas_handle);
+                    (driver.cuCtxDestroy_v2)(context);
+                    return Err(format!(
+                        "cuModuleGetFunction for adk_ionization_kernel failed: {res}"
+                    ));
                 }
 
                 let mut apply_prop_fn = std::ptr::null_mut();
@@ -643,6 +664,7 @@ pub fn init_gpu_context() -> Result<&'static GpuContext, String> {
                     module,
                     raman_fn,
                     ppt_fn,
+                    adk_fn,
                     apply_prop_fn,
                     rk45_accumulate_stage_fn,
                     rk45_accumulate_error_fn,

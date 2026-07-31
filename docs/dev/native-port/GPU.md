@@ -1,6 +1,6 @@
 # GPU-Resident Propagation (Track S3) Design Document
 
-> **Current status (2026-07-25, updated): the correctness block is FIXED.**
+> **Current status (2026-07-31, updated): the correctness block is FIXED.**
 > `CudaNativeSim` computes real nonlinearity again and is verified on real
 > hardware — stage derivatives match CPU native to ~1e-15 (previously
 > `max|kᵢ| ≈ 3.5e-13` against CPU's 12225, i.e. pure linear propagation),
@@ -13,12 +13,17 @@
 > fixed alongside: `set_field` never seeded `ks_d[0]`, so the first `step()`
 > read uninitialized device memory.
 >
-> **Remaining caveats:** scope is still only mode-averaged RealGrid Kerr +
-> PPT plasma (everything else returns `-1` and falls back), and there is still
-> no GPU CI, so every GPU change needs a recorded manual hardware run.
+> **Remaining caveats:** supported scope is mode-averaged RealGrid Kerr + PPT
+> or **thresholded ADK** plasma; every other geometry/physics, and ADK with
+> `threshold=false`, returns or routes to CPU fallback. There is still no GPU
+> CI, so every GPU change needs a recorded manual hardware run.
 > **2026-07-27:** adaptive acceptance now uses a real pre-acceptance trial and
 > the same global weak norm as CPU/Julia; the three PPT cumtrapz operations
 > are parallel prefix scans, and PPT `:auto` dispatch has a measured threshold.
+> **2026-07-31:** mode-averaged RealGrid thresholded ADK is implemented and
+> retained after a **2.147×** production-shaped benchmark at `n=8193`.
+> `:auto` uses the exact `_GPU_ADK_N_THRESHOLD = 8193`; `threshold=false`
+> remains CPU fallback. The strict CUDA baseline was green first.
 > Sections below that describe the defect in the present tense are retained
 > for provenance — BACKLOG S3 item 0 and
 > `portlog-inbox/gpu-nonlinearity.md` are authoritative.
@@ -28,9 +33,9 @@
 The original objective was to eliminate per-kernel PCIe round-trips by keeping
 the simulation state resident on the GPU. The landed `CudaNativeSim` does own
 the field, RK stages, error buffers, scratch, cuFFT plans, and the narrow
-mode-averaged Kerr/PPT state in VRAM. The current objective is no longer
-residency scaffolding; it is numerical parity with `CpuNativeSim` before any
-scope expansion.
+mode-averaged Kerr/PPT/thresholded-ADK state in VRAM. The current objective is
+no longer residency scaffolding; it is maintaining numerical parity with
+`CpuNativeSim` while any later scope expansion is separately designed.
 
 `CudaNativeSim` mirrors the CPU `NativeSim`: the **entire state vector and all
 RK45 scratch buffers** reside in VRAM for the full duration of a `solve`.
@@ -89,21 +94,24 @@ The landed slice has CUDA kernels for:
 4. **Kerr/Norm Broadcasts:** Applying the windowing and nonlinear scale.
 5. **Cumtrapz:** PPT plasma, implemented as deterministic two-level
    256-sample Blelloch prefix scans plus parallel physics finalizers.
+6. **ADK rate:** a pointwise `adk_ionization_kernel` for thresholded ADK,
+   feeding the same fraction/current/polarization scans as PPT.
 
 The 2026-07-25 correctness repair completed the surrounding pipeline: input
 normalization, oversampled FFT sizing/cropping, spectral `pre/β`
 normalization, and `ωwin`.
 
 ## 7. Scope of V1
-The intended landed scope is **mode-averaged RealGrid, constant linop, scalar
-density, exactly one plain Kerr response, and at most one PPT plasma
-response**. ADK, Raman, shot noise, z-dependence, and radial/modal/free-space
-return or route to ineligibility and remain on `CpuNativeSim`. This table
-describes intended eligibility only; eligible GPU configurations are not
-automatically rechecked because the project still lacks standing GPU CI.
-Within this scope, the backend is numerically hardware-verified.
+The landed scope is **mode-averaged RealGrid, constant linop, scalar density,
+exactly one plain Kerr response, and at most one PPT or thresholded ADK plasma
+response**. `:auto` selects ADK only from the exact
+`_GPU_ADK_N_THRESHOLD = 8193`; `threshold=false`, Raman, shot noise, mixtures,
+z-dependence, and radial/modal/free-space return or route to ineligibility and
+remain on `CpuNativeSim`. Eligible GPU configurations are not automatically
+rechecked because the project still lacks standing GPU CI. Within this scope,
+the backend is numerically hardware-verified.
 
-## 8. Status (updated 2026-07-25 — supersedes the historical reviews below)
+## 8. Status (updated 2026-07-31 — supersedes the historical reviews below)
 
 The `Box<dyn NativeBackend>` decision in §4 is settled and not a TODO.
 
@@ -133,19 +141,21 @@ with root causes: `BACKLOG.md`'s "GPU-resident stepper" entry under "Done
 fix below *did* hold up once actually run on hardware — it was correct by
 inspection before verification and stayed correct after.
 
-**Actual V1 scope, precisely** (§7 said "mode-averaged RealGrid Kerr
-(+plasma)" — the "(+plasma)" was aspirational and was wrong until
-2026-07-11, see below). `CudaNativeSim`'s `NativeBackend` impl
-(`cuda_native.rs`) implements `set_mode_avg_params` and (as of 2026-07-11)
-`set_plasma_params` (PPT only); every other `set_*_params`
-(`set_plasma_params_adk`, `set_radial_params`, `set_raman_params[_fft]`,
-`set_modal_params`, `set_free_params`, every `_zdep_*` variant,
-`set_mode_avg_noise[_cplx]`) unconditionally returns `-1`. `RK45.jl`'s
+**Actual V1 scope, precisely** (§7's early "mode-averaged RealGrid Kerr
+(+plasma)" wording was aspirational until PPT landed 2026-07-11). The current
+`CudaNativeSim` `NativeBackend` impl (`cuda_native.rs`) implements
+`set_mode_avg_params`, `set_plasma_params` (PPT), and
+`set_plasma_params_adk` for **thresholded** ADK. Other `set_*_params`
+(`set_radial_params`, `set_raman_params[_fft]`, `set_modal_params`,
+`set_free_params`, every `_zdep_*` variant, `set_mode_avg_noise[_cplx]`) still
+unconditionally return `-1`; unthresholded ADK deliberately routes to CPU.
+`RK45.jl`'s
 `_gpu_native_eligible` docstring is the source of truth for exact scope.
 Concretely, eligible configs are: `TransModeAvg`, `RealGrid`, a constant
 (non-z-dependent) linop, scalar (non-mixture) density, no shot noise,
-exactly one plain Kerr response, and at most one plasma response using PPT
-ionisation (`IonRatePPTAccel` — ADK still returns `-1`).
+exactly one plain Kerr response, and at most one PPT plasma response or one
+**thresholded** `IonRateADK`. Unthresholded ADK (`threshold=false`) is
+intentionally unsupported by CUDA and falls back to CPU.
 
 **Plasma support added 2026-07-11** (BACKLOG.md S3 item 2; scan implementation
 superseded 2026-07-27): PPT ionisation
@@ -202,18 +212,52 @@ manual runs, not a standing CI job.
 **What's still open, in order:**
 
 1. Add scheduled/dedicated GPU CI.
-2. Only after that, decide whether to expand beyond mode-averaged RealGrid
-   Kerr/PPT. Raman, ADK, radial/modal/free-space, and parallel plasma scans
-   remain unimplemented and should continue routing to CPU until individually
-   designed and tested.
+2. The lead has kept standing GPU CI deferred. The local-hardware-gated
+   mode-averaged RealGrid ADK expansion is complete and retained; Raman and
+   radial/modal/free-space remain unimplemented. PPT and ADK share the
+   completed parallel scan pipeline.
 
 The problem-size dispatch policy is:
 `AMALTHEA_NATIVE_GPU=off/on/auto`, with `auto` selecting Kerr-only problems at
-`length(y0) ≥ 16384` and supported PPT problems at `length(y0) ≥ 8192`.
+`length(y0) ≥ 16384`, supported PPT problems at `length(y0) ≥ 8192`, and
+supported thresholded ADK problems at **exactly** `length(y0) ≥ 8193`.
 The PPT threshold was remeasured after parallelizing the scans: GPU/CPU is
 0.82× at n=2049, 1.08× at n=4097, and 2.94× at n=8193, so 8192 deliberately
 skips the marginal crossover. Both policies remain behind the explicit
 `AMALTHEA_USE_RUST_CUDA_NATIVE=1` master opt-in.
+
+## 9. First expansion completed — mode-averaged RealGrid ADK (2026-07-31)
+
+The strict local hardware baseline completed first on the RTX 5060 Ti (driver
+610.43.02): required-CUDA Rust tests, real-PTX release build, focused CUDA/
+dense/dispatch tests, and the strict balanced Rust group. This did not register
+the machine as a self-hosted runner; standing GPU CI remains deferred.
+
+The landed pointwise CUDA rate kernel matches `AdkIonizationRate::rate`:
+absolute field, exact zero for non-finite and below-threshold values, the
+transferred power/exponential constants, and the existing optional
+cycle-average multiplier. `set_plasma_params_adk` stores those constants and
+selects the rate kind; the downstream parallel fraction/current/polarization
+scans and finalizers are reused unchanged. The FFI signature does not change.
+
+Eligibility stays narrow: constant linop, scalar density, mode-averaged
+RealGrid, exactly one plain Kerr response, at most one **thresholded** ADK
+plasma response, and no Raman, shot noise, mixture, z-dependence, or alternate
+geometry.
+Acceptance requires direct rate-boundary/CPU comparison, nonzero stage-scale
+agreement, a Julia ADK control effect at least 100× the comparison tolerance,
+fixed-step and adaptive trajectories, and a deliberate rejection whose field
+is bit-exact before retry.
+
+Direct strict-CUDA ADK tests and Julia integration (**17/17**) cover rate
+boundaries, non-vacuity, stage scale, fixed/adaptive trajectories, and
+bit-exact rejected-state retry; the focused CUDA suite passed **101/101**.
+At `length(Eω)=8193`, `n_time_over=32768`, warmup plus the minimum of three
+five-step batches measured CPU **[3.726, 3.707, 3.683]** ms/step and GPU
+**[2.433, 1.965, 1.716]** ms/step: **2.147×**, passing the `>=1.4×` retention
+gate. The source and eligibility are retained at the exact threshold **8193**;
+do not round it to 8192. `threshold=false` remains CPU fallback. Full evidence
+is in `PLANS.md` §11.4 and `PORT_LOG.md`.
 
 ---
 

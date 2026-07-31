@@ -223,6 +223,69 @@ using TestItems
                 @test rel_adaptive < 1e-6
             end
 
+            @testset "locextrap=false matches CPU-native and Julia" begin
+                false_kw = (; rtol=1e-6, atol=1e-10, locextrap=false,
+                            max_dt=dt, min_dt=dt)
+                s_jl_false = PreconStepper(transform, linop, copy(Eω), t0, dt;
+                                           false_kw...)
+                s_cpu_false = withenv("AMALTHEA_USE_RUST_CUDA_NATIVE" => "0",
+                                      "AMALTHEA_NATIVE_GPU" => "off") do
+                    RustNativeStepper(transform, linop, copy(Eω), t0, dt;
+                                      false_kw...)
+                end
+                s_gpu_false = RustNativeStepper(transform, linop, copy(Eω), t0, dt;
+                                                false_kw...)
+                s_jl_true = PreconStepper(transform, linop, copy(Eω), t0, dt;
+                                          rtol=1e-6, atol=1e-10,
+                                          locextrap=true,
+                                          max_dt=dt, min_dt=dt)
+
+                @test step!(s_jl_false)
+                @test step!(s_cpu_false)
+                @test step!(s_gpu_false)
+                @test step!(s_jl_true)
+                @test norm(s_cpu_false.yn - s_jl_false.yn) /
+                      norm(s_jl_false.yn) < 1e-13
+                @test norm(s_gpu_false.yn - s_jl_false.yn) /
+                      norm(s_jl_false.yn) < 1e-12
+                @test isapprox(s_gpu_false.err, s_cpu_false.err; rtol=1e-10)
+                @test norm(s_jl_false.yn - s_jl_true.yn) /
+                      norm(s_jl_false.yn) > 1e-12
+
+                # The false-mode trial buffer is also transactional on a
+                # deliberate rejection; neither backend may expose it as the
+                # resident field until the controller accepts.
+                dt_reject = 0.1
+                rejected_cpu = withenv("AMALTHEA_USE_RUST_CUDA_NATIVE" => "0",
+                                       "AMALTHEA_NATIVE_GPU" => "off") do
+                    RustNativeStepper(transform, linop, copy(Eω), t0, dt_reject;
+                                      rtol=1e-6, atol=1e-10,
+                                      locextrap=false)
+                end
+                rejected_gpu = RustNativeStepper(transform, linop, copy(Eω),
+                                                 t0, dt_reject;
+                                                 rtol=1e-6, atol=1e-10,
+                                                 locextrap=false)
+                @test !step!(rejected_cpu)
+                @test !step!(rejected_gpu)
+                @test rejected_cpu.yn == Eω
+                @test rejected_gpu.yn == Eω
+                @test isapprox(rejected_gpu.err, rejected_cpu.err; rtol=1e-10)
+                @test isapprox(rejected_gpu.dtn, rejected_cpu.dtn; rtol=1e-10)
+
+                # Continue the accepted fixed trajectory through several
+                # deferred FSAL carries.
+                for _ in 1:3
+                    @test step!(s_jl_false)
+                    @test step!(s_cpu_false)
+                    @test step!(s_gpu_false)
+                end
+                @test norm(s_cpu_false.yn - s_jl_false.yn) /
+                      norm(s_jl_false.yn) < 1e-13
+                @test norm(s_gpu_false.yn - s_jl_false.yn) /
+                      norm(s_jl_false.yn) < 1e-12
+            end
+
             @testset "Full-solve equivalence (fixed step size)" begin
                 solve(s_jl, flength)
                 solve(s_ru, flength)
@@ -324,6 +387,125 @@ using TestItems
     end
 end
 
+@testitem "Native-Rust GPU-resident stepper (CUDA, mode-avg ADK plasma)" tags=[:rust] begin
+    import Test: @test, @test_skip, @testset
+    using Amalthea
+    using Amalthea.RK45: PreconStepper, RustNativeStepper, step!, solve
+    import Logging: with_logger, NullLogger
+    import LinearAlgebra: norm
+
+    libpath = RK45._LIBAMALTHEA_RK45
+    require_cuda = get(ENV, "AMALTHEA_REQUIRE_CUDA_TESTS", "0") == "1"
+    if !isfile(libpath)
+        require_cuda && error("CUDA tests are required, but the Rust library was not found")
+        @test_skip "Rust library not found"
+    else
+        # This is deliberately the known non-vacuous ADK configuration from
+        # test_native_adk_ionisation.jl: lower energy would put every sample
+        # below ADK's threshold and make a no-op GPU rate appear correct.
+        args = (125e-6, 0.02, :He, 1.0)
+        kw = (; λ0=800e-9, λlims=(150e-9, 4e-6), trange=500e-15,
+              raman=false, plasma=:ADK, kerr=true, shotnoise=false,
+              energy=1.6e-3, τfwhm=30e-15)
+        Eω, grid, linop, transform, _, _ = with_logger(NullLogger()) do
+            Interface.prop_capillary_args(args...; kw...)
+        end
+        Eω_off, _, linop_off, transform_off, _, _ = with_logger(NullLogger()) do
+            Interface.prop_capillary_args(args...; merge(kw, (; plasma=false))...)
+        end
+        t0, dt = 0.0, 0.005
+
+        # The Julia control establishes that this exact ADK response changes
+        # the physics by far more than every equivalence tolerance below.
+        s_jl_on = PreconStepper(transform, linop, copy(Eω), t0, dt;
+                                rtol=1e-6, atol=1e-10, max_dt=dt, min_dt=dt)
+        s_jl_off = PreconStepper(transform_off, linop_off, copy(Eω_off), t0, dt;
+                                 rtol=1e-6, atol=1e-10, max_dt=dt, min_dt=dt)
+        solve(s_jl_on, args[2])
+        solve(s_jl_off, args[2])
+        adk_effect = norm(s_jl_on.yn - s_jl_off.yn) / norm(s_jl_on.yn)
+        @test adk_effect > 100 * 1e-10
+
+        gpu_available = true
+        gpu_error = nothing
+        withenv("AMALTHEA_USE_RUST_CUDA_NATIVE" => "1",
+                "AMALTHEA_USE_RUST_IONISATION" => "1",
+                "AMALTHEA_NATIVE_GPU" => "on") do
+            local s_gpu
+            try
+                s_gpu = RustNativeStepper(transform, linop, copy(Eω), t0, dt;
+                                           rtol=1e-6, atol=1e-10,
+                                           max_dt=dt, min_dt=dt)
+            catch e
+                gpu_available = false
+                gpu_error = e
+                return
+            end
+            @test RK45._gpu_native_eligible(transform, linop, length(Eω))
+
+            s_cpu = withenv("AMALTHEA_USE_RUST_CUDA_NATIVE" => "0",
+                            "AMALTHEA_NATIVE_GPU" => "off") do
+                RustNativeStepper(transform, linop, copy(Eω), t0, dt;
+                                  rtol=1e-6, atol=1e-10, max_dt=dt, min_dt=dt)
+            end
+            getk(s, i) = begin
+                k = zeros(ComplexF64, length(Eω))
+                @test ccall((:get_ks_stage, libpath), Cint,
+                            (Ptr{Cvoid}, Csize_t, Ptr{ComplexF64}, Csize_t),
+                            s._handle.ptr, Csize_t(i), k, Csize_t(length(k))) == 0
+                k
+            end
+            @testset "Nonzero ADK stage scale and CPU-native agreement" begin
+                k_cpu, k_gpu = getk(s_cpu, 0), getk(s_gpu, 0)
+                @test maximum(abs.(k_cpu)) > 100
+                @test norm(k_gpu - k_cpu) / norm(k_cpu) < 1e-12
+            end
+
+            @testset "Fixed-step GPU, CPU, and Julia trajectories" begin
+                solve(s_cpu, args[2])
+                solve(s_gpu, args[2])
+                @test norm(s_gpu.yn - s_cpu.yn) / norm(s_cpu.yn) < 1e-12
+                @test norm(s_gpu.yn - s_jl_on.yn) / norm(s_jl_on.yn) < 1e-10
+            end
+
+            @testset "ADK rejection is bit-exact and retry remains adaptive" begin
+                reject_dt = 0.1
+                s_cpu_retry = withenv("AMALTHEA_USE_RUST_CUDA_NATIVE" => "0",
+                                      "AMALTHEA_NATIVE_GPU" => "off") do
+                    RustNativeStepper(transform, linop, copy(Eω), t0, reject_dt;
+                                      rtol=1e-6, atol=1e-10, max_dt=0.1, min_dt=0.0)
+                end
+                s_gpu_retry = RustNativeStepper(transform, linop, copy(Eω), t0, reject_dt;
+                                                rtol=1e-6, atol=1e-10,
+                                                max_dt=0.1, min_dt=0.0)
+                before = copy(s_gpu_retry.yn)
+                @test !step!(s_cpu_retry)
+                @test !step!(s_gpu_retry)
+                @test s_gpu_retry.yn == before
+                @test isapprox(s_gpu_retry.err, s_cpu_retry.err; rtol=1e-10)
+                @test isapprox(s_gpu_retry.dtn, s_cpu_retry.dtn; rtol=1e-10)
+                accepted = false
+                for _ in 1:8
+                    cpu_ok, gpu_ok = step!(s_cpu_retry), step!(s_gpu_retry)
+                    @test gpu_ok == cpu_ok
+                    if gpu_ok
+                        accepted = true
+                        break
+                    end
+                end
+                @test accepted
+                solve(s_cpu_retry, args[2])
+                solve(s_gpu_retry, args[2])
+                @test norm(s_gpu_retry.yn - s_cpu_retry.yn) / norm(s_cpu_retry.yn) < 1e-6
+            end
+        end
+        if !gpu_available
+            require_cuda && error("CUDA tests are required, but GPU setup failed: $gpu_error")
+            @test_skip "CUDA GPU/toolkit not available on this machine: $gpu_error"
+        end
+    end
+end
+
 @testitem "Native-Rust GPU-resident stepper (CUDA, mode-avg Kerr+plasma)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
     using Amalthea
@@ -337,9 +519,8 @@ end
         require_cuda && error("CUDA tests are required, but the Rust library was not found")
         @test_skip "Rust library not found"
     else
-        # docs/dev/BACKLOG.md S3 item 2 (first slice, 2026-07-11): plasma support on
-        # `CudaNativeSim`, PPT ionisation only (ADK still returns -1 — see
-        # `RK45._gpu_native_eligible`'s docstring). Same mode-averaged
+        # docs/dev/BACKLOG.md S3: this sibling exercises the PPT rate branch;
+        # ADK has its own explicit CUDA item above. Same mode-averaged
         # RealGrid Kerr scope as the sibling Kerr-only testitem above, plus
         # a PPT plasma response (`gas=:Ar`, atomic — `Interface.jl`'s
         # `plasma=true` auto-selects PPT for atoms, ADK for molecules; no

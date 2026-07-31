@@ -62,6 +62,53 @@ using TestItems
             rel_step = norm(s_ru.yn - s_jl.yn) / norm(s_jl.yn)
             @test rel_step < 1e-13
         end
+
+        @testset "locextrap=false preserves the final internal stage" begin
+            false_kw = (; rtol=1e-6, atol=1e-10, locextrap=false)
+            s_jl = PreconStepper(transform, linop, copy(Eω), t0, dt; false_kw...)
+            s_ru = RustNativeStepper(transform, linop, copy(Eω), t0, dt; false_kw...)
+            s_true = PreconStepper(transform, linop, copy(Eω), t0, dt;
+                                   rtol=1e-6, atol=1e-10, locextrap=true)
+
+            @test step!(s_jl)
+            @test step!(s_ru)
+            @test step!(s_true)
+            @test isapprox(s_ru.err, s_jl.err; rtol=1e-11)
+            @test isapprox(s_ru.dtn, s_jl.dtn; rtol=1e-11)
+            @test norm(s_ru.yn - s_jl.yn) / norm(s_jl.yn) < 1e-13
+            # The two embedded candidates differ materially at this step size;
+            # without this check a backend that ignored `locextrap` could pass.
+            @test norm(s_jl.yn - s_true.yn) / norm(s_jl.yn) > 1e-12
+
+            # A deliberately rejected trial must use the same candidate for
+            # its norm and then restore the resident field transactionally.
+            dt_reject = 0.1
+            rejected_jl = PreconStepper(transform, linop, copy(Eω), t0, dt_reject;
+                                        rtol=1e-6, atol=1e-10,
+                                        locextrap=false)
+            rejected_ru = RustNativeStepper(transform, linop, copy(Eω), t0, dt_reject;
+                                            rtol=1e-6, atol=1e-10,
+                                            locextrap=false)
+            @test !step!(rejected_jl)
+            @test !step!(rejected_ru)
+            @test rejected_jl.yn == Eω
+            @test rejected_ru.yn == Eω
+            @test isapprox(rejected_ru.err, rejected_jl.err; rtol=1e-11)
+            @test isapprox(rejected_ru.dtn, rejected_jl.dtn; rtol=1e-11)
+
+            # Four fixed accepted steps cross the deferred FSAL carry seam.
+            fixed_kw = (; rtol=1e-6, atol=1e-10, locextrap=false,
+                        max_dt=dt, min_dt=dt)
+            multi_jl = PreconStepper(transform, linop, copy(Eω), t0, dt;
+                                     fixed_kw...)
+            multi_ru = RustNativeStepper(transform, linop, copy(Eω), t0, dt;
+                                         fixed_kw...)
+            for _ in 1:4
+                @test step!(multi_jl)
+                @test step!(multi_ru)
+            end
+            @test norm(multi_ru.yn - multi_jl.yn) / norm(multi_jl.yn) < 1e-13
+        end
         
         @testset "Full-solve equivalence (~1e-6)" begin
             # Fixed step size (max_dt=min_dt=dt): the adaptive PI controller's

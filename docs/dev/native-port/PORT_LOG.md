@@ -2412,3 +2412,249 @@ physics job `90749235858` also passed.
 **Next:** Commit this closure record, merge `fix-windows-scheduler-utf8` into
 `main`, push `main`, and require the resulting main test/documentation runs to
 pass before deleting or otherwise retiring branches.
+
+## 2026-07-31 — Integration — final merged handoff — Codex (GPT-5)
+
+**Status:** complete
+
+**Did:** Completed the requested integration and prepared the repository for a
+fresh chat. The GPU repair/balancing branch and Windows scheduler hotfix are
+merged into `main`; their completed remote and local branches, plus the older
+merged discovery branch, were deleted after explicit ancestry checks.
+
+**How:** `6ee363c` merged `gpu-adaptive-error-and-expansion`; `1fff51b` merged
+`fix-windows-scheduler-utf8`. `origin/main` and local `main` both resolve to
+`1fff51b9cf0ecd96195b5e8c1deb3f44393af598`. `origin` retains only `main` and
+`gh-pages`; the latter is intentionally preserved because it deploys the
+documentation site. No source or ABI changed after the validated hotfix merge.
+
+**Decisions:** Preserve merge history for both long-lived work units. Delete
+only branches proven ancestors of `main`; do not delete `gh-pages`. Keep CI
+polling and scheduler heartbeats at the lead-requested 60-second interval.
+
+**Gotchas:** GitHub's active-job log blob is unavailable through the API even
+while the web UI streams flushed output. Post-run logs remain the audit source
+for exact heartbeat timestamps. Historical mentions of deleted branch names in
+older PLANS/PORT_LOG entries are provenance, not live resume instructions.
+
+**Tests:** Pre-integration local eight-group gate: physics **1663/1663**, Rust
+**42640/42640**, multimode **41/41**, interface **314/314**, propagation
+**18/18**, I/O **2313/2313**, fields **339/339**, examples **20/20**. Hotfix
+branch run `30503817234`: **16/16 jobs pass**, including Windows Rust
+**42569/42569** with live one-minute heartbeats. Final main run `30642534593`:
+**16/16 jobs pass**; documentation run `30642537095`: pass. Working tree was
+clean and `HEAD...origin/main` was **0/0** before this documentation-only
+handoff edit.
+
+**Next:** The authoritative live choices are BACKLOG resume item 2 (standing
+required-CUDA CI, still deliberately deferred) and S3 item 4 (broader GPU
+physics/geometries). Start either only when the lead selects it; there is no
+pending merge, release repair, Windows scheduler repair, or branch cleanup.
+
+## 2026-07-31 — Campaign 11.1 — RK45 norm and `locextrap=false` correctness — Codex (GPT-5)
+
+**Status:** complete
+
+**Did:** Made `norm=` truthful for both Rust steppers by retaining arbitrary
+norms on the Julia oracle, and made `locextrap=false` use the actual final
+internal DP stage on legacy, resident CPU, and CUDA paths. Independent
+correctness review approved the implementation and the deliberately
+discriminating tests.
+
+**How:** `src/RK45.jl:56-113` routes `norm !== weaknorm` directly to
+`PreconStepper`; `RustPreconStepper` (`:732`) and `RustNativeStepper`
+(`:1163`) reject direct unsupported construction with `NativeIneligible`.
+The legacy FFI stepper preserves `PreconStepFfiHandle.y_stage`; CPU resident
+`CpuNativeSim::step` and CUDA `CudaNativeSim::step` preserve their final
+`ystage` trial when `locextrap=false`, while the existing fifth-order path is
+unchanged. Coverage is in `test/test_stepper_rust.jl:36-104`,
+`test/test_native_phase1.jl:66-109`, and
+`test/test_native_cuda.jl:226-286`; no FFI signature changed.
+
+**Decisions:** Do not add a norm enum or Julia callback ABI to Rust: arbitrary
+norms belong to the complete Julia fallback, rather than silently becoming
+`weaknorm`. Use the last DP stage for `locextrap=false`, matching Julia's
+fourth-order embedded candidate, and compute error against that same trial
+before transactional rejection restoration.
+
+**Gotchas:** A type-only fallback test is insufficient. The regression state
+must distinguish the norms and the `locextrap` candidates, or a backend that
+ignores either setting can still appear correct. The rejected field must stay
+bit-exact even though the tested trial buffer is no longer the old field.
+
+**Tests:** Focused CPU RK45 suite **61/61**. The non-default-norm case accepted
+at about **0.896706** under `maxnorm` and rejected at about **1.18067** under
+`weaknorm`; the true/false local-extrapolation candidates differ by about
+**3.9694e-5**. Legacy and CPU-resident one/four-step checks hit the
+`<1e-13` reassociation tier; the strict real-CUDA suite includes the same
+accepted/rejected semantics.
+
+**Next:** This correctness unit is closed. Do not broaden arbitrary-norm Rust
+support unless a new design justifies an explicit callback/enum ABI.
+
+## 2026-07-31 — Campaign 11.2 — FFI safety and transactional CUDA setup — Codex (GPT-5)
+
+**Status:** complete
+
+**Did:** Hardened the resident FFI boundary and made CUDA mode-averaged setup
+transactional: malformed pointers/shapes and contained panics return errors,
+and failed real-CUDA reconfiguration leaves the prior usable configuration
+intact.
+
+**How:** `amalthea/src/native.rs:5688` (`native_set_mode_avg_params`) now
+validates dimensions, FFT-plan shape, pairwise optional prefactors, and active
+coefficients before slice construction. `native_step` (`:6650`) validates
+`sim`/`yn`/`result` and wraps backend execution in `catch_unwind`, returning
+`-1` for bad inputs and `-2` for a contained panic. CUDA staging in
+`amalthea/src/cuda_native.rs:1171` builds buffers/copies/plans in temporaries,
+commits only after full success, and tears down temporary plans on failure;
+`init_cuda_native_sim` remains the public constructor at
+`amalthea/src/native.rs:5274`. The safety tests live beside the FFI unit tests
+in `native.rs`; the build-policy integration seam is
+`amalthea/tests/build_policy.rs`.
+
+**Decisions:** Keep public FFI signatures and normal backend return codes
+unchanged. Treat a half-present complex prefactor as invalid, not as an
+identity default. Test allocation/copy/second-plan rollback through the
+internal staging seam rather than relying on an unreproducible device fault.
+
+**Gotchas:** `towin` has `n_time_over` entries, but `owin`, `sidx`, `pre`, and
+`beta` have resident spectral length `sim.n`; conflating these was an unsafe
+contract. A strict CUDA failure must not destroy the existing plans before the
+replacement has fully initialized.
+
+**Tests:** Focused native FFI suite **28/28**. Strict real-CUDA rollback and
+lifecycle checks passed. Final strict Rust result was **79 library + 3
+build-policy = 82/82** in ordinary and `-D warnings` builds with
+`AMALTHEA_REQUIRE_CUDA_TESTS=1`.
+
+**Next:** This FFI unit is closed. Retain the transactional staging seam when
+adding any future CUDA setup state.
+
+## 2026-07-31 — Campaign 11.3 — CI warnings, strict PTX, and least privilege — Codex (GPT-5)
+
+**Status:** complete
+
+**Did:** Removed project-owned warning sources, made strict-CUDA builds reject
+dummy/missing PTX, applied workflow least privilege, and re-established the
+local CUDA verification baseline without registering a runner.
+
+**How:** `amalthea/build.rs:8-68` watches
+`AMALTHEA_REQUIRE_CUDA_TESTS=1` and fails if `nvcc`/real PTX is unavailable;
+`amalthea/tests/build_policy.rs` covers ordinary dummy-PTX and strict policy.
+`test/test_maths.jl:132-138` separates the local `sumfunc` names,
+`Project.toml:108` permits SHA `0.7, 1`, and the Documenter `$HOME` text is
+literal. `.github/workflows/{run_tests,release,documenter,upstream_sync}.yml`
+sets read-default permissions with only the required job-level writes.
+
+**Decisions:** Preserve normal CPU-only dummy PTX; strict mode alone requires
+real PTX. Record macOS `aws/tap`, Node `punycode`, and expected CPU dummy-PTX
+messages as hosted/upstream/expected rather than silencing them. Do not alter
+branch protection or repository default workflow permissions: branch protection
+is absent and the default remains write, by explicit non-action.
+
+**Gotchas:** The strict baseline requires direct CUDA access, not the normal
+sandbox. Real PTX markers and the RTX 5060 Ti driver **610.43.02** are
+hardware evidence, not standing CI. No post-diff workflow was remotely
+triggered, so do not represent the audited historical Actions runs as a new
+post-change remote execution.
+
+**Tests:** Strict Rust **82/82** (79 library + 3 build-policy), normal and
+`-D warnings`, with `AMALTHEA_REQUIRE_CUDA_TESTS=1`; real PTX markers observed.
+Audited GitHub runs: tests **30642534593, 16/16**, docs **30642537095,
+success**. `git diff --check` passed.
+
+**Next:** Standing required-CUDA CI is still deliberately deferred in
+BACKLOG resume item 2. A future runner must use strict mode and include the
+resident CUDA items rather than relying on self-skips.
+
+## 2026-07-31 — Campaign 11.4 — thresholded mode-averaged RealGrid ADK — Codex (GPT-5)
+
+**Status:** complete
+
+**Did:** Added and retained the first broader GPU physics slice: thresholded
+ADK plasma for the narrow mode-averaged RealGrid resident path. Formula and
+path received independent math and code reviews; the production gate retained
+the source and automatic dispatch threshold.
+
+**How:** `amalthea/src/kernels.cu:114`
+`adk_ionization_kernel` mirrors `AdkIonizationRate::rate`; CUDA parameter
+storage/selection is `CudaNativeSim::set_plasma_params_adk`
+(`amalthea/src/cuda_native.rs:1301`), reached through the existing native
+setter (`amalthea/src/native.rs:4276`) without a Julia FFI signature change.
+`src/RK45.jl:1037-1158` expands GPU support and sets the exact
+`_GPU_ADK_N_THRESHOLD = 8193`; dispatch coverage is
+`test/test_native_gpu_dispatch.jl:67-153`, including the deliberate
+`threshold=false` CPU fallback. Strict hardware integration is
+`test/test_native_cuda.jl:390-515`.
+
+**Decisions:** Support only one plain Kerr response plus at most one
+**thresholded** ADK plasma response on constant-linop, scalar-density,
+mode-averaged RealGrid. Reuse the existing parallel fraction/current/
+polarization scans. Retain `:auto` at **8193 exactly**, not 8192, because that
+is the first measured production-shaped size clearing the predeclared 1.4×
+bar; keep `threshold=false` on CPU to preserve its Julia semantics.
+
+**Gotchas:** ADK cannot be accepted on an effect-free test. Coverage asserts a
+non-vacuous Julia ADK control, nonzero comparable stage derivatives,
+fixed/adaptive agreement, and a bit-exact rejected field before retry. The
+balanced Julia Rust gate initially reported **42412/42413** only because the
+new ADK item lacked a timing-manifest entry, not because computation failed.
+Added `test_native_cuda.jl::Native-Rust GPU-resident stepper (CUDA, mode-avg
+ADK plasma) 31.4` to `test/rust_test_timings.txt`; the direct manifest package
+test then passed **339/339** exit 0. Do not claim the complete balanced gate
+was rerun after this timing-only repair (worker 1 had passed **337/337**; the
+sole defect was the worker-0 manifest entry).
+
+**Tests:** Direct strict CUDA ADK rate test passed; Julia ADK integration
+**17/17** (non-vacuity, stage, fixed, adaptive, reject/retry); existing focused
+CUDA suite **101/101**. At `n=8193`, `n_time_over=32768`, warmup plus minimum
+of three five-step batches: CPU **[3.726, 3.707, 3.683]** ms/step, GPU
+**[2.433, 1.965, 1.716]** ms/step, **2.147×**; retention gate `>=1.4×` passed.
+The post-fix manifest package test is **339/339**, exit 0. `cargo fmt --all
+-- --check` still exposes pre-existing drift in five bench files plus `io.rs`;
+the changed Rust sources pass formatting.
+
+**Next:** ADK is closed at its measured threshold. The remaining S3 work is
+broader GPU physics/geometries; standing GPU CI remains the separately
+deferred BACKLOG item. Do not lower the ADK threshold without new measurement.
+
+## 2026-07-31 — Release 1.0.2 — prepared for hosted validation — Codex (GPT-5)
+
+**Status:** in-progress (release prepared; publication intentionally pending)
+
+**Did:** Prepared the reviewed Campaign 11 changes as release candidate
+`1.0.2` on `release/1.0.2`. Added user-facing changelog notes and synchronized
+Julia/Python release metadata. No tag, GitHub release, registry action, merge,
+or release-workflow dispatch was performed.
+
+**How:** Added `CHANGELOG.md` section `1.0.2`; changed `Project.toml` from
+`1.0.2-DEV` to `1.0.2` and `python/pyproject.toml` from `1.0.2.dev0` to
+`1.0.2`. The release branch contains the full Campaign 11 implementation and
+documentation described by the four entries immediately above. The existing
+tag-driven `.github/workflows/release.yml` remains dormant until an authorized
+tag or explicit dispatch.
+
+**Decisions:** Use the already-reserved next patch version `1.0.2`, matching
+the post-`v1.0.1` development metadata and the repository's established
+release pattern. Keep preparation and publication separate: push the release
+branch so hosted tests can run, but do not tag, publish, merge, or launch until
+the lead explicitly confirms those tests have finished.
+
+**Gotchas:** A green branch run is not a published release. The release
+workflow also builds portable Linux/macOS/Windows binaries only after its tag
+or manual trigger; do not infer asset availability from this preparation
+commit. After eventual publication, development metadata must advance again
+rather than leaving `main` identifying itself as `1.0.2` indefinitely.
+
+**Tests:** Campaign validation before release preparation: strict Rust
+**82/82** in normal, `-D warnings`, and required-CUDA modes; Julia ADK
+integration **17/17**; focused CUDA **101/101**; balanced computational Julia
+assertions passed with the sole timing-manifest defect repaired and retested
+**339/339**. Release-preparation validation is limited to metadata/TOML,
+changelog consistency, and `git diff --check`; hosted branch tests are pending.
+
+**Next:** Push `release/1.0.2` and wait for the lead's explicit confirmation
+that hosted tests finished. Only then merge/tag/publish `v1.0.2`, verify all
+three canonical binary assets and `SHA256SUMS.txt`, and advance development
+metadata.

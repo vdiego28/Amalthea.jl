@@ -1326,6 +1326,13 @@ unsafe fn precon_step_inner(
                     }
                 }
             }
+        } else {
+            // Julia's `evaluate!(::PreconStepper)` leaves `s.yn` holding
+            // the final internal RK stage when local extrapolation is off.
+            // `h.y_stage` is that stage after the loop above; retaining the
+            // caller's old `yn` here would evaluate the error against, and
+            // potentially accept, the wrong trial state.
+            std::ptr::copy_nonoverlapping(h.y_stage.as_ptr(), yn, n);
         }
 
         // ── error estimate ────────────────────────────────────────────────────────

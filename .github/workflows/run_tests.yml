@@ -6,6 +6,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 # CI must always exercise the Rust library built from the *checked-out*
 # source, never a published release asset. deps/build.jl keys its prebuilt
 # download on the Project.toml version, which still names the last tagged
@@ -234,17 +237,35 @@ jobs:
       - name: Run native-path benchmark
         run: julia --project test/benchmark_native_default.jl
 
-      # Publishes to the gh-pages branch and tracks the value over commits;
-      # comments + fails the job if a new measurement regresses sharply
-      # against recent history. Only runs on push to main (not PRs) so PR
-      # runs on forks/branches never need gh-pages write access and the
-      # tracked history stays free of unmerged-branch noise.
-      - name: Store benchmark result and check for regressions
+      # The publisher runs as a separate write-scoped job, so this benchmark
+      # job remains read-only on pull requests and non-main pushes.
+      - name: Upload benchmark result for main-branch publisher
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-benchmark-result
+          path: test/benchmark_result.json
+          if-no-files-found: error
+          retention-days: 1
+
+  benchmark-publish:
+    name: Publish native-path benchmark
+    needs: benchmark
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: native-benchmark-result
+          path: benchmark-result
+      - name: Store benchmark result and check for regressions
         uses: benchmark-action/github-action-benchmark@v1
         with:
           tool: 'customSmallerIsBetter'
-          output-file-path: test/benchmark_result.json
+          output-file-path: benchmark-result/benchmark_result.json
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: true
           # Documenter's deploydocs (documenter.yml) deploys push-to-main docs
@@ -253,7 +274,9 @@ jobs:
           # instead of at this action's own default (dev/bench).
           benchmark-data-dir-path: bench
           alert-threshold: '150%'
-          comment-on-alert: true
+          # Keep this publisher at contents-only permission; alert comments
+          # would require issues/pull-requests write access.
+          comment-on-alert: false
           fail-on-alert: true
 
   python-test:

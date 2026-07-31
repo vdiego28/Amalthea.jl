@@ -18,6 +18,7 @@ the durable rationale.
 | [Standalone CLI](#4-standalone-cli-luna-cli-backlog-s6-item-3) | S6 item 3 | **Parked — recommend against building as specified.** A smaller "dump-and-replay" alternative is sketched |
 | [Multi-mode StepIndex](#5-native-multi-mode-stepindexmode-backlog-phase-i-item-5) | Phase I.5b | **Parked.** Feasible but no consumer; numerical mode-field work is disproportionate |
 | [Beyond-Luna math](#6-beyond-luna-math-options-backlog-phase-j-item-6) | Phase J.6 | **Closed.** Direct error/PPT: do not pursue; short-kernel Raman measured 2026-07-25 and rejected |
+| [2026-07-31 correctness, safety, CI, and GPU campaign](#11-2026-07-31-correctness-safety-ci-and-gpu-campaign) | Correctness, safety, CI, and first ADK slice | **Complete 2026-07-31.** Four reviewed work units landed; thresholded ADK is retained at `_GPU_ADK_N_THRESHOLD = 8193` |
 
 ---
 
@@ -2533,3 +2534,172 @@ retain the existing final parsed summaries and complete failed-log emission.
 Test activity extraction and formatting without launching Julia. This restores
 live evidence without serializing items, duplicating worker output, or claiming
 an exact current test when TestItemRunner has not emitted such an event.
+
+## 11. 2026-07-31 correctness, safety, CI, and GPU campaign
+
+**Status: complete 2026-07-31.** The four work units below were implemented,
+independently reviewed, and recorded in the appended `PORT_LOG.md` entries.
+No standing GPU runner was added: CUDA validation remains local to the RTX
+5060 Ti until the lead reopens that deliberately deferred item.
+
+### 11.1 Make `norm=` and `locextrap=false` truthful on every stepper — complete
+
+At campaign start both Rust steppers hard-coded `weaknorm_c64`, even though
+`solve_precon` forwarded an arbitrary `norm` keyword. Native eligibility is
+therefore restricted to `norm === weaknorm`: `RustNativeStepper` and
+`RustPreconStepper` constructors reject any other function with
+`NativeIneligible`, while `solve_precon` routes such calls directly to
+`PreconStepper` even when either Rust toggle is enabled. Do not add a norm enum
+or callback ABI in this repair; Julia remains the complete arbitrary-function
+fallback. A regression must use a state where `maxnorm` accepts near
+`err=0.897` while `weaknorm` rejects near `err=1.181`, proving the fallback is
+behavioral rather than a type-only assertion.
+
+With `locextrap=false`, Julia advances with the final internal RK stage left by
+`evaluate!` (the `B[6] == b4[1:6]` fourth-order solution). The legacy Rust
+callback stepper instead left the caller's old `yn`; CPU resident started
+`yn` from `field`; CUDA overwrote its dead stage buffer with `field`. The
+repair preserves the final stage and uses it as the trial on all three Rust
+paths: copy
+`PreconStepFfiHandle.y_stage` to legacy `yn`, copy `CpuNativeSim.ystage` to
+resident `yn`, and retain CUDA's final `ystage_d` rather than reseeding it.
+`locextrap=true` continues to form the existing `b5` trial. In both modes the
+error norm is evaluated against the actual trial, rejection restores the old
+field, and acceptance applies the final interaction-picture propagator.
+
+Tests cover direct legacy/resident constructors, `solve_precon` dispatch,
+accepted and rejected steps, one-step equivalence, and a fixed-step multi-step
+trajectory. `locextrap=false` targets the reassociation tier (approximately
+`1e-13`) on legacy and CPU resident paths and must also pass the strict real-
+CUDA suite; `locextrap=true` is retained as a regression control.
+
+**Result:** `src/RK45.jl` now routes every non-`weaknorm` request to the Julia
+oracle and rejects direct Rust construction. The focused CPU suite passed
+**61/61**: the deliberately discriminating case accepted under `maxnorm` at
+about **0.896706** and rejected under `weaknorm` at about **1.18067**; the
+`locextrap` candidates differ by about **3.9694e-5**, so the check cannot pass
+if the flag is ignored. The independent correctness review approved the
+fallback and final-stage semantics.
+
+### 11.2 Harden the resident FFI boundary and CUDA setup transaction — complete
+
+`native_step`'s documented return codes become real: validate `sim`, `yn`, and
+`result` before dereference, run the backend call inside
+`catch_unwind(AssertUnwindSafe(...))`, return `-1` for invalid pointers and
+`-2` for a contained panic, and never let an unwind cross `extern "C"`.
+Backend `step` implementations retain their normal `0`/error returns.
+
+Correct `native_set_mode_avg_params`'s length contract. `towin` is
+`n_time_over` elements; `owin`, `sidx`, `pre_re`, `pre_im`, and `beta` are
+the resident spectral state length `sim.n`. Before constructing any slice or
+allocating, require positive dimensions, `n_time_over >= n_time`, and a state
+shape consistent with the configured grid (`sim.n == n_time/2 + 1` for
+RealGrid, `sim.n == n_time` for EnvGrid). The CPU backend must also confirm
+that FFT plans were configured for those same dimensions. Optional null
+arrays keep their documented identity/default behavior; a half-present
+`pre_re`/`pre_im` pair is rejected rather than silently defaulted.
+
+CUDA mode-averaged setup becomes transactional. Compute byte counts with
+checked multiplication and checked `usize`→`i32` conversion; build host
+vectors, all device buffers/copies, and both new cuFFT plans in temporaries.
+Only after every operation succeeds are old fields/plans replaced; then destroy
+the superseded plans. On a second-plan failure destroy the first temporary.
+Allocation/copy/plan errors return a nonzero code and leave the prior usable
+configuration untouched. Factor staging behind a small internal helper whose
+test implementation can inject allocation, copy, and second-plan failures;
+assert the previous field/config still round-trips after each failure.
+Null-pointer, dimension, panic-containment, and real-CUDA valid/invalid lifecycle
+tests join the existing FFI safety net.
+
+**Result:** `native_step` now contains unwinds and the mode-averaged setters
+validate before dereferencing. `CudaNativeSim` retains a usable old setup when
+strict real-CUDA staging fails. The focused native FFI suite passed **28/28**;
+the final strict Rust gate passed **79 library + 3 build-policy = 82/82** in
+normal and `-D warnings` builds with `AMALTHEA_REQUIRE_CUDA_TESTS=1`.
+
+### 11.3 Clean CI warnings, enforce real PTX in strict mode, and validate CUDA locally — complete
+
+Project-owned warnings are fixed narrowly: `SHA` compatibility becomes
+`"0.7, 1"`; the two local `sumfunc` definitions in `test_maths.jl` receive
+distinct names; and the PPT cache docstring renders `$HOME` literally without
+Documenter treating it as interpolation. The macOS `aws/tap` annotations,
+Node `punycode` notices, and ordinary CPU-build dummy-PTX warning are recorded
+as hosted/upstream or expected noise, not silenced by weakening security.
+
+`amalthea/build.rs` watches `AMALTHEA_REQUIRE_CUDA_TESTS`. In ordinary builds,
+missing/failing `nvcc` still emits dummy PTX so CPU-only development works. In
+required-CUDA mode, missing `nvcc`, failed compilation, or absent/non-real PTX
+fails the Cargo build before any self-skipping test can run. Add a build-script
+unit/integration seam that verifies both ordinary fallback and strict failure.
+
+Set workflow permissions to `contents: read` by default. Grant `contents:
+write` only to TagBot, the release `publish` job, the documentation deployment
+job, and the main-branch benchmark publisher; grant `issues: write` only to
+the upstream-sync issue job. Test, release-build, and PR-only jobs remain
+read-only. Report the repository's current lack of branch protection without
+changing repository settings.
+
+Restore local CUDA before physics expansion. Use
+`/usr/local/cuda-13.3/bin` explicitly, then (with user-approved privilege)
+run `nvidia-modprobe` to recreate `/dev/nvidia*`; if the driver still cannot
+communicate, inspect device permissions, persistence service, and kernel state
+before proposing reinstall/reboot. With no source change to the backend,
+establish: strict `cargo test`, a release build containing real PTX, the focused
+CUDA+dense/dispatch suite (prior baseline 104/104), and the strict balanced Rust
+group. Record exact commands and results; do not register this machine as a
+self-hosted runner.
+
+**Result:** project-owned `sumfunc`, Documenter `$HOME`, SHA-compatibility,
+and expected-dummy-PTX warnings were addressed without suppressing hosted or
+upstream notices. Test, release-build, documentation, and upstream-sync
+permissions now follow least privilege. The RTX 5060 Ti (driver **610.43.02**)
+produced real PTX markers in strict mode. Audited hosted evidence is test run
+**30642534593 (16/16)** and documentation run **30642537095 (success)**; no
+post-diff remote run was triggered, branch protection remains absent, and the
+repository default workflow permission remains write because repository
+settings were deliberately not changed.
+
+### 11.4 First GPU expansion: mode-averaged RealGrid ADK — complete and retained
+
+After the unchanged-backend hardware baseline became green, the implementation
+extended only the existing constant-linop, scalar-density, mode-averaged
+RealGrid path. It adds an
+`adk_ionization_kernel` reproducing `AdkIonizationRate::rate` from the seven
+transferred constants: absolute field, exact zero for non-finite or
+below-threshold input, the current power/exponential expression, and the
+`avfac != 1` cycle-average multiplier. `CudaNativeSim::set_plasma_params_adk`
+validates the handle and stores those scalars; a rate-kind flag selects ADK or
+the existing PPT LUT kernel. The downstream parallel fraction/current/
+polarization scans and finalizers are reused unchanged. No Julia FFI signature
+changes.
+
+GPU eligibility broadens only to exactly one plain Kerr response plus at most
+one **thresholded** ADK `PlasmaCumtrapz`, still excluding Raman, shot noise, mixtures,
+z-dependence, and radial/modal/free-space geometries. Direct kernel tests cover
+NaN/infinities, both signs, threshold boundaries, cycle averaging, and CPU
+`AdkIonizationRate` equivalence. Integration coverage requires comparable
+nonzero CPU/GPU stage derivatives; an ADK-on/off Julia effect at least 100×
+the asserted tolerance; fixed-step GPU/CPU/Julia agreement; deliberate
+reject/retry with bit-exact rejected state; and an adaptive trajectory.
+
+Measure the production-shaped ADK case at `length(Eω)=8193`
+(`n_time_over=32768`) using the same warmup and minimum-of-three five-step
+batches as the PPT threshold study. Retain the CUDA ADK source and production
+eligibility only if GPU is at least 1.4× faster than CPU with margin; choose
+the first measured size meeting that bar as a separate ADK threshold. If the
+bar is not met, revert the CUDA ADK implementation and eligibility changes,
+retain only the benchmark/correctness evidence in the design and PORT_LOG, and
+record the measured no-go. Do not leave a forced-on production path or guess
+an automatic threshold. Raman and all new geometries remain deferred.
+
+**Result:** the pointwise ADK kernel, ADK parameter storage, and narrow
+eligibility landed without a Julia FFI signature change. Independent math and
+code reviews approved the formula/path. Direct strict-CUDA coverage plus the
+Julia ADK integration suite (**17/17**, including non-vacuity, stage, fixed,
+adaptive, and reject/retry checks) passed; the existing focused CUDA suite
+passed **101/101**. At `length(Eω)=8193`, `n_time_over=32768`, warmup plus the
+minimum of three five-step batches measured CPU **[3.726, 3.707, 3.683]**
+ms/step and GPU **[2.433, 1.965, 1.716]** ms/step: **2.147×**, clearing the
+`>=1.4×` gate. Production `:auto` therefore retains the exact
+`_GPU_ADK_N_THRESHOLD = 8193`; `threshold=false` stays CPU fallback rather
+than selecting the CUDA ADK kernel.
