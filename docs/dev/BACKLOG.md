@@ -451,7 +451,7 @@ or "verified" inside a superseded narrative do not outrank this list.
     unused, untrusted `aws/tap`; both jobs pass, so trusting the tap or
     disabling Homebrew's trust check is explicitly out of scope.
     `test/test_groups.txt` now owns the group list, and the expanded
-    336-assertion manifest meta-test independently checks every executable
+    337-assertion manifest meta-test independently checks every executable
     test item's assignment, Python discovery, workflow inclusion, external
     CUDA test, and exact-or-legacy timing coverage. All 112 scheduled item
     memberships have timings. The scheduler can address individual
@@ -467,6 +467,23 @@ or "verified" inside a superseded narrative do not outrank this list.
     314/314 in 217.9s. Physics, multimode, propagation, I/O, fields, and
     examples also passed through the new scheduler. The first pushed Actions
     run remains the authoritative hosted-runner timing comparison.
+    **2026-07-29 first-push regression:** both Windows jobs failed before
+    launching Julia tests because Python decoded UTF-8 Julia sources with the
+    host CP-1252 default (`UnicodeDecodeError`, byte `0x81`). The bounded fix
+    makes UTF-8 explicit for scheduler manifests, source declarations,
+    timings, group lists, and worker-log parsing. The subsequent hosted Rust
+    trace exposed CRLF retained by the Julia meta-test when it split Python
+    stdout on bare `\n`; it now uses `readlines(IOBuffer(...))` and directly
+    regresses synthetic CRLF. Failed worker logs are also copied into durable
+    Actions output with console-safe escaping. CI workers now print their
+    assigned items before launch and emit one-minute flushed heartbeats with
+    elapsed time, log size, and the latest available log line, so a long
+    parallel bucket is no longer opaque. A 12-test scheduler unit suite and
+    the 337-assertion manifest meta-test pass locally. Hosted run
+    `30503817234` passed all **16/16** jobs: Windows physics and Rust are green,
+    Windows Rust passed **42569/42569**, and its retained log proves assignments
+    were flushed before launch followed by one-minute live heartbeats. This
+    first-push portability/visibility follow-up is closed.
 
 Explicitly parked, and therefore **not** resume points without a new user need:
 multi-mode `StepIndexMode` (no consumer), the full SoA conversion (~1% ceiling),

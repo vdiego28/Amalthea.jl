@@ -2461,3 +2461,75 @@ Before changing expected CI wall time:
    counts with serial baselines;
 5. validate workflow YAML and inspect printed CI bins. The first pushed run,
    not local estimates, supplies the authoritative hosted-runner improvement.
+
+### 10.5 Hosted Windows encoding follow-up (2026-07-29)
+
+The first pushed matrix reached the new scheduler on both Windows jobs but
+failed before test execution: Python 3.12 used the host's CP-1252 default for
+`Path.read_text()`, while the maintained Julia test files are UTF-8 and contain
+Unicode math identifiers. Discovery raised `UnicodeDecodeError` on byte
+`0x81` in both the physics and Rust jobs.
+
+Make UTF-8 part of the scheduler's explicit file-format contract rather than
+depending on the process locale. Pass `encoding="utf-8"` for maintained
+manifests, source declarations, timing files, and group lists; parse Julia
+worker logs as UTF-8 with replacement for a malformed diagnostic byte so log
+decoding can never hide the underlying test result. Keep child stdout pointed
+at the existing log files unchanged. Add a unit assertion that declaration
+discovery requests UTF-8 explicitly, rerun the local scheduler/meta/full gates,
+then push and require both Windows jobs to pass on the new hosted run.
+
+The UTF-8 patch's first hosted run proved discovery on Windows: physics passed
+and Rust launched both Julia buckets. The second Rust bucket later failed with
+112 non-passing assertions, but the scheduler printed only its aggregate
+summary and runner-local log path; Actions discarded that file when the job
+ended. Before changing any assertion or platform behavior, make a failed
+bucket's complete UTF-8-decoded worker log part of scheduler stdout, delimited
+with stable begin/end markers. Test this diagnostic without launching Julia.
+The worker logs are compact TestItemRunner output (kilobytes, not raw assertion
+streams), so emitting the complete file preserves the first error and stack
+trace without risking the ambiguity of a tail-only excerpt. Use the next
+hosted Windows Rust result to identify and then fix the platform-specific
+failure; the numerical deficit alone is not sufficient evidence for a code
+change.
+
+The first diagnostic run reached the begin marker but exposed another Windows
+locale boundary: Python decoded the worker file as UTF-8, then CP-1252
+`sys.stdout` rejected TestItemRunner's `✓` character before any test detail was
+emitted. Render diagnostic content through the active stdout encoding with
+`backslashreplace` first. Representable text remains unchanged and unsupported
+characters become lossless `\u`/`\U` escapes, so emitting a diagnostic can
+never replace the underlying test failure with a console-encoding exception.
+Cover this specifically with a CP-1252 output-safety unit test before the next
+push.
+
+The console-safe trace then identified the original test failure precisely.
+Python's Windows text stdout writes CRLF; the Julia manifest meta-test used
+`split(..., '\n')`, leaving `\r` on every non-final scheduled identity. Hosted
+assertions showed values such as `"test_grid.jl\r"` compared with
+`"test_grid.jl"`, causing discovery and timing checks to fail across every
+maintained group. Parse Python subprocess output with
+`readlines(IOBuffer(output))` for the same platform-independent newline
+handling already used for repository manifests. Add an explicit synthetic
+CRLF assertion to the meta-test and use the helper for both group discovery
+and the final secondary-root Rust membership check. No scheduler output format
+or test membership changes.
+
+### 10.6 Preserve live CI visibility under parallel buckets
+
+Redirecting each Julia worker to a private log prevents interleaved output, but
+the current `as_completed` loop produces no durable Actions output until every
+worker exits. GitHub can therefore say only that the step is in progress; a
+reviewer cannot distinguish a healthy long test from a hung process or see
+which tests a bucket owns.
+
+Keep the non-interleaved worker logs and existing bucket granularity. In CI
+mode, print each worker's complete assigned item list before launch and flush
+it immediately. While futures remain active, run a reporter that wakes once
+per minute and prints, with flushing, each active worker's elapsed wall time,
+current log byte count, and most recent non-empty log line (console-safe and
+length-bounded). Report process completion as soon as its future resolves;
+retain the existing final parsed summaries and complete failed-log emission.
+Test activity extraction and formatting without launching Julia. This restores
+live evidence without serializing items, duplicating worker output, or claiming
+an exact current test when TestItemRunner has not emitted such an event.

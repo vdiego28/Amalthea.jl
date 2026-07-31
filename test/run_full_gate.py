@@ -23,7 +23,7 @@ GROUPS_FILE = REPO_ROOT / "test" / "test_groups.txt"
 
 GROUPS = [
     line.strip()
-    for line in GROUPS_FILE.read_text().splitlines()
+    for line in GROUPS_FILE.read_text(encoding="utf-8").splitlines()
     if line.strip() and not line.lstrip().startswith("#")
 ]
 

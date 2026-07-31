@@ -2190,3 +2190,225 @@ run with direct device access.
 
 **Next:** Push the reconciled feature branch, merge it into `main`, push
 `main`, and inspect the first hosted matrix produced by the new scheduler.
+
+## 2026-07-29 — Backlog 20 follow-up — Windows scheduler UTF-8 — Codex (GPT-5)
+
+**Status:** in-progress
+
+**Did:** Diagnosed the first hosted balanced-matrix failure and prepared a
+bounded Windows portability fix. Both Windows jobs reached
+`parallel_group_tests.py` but failed during source discovery before launching
+any Julia test because Python used CP-1252 to decode UTF-8 Julia sources.
+
+**How:** The design is recorded in `docs/dev/native-port/PLANS.md` §10.5.
+`test/parallel_group_tests.py` now passes `encoding="utf-8"` for maintained
+manifests, test declarations, and timing files, and parses Julia worker logs
+as UTF-8 with replacement for malformed diagnostic bytes.
+`test/run_full_gate.py` reads the canonical group list as UTF-8.
+`test/test_parallel_group_tests.py` asserts declaration discovery requests
+UTF-8 explicitly. No source solver, FFI symbol, ABI, or test assertion changed.
+
+**Decisions:** Treat encoding as a file-format contract, not a runner-locale
+assumption. Keep log decoding tolerant only at the diagnostic boundary;
+repository-owned source/manifests remain strict UTF-8 so corruption fails
+clearly.
+
+**Gotchas:** The hosted failure is identical in physics and Rust because both
+die in shared discovery, not because either test group failed. A local
+`LC_ALL=C` end-to-end probe successfully passed Python discovery/log parsing
+but caused Julia/Pkg to attempt sandbox-blocked scratch-log writes; that
+artificial Julia-environment failure is not the Windows defect and is not a
+test result for the patch.
+
+**Tests:** Scheduler unit tests **8/8**, Python byte compilation, workflow YAML
+parse, `git diff --check`, explicit ASCII-locale physics item discovery, and
+the focused manifest meta-test **336/336**: pass. Original hosted run
+`30453384776` failed jobs `90580736952` (Windows physics) and `90580737061`
+(Windows Rust) at `Path.read_text()` with `UnicodeDecodeError`.
+
+**Next:** Commit and push `fix-windows-scheduler-utf8`, require both Windows
+jobs to pass on the new hosted run, then mark this entry complete and merge
+the hotfix into `main`.
+
+## 2026-07-29 — Backlog 20 follow-up — hosted Windows Rust diagnostics — Codex (GPT-5)
+
+**Status:** in-progress
+
+**Did:** Verified the first UTF-8 hotfix matrix and added durable failed-bucket
+diagnostics after its Windows Rust job exposed a second, test-level failure.
+Fifteen jobs passed, including Windows physics and both non-Windows Rust jobs.
+Windows Rust completed both buckets, but worker 1 returned **42245/42357**
+with 112 non-passing assertions. The runner-local worker log was not retained,
+so the aggregate deficit does not identify a safe fix.
+
+**How:** Extended the design in `docs/dev/native-port/PLANS.md` §10.5.
+`test/parallel_group_tests.py:256` now emits a failed worker's complete,
+UTF-8-decoded TestItemRunner log to job stdout between stable begin/end
+markers; `run_groups` calls it only for a failed bucket. No passing-job output,
+test assertion, solver source, FFI symbol, or ABI changed.
+`test/test_parallel_group_tests.py` verifies both delimiters and Unicode log
+content without launching Julia.
+
+**Decisions:** Do not infer a test fix from the exact 112-assertion deficit,
+even though worker 1 includes the 112-membership manifest meta-test. Preserve
+the complete compact worker log rather than a tail so the first error and stack
+trace survive. Keep per-worker files for normal parallel output isolation.
+
+**Gotchas:** GitHub's completed job log and run-artifact API contained no
+`.rust_test_logs` files; runner-local paths are unusable after teardown. The
+run's Julia package cache is not a workspace artifact and cannot recover the
+log.
+
+**Tests:** Scheduler unit tests **9/9**, Python byte compilation, and
+`git diff --check`: pass. Hosted hotfix run `30454407921` passed 15/16 jobs;
+only Windows Rust job `90584183537` failed after **1723.3s**.
+
+**Next:** Push the diagnostic commit, inspect the next Windows Rust worker log,
+then implement and validate only the platform fix supported by that trace.
+
+## 2026-07-29 — Backlog 20 follow-up — Windows diagnostic stdout — Codex (GPT-5)
+
+**Status:** in-progress
+
+**Did:** Hardened failed-worker log emission after the first diagnostic run
+showed that Windows CP-1252 stdout could not represent TestItemRunner's Unicode
+status glyphs. The underlying Rust bucket still failed **42245/42357**; this
+unit fixes only the diagnostic that masked its details.
+
+**How:** Extended `docs/dev/native-port/PLANS.md` §10.5.
+`test/parallel_group_tests.py:282` encodes the already UTF-8-decoded worker
+content through `sys.stdout.encoding` with `backslashreplace`, then decodes it
+back before printing. Characters supported by the console are unchanged;
+unsupported characters are rendered as ASCII `\u`/`\U` escapes.
+`test/test_parallel_group_tests.py` exercises the exact CP-1252 boundary with
+both `✓` and `λ`.
+
+**Decisions:** Preserve the host console encoding and escape unsupported
+diagnostic characters rather than globally reconfiguring stdout. This keeps
+passing scheduler output unchanged and avoids assuming how PowerShell or other
+callers consume UTF-8 bytes.
+
+**Gotchas:** Hosted diagnostic run `30499251746`, Windows Rust job
+`90735017011`, reached the failed-log begin marker and then raised
+`UnicodeEncodeError` for `\u2713` at the `print(content)` call. No worker detail
+survived that runner teardown.
+
+**Tests:** Scheduler unit tests **10/10**, Python byte compilation, and
+`git diff --check`: pass.
+
+**Next:** Push, wait for the Windows Rust bucket, and use its now
+console-safe complete trace to identify the original 112-assertion failure.
+
+## 2026-07-30 — Backlog 20 follow-up — Windows CRLF manifest output — Codex (GPT-5)
+
+**Status:** in-progress
+
+**Did:** Identified and fixed the original Windows Rust assertion failure.
+The durable worker trace showed Python subprocess identities ending in `\r`
+(for example `"test_grid.jl\r"`), producing 112 manifest failures while all
+physics/native assertions in the same bucket passed.
+
+**How:** Recorded the confirmed design in
+`docs/dev/native-port/PLANS.md` §10.5. `test/test_test_manifest.jl:18` adds
+`output_lines(output)`, backed by `readlines(IOBuffer(output))`, and uses it
+for every scheduler discovery result and the final external-CUDA membership
+check. Unlike splitting on bare `\n`, Julia's line reader removes both LF and
+CRLF terminators. A synthetic CRLF assertion makes the platform contract
+executable. No scheduler identity, timing, test assignment, solver source,
+FFI symbol, or ABI changed.
+
+**Decisions:** Fix the consumer at its line-oriented parsing boundary instead
+of forcing Python to emit Unix newlines on Windows. `readlines` is the same
+cross-platform abstraction already used for repository manifests and remains
+correct for Linux/macOS output.
+
+**Gotchas:** Console-safe diagnostic run `30500651407`, Windows Rust job
+`90739350328`, proved the failure: every non-final subprocess line retained
+`\r`; the final line in each group passed because `chomp` removed its complete
+CRLF. The trace itself was emitted successfully with Unicode represented as
+`\u` escapes where CP-1252 could not encode it.
+
+**Tests:** Scheduler unit tests **10/10**, Python byte compilation,
+`git diff --check`, and the focused Rust manifest item **337/337**: pass.
+
+**Next:** Commit and push the CRLF parser fix, require the hosted Windows Rust
+job and complete matrix to pass, then close the UTF-8/CRLF follow-up and merge
+the hotfix into `main`.
+
+## 2026-07-30 — Backlog 20 follow-up — live parallel-CI visibility — Codex (GPT-5)
+
+**Status:** in-progress
+
+**Did:** Restored live Actions visibility for parallel test buckets after the
+lead correctly observed that an `in_progress` step did not prove which tests
+were assigned, advancing, failing, or hung. The CRLF verification job remained
+opaque beyond 37 minutes, so it is not treated as evidence of correct progress.
+
+**How:** Added the design in `docs/dev/native-port/PLANS.md` §10.6.
+In CI mode, `test/parallel_group_tests.py:403` prints and immediately flushes
+each worker's complete item assignment before launch. A reporter thread wakes
+every 60 seconds while futures remain active and prints elapsed time, current
+worker-log byte count, and the latest non-empty UTF-8 line after console-safe
+escaping and a 240-character bound. Worker process completion is reported as
+soon as its future resolves; existing parsed totals and full failure logs
+remain unchanged. Local non-CI gate output does not gain the item listing or
+reporter.
+
+**Decisions:** Keep Julia workers' stdout isolated to avoid unreadable
+interleaving. Report the latest emitted log line as activity, not as an exact
+“currently running test” claim: TestItemRunner does not expose a current-item
+event to the parent scheduler. Flush every live message so Python's piped
+stdout buffering cannot defer it until job completion.
+
+**Gotchas:** Actions timestamps on prior runs showed even the pre-launch
+distribution lines only at process exit because Python stdout was block
+buffered. Adding heartbeat text without `flush=True` would therefore leave the
+original observability defect intact.
+
+**Tests:** Scheduler unit tests **12/12**, including a simulated CI future that
+proves assignment, heartbeat/latest-line, immediate completion, and final
+summary output; Python byte compilation and `git diff --check`: pass. The
+focused CRLF manifest item remains **337/337** from the preceding unit.
+
+**Next:** Push the visibility commit, inspect its one-minute Windows Rust
+heartbeats, require the complete matrix to pass, then close and merge the
+hotfix.
+
+## 2026-07-31 — Backlog 20 follow-up — Windows scheduler closure — Codex (GPT-5)
+
+**Status:** complete
+
+**Did:** Closed the hosted Windows portability and parallel-CI visibility
+follow-up. The final hotfix branch matrix passed every job, including both
+Windows groups, and the retained Rust log proves that live assignments,
+one-minute heartbeats, independent worker completions, and final totals all
+reach durable Actions output.
+
+**How:** No implementation changed in this closure unit. The completed branch
+contains explicit UTF-8 scheduler I/O (`724acc4`), complete failed-worker logs
+(`da72df1`), console-safe diagnostics (`028da37`), CRLF-safe Julia subprocess
+parsing (`c43a7b9`), and live parallel-worker reporting (`41479a3`). No solver
+source, FFI symbol, or ABI changed across the hotfix.
+
+**Decisions:** Accept the reporter's latest emitted log line as honest live
+activity rather than claiming an exact current `@testitem`. Keep the 60-second
+interval requested by the lead. Preserve full failure-log emission even though
+the final run is green; it is now the durable diagnostic path for future
+bucket failures.
+
+**Gotchas:** GitHub's job-log API returns `BlobNotFound` while a job is active,
+although the Actions web UI streams flushed output. The retained post-job log
+is therefore the auditable source for exact heartbeat timestamps. Early
+heartbeats legitimately reported zero-byte worker logs while Julia compiled;
+later heartbeats showed growing files and propagation progress.
+
+**Tests:** Local scheduler unit tests **12/12**, Python byte compilation,
+`git diff --check`, and focused manifest item **337/337**: pass. Hosted run
+`30503817234`: **16/16 jobs pass**. Windows Rust job `90749235806` printed
+assignments at 00:52:41Z, heartbeats at 60-second intervals, worker 1 completion
+at 1202.3s, worker 0 completion at 1618.5s, and **42569/42569** total. Windows
+physics job `90749235858` also passed.
+
+**Next:** Commit this closure record, merge `fix-windows-scheduler-utf8` into
+`main`, push `main`, and require the resulting main test/documentation runs to
+pass before deleting or otherwise retiring branches.
