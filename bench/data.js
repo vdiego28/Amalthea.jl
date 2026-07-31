@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785329700590,
+  "lastUpdate": 1785511517785,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -724,6 +724,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 3.011102,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "distinct": true,
+          "id": "1fff51b9cf0ecd96195b5e8c1deb3f44393af598",
+          "message": "Merge branch 'fix-windows-scheduler-utf8'",
+          "timestamp": "2026-07-31T11:21:25-04:00",
+          "tree_id": "b3168b1ffba0c494ec64339d34b9c6dc6b313199",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/1fff51b9cf0ecd96195b5e8c1deb3f44393af598"
+        },
+        "date": 1785511516614,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.898517,
             "unit": "ms/step"
           }
         ]
