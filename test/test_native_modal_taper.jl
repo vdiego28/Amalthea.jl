@@ -57,6 +57,7 @@ using TestItems
                                       max_dt=dt, min_dt=dt)
                 s_ru = RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
                                           max_dt=dt, min_dt=dt, flength=L)
+                @test RK45._native_backend(s_ru) === :cpu
 
                 solve(s_jl, L)
                 solve(s_ru, L)

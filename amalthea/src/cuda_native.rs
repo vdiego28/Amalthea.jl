@@ -1,7 +1,9 @@
 use crate::cuda::{
-    CUFFT_D2Z, CUFFT_Z2D, GpuBuffer, cufftHandle, get_cufft_api, get_driver_api, get_gpu_context,
+    CUFFT_D2Z, CUFFT_FORWARD, CUFFT_INVERSE, CUFFT_Z2D, CUFFT_Z2Z, GpuBuffer, cufftHandle,
+    get_cufft_api, get_driver_api, get_gpu_context,
 };
 use crate::native::{NativeBackend, NativeStepResult};
+use crate::raman::PrecomputedStepCoeffs;
 use libc::size_t;
 use num_complex::Complex;
 use std::ffi::{c_char, c_double, c_int, c_uint};
@@ -9,6 +11,8 @@ use std::ffi::{c_char, c_double, c_int, c_uint};
 use std::sync::Mutex;
 #[cfg(test)]
 use std::sync::atomic::{AtomicU8, Ordering};
+
+include!(concat!(env!("OUT_DIR"), "/cuda_raman_limits.rs"));
 
 #[cfg(test)]
 static MODE_AVG_SETUP_FAIL_POINT: AtomicU8 = AtomicU8::new(0);
@@ -62,6 +66,7 @@ struct ModeAvgSetup {
     sqrt_aeff: c_double,
     fft_r2c: cufftHandle,
     fft_c2r: cufftHandle,
+    fft_c2c: cufftHandle,
 }
 
 impl Drop for ModeAvgSetup {
@@ -73,6 +78,9 @@ impl Drop for ModeAvgSetup {
                 }
                 if self.fft_c2r != 0 {
                     (cufft.cufftDestroy)(self.fft_c2r);
+                }
+                if self.fft_c2c != 0 {
+                    (cufft.cufftDestroy)(self.fft_c2c);
                 }
             }
         }
@@ -93,6 +101,9 @@ enum PlasmaRateKind {
 
 pub struct CudaNativeSim {
     pub n: usize,
+    /// `true` for RealGrid/r2c; `false` for EnvGrid/c2c. Set by
+    /// `native_set_fftw_plans` before mode-averaged parameters are staged.
+    pub is_real: bool,
     pub n_time: usize,
     pub n_time_over: usize,
     /// Oversampled spectral length `n_time_over/2+1` (RealGrid r2c
@@ -180,6 +191,20 @@ pub struct CudaNativeSim {
     // GPU-resident stepper entry).
     pub fft_r2c: cufftHandle,
     pub fft_c2r: cufftHandle,
+    pub fft_c2c: cufftHandle,
+
+    // Resident SDO Raman state. The coefficient layout is repr(C) and shared
+    // with `raman_ade_kernel`; no host/device transfer occurs during a step.
+    pub has_raman: bool,
+    pub raman_num_osc: usize,
+    pub raman_density: c_double,
+    pub raman_thg: bool,
+    pub raman_coeffs_d: GpuBuffer,
+    pub raman_intensity_d: GpuBuffer,
+    pub raman_p_d: GpuBuffer,
+    pub raman_hilbert_a_d: GpuBuffer,
+    pub raman_hilbert_b_d: GpuBuffer,
+    pub raman_hilbert_fft: cufftHandle,
 }
 
 impl CudaNativeSim {
@@ -234,9 +259,15 @@ impl CudaNativeSim {
         let plas_phase_d = GpuBuffer::alloc(8)?;
         let plas_current_d = GpuBuffer::alloc(8)?;
         let plas_scan_sums_d = GpuBuffer::alloc(8)?;
+        let raman_coeffs_d = GpuBuffer::alloc(std::mem::size_of::<PrecomputedStepCoeffs>())?;
+        let raman_intensity_d = GpuBuffer::alloc(8)?;
+        let raman_p_d = GpuBuffer::alloc(8)?;
+        let raman_hilbert_a_d = GpuBuffer::alloc(16)?;
+        let raman_hilbert_b_d = GpuBuffer::alloc(16)?;
 
         Ok(Self {
             n,
+            is_real: true,
             n_time: 0,
             n_time_over: 0,
             n_spec_over: 0,
@@ -288,6 +319,17 @@ impl CudaNativeSim {
             plas_scan_sums_d,
             fft_r2c: 0,
             fft_c2r: 0,
+            fft_c2c: 0,
+            has_raman: false,
+            raman_num_osc: 0,
+            raman_density: 0.0,
+            raman_thg: true,
+            raman_coeffs_d,
+            raman_intensity_d,
+            raman_p_d,
+            raman_hilbert_a_d,
+            raman_hilbert_b_d,
+            raman_hilbert_fft: 0,
         })
     }
 }
@@ -313,7 +355,8 @@ impl CudaNativeSim {
         let n_spec = self.n;
         if n_time == 0
             || n_time_over < n_time
-            || n_spec != n_time / 2 + 1
+            || (self.is_real && n_spec != n_time / 2 + 1)
+            || (!self.is_real && n_spec != n_time)
             || n_spec < 2
             || (pre_re.is_null() != pre_im.is_null())
             || !nlscale.is_finite()
@@ -324,10 +367,14 @@ impl CudaNativeSim {
         {
             return Err("invalid mode-averaged CUDA dimensions or pre pair".to_string());
         }
-        let n_spec_over = n_time_over
-            .checked_div(2)
-            .and_then(|n| n.checked_add(1))
-            .ok_or_else(|| "mode-averaged CUDA spectral dimension overflow".to_string())?;
+        let n_spec_over = if self.is_real {
+            n_time_over
+                .checked_div(2)
+                .and_then(|n| n.checked_add(1))
+                .ok_or_else(|| "mode-averaged CUDA spectral dimension overflow".to_string())?
+        } else {
+            n_time_over
+        };
         let n_time_over_i32 = i32::try_from(n_time_over)
             .map_err(|_| "mode-averaged CUDA time dimension exceeds cuFFT i32 range".to_string())?;
         let sc = nlscale * sqrt_aeff;
@@ -391,8 +438,9 @@ impl CudaNativeSim {
             .collect::<Vec<_>>();
 
         mode_avg_setup_failpoint(MODE_AVG_FAIL_ALLOC)?;
-        let eto_d = GpuBuffer::alloc(checked_bytes(n_time_over, 8)?)?;
-        let pto_d = GpuBuffer::alloc(checked_bytes(n_time_over, 8)?)?;
+        let time_bytes = if self.is_real { 8 } else { 16 };
+        let eto_d = GpuBuffer::alloc(checked_bytes(n_time_over, time_bytes)?)?;
+        let pto_d = GpuBuffer::alloc(checked_bytes(n_time_over, time_bytes)?)?;
         let eoo_d = GpuBuffer::alloc(checked_bytes(n_spec_over, 16)?)?;
         let poo_d = GpuBuffer::alloc(checked_bytes(n_spec_over, 16)?)?;
         let towin_d = GpuBuffer::alloc(checked_bytes(n_time_over, 8)?)?;
@@ -412,19 +460,27 @@ impl CudaNativeSim {
 
         let cufft = get_cufft_api()?;
         let mut fft_r2c = 0;
-        let rc = unsafe { (cufft.cufftPlan1d)(&mut fft_r2c, n_time_over_i32, CUFFT_D2Z, 1) };
-        if rc != 0 {
-            return Err(format!("cufftPlan1d (D2Z) failed: {rc}"));
-        }
         let mut fft_c2r = 0;
-        if let Err(e) = mode_avg_setup_failpoint(MODE_AVG_FAIL_SECOND_PLAN) {
-            unsafe { (cufft.cufftDestroy)(fft_r2c) };
-            return Err(e);
-        }
-        let rc = unsafe { (cufft.cufftPlan1d)(&mut fft_c2r, n_time_over_i32, CUFFT_Z2D, 1) };
-        if rc != 0 {
-            unsafe { (cufft.cufftDestroy)(fft_r2c) };
-            return Err(format!("cufftPlan1d (Z2D) failed: {rc}"));
+        let mut fft_c2c = 0;
+        if self.is_real {
+            let rc = unsafe { (cufft.cufftPlan1d)(&mut fft_r2c, n_time_over_i32, CUFFT_D2Z, 1) };
+            if rc != 0 {
+                return Err(format!("cufftPlan1d (D2Z) failed: {rc}"));
+            }
+            if let Err(e) = mode_avg_setup_failpoint(MODE_AVG_FAIL_SECOND_PLAN) {
+                unsafe { (cufft.cufftDestroy)(fft_r2c) };
+                return Err(e);
+            }
+            let rc = unsafe { (cufft.cufftPlan1d)(&mut fft_c2r, n_time_over_i32, CUFFT_Z2D, 1) };
+            if rc != 0 {
+                unsafe { (cufft.cufftDestroy)(fft_r2c) };
+                return Err(format!("cufftPlan1d (Z2D) failed: {rc}"));
+            }
+        } else {
+            let rc = unsafe { (cufft.cufftPlan1d)(&mut fft_c2c, n_time_over_i32, CUFFT_Z2Z, 1) };
+            if rc != 0 {
+                return Err(format!("cufftPlan1d (Z2Z) failed: {rc}"));
+            }
         }
 
         Ok(ModeAvgSetup {
@@ -444,13 +500,22 @@ impl CudaNativeSim {
             plas_current_d: Some(plas_current_d),
             plas_scan_sums_d: Some(plas_scan_sums_d),
             kerr_fac,
-            scale_fwd: (n_spec_over as f64 - 1.0) / (n_spec as f64 - 1.0),
-            scale_inv: (n_spec as f64 - 1.0) / (n_spec_over as f64 - 1.0),
+            scale_fwd: if self.is_real {
+                (n_spec_over as f64 - 1.0) / (n_spec as f64 - 1.0)
+            } else {
+                n_time_over as f64 / n_time as f64
+            },
+            scale_inv: if self.is_real {
+                (n_spec as f64 - 1.0) / (n_spec_over as f64 - 1.0)
+            } else {
+                n_time as f64 / n_time_over as f64
+            },
             inv_nto_sc: (1.0 / n_time_over as f64) * (1.0 / sc),
             nlscale,
             sqrt_aeff,
             fft_r2c,
             fft_c2r,
+            fft_c2c,
         })
     }
 
@@ -460,6 +525,8 @@ impl CudaNativeSim {
             std::mem::replace(&mut self.fft_r2c, std::mem::replace(&mut staged.fft_r2c, 0));
         let old_c2r =
             std::mem::replace(&mut self.fft_c2r, std::mem::replace(&mut staged.fft_c2r, 0));
+        let old_c2c =
+            std::mem::replace(&mut self.fft_c2c, std::mem::replace(&mut staged.fft_c2c, 0));
         self.n_time = staged.n_time;
         self.n_time_over = staged.n_time_over;
         self.n_spec_over = staged.n_spec_over;
@@ -506,6 +573,9 @@ impl CudaNativeSim {
                 }
                 if old_c2r != 0 {
                     (cufft.cufftDestroy)(old_c2r);
+                }
+                if old_c2c != 0 {
+                    (cufft.cufftDestroy)(old_c2c);
                 }
             }
         }
@@ -688,6 +758,14 @@ impl CudaNativeSim {
     /// `self.ystage_d` must already hold the current stage's spectral field
     /// (length `n`), and `idx < 7`.
     unsafe fn compute_rhs_mode_avg(&mut self, idx: usize) -> Result<(), String> {
+        if self.is_real {
+            unsafe { self.compute_rhs_mode_avg_real(idx) }
+        } else {
+            unsafe { self.compute_rhs_mode_avg_env(idx) }
+        }
+    }
+
+    unsafe fn compute_rhs_mode_avg_real(&mut self, idx: usize) -> Result<(), String> {
         if self.n_time_over == 0 || self.fft_r2c == 0 || self.fft_c2r == 0 {
             // No FFT plans configured (set_mode_avg_params not called yet,
             // or plan creation failed) — zero-fill, matching this file's
@@ -937,6 +1015,123 @@ impl CudaNativeSim {
                 )?;
             }
 
+            // ── Step 3c: resident Raman SDO ADE. `thg=true` uses the
+            // carrier field square directly; `thg=false` follows
+            // RamanPolarField's analytic-signal Hilbert convention using a
+            // dedicated c2c plan and resident complex scratch.
+            if self.has_raman {
+                let mut thg = self.raman_thg as c_int;
+                let mut intensity_args: [*mut libc::c_void; 4] = [
+                    &mut self.eto_d.dptr as *mut _ as *mut _,
+                    &mut self.raman_intensity_d.dptr as *mut _ as *mut _,
+                    &mut n_time_over_i as *mut _ as *mut _,
+                    &mut thg as *mut _ as *mut _,
+                ];
+                launch_checked(
+                    driver,
+                    ctx.raman_intensity_real_fn,
+                    grid_size_t,
+                    block_size,
+                    0,
+                    &mut intensity_args,
+                    "raman_intensity_real",
+                )?;
+                if !self.raman_thg {
+                    let mut pack_args: [*mut libc::c_void; 3] = [
+                        &mut self.eto_d.dptr as *mut _ as *mut _,
+                        &mut self.raman_hilbert_a_d.dptr as *mut _ as *mut _,
+                        &mut n_time_over_i as *mut _ as *mut _,
+                    ];
+                    launch_checked(
+                        driver,
+                        ctx.raman_hilbert_pack_fn,
+                        grid_size_t,
+                        block_size,
+                        0,
+                        &mut pack_args,
+                        "raman_hilbert_pack",
+                    )?;
+                    let rc = (cufft.cufftExecZ2Z)(
+                        self.raman_hilbert_fft,
+                        self.raman_hilbert_a_d.dptr as *mut _,
+                        self.raman_hilbert_b_d.dptr as *mut _,
+                        CUFFT_FORWARD,
+                    );
+                    if rc != 0 {
+                        return Err(format!("raman Hilbert forward failed ({rc})"));
+                    }
+                    let mut filter_args: [*mut libc::c_void; 2] = [
+                        &mut self.raman_hilbert_b_d.dptr as *mut _ as *mut _,
+                        &mut n_time_over_i as *mut _ as *mut _,
+                    ];
+                    launch_checked(
+                        driver,
+                        ctx.raman_hilbert_filter_fn,
+                        grid_size_t,
+                        block_size,
+                        0,
+                        &mut filter_args,
+                        "raman_hilbert_filter",
+                    )?;
+                    let rc = (cufft.cufftExecZ2Z)(
+                        self.raman_hilbert_fft,
+                        self.raman_hilbert_b_d.dptr as *mut _,
+                        self.raman_hilbert_a_d.dptr as *mut _,
+                        CUFFT_INVERSE,
+                    );
+                    if rc != 0 {
+                        return Err(format!("raman Hilbert inverse failed ({rc})"));
+                    }
+                    let mut hilbert_scale = 1.0 / self.n_time_over as f64;
+                    let mut hilbert_scale_args: [*mut libc::c_void; 3] = [
+                        &mut self.raman_hilbert_a_d.dptr as *mut _ as *mut _,
+                        &mut hilbert_scale as *mut _ as *mut _,
+                        &mut n_time_over_i as *mut _ as *mut _,
+                    ];
+                    launch_checked(
+                        driver,
+                        ctx.scale_complex_fn,
+                        grid_size_t,
+                        block_size,
+                        0,
+                        &mut hilbert_scale_args,
+                        "raman Hilbert inverse scale",
+                    )?;
+                    let mut intensity_args: [*mut libc::c_void; 3] = [
+                        &mut self.raman_hilbert_a_d.dptr as *mut _ as *mut _,
+                        &mut self.raman_intensity_d.dptr as *mut _ as *mut _,
+                        &mut n_time_over_i as *mut _ as *mut _,
+                    ];
+                    launch_checked(
+                        driver,
+                        ctx.raman_hilbert_intensity_fn,
+                        grid_size_t,
+                        block_size,
+                        0,
+                        &mut intensity_args,
+                        "raman_hilbert_intensity",
+                    )?;
+                }
+                self.launch_raman_ade(driver, ctx, 1, self.n_time_over)?;
+                let mut density = self.raman_density;
+                let mut accumulate_args: [*mut libc::c_void; 5] = [
+                    &mut self.pto_d.dptr as *mut _ as *mut _,
+                    &mut self.eto_d.dptr as *mut _ as *mut _,
+                    &mut self.raman_p_d.dptr as *mut _ as *mut _,
+                    &mut density as *mut _ as *mut _,
+                    &mut n_time_over_i as *mut _ as *mut _,
+                ];
+                launch_checked(
+                    driver,
+                    ctx.raman_accumulate_real_fn,
+                    grid_size_t,
+                    block_size,
+                    0,
+                    &mut accumulate_args,
+                    "raman_accumulate_real",
+                )?;
+            }
+
             // ── Step 4: time-domain window apodization on the combined Pto.
             let mut window_args: [*mut libc::c_void; 3] = [
                 &mut self.pto_d.dptr as *mut _ as *mut _,
@@ -985,6 +1180,206 @@ impl CudaNativeSim {
             )?;
 
             Ok(())
+        }
+    }
+
+    /// EnvGrid counterpart of `compute_rhs_mode_avg_real`. It mirrors
+    /// `CpuNativeSim::rhs_mode_avg_env`: copy the low/high spectral halves into
+    /// an oversampled c2c buffer, apply the inverse transform and scaling,
+    /// evaluate Kerr plus Raman in complex time domain, window, then copy the
+    /// low/high output halves back to the ODE state.
+    unsafe fn compute_rhs_mode_avg_env(&mut self, idx: usize) -> Result<(), String> {
+        if self.n_time_over == 0 || self.fft_c2c == 0 {
+            let zeros = vec![Complex::new(0.0, 0.0); self.n];
+            self.ks_d[idx].copy_to_device(&zeros)?;
+            return Ok(());
+        }
+        let ctx = get_gpu_context().ok_or_else(|| "GPU context not initialized".to_string())?;
+        let driver = get_driver_api()?;
+        let cufft = get_cufft_api()?;
+        unsafe {
+            crate::cuda::activate_context()?;
+
+            let block_size = 256u32;
+            let grid_spec = (self.n as u32).div_ceil(block_size);
+            let grid_over = (self.n_spec_over as u32).div_ceil(block_size);
+            let mut n_spec = self.n as c_int;
+            let mut n_spec_over = self.n_spec_over as c_int;
+            let mut n_time_over = self.n_time_over as c_int;
+            let mut scale_fwd = self.scale_fwd;
+            let mut expand_args: [*mut libc::c_void; 5] = [
+                &mut self.ystage_d.dptr as *mut _ as *mut _,
+                &mut self.eoo_d.dptr as *mut _ as *mut _,
+                &mut scale_fwd as *mut _ as *mut _,
+                &mut n_spec as *mut _ as *mut _,
+                &mut n_spec_over as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.expand_spectrum_env_fn,
+                grid_over,
+                block_size,
+                0,
+                &mut expand_args,
+                "expand_spectrum_env",
+            )?;
+
+            let rc = (cufft.cufftExecZ2Z)(
+                self.fft_c2c,
+                self.eoo_d.dptr as *mut _,
+                self.eto_d.dptr as *mut _,
+                CUFFT_INVERSE,
+            );
+            if rc != 0 {
+                return Err(format!("cufftExecZ2Z inverse failed ({rc})"));
+            }
+
+            let mut inv_scale = self.inv_nto_sc;
+            let mut scale_args: [*mut libc::c_void; 3] = [
+                &mut self.eto_d.dptr as *mut _ as *mut _,
+                &mut inv_scale as *mut _ as *mut _,
+                &mut n_time_over as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.scale_complex_fn,
+                grid_over,
+                block_size,
+                0,
+                &mut scale_args,
+                "scale_eto_env(step1+2)",
+            )?;
+
+            let mut kerr_fac = self.kerr_fac;
+            let mut kerr_args: [*mut libc::c_void; 4] = [
+                &mut self.pto_d.dptr as *mut _ as *mut _,
+                &mut self.eto_d.dptr as *mut _ as *mut _,
+                &mut kerr_fac as *mut _ as *mut _,
+                &mut n_time_over as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.rhs_mode_avg_env_fn,
+                grid_over,
+                block_size,
+                0,
+                &mut kerr_args,
+                "rhs_mode_avg_env(step3)",
+            )?;
+
+            if self.has_raman {
+                let mut intensity_args: [*mut libc::c_void; 3] = [
+                    &mut self.eto_d.dptr as *mut _ as *mut _,
+                    &mut self.raman_intensity_d.dptr as *mut _ as *mut _,
+                    &mut n_time_over as *mut _ as *mut _,
+                ];
+                launch_checked(
+                    driver,
+                    ctx.raman_intensity_env_fn,
+                    grid_over,
+                    block_size,
+                    0,
+                    &mut intensity_args,
+                    "raman_intensity_env",
+                )?;
+                self.launch_raman_ade(driver, ctx, 1, n_time_over as usize)?;
+                let mut density = self.raman_density;
+                let mut accumulate_args: [*mut libc::c_void; 5] = [
+                    &mut self.pto_d.dptr as *mut _ as *mut _,
+                    &mut self.eto_d.dptr as *mut _ as *mut _,
+                    &mut self.raman_p_d.dptr as *mut _ as *mut _,
+                    &mut density as *mut _ as *mut _,
+                    &mut n_time_over as *mut _ as *mut _,
+                ];
+                launch_checked(
+                    driver,
+                    ctx.raman_accumulate_env_fn,
+                    grid_over,
+                    block_size,
+                    0,
+                    &mut accumulate_args,
+                    "raman_accumulate_env",
+                )?;
+            }
+
+            let mut window_args: [*mut libc::c_void; 3] = [
+                &mut self.pto_d.dptr as *mut _ as *mut _,
+                &mut self.towin_d.dptr as *mut _ as *mut _,
+                &mut n_time_over as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.apply_time_window_complex_fn,
+                grid_over,
+                block_size,
+                0,
+                &mut window_args,
+                "apply_time_window_env(step4)",
+            )?;
+
+            let rc = (cufft.cufftExecZ2Z)(
+                self.fft_c2c,
+                self.pto_d.dptr as *mut _,
+                self.poo_d.dptr as *mut _,
+                CUFFT_FORWARD,
+            );
+            if rc != 0 {
+                return Err(format!("cufftExecZ2Z forward failed ({rc})"));
+            }
+            let mut scale_inv = self.scale_inv;
+            let mut finalize_args: [*mut libc::c_void; 7] = [
+                &mut self.poo_d.dptr as *mut _ as *mut _,
+                &mut self.ks_d[idx].dptr as *mut _ as *mut _,
+                &mut self.norm_pre_beta_d.dptr as *mut _ as *mut _,
+                &mut self.owin_d.dptr as *mut _ as *mut _,
+                &mut scale_inv as *mut _ as *mut _,
+                &mut n_spec as *mut _ as *mut _,
+                &mut n_spec_over as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.finalize_spectrum_env_fn,
+                grid_spec,
+                block_size,
+                0,
+                &mut finalize_args,
+                "finalize_spectrum_env(step5+6+7)",
+            )?;
+            Ok(())
+        }
+    }
+
+    unsafe fn launch_raman_ade(
+        &self,
+        driver: &crate::cuda::CudaDriverApi,
+        ctx: &crate::cuda::GpuContext,
+        grid: u32,
+        n_time: usize,
+    ) -> Result<(), String> {
+        let mut intensity = self.raman_intensity_d.dptr;
+        let mut polarization = self.raman_p_d.dptr;
+        let mut coeffs = self.raman_coeffs_d.dptr;
+        let mut num_osc = self.raman_num_osc as c_int;
+        let mut n_time_i = n_time as c_int;
+        let mut n_series = 1i32;
+        let mut args: [*mut libc::c_void; 6] = [
+            &mut intensity as *mut _ as *mut _,
+            &mut polarization as *mut _ as *mut _,
+            &mut coeffs as *mut _ as *mut _,
+            &mut num_osc as *mut _ as *mut _,
+            &mut n_time_i as *mut _ as *mut _,
+            &mut n_series as *mut _ as *mut _,
+        ];
+        unsafe {
+            launch_checked(
+                driver,
+                ctx.raman_fn,
+                grid,
+                1,
+                0,
+                &mut args,
+                "raman_ade_resident",
+            )
         }
     }
 }
@@ -1149,11 +1544,12 @@ impl NativeBackend for CudaNativeSim {
         _lib_path: *const c_char,
         _n_time: size_t,
         _n_time_over: size_t,
-        _is_real: c_int,
+        is_real: c_int,
         _flags: c_uint,
         _wisdom_path: *const c_char,
     ) -> i32 {
-        0 // Replaced by cuFFT
+        self.is_real = is_real != 0;
+        0 // Replaced by cuFFT; retain the grid kind for mode-avg setup.
     }
 
     unsafe fn wisdom_export(&mut self, _path: *const c_char) -> i32 {
@@ -1377,15 +1773,116 @@ impl NativeBackend for CudaNativeSim {
 
     unsafe fn set_raman_params(
         &mut self,
-        _omega: *const c_double,
-        _gamma: *const c_double,
-        _coupling: *const c_double,
-        _n_osc: size_t,
-        _dt: c_double,
-        _density: c_double,
-        _thg: c_int,
+        omega: *const c_double,
+        gamma: *const c_double,
+        coupling: *const c_double,
+        n_osc: size_t,
+        dt: c_double,
+        density: c_double,
+        thg: c_int,
     ) -> i32 {
-        -1
+        if self.n_time_over == 0
+            || omega.is_null()
+            || gamma.is_null()
+            || coupling.is_null()
+            || n_osc == 0
+            || n_osc > CUDA_RAMAN_MAX_OSCILLATORS
+            || !dt.is_finite()
+            || dt == 0.0
+            || !density.is_finite()
+        {
+            return -2;
+        }
+        let omegas = unsafe { std::slice::from_raw_parts(omega, n_osc) };
+        let gammas = unsafe { std::slice::from_raw_parts(gamma, n_osc) };
+        let couplings = unsafe { std::slice::from_raw_parts(coupling, n_osc) };
+        let mut coeffs = Vec::with_capacity(n_osc);
+        for i in 0..n_osc {
+            if !omegas[i].is_finite()
+                || !gammas[i].is_finite()
+                || !couplings[i].is_finite()
+                || omegas[i] == 0.0
+            {
+                return -2;
+            }
+            let osc = crate::raman::RamanOscillator {
+                omega: omegas[i],
+                gamma: gammas[i],
+                coupling: couplings[i],
+            };
+            coeffs.push(PrecomputedStepCoeffs::compute(&osc, dt));
+        }
+
+        let coeff_bytes =
+            match checked_bytes(coeffs.len(), std::mem::size_of::<PrecomputedStepCoeffs>()) {
+                Ok(bytes) => bytes,
+                Err(_) => return -1,
+            };
+        let time_bytes = match checked_bytes(self.n_time_over, std::mem::size_of::<f64>()) {
+            Ok(bytes) => bytes,
+            Err(_) => return -1,
+        };
+        let complex_time_bytes =
+            match checked_bytes(self.n_time_over, std::mem::size_of::<Complex<f64>>()) {
+                Ok(bytes) => bytes,
+                Err(_) => return -1,
+            };
+        let coeffs_d = match GpuBuffer::alloc(coeff_bytes) {
+            Ok(b) => b,
+            Err(_) => return -1,
+        };
+        let intensity_d = match GpuBuffer::alloc(time_bytes) {
+            Ok(b) => b,
+            Err(_) => return -1,
+        };
+        let p_d = match GpuBuffer::alloc(time_bytes) {
+            Ok(b) => b,
+            Err(_) => return -1,
+        };
+        let hilbert_a_d = match GpuBuffer::alloc(complex_time_bytes) {
+            Ok(b) => b,
+            Err(_) => return -1,
+        };
+        let hilbert_b_d = match GpuBuffer::alloc(complex_time_bytes) {
+            Ok(b) => b,
+            Err(_) => return -1,
+        };
+        if coeffs_d.copy_to_device(&coeffs).is_err() {
+            return -1;
+        }
+
+        let mut hilbert_fft = 0;
+        if self.is_real && thg == 0 {
+            let cufft = match get_cufft_api() {
+                Ok(api) => api,
+                Err(_) => return -1,
+            };
+            let n_i32 = match i32::try_from(self.n_time_over) {
+                Ok(n) => n,
+                Err(_) => return -1,
+            };
+            let rc = unsafe { (cufft.cufftPlan1d)(&mut hilbert_fft, n_i32, CUFFT_Z2Z, 1) };
+            if rc != 0 {
+                return -1;
+            }
+        }
+
+        if let Ok(cufft) = get_cufft_api()
+            && self.raman_hilbert_fft != 0
+        {
+            unsafe { (cufft.cufftDestroy)(self.raman_hilbert_fft) };
+        }
+        self.raman_coeffs_d = coeffs_d;
+        self.raman_intensity_d = intensity_d;
+        self.raman_p_d = p_d;
+        self.raman_hilbert_a_d = hilbert_a_d;
+        self.raman_hilbert_b_d = hilbert_b_d;
+        self.raman_hilbert_fft = hilbert_fft;
+        self.raman_num_osc = n_osc;
+        self.raman_density = density;
+        self.raman_thg = thg != 0;
+        self.has_raman = true;
+        0
     }
     unsafe fn set_raman_fft_params(
         &mut self,
@@ -1882,6 +2379,16 @@ impl Drop for CudaNativeSim {
                     (cufft.cufftDestroy)(self.fft_c2r);
                 }
             }
+            if self.fft_c2c != 0 {
+                unsafe {
+                    (cufft.cufftDestroy)(self.fft_c2c);
+                }
+            }
+            if self.raman_hilbert_fft != 0 {
+                unsafe {
+                    (cufft.cufftDestroy)(self.raman_hilbert_fft);
+                }
+            }
         }
     }
 }
@@ -2106,7 +2613,7 @@ mod tests {
         let n = 4usize; // RealGrid Nt=6 -> Nt/2+1 spectral bins.
         let mut sim =
             CudaNativeSim::new(n, &vec![Complex::new(0.0, 0.0); n]).expect("CudaNativeSim::new");
-        let towin = vec![1.0; 8];
+        let towin = [1.0; 8];
         let owin = vec![1.0; n];
         let sidx = vec![1u8; n];
         let pre = vec![0.0; n];

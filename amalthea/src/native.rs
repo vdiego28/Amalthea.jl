@@ -5254,12 +5254,13 @@ impl NativeBackend for CpuNativeSim {
     }
 }
 
-/// GPU-resident stepper V1 (`CudaNativeSim`) covers only mode-averaged
-/// RealGrid Kerr propagation with optional PPT or thresholded ADK plasma (see
-/// `cuda_native.rs`'s `NativeBackend` impl — every other geometry/physics
-/// method returns -1). Verified against the CPU resident backend and Julia
-/// oracle on real CUDA hardware for that scope (docs/dev/BACKLOG.md's
-/// "GPU-resident stepper" entry); everything outside it remains
+/// GPU-resident stepper V1 (`CudaNativeSim`) covers mode-averaged RealGrid or
+/// EnvGrid Kerr and SDO Raman matching the grid
+/// (`RamanPolarField`/`RamanPolarEnv`), plus optional PPT/thresholded-ADK
+/// plasma on RealGrid only. Other geometries and convolution-only Raman remain
+/// CPU-only (see `cuda_native.rs`'s `NativeBackend` impl). The supported Raman
+/// scope is verified against the CPU resident backend and Julia oracle on real
+/// CUDA hardware by the CUDA Raman test; everything outside it remains
 /// unimplemented, not just untested. Refuses to initialize unless this env
 /// var is explicitly set, so it can never be reached by accident via default
 /// dispatch — Julia's own eligibility guard (`RK45._gpu_native_eligible`)
@@ -5279,7 +5280,7 @@ pub unsafe extern "C" fn init_cuda_native_sim(linop: *const c_double, n: size_t)
     if std::env::var(CUDA_NATIVE_OPT_IN_VAR).as_deref() != Ok("1") {
         eprintln!(
             "Amalthea warning: GPU-resident stepper (CudaNativeSim) is experimental \
-             (mode-averaged RealGrid Kerr + optional PPT/ADK plasma) — refusing to initialize. \
+             (mode-averaged RealGrid/EnvGrid Kerr + SDO Raman, with PPT/ADK plasma on RealGrid only) — refusing to initialize. \
              Set {}=1 to opt in (see \
              docs/dev/BACKLOG.md).",
             CUDA_NATIVE_OPT_IN_VAR
@@ -5287,9 +5288,9 @@ pub unsafe extern "C" fn init_cuda_native_sim(linop: *const c_double, n: size_t)
         return std::ptr::null_mut();
     }
     eprintln!(
-        "Amalthea warning: {}=1 — using the GPU-resident stepper (mode-averaged RealGrid \
-         Kerr + optional PPT/ADK plasma; any other geometry/physics is not implemented, not \
-         just unverified).",
+        "Amalthea warning: {}=1 — using the GPU-resident stepper (mode-averaged RealGrid/EnvGrid \
+         Kerr + matching SDO Raman, with optional PPT/ADK plasma on RealGrid only; other geometry/physics is not \
+         implemented, not just unverified).",
         CUDA_NATIVE_OPT_IN_VAR
     );
     let linop_sl = unsafe { std::slice::from_raw_parts(linop as *const Complex<f64>, n) };

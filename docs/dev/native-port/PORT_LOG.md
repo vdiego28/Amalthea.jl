@@ -2695,3 +2695,343 @@ SHA256SUMS.txt` reported **OK** for Linux, macOS, and Windows assets.
 `main`, and require its test/documentation workflows to pass. The live queue
 then returns to the deliberately deferred standing GPU CI and broader GPU
 physics/geometries.
+
+## 2026-07-31 — Repository handoff — upstream triage and checkout reconciliation — Codex (GPT-5)
+**Status:** complete
+**Did:** Added `docs/dev/native-port/UPSTREAM_TRIAGE.md` with the actionable
+Luna.jl PR/issue review and linked it from the agent and backlog documentation.
+Reconciled the current handoff text with the actual release merge: `main` and
+`origin/main` are both at `4925c67`, and the working tree was clean before this
+documentation update.
+**How:** Verified the commit graph and refs with `git log`, `git show-ref`, and
+`git branch -vv`. Commit `4925c67` merges first parent `1fff51b` with
+`release/1.0.2` commit `83beffa`; the package metadata is `1.0.3-DEV` and
+`1.0.3.dev0`. Updated only stale current-handoff/release wording in
+`AGENTS.md` and `docs/dev/BACKLOG.md`; historical log entries retain their
+original commit and version references.
+**Decisions:** Keep upstream findings in a separate triage document rather
+than silently turning all candidates into live implementation work. The first
+recommended candidate is IJulia `ARGS` isolation, followed by step-index root
+filtering and BSI PPT corrections. No source or FFI symbols changed.
+**Gotchas:** The checkout was not behind or on the wrong branch; the mismatch
+was documentation left at the pre-release merge point. The upstream review
+contains WIP proposals whose inline review findings should be resolved before
+porting them.
+**Tests:** Documentation-only validation: `git diff --check` and status/ref
+inspection. No runtime tests were needed because no executable code changed.
+**Next:** Select one upstream candidate, record its design and feasibility in
+`PLANS.md`, promote it into the live `BACKLOG.md`, and then implement it using
+the normal Julia-oracle/native-equivalence test discipline.
+
+## 2026-08-02 — S3 item 4 — Mode-averaged CUDA SDO Raman — Codex (GPT-5)
+**Status:** complete
+**Did:** Implemented resident CUDA SDO Raman for mode-averaged RealGrid
+(`RamanPolarField`, both `thg` values) and EnvGrid (`RamanPolarEnv`). Added
+dispatch guards, strict hardware coverage, timing-manifest coverage, and
+updated the GPU design/support/backlog documentation. Radial, modal,
+free-space, mixtures, `:SiO2`, shot noise, and z-dependent Raman remain CPU
+fallbacks.
+**How:** `amalthea/src/cuda.rs` loads the resident Raman and EnvGrid kernel
+symbols. `amalthea/src/kernels.cu` adds real/env intensity, Hilbert analytic
+signal, ADE accumulation, complex FFT scaling/window, and spectrum-finalizing
+kernels. `amalthea/src/cuda_native.rs:43-214,339-538,758-1390,1545-1868`
+adds resident oscillator coefficients/scratch, transactional c2c plans,
+RealGrid Hilbert processing, EnvGrid c2c processing, and `set_raman_params`
+state upload using `PrecomputedStepCoeffs`. The existing FFI symbol
+`native_set_raman_params` remains unchanged. `src/RK45.jl:1038-1073,1162-1180`
+accepts only matching-grid SDO responses and keeps Raman on CPU for `:auto`.
+`test/test_native_cuda_raman.jl:3-240` covers direct stages, fixed solves,
+rejected-step retry, non-vacuity, EnvGrid, and `:SiO2` fallback.
+**Decisions:** Flatten only `CombinedRamanResponse` SDO oscillators and reuse
+the existing ADE coefficient contract; retain `AMALTHEA_NATIVE_GPU=on` for
+correctness while withholding `:auto` until a production-shaped Raman
+benchmark exists. For `thg=false`, preserve Julia's analytic-signal bin mask
+and apply the cuFFT inverse's explicit `1/n` scaling. EnvGrid uses full c2c
+spectra with the CPU-compatible low/high crop and normalization.
+**Gotchas:** The first thg=false GPU comparison exposed the missing c2c
+inverse normalization; without the resident scale kernel the result was
+wrong despite the FFT pipeline looking structurally correct. The full Rust
+gate must use a writable `JULIA_DEPOT_PATH` in this sandbox because the
+default home Scratch log is read-only. The new timing entry in
+`test/rust_test_timings.txt` is required by `test_test_manifest.jl`.
+**Tests:** `nvcc --ptx amalthea/src/kernels.cu` passed; strict
+`AMALTHEA_REQUIRE_CUDA_TESTS=1 cargo build --release` passed; `cargo test`
+passed 79/79 unit tests plus 3/3 build-policy tests. The strict focused CUDA
+suite passed 146/146 and the CPU/dispatch regression set passed 45/45. The
+new local hardware CUDA item passed 53/53: stage agreement <1e-9, fixed
+RealGrid GPU/CPU relative error about 5e-16, EnvGrid about 2e-16, adaptive
+full-solve error <1e-6, and Raman-on/off controls changed the Julia oracle by
+about 8.4e-4. The repaired full Rust gate passed 42640 assertions with one
+expected broken CUDA item on this run's unavailable driver; the focused
+manifest check passed 342/342 assertions with the same expected broken item.
+**Next:** Keep standing required-CUDA CI as the live queue item. Before
+enabling Raman in `:auto`, run and record a production-shaped CPU/GPU
+benchmark; broader radial/modal/free-space GPU physics needs a separate
+design and implementation slice.
+
+## 2026-08-02 — S3 review follow-up — EnvGrid plasma eligibility contract — Codex (GPT-5)
+**Status:** complete
+**Did:** Closed a correctness hole where a low-level mode-averaged EnvGrid
+transform containing `PlasmaCumtrapz` could select CUDA even though the EnvGrid
+CUDA RHS implements only Kerr and Raman, silently omitting plasma. EnvGrid
+plasma is now an explicit CPU fallback; RealGrid PPT/thresholded-ADK support is
+unchanged. Corrected user-facing support claims and completed Luna feature plan
+01.
+**How:** Added the grid/response compatibility guard in
+`src/RK45.jl:1038-1064`. Added a no-hardware low-level EnvGrid+thresholded-ADK
+reproducer and fixed-step fallback comparison in
+`test/test_native_gpu_dispatch.jl:86-158`. Corrected the CUDA initialization
+messages in `amalthea/src/native.rs:5280-5295` and the support contract in
+`amalthea/README.md`, `docs/dev/BACKLOG.md`, `GPU.md`, and
+`NATIVE_SUPPORT_MATRIX.md`. No FFI symbol or CUDA numerical kernel changed.
+**Decisions:** Reject the unsupported combination at the pure configuration
+boundary instead of attempting envelope plasma in this fix. The high-level
+interface already rejects envelope plasma, but that is insufficient because
+the low-level `TransModeAvg` constructor can create it. Test the decision
+directly and compare two fixed CPU-native steps because `RustNativeStepper`'s
+opaque handle does not reveal whether its resident backend is CPU or CUDA.
+**Gotchas:** A support predicate must validate combinations, not merely each
+feature independently. The full Rust gate needs a writable `JULIA_DEPOT_PATH`
+inside this sandbox; its CUDA item is expected-broken when `cuInit` cannot see
+the driver, so strict CUDA validation was also run outside the sandbox on the
+local RTX 5060 Ti.
+**Tests:** The focused dispatch item passed 35/35 and printed forced-on
+CPU-fallback relative error `0.0` (required `<1e-13`). The strict hardware CUDA
+suite (`test_native_cuda.jl`, `test_native_cuda_raman.jl`, and
+`test_native_gpu_dispatch.jl`) passed 189/189. Strict `cargo test` passed 79/79
+unit plus 3/3 build-policy tests, and strict `cargo build --release` passed.
+The full Julia Rust group passed 42,645 assertions with one expected broken
+CUDA item in the sandbox; the separate strict hardware suite establishes that
+the CUDA coverage itself passes.
+**Next:** Execute Luna feature plan 02 (resident rotational-response capacity)
+or plan 03 (backend observability and hardware-independent rejection tests),
+while standing required-CUDA CI remains the live infrastructure item.
+
+## 2026-08-02 — Luna feature plan 02 — CUDA rotational Raman capacity — Codex (GPT-5)
+**Status:** complete
+**Did:** Raised the resident CUDA ADE Raman capacity from the old 32-oscillator
+limit to an explicit generated 64-oscillator contract. N₂ rotational Raman now
+selects CUDA for the 49-oscillator rotation response and the 50-oscillator
+rotation+vibration response. Larger flattened responses remain a correct CPU
+fallback, with no silent truncation.
+**How:** `amalthea/build.rs:6-39` emits `cuda_raman_limits.rs` and
+`cuda_raman_limits.h` from one `CUDA_RAMAN_MAX_OSCILLATORS = 64` literal;
+`amalthea/src/kernels.cu:4-48` includes the generated PTX header and uses
+`q[64]`/`dq[64]` without a clamp. `amalthea/src/cuda_native.rs:1774-1870`
+validates the bound in `CudaNativeSim::set_raman_params` and uses checked byte
+counts for coefficient, real-time, complex-time, and Hilbert buffers. The
+existing `native_set_raman_params` FFI contract is unchanged.
+`amalthea/src/raman.rs:147-218` applies the same bound to the standalone GPU
+solver and falls back to scalar CPU solving above it. `src/RK45.jl:1065-1074`
+and `src/RK45.jl:1143-1153` mirror the bound in Julia eligibility. The focused
+coverage is in `test/test_native_cuda_raman.jl:142-226` and the hardware-free
+64/65 boundary is in `test/test_native_gpu_dispatch.jl:118-163`.
+**Decisions:** Chose 64 because it covers N₂'s measured 49/50 flattened
+responses with 14 slots of margin while retaining a finite per-thread state
+contract. The Rust/PTX value is generated from one source; Julia mirrors the
+public boundary so over-capacity configurations are rejected before CUDA
+setup. The kernel does not implement a fallback clamp. Allocation overflow is
+an explicit setup failure rather than a zero-byte allocation.
+**Gotchas:** Manual `nvcc` validation must include the generated `OUT_DIR`
+header (`-I target/release/build/amalthea-7b212302a0eefefb/out`). The 64-state
+kernel uses 1024 bytes of local ADE state per active thread; the real CUDA 13.3
+cubin reported a 1024-byte stack frame, 62 registers, and zero spills.
+**Tests:** `AMALTHEA_REQUIRE_CUDA_TESTS=1 cargo build --release` passed.
+`/usr/local/cuda-13.3/bin/nvcc --cubin --ptxas-options=-v -I
+target/release/build/amalthea-7b212302a0eefefb/out src/kernels.cu -o
+/tmp/amalthea-kernels.cubin` passed with the resource result above. The strict
+CUDA Julia suite (`test_native_cuda.jl`, `test_native_cuda_raman.jl`, and
+`test_native_gpu_dispatch.jl`) passed 209/209; N₂ 49/50 fixed-solve errors
+were `4.946766533430483e-16` and `5.068506594278426e-16`, and Raman-on/off
+effects were `3.5716896665064484e-3` and `4.108995868691615e-3`. The focused
+no-hardware dispatch item passed 41/41. `AMALTHEA_REQUIRE_CUDA_TESTS=1 cargo
+test` passed 79 Rust tests plus 3 build-policy tests. The full Rust group
+passed 42,651 assertions with one expected broken CUDA-driver item in the
+sandbox. `git diff --check` passed.
+**Next:** Plan 02 is closed. The next feature-plan candidate is plan 03;
+required-CUDA CI remains the live infrastructure follow-up.
+
+## 2026-08-02 — Luna feature plan 03 — backend observability — Codex (GPT-5)
+**Status:** complete
+**Did:** Made CPU-vs-CUDA selection directly observable on resident native
+steppers and moved pure dispatch/fallback coverage ahead of CUDA hardware
+gates. Tests now prove `:cpu` or `:cuda` rather than treating every
+`RustNativeStepper` as equivalent.
+**How:** `src/RK45.jl:927-973` adds `backend::Symbol` to
+`RustNativeSimHandle`; the existing `init_native_sim`,
+`init_cuda_native_sim`, and `free_native_sim` FFI lifecycle is unchanged.
+`src/RK45.jl:1018-1030` adds `RK45._native_backend(s)`, returning exactly
+`:cpu` or `:cuda` without an FFI round-trip. `src/RK45.jl:1221-1233` records
+`:cpu` for all z-dependent constructors and makes a null pointer a hard error
+instead of returning a misleading CPU-kind handle. The pure dispatch tests in
+`test/test_native_gpu_dispatch.jl:147-189` cover `:off`, below-threshold
+`:auto`, pure `:on`, and unsupported forced-on construction. The Raman test's
+pure eligibility/capacity/unsupported-response block is now before its CUDA
+gate at `test/test_native_cuda_raman.jl:72-145`. Existing CUDA checks at
+`test/test_native_cuda.jl:89-103` and `:604-607`, plus the Raman hardware
+checks, assert `:cuda` before numerical comparisons; z-dependent tests assert
+`:cpu`.
+**Decisions:** Store the requested backend kind in Julia because dispatch was
+already decided there; an FFI query would add no information and could itself
+become a new failure seam. Keep the accessor internal and diagnostic-facing.
+Do not attempt supported CUDA construction on CPU-only hosts: `:on` proves
+only pure eligibility there, while `:off` and small `:auto` cases construct
+the CPU backend. Unsupported configurations construct CPU even under forced
+`:on`.
+**Gotchas:** `s isa RustNativeStepper` is not backend evidence. A null pointer
+must be rejected before any caller can inspect the stored symbol. The pure
+Raman checks must remain outside the hardware branch or CPU-only CI will count
+only the skip/broken CUDA item and miss fallback regressions.
+**Tests:** `cargo build --release` passed. The focused no-hardware dispatch
+item passed 49/49. The Raman item executed 17 pure assertions and recorded one
+expected broken CUDA-driver item without hardware. The strict CUDA suite
+(`test_native_cuda.jl`, `test_native_cuda_raman.jl`, and
+`test_native_gpu_dispatch.jl`) passed 248/248, with explicit `:cuda`
+assertions before GPU comparisons. The z-dependent constructor items passed
+16/16, 4/4, and 10/10; backend-report tests passed 15/15. The full Julia Rust
+group passed 42,682 assertions with one expected broken CUDA-driver item in
+the sandbox. `git diff --check` passed.
+**Next:** Plan 03 is closed. Plan 04 or the standing required-CUDA CI plan is
+the next candidate; no dispatch thresholds or physics kernels were changed.
+
+## 2026-08-02 — Agent workflow — Luna authorship and verification split — Codex (GPT-5)
+**Status:** complete
+**Did:** Made the feature-plan pack explicitly require Luna implementation
+agents to author all theory, derivations, mathematical contracts, tolerance
+arguments, and difficult empirical results before larger-model review.
+**How:** Added an authorship/verification protocol and a matching success-gate
+item to `docs/dev/native-port/luna-feature-plans/README.md`. The suggested Luna
+prompt now states the same responsibility.
+**Decisions:** Keep the larger model in an independent verifier role: it checks
+the Luna-authored reasoning, code-to-equation correspondence, non-vacuity, and
+measurements, but does not silently fill missing substantive work. A run with
+missing theory/math/hard-result documentation is incomplete and returns to the
+Luna agent for correction.
+**Gotchas:** Existing repository equations may be cited rather than duplicated,
+but the implementing Luna agent must still justify their applicability and
+document changed indexing, layout, scaling, precision, assumptions, and test
+conditions.
+**Tests:** Documentation-only change; `git diff --check` passed.
+**Next:** Give one plan file at a time to Luna using the updated index prompt,
+then submit the completed implementation and authored evidence for independent
+verification.
+
+## 2026-08-02 — Luna feature plan 04 — EnvGrid Kerr auto policy — Codex (GPT-5)
+**Status:** complete
+**Did:** Added an evidence-based, EnvGrid-specific automatic CUDA dispatch
+threshold. `AMALTHEA_NATIVE_GPU=auto` now keeps the existing RealGrid Kerr
+threshold at 16,384 but selects mode-averaged EnvGrid Kerr only at 32,768 or
+larger, instead of inheriting the RealGrid c2c-incompatible policy.
+**How:** `src/RK45.jl:1093-1142` documents the existing RealGrid threshold and
+the new `_GPU_ENV_KERR_N_THRESHOLD = 32768`; `src/RK45.jl:1210-1223` branches
+explicitly on `EnvGrid` inside `_gpu_native_eligible`. No FFI symbols or Rust
+physics kernels changed. Pure threshold/fallback tests are in
+`test/test_native_gpu_dispatch.jl:122-192`; the hardware `:auto`→`:cuda`
+assertion is in `test/test_native_cuda_raman.jl:182-195`.
+**Decisions:** Retained 32,768 as the first stable substantial EnvGrid win.
+The RTX 5060 Ti sweep used two warm-up steps and three five-step fixed
+`native_step` batches at 2,048, 4,096, 8,192, 16,384, 32,768, and 65,536
+points. At 16,384 the GPU/CPU batches were 1.80x, 1.37x, and 1.71x; at 32,768
+they were 3.31x, 3.51x, and 3.98x. The marginal 16,384 batch failed the
+repository's substantial/stable retention rule, so the threshold is not
+rounded down. `:on` behavior and all numerical CUDA paths remain unchanged.
+**Gotchas:** The benchmark and strict hardware suite must run outside the
+normal sandbox: CUDA driver discovery inside it reports `cuInit failed: 100`.
+The 65,536 first CPU batch was a warm-up/outlier; it does not affect the
+32,768 decision because every 32,768 batch clears the retention gate. The
+pure dispatch test now constructs 8,192- and 32,768-point EnvGrid transforms,
+so its timing metadata was raised to 121.7 seconds.
+**Tests:** The focused no-hardware dispatch item passed 56/56. The elevated
+strict CUDA suite (`test_native_cuda.jl`, `test_native_cuda_raman.jl`, and
+`test_native_gpu_dispatch.jl`) passed 259/259, including the EnvGrid
+32,768-point `:auto`→`:cuda` assertion. The full Rust group passed 42,689
+assertions with one expected sandbox CUDA-driver broken item. `cargo build
+--release` passed and `git diff --check` passed.
+**Next:** Plan 04 is closed. The next feature candidate is Plan 05's measured
+Raman `:auto` policy; standing required-CUDA CI remains the external Plan 06
+follow-up.
+
+## 2026-08-02 — Luna feature plan 05 — Raman auto policy — Codex (GPT-5)
+**Status:** complete
+**Did:** Completed the production-shaped Raman CPU/CUDA benchmark and made the
+measured policy explicit. Supported Raman remains CPU-native under
+`AMALTHEA_NATIVE_GPU=auto`; explicit `on` and `off` behavior are unchanged.
+**How:** `src/RK45.jl:1186-1241` adds four named class policy slots and
+`_gpu_raman_auto_threshold`: RealGrid THG on, RealGrid THG off, EnvGrid, and
+multi-oscillator/rotational Raman. `src/RK45.jl:1243-1267` consults those
+slots before any generic Kerr/PPT/ADK threshold, so a future Raman benchmark
+cannot accidentally inherit a non-Raman policy. No Rust code or FFI symbols
+changed. `test/test_native_gpu_dispatch.jl:257-277` proves the named Raman
+slots are unset, capacity-64 Raman is CPU-selected under `:auto`, and
+over-capacity remains rejected. `test/test_native_cuda_raman.jl:110-163`
+proves RealGrid vibration, 49/50-oscillator rotational Raman, and EnvGrid
+Raman all select the CPU backend under `:auto` while `:on` remains eligible.
+**Decisions:** Retain no automatic Raman threshold. The benchmark used the
+production-shaped N₂ capillary (`λ₀=800 nm`, 125 µm radius, 1 atm, 5 cm,
+20 fs FWHM, 5 µJ, `dt=0.01`), resident `RustNativeStepper`, two warm-up
+steps, and three five-step batches per size. It measured RealGrid THG on/off
+vibration (1 oscillator), EnvGrid vibration (1), and 50-oscillator
+rotation+vibration in RealGrid THG on/off and EnvGrid. Every batch was below
+the established 1.4× stable-substantial retention bar; the maximum was
+1.141× at EnvGrid `Nω=32768` with one vibrational oscillator. The full raw
+table and class-by-class decision are in
+`docs/dev/native-port/luna-feature-plans/LUNA_FEATURE_PLAN_05_GPU_RAMAN_AUTO_POLICY.md`.
+**Gotchas:** The first all-class process terminated while allocating the
+unprinted `Nω=32769`, 50-oscillator RealGrid `thg=true` point. A bounded
+follow-up completed the missing RealGrid `thg=false` rotational sweep through
+`Nω=16385` and the EnvGrid rotational sweep through `Nω=32768`; the completed
+RealGrid `thg=true` rotational row at `Nω=16385` was 1.001–1.002×. The
+termination is recorded as an incomplete measurement, not treated as a
+performance result. The strict CUDA suite must continue to run outside the
+normal sandbox because sandbox CUDA initialization reports `cuInit failed: 100`.
+**Tests:** `cargo build --release` passed. The focused no-hardware dispatch
+item passed **63/63**; the focused Raman item passed **28** assertions with
+one expected broken CUDA-driver item. The elevated strict CUDA suite
+(`test_native_cuda.jl`, `test_native_cuda_raman.jl`, and
+`test_native_gpu_dispatch.jl`) passed **277/277**; Raman fixed-solve
+GPU/CPU relative errors were `5.13e-16` (`thg=true`), `5.26e-16`
+(`thg=false`), and `2.01e-16` (EnvGrid), with rotational 49/50 errors
+`5.07e-16`/`5.01e-16`. The full `LUNA_TEST_GROUP=rust` run passed
+**42,707** assertions with one expected sandbox CUDA-driver broken item
+(**42,708** total). `git diff --check` passed.
+**Next:** Plan 05 is closed. The next feature candidate is Plan 06's standing
+required-CUDA CI; no further Raman dispatch work is justified without new
+hardware evidence or a changed performance bar.
+
+## 2026-08-02 — Luna feature plans 01-05 — final audit and handoff — Codex (GPT-5)
+**Status:** complete
+**Did:** Reviewed the complete accumulated Plans 01-05 worktree before commit,
+including the Julia dispatch contract, CUDA EnvGrid/Raman implementation,
+generated 64-oscillator capacity, backend observability, automatic-dispatch
+policies, tests, and documentation. The implementation is ready to hand off;
+the audit found no physics, ownership, fallback, or numerical defect.
+**How:** Traced staged CUDA resource ownership and cuFFT cleanup through
+`amalthea/src/cuda_native.rs:45-620`, the EnvGrid RHS at
+`amalthea/src/cuda_native.rs:1191`, Raman setup/capacity handling at
+`amalthea/src/cuda_native.rs:1774`, and final cleanup at
+`amalthea/src/cuda_native.rs:2369`. Cross-checked the generated Rust/PTX
+capacity source at `amalthea/build.rs:26` against Julia eligibility and policy
+at `src/RK45.jl:1019-1267`. Corrected only formatting drift in the changed
+Rust files plus two new-work clippy findings (a collapsible cuFFT cleanup and a
+fixed-size test allocation); no FFI symbol or behavior changed during audit.
+**Decisions:** Keep Plans 01-05 as one coherent feature-branch commit because
+they were developed and validated together in the inherited worktree. Do not
+mix in repository-wide formatting or lint cleanup: `cargo fmt --all --check`
+and `cargo clippy --lib --tests -- -D warnings` expose pre-existing findings in
+untouched benchmarks, `src/io.rs`, dynamic-library transmute bindings, docs,
+and older tests. All findings attributable to these plans were corrected.
+**Gotchas:** Repository-wide rustfmt/clippy are not currently clean baseline
+gates. Use targeted rustfmt for touched Rust files until that separate cleanup
+is scheduled. CUDA hardware checks still require execution outside the normal
+sandbox because in-sandbox driver initialization reports error 100.
+**Tests:** Targeted `rustfmt --check --edition 2024` passed for `build.rs`,
+`src/cuda.rs`, `src/cuda_native.rs`, `src/native.rs`, and `src/raman.rs`;
+`git diff --check` passed. Final elevated
+`AMALTHEA_REQUIRE_CUDA_TESTS=1 cargo test` passed 79/79 unit tests and 3/3
+build-policy tests with real PTX/CUDA. The final semantic tree had already
+passed the elevated strict Julia CUDA suite 277/277 and the full
+`LUNA_TEST_GROUP=rust` gate with 42,707 passing assertions plus one expected
+sandbox CUDA-driver broken item; the audit's subsequent edits were
+formatting/lint-only.
+**Next:** Commit and push branch `luna-plans-01-05`. Plan 06 remains the next
+candidate but is externally gated on hosted GPU CI provisioning.

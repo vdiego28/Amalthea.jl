@@ -56,6 +56,7 @@ using TestItems
 
             s_ru = RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
                                       flength=flength)
+            @test RK45._native_backend(s_ru) === :cpu
             dens_r = Ref{Float64}(0.0)
             beta1_r = Ref{Float64}(0.0)
             for z in (0.0, 0.0025, 0.01, 0.25, 0.49, 0.5)

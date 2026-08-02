@@ -1,6 +1,6 @@
 # GPU-Resident Propagation (Track S3) Design Document
 
-> **Current status (2026-07-31, updated): the correctness block is FIXED.**
+> **Current status (2026-08-02, updated): the correctness block is FIXED.**
 > `CudaNativeSim` computes real nonlinearity again and is verified on real
 > hardware — stage derivatives match CPU native to ~1e-15 (previously
 > `max|kᵢ| ≈ 3.5e-13` against CPU's 12225, i.e. pure linear propagation),
@@ -13,9 +13,15 @@
 > fixed alongside: `set_field` never seeded `ks_d[0]`, so the first `step()`
 > read uninitialized device memory.
 >
-> **Remaining caveats:** supported scope is mode-averaged RealGrid Kerr + PPT
-> or **thresholded ADK** plasma; every other geometry/physics, and ADK with
-> `threshold=false`, returns or routes to CPU fallback. There is still no GPU
+> **Remaining caveats:** landed scope is mode-averaged RealGrid/EnvGrid Kerr
+> plus SDO Raman matching the grid (`RamanPolarField`/`RamanPolarEnv`), with
+> at most 64 flattened oscillators (N₂ rotation has 49; rotation+vibration has
+> 50), and with
+> PPT or **thresholded ADK** plasma on RealGrid only. EnvGrid plasma is an
+> explicit CPU fallback because its CUDA RHS has no plasma implementation.
+> `:SiO2`, mixtures, shot noise,
+> z-dependent Raman, and radial/modal/free-space GPU paths still return or
+> route to CPU fallback. ADK with `threshold=false` remains CPU-only. There is still no GPU
 > CI, so every GPU change needs a recorded manual hardware run.
 > **2026-07-27:** adaptive acceptance now uses a real pre-acceptance trial and
 > the same global weak norm as CPU/Julia; the three PPT cumtrapz operations
@@ -24,6 +30,12 @@
 > retained after a **2.147×** production-shaped benchmark at `n=8193`.
 > `:auto` uses the exact `_GPU_ADK_N_THRESHOLD = 8193`; `threshold=false`
 > remains CPU fallback. The strict CUDA baseline was green first.
+> **2026-08-02:** mode-averaged SDO Raman landed for RealGrid carrier fields
+> (`thg=true` and `thg=false`) and EnvGrid envelopes. The strict CUDA Raman
+> item passed **53/53**, including direct stage checks, non-vacuity controls,
+> fixed trajectories, rejected-step retries, and CPU fallback for `:SiO2`.
+> Raman remains CPU-selected under `:auto` until a production benchmark sets a
+> threshold; correctness tests use `AMALTHEA_NATIVE_GPU=on`.
 > Sections below that describe the defect in the present tense are retained
 > for provenance — BACKLOG S3 item 0 and
 > `portlog-inbox/gpu-nonlinearity.md` are authoritative.
@@ -33,7 +45,8 @@
 The original objective was to eliminate per-kernel PCIe round-trips by keeping
 the simulation state resident on the GPU. The landed `CudaNativeSim` does own
 the field, RK stages, error buffers, scratch, cuFFT plans, and the narrow
-mode-averaged Kerr/PPT/thresholded-ADK state in VRAM. The current objective is
+mode-averaged both-grid Kerr/Raman plus RealGrid PPT/thresholded-ADK state in
+VRAM. The current objective is
 no longer residency scaffolding; it is maintaining numerical parity with
 `CpuNativeSim` while any later scope expansion is separately designed.
 
@@ -102,16 +115,20 @@ normalization, oversampled FFT sizing/cropping, spectral `pre/β`
 normalization, and `ωwin`.
 
 ## 7. Scope of V1
-The landed scope is **mode-averaged RealGrid, constant linop, scalar density,
-exactly one plain Kerr response, and at most one PPT or thresholded ADK plasma
-response**. `:auto` selects ADK only from the exact
-`_GPU_ADK_N_THRESHOLD = 8193`; `threshold=false`, Raman, shot noise, mixtures,
-z-dependence, and radial/modal/free-space return or route to ineligibility and
-remain on `CpuNativeSim`. Eligible GPU configurations are not automatically
-rechecked because the project still lacks standing GPU CI. Within this scope,
-the backend is numerically hardware-verified.
+The landed scope is **mode-averaged RealGrid or EnvGrid, constant linop, scalar
+density, and exactly one plain Kerr response**. Both grids may add at most one
+matching SDO Raman response with **1–64 flattened oscillators**; RealGrid alone may add at most one PPT or
+thresholded ADK plasma response. EnvGrid plasma is explicitly ineligible.
+`:auto` selects ADK only from the exact
+`_GPU_ADK_N_THRESHOLD = 8193`; `threshold=false`, shot noise, mixtures,
+z-dependence, `:SiO2`, and radial/modal/free-space return or route to
+ineligibility and remain on `CpuNativeSim`. Plan 05's production-shaped
+benchmark stayed below the 1.4x retention bar for every Raman class, so Raman
+stays CPU-selected under `:auto`. Eligible GPU configurations are
+not automatically rechecked because the project still lacks standing GPU CI.
+Within this scope, the backend is numerically hardware-verified.
 
-## 8. Status (updated 2026-07-31 — supersedes the historical reviews below)
+## 8. Status (updated 2026-08-02 — supersedes the historical reviews below)
 
 The `Box<dyn NativeBackend>` decision in §4 is settled and not a TODO.
 
@@ -144,18 +161,22 @@ inspection before verification and stayed correct after.
 **Actual V1 scope, precisely** (§7's early "mode-averaged RealGrid Kerr
 (+plasma)" wording was aspirational until PPT landed 2026-07-11). The current
 `CudaNativeSim` `NativeBackend` impl (`cuda_native.rs`) implements
-`set_mode_avg_params`, `set_plasma_params` (PPT), and
-`set_plasma_params_adk` for **thresholded** ADK. Other `set_*_params`
-(`set_radial_params`, `set_raman_params[_fft]`, `set_modal_params`,
-`set_free_params`, every `_zdep_*` variant, `set_mode_avg_noise[_cplx]`) still
-unconditionally return `-1`; unthresholded ADK deliberately routes to CPU.
+`set_mode_avg_params`, `set_plasma_params` (PPT),
+`set_plasma_params_adk` for **thresholded** ADK, and resident SDO Raman via
+`set_raman_params`. Other `set_*_params` (`set_radial_params`,
+`set_raman_fft_params`, `set_modal_params`, `set_free_params`, every
+`_zdep_*` variant, `set_mode_avg_noise[_cplx]`) still unconditionally return
+`-1`; unthresholded ADK deliberately routes to CPU.
 `RK45.jl`'s
 `_gpu_native_eligible` docstring is the source of truth for exact scope.
-Concretely, eligible configs are: `TransModeAvg`, `RealGrid`, a constant
+Concretely, plasma-eligible configs are: `TransModeAvg`, `RealGrid`, a constant
 (non-z-dependent) linop, scalar (non-mixture) density, no shot noise,
-exactly one plain Kerr response, and at most one PPT plasma response or one
-**thresholded** `IonRateADK`. Unthresholded ADK (`threshold=false`) is
-intentionally unsupported by CUDA and falls back to CPU.
+exactly one plain Kerr response, and at most one PPT plasma response or
+**thresholded** `IonRateADK`, optionally with matching SDO Raman. EnvGrid
+supports the same base Kerr and matching `RamanPolarEnv`, but never plasma.
+Unthresholded ADK (`threshold=false`) and intermediate-broadening Raman are
+intentionally unsupported by CUDA and fall back to CPU. RealGrid Raman
+supports both THG flags; EnvGrid Raman uses envelope intensity.
 
 **Plasma support added 2026-07-11** (BACKLOG.md S3 item 2; scan implementation
 superseded 2026-07-27): PPT ionisation
@@ -213,18 +234,23 @@ manual runs, not a standing CI job.
 
 1. Add scheduled/dedicated GPU CI.
 2. The lead has kept standing GPU CI deferred. The local-hardware-gated
-   mode-averaged RealGrid ADK expansion is complete and retained; Raman and
-   radial/modal/free-space remain unimplemented. PPT and ADK share the
+   mode-averaged RealGrid ADK and mode-averaged SDO Raman expansions are
+   complete and retained; radial/modal/free-space remain unimplemented, and
+   intermediate-broadening Raman remains CPU-only. PPT and ADK share the
    completed parallel scan pipeline.
 
 The problem-size dispatch policy is:
 `AMALTHEA_NATIVE_GPU=off/on/auto`, with `auto` selecting Kerr-only problems at
-`length(y0) ≥ 16384`, supported PPT problems at `length(y0) ≥ 8192`, and
-supported thresholded ADK problems at **exactly** `length(y0) ≥ 8193`.
+`length(y0) ≥ 16384` on RealGrid and **exactly** `length(y0) ≥ 32768` on
+EnvGrid, supported PPT problems at `length(y0) ≥ 8192`, and supported
+thresholded ADK problems at **exactly** `length(y0) ≥ 8193`.
 The PPT threshold was remeasured after parallelizing the scans: GPU/CPU is
 0.82× at n=2049, 1.08× at n=4097, and 2.94× at n=8193, so 8192 deliberately
 skips the marginal crossover. Both policies remain behind the explicit
-`AMALTHEA_USE_RUST_CUDA_NATIVE=1` master opt-in.
+`AMALTHEA_USE_RUST_CUDA_NATIVE=1` master opt-in. EnvGrid retains its own
+threshold because its c2c FFT timing differs from the RealGrid r2c/c2r path;
+the RTX 5060 Ti sweep found 16,384 marginal in one batch and 32,768 stable at
+3.31–3.98× GPU/CPU. Full evidence is in Luna feature plan 04.
 
 ## 9. First expansion completed — mode-averaged RealGrid ADK (2026-07-31)
 
@@ -258,6 +284,65 @@ five-step batches measured CPU **[3.726, 3.707, 3.683]** ms/step and GPU
 gate. The source and eligibility are retained at the exact threshold **8193**;
 do not round it to 8192. `threshold=false` remains CPU fallback. Full evidence
 is in `PLANS.md` §11.4 and `PORT_LOG.md`.
+
+---
+
+## 10. Second expansion — mode-averaged SDO Raman (landed 2026-08-02)
+
+This landed extension adds two ordered subphases to the explicitly opt-in CUDA
+backend. The first supports `TransModeAvg` + `RealGrid` +
+`RamanPolarField`; the second adds `TransModeAvg` + `EnvGrid` +
+`RamanPolarEnv`. Both use the existing SDO/rotational oscillator flattening
+and the resident `native_set_raman_params` FFI signature. The
+intermediate-broadening `:SiO2` response remains on its existing CPU/native
+FFT-convolution path and is not part of this item.
+
+### 10.1 RealGrid carrier Raman
+
+`CudaNativeSim` stores the precomputed `PrecomputedStepCoeffs` for each
+oscillator and resident real intensity/polarisation buffers. The existing
+`raman_ade_kernel` is launched with the mode-averaged oversampled length and a
+generated **64-oscillator capacity contract** shared by Rust validation and
+the PTX header. N₂ rotation (49) and rotation+vibration (50) therefore run in
+CUDA; larger flattened responses remain CPU fallback. The kernel no longer
+clamps excess oscillators, and Raman buffer byte counts use checked
+multiplication before allocation. The launch has no per-stage allocation or
+host copy.
+there is no per-stage allocation or host copy. `thg=true` uses `E²` directly.
+`thg=false` uses a resident c2c Hilbert plan and the same analytic-signal
+convention as `RamanPolarField` before launching the ADE kernel. The result is
+accumulated as `pto += ρ·E·P`, before the shared time-window and FFT stages.
+
+### 10.2 EnvGrid envelope Raman
+
+The CUDA setup gains a c2c mode-averaged plan and complex time/frequency
+buffers. The time-domain intensity is `0.5·|E|²`; the ADE output remains real;
+the contribution is accumulated as `pto += E·(ρ·P)`. The existing field/RK
+buffers and EnvGrid Kerr path are reused. No `thg` branch exists for
+`RamanPolarEnv`.
+
+### 10.3 Eligibility, fallback, and verification
+
+Eligibility remains constant-linop, scalar-density, mode-averaged, one plain
+Kerr plus at most one `CombinedRamanResponse` made from 1–64 SDO or flattened
+rotational oscillators. Mixtures, shot noise, z-dependent Raman, `:SiO2`, and
+all radial/modal/free-space combinations remain `NativeIneligible` and use
+the CPU resident/Julia fallback. The master CUDA opt-in and explicit
+`AMALTHEA_NATIVE_GPU=on` correctness route do not change.
+
+Verification passed with a direct CUDA-vs-CPU-ADE stage check, a non-vacuous
+Raman-on/off oracle effect, fixed-step and adaptive reject/retry trajectories,
+and explicit `:SiO2` CPU fallback coverage. The strict CUDA item passed 53/53;
+RealGrid and EnvGrid GPU-vs-CPU fixed trajectories were at approximately
+`5e-16` and `2e-16`, respectively. Plan 05 then measured the production-shaped
+Raman classes with two warm-up steps and three five-step batches. The largest
+speedup was only `1.141x` (EnvGrid, one vibrational oscillator, `Nω=32768`),
+below the established `1.4x` retention bar; the rotational classes stayed at
+parity. Therefore every Raman `:auto` policy threshold is deliberately unset:
+supported Raman remains CPU-selected under `:auto`, while `:on` remains the
+explicit CUDA correctness/experiment route. The complete table and the bounded
+large-rotational benchmark gotcha are recorded in
+`luna-feature-plans/LUNA_FEATURE_PLAN_05_GPU_RAMAN_AUTO_POLICY.md`.
 
 ---
 

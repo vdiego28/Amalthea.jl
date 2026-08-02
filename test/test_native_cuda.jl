@@ -87,6 +87,7 @@ using TestItems
             end
 
             @testset "GPU handle actually used (not silently CPU)" begin
+                @test RK45._native_backend(s_ru) === :cuda
                 # `RK45._gpu_native_eligible` must have returned true for this
                 # exact config, or the "equivalence" below would just be
                 # CPU-vs-CPU (both native.rs backends live behind the same
@@ -442,6 +443,7 @@ end
                 return
             end
             @test RK45._gpu_native_eligible(transform, linop, length(Eω))
+            @test RK45._native_backend(s_gpu) === :cuda
 
             s_cpu = withenv("AMALTHEA_USE_RUST_CUDA_NATIVE" => "0",
                             "AMALTHEA_NATIVE_GPU" => "off") do
@@ -600,6 +602,7 @@ end
             end
 
             @testset "GPU handle actually used (not silently CPU)" begin
+                @test RK45._native_backend(s_ru) === :cuda
                 @test RK45._gpu_native_eligible(transform, linop, length(Eω))
             end
 

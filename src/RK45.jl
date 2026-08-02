@@ -926,6 +926,7 @@ end
 
 mutable struct RustNativeSimHandle
     ptr::Ptr{Cvoid}
+    backend::Symbol
     function RustNativeSimHandle(linop::Array{ComplexF64}; use_gpu::Bool=false)
         n = length(linop)
         ptr = if use_gpu
@@ -935,7 +936,7 @@ mutable struct RustNativeSimHandle
             ccall((:init_native_sim, _LIBAMALTHEA_RK45), Ptr{Cvoid},
                   (Ptr{ComplexF64}, Csize_t), pointer(linop), Csize_t(n))
         end
-        h = new(ptr)
+        h = new(ptr, use_gpu ? :cuda : :cpu)
         finalizer(h) do h
             p = h.ptr
             if p != C_NULL
@@ -959,7 +960,7 @@ mutable struct RustNativeSimHandle
         seed = zeros(ComplexF64, n)
         ptr = ccall((:init_native_sim, _LIBAMALTHEA_RK45), Ptr{Cvoid},
                     (Ptr{ComplexF64}, Csize_t), pointer(seed), Csize_t(n))
-        h = new(ptr)
+        h = new(ptr, :cpu)
         finalizer(h) do h
             p = h.ptr
             if p != C_NULL
@@ -1014,6 +1015,20 @@ mutable struct RustNativeStepper{T<:AbstractArray}
     _gc_roots::Vector{Any}
 end
 
+"""
+    _native_backend(s::RustNativeStepper) -> Symbol
+
+Return the backend selected when `s` was constructed: `:cpu` for the resident
+CPU backend or `:cuda` for the explicitly selected CUDA backend. This is an
+internal observability hook for tests and diagnostics; it does not perform an
+FFI query or change dispatch. A failed constructor never returns a stepper, so
+there is no valid fallback-kind value for a null native handle.
+"""
+function _native_backend(s::RustNativeStepper)
+    s._handle.ptr == C_NULL && error("RustNativeStepper has no live native backend")
+    s._handle.backend
+end
+
 function RustNativeStepper(linop, y0, t, dt; kwargs...)
     RustNativeStepper(nothing, linop, y0, t, dt; kwargs...)
 end
@@ -1023,12 +1038,13 @@ end
 
 True iff the experimental GPU-resident stepper (`CudaNativeSim`,
 `amalthea/src/cuda_native.rs`) can handle this exact config: mode-averaged
-(`TransModeAvg`), RealGrid, a constant (non-z-dependent) linop, a scalar
-(non-mixture) density, no shot noise, exactly one plain Kerr response, and
-at most one plasma response using PPT (`IonRatePPTAccel`) or analytic ADK
-(`IonRateADK`) ionisation. No other response kind (e.g. Raman) is implemented
-on `CudaNativeSim` — every `set_*_params`
-beyond `set_mode_avg_params`/`set_plasma_params` returns -1.
+(`TransModeAvg`), RealGrid or EnvGrid, a constant (non-z-dependent) linop, a
+scalar (non-mixture) density, no shot noise, exactly one plain Kerr response,
+at most one RealGrid-only plasma response using PPT (`IonRatePPTAccel`) or
+analytic ADK (`IonRateADK`) ionisation, and at most one SDO Raman response
+matching the grid (`RamanPolarField` for RealGrid or `RamanPolarEnv` for
+EnvGrid). Raman must flatten to `RamanRespSingleDampedOscillator` terms;
+intermediate-broadening and other convolution-only responses remain CPU-only.
 
 Pure config-shape check: does not read the `cuda_native`/`gpu_dispatch`
 toggles or the problem size — see [`_gpu_native_eligible`](@ref) for the full
@@ -1037,20 +1053,40 @@ dispatch decision.
 function _gpu_kernel_supports(f!, linop)
     f! isa Amalthea.NonlinearRHS.TransModeAvg || return false
     linop isa Array{ComplexF64} || return false
-    f!.grid isa Amalthea.Grid.RealGrid || return false
+    is_real_grid = f!.grid isa Amalthea.Grid.RealGrid
+    is_env_grid = f!.grid isa Amalthea.Grid.EnvGrid
+    (is_real_grid || is_env_grid) || return false
     f!.densityfun(0.0) isa Real || return false
     isnothing(f!.Et_noise) || return false
     kerr_resps = filter(_is_plain_kerr_resp, f!.resp)
     plasma_resps = filter(r -> r isa Amalthea.Nonlinear.PlasmaCumtrapz, f!.resp)
+    raman_resps = filter(r -> r isa Amalthea.Nonlinear.RamanPolarField ||
+                              r isa Amalthea.Nonlinear.RamanPolarEnv, f!.resp)
     length(kerr_resps) == 1 || return false
-    length(plasma_resps) + length(kerr_resps) == length(f!.resp) || return false
+    length(plasma_resps) + length(raman_resps) + length(kerr_resps) == length(f!.resp) ||
+        return false
     length(plasma_resps) <= 1 || return false
+    # CudaNativeSim::compute_rhs_mode_avg_env implements Kerr and Raman only.
+    # Accepting EnvGrid plasma here would construct a GPU backend whose RHS
+    # silently omits that response. The low-level API can build this shape even
+    # though Interface.jl deliberately does not expose envelope plasma.
+    !isempty(plasma_resps) && !is_real_grid && return false
     isempty(plasma_resps) ||
         plasma_resps[1].ratefunc isa Amalthea.Ionisation.IonRatePPTAccel ||
         plasma_resps[1].ratefunc isa Amalthea.Ionisation.IonRateADK || return false
     !isempty(plasma_resps) &&
         plasma_resps[1].ratefunc isa Amalthea.Ionisation.IonRateADK &&
         !plasma_resps[1].ratefunc.threshold && return false
+    length(raman_resps) <= 1 || return false
+    if !isempty(raman_resps)
+        raman = raman_resps[1]
+        (is_real_grid && raman isa Amalthea.Nonlinear.RamanPolarField) ||
+            (is_env_grid && raman isa Amalthea.Nonlinear.RamanPolarEnv) || return false
+        rr = raman.r
+        rr isa Amalthea.Raman.CombinedRamanResponse || return false
+        Rs = Amalthea.Raman.flatten_sdo_oscillators(rr)
+        !isnothing(Rs) && !isempty(Rs) && length(Rs) <= _GPU_RAMAN_MAX_OSCILLATORS || return false
+    end
     true
 end
 
@@ -1059,8 +1095,8 @@ end
 
 Minimum problem size (`length(y0)`, i.e. Nω) at which the GPU-resident
 stepper measurably outperforms the CPU-resident one for a Kerr-only
-mode-averaged config — measured, not guessed (docs/dev/BACKLOG.md S3 item 3),
-on real hardware (RTX 5060 Ti, 2026-07-16). Below this the GPU path is
+mode-averaged RealGrid config — measured, not guessed (docs/dev/BACKLOG.md S3
+item 3), on real hardware (RTX 5060 Ti, 2026-07-16). Below this the GPU path is
 dominated by CUDA kernel-launch/sync overhead (`cuda_native.rs::step`'s
 `launch_checked` synchronizes after every one of ~dozens of per-stage kernel
 launches); above it, cuFFT throughput wins. Measured sweep (mode-avg,
@@ -1088,6 +1124,22 @@ single-GPU-thread cumulative kernels had a completely different performance
 curve.
 """
 const _GPU_KERR_ONLY_N_THRESHOLD = 16384
+
+"""
+    _GPU_ENV_KERR_N_THRESHOLD
+
+Minimum problem size (`length(y0)`, i.e. Nω) at which the GPU-resident
+stepper's mode-averaged EnvGrid Kerr path is retained by `:auto`. This is a
+separate policy from `_GPU_KERR_ONLY_N_THRESHOLD`: EnvGrid uses c2c FFTs and
+has a different measured crossover. On the RTX 5060 Ti (driver 610.43.02,
+CUDA 13.3.73), a fixed-step `native_step` sweep with two warm-up steps and
+three five-step batches measured the first consistently substantial win at
+Nω=32768. Nω=16384 had one marginal 1.37x batch, so it is deliberately not
+retained as the threshold. The complete table is in
+`docs/dev/native-port/luna-feature-plans/LUNA_FEATURE_PLAN_04_GPU_ENVGRID_AUTO_POLICY.md`.
+The CUDA master opt-in remains required.
+"""
+const _GPU_ENV_KERR_N_THRESHOLD = 32768
 
 """
     _GPU_PPT_N_THRESHOLD
@@ -1120,6 +1172,33 @@ The CUDA master opt-in remains mandatory.
 const _GPU_ADK_N_THRESHOLD = 8193
 
 """
+    _GPU_RAMAN_MAX_OSCILLATORS
+
+Maximum number of flattened SDO Raman oscillators accepted by the resident
+CUDA ADE kernel. The value is generated for Rust and PTX from the same
+build-time contract (`amalthea/build.rs` → `cuda_raman_limits.{rs,h}`). Julia
+mirrors it here so an over-capacity response is rejected before CUDA setup and
+falls back to the correct CPU-native path instead of reaching a setter error
+or being silently truncated.
+"""
+const _GPU_RAMAN_MAX_OSCILLATORS = 64
+
+"""
+    _GPU_RAMAN_*_N_THRESHOLD
+
+Measured `:auto` policy thresholds for the supported mode-averaged Raman
+pipeline classes. The 2026-08-02 production-shaped sweep did not produce a
+stable substantial GPU win for any class (maximum observed speedup: 1.141x),
+so these are deliberately unset. Keeping one named value per pipeline avoids
+accidentally routing Raman through a generic Kerr threshold and gives a future
+benchmark a precise place to enable only the class it proves.
+"""
+const _GPU_RAMAN_REAL_THG_TRUE_N_THRESHOLD::Union{Nothing, Int} = nothing
+const _GPU_RAMAN_REAL_THG_FALSE_N_THRESHOLD::Union{Nothing, Int} = nothing
+const _GPU_RAMAN_ENV_N_THRESHOLD::Union{Nothing, Int} = nothing
+const _GPU_RAMAN_ROTATIONAL_N_THRESHOLD::Union{Nothing, Int} = nothing
+
+"""
     _gpu_native_eligible(f!, linop, n)
 
 Full GPU dispatch decision for `RustNativeStepper`: `true` iff
@@ -1132,10 +1211,12 @@ default `:auto`) selects GPU for this exact config:
 - `:on` — always, whenever the kernel supports it (the old unconditional
   behavior — useful to force GPU on a small config, e.g. to reproduce a
   specific benchmark/test run regardless of the measured threshold).
-- `:auto` (default) — GPU for a plasma-free config at
-  `n >= _GPU_KERR_ONLY_N_THRESHOLD`, or a supported PPT config at
-  `n >= _GPU_PPT_N_THRESHOLD`, or a supported thresholded ADK config at
-  `n >= _GPU_ADK_N_THRESHOLD`.
+- `:auto` (default) — GPU for a supported non-Raman config at the measured
+  Kerr/PPT/ADK thresholds above. Supported Raman classes consult their own
+  measured policy thresholds; all are currently unset because the
+  production-shaped Raman sweep did not clear the 1.4x retention bar, so
+  Raman remains CPU-native in `:auto`. Use `:on` for the correctness path and
+  explicit experiments.
 
 Also requires the `AMALTHEA_USE_RUST_CUDA_NATIVE=1` master opt-in
 (`cuda_native` field) regardless of `gpu_dispatch` — Rust's
@@ -1143,14 +1224,40 @@ Also requires the `AMALTHEA_USE_RUST_CUDA_NATIVE=1` master opt-in
 function is purely to avoid attempting GPU init for an ineligible config
 where it would return a confusing null pointer instead of the real reason.
 """
+function _gpu_raman_auto_threshold(f!)
+    raman_idx = findfirst(r -> r isa Amalthea.Nonlinear.RamanPolarField ||
+                                  r isa Amalthea.Nonlinear.RamanPolarEnv, f!.resp)
+    isnothing(raman_idx) && return nothing
+    raman = f!.resp[raman_idx]
+    Rs = Amalthea.Raman.flatten_sdo_oscillators(raman.r)
+    # N₂ rotational responses are the multi-oscillator policy class. A future
+    # benchmark may retain this separately from the one-oscillator paths.
+    length(Rs) > 1 && return _GPU_RAMAN_ROTATIONAL_N_THRESHOLD
+    if raman isa Amalthea.Nonlinear.RamanPolarEnv
+        return _GPU_RAMAN_ENV_N_THRESHOLD
+    end
+    raman.thg ? _GPU_RAMAN_REAL_THG_TRUE_N_THRESHOLD :
+                _GPU_RAMAN_REAL_THG_FALSE_N_THRESHOLD
+end
+
 function _gpu_native_eligible(f!, linop, n::Integer)
     cfg = Amalthea.Config.backend_config()
     cfg.cuda_native || return false
     _gpu_kernel_supports(f!, linop) || return false
     cfg.gpu_dispatch === :off && return false
     cfg.gpu_dispatch === :on && return true
+    if any(r -> r isa Amalthea.Nonlinear.RamanPolarField ||
+               r isa Amalthea.Nonlinear.RamanPolarEnv, f!.resp)
+        threshold = _gpu_raman_auto_threshold(f!)
+        return !isnothing(threshold) && n >= threshold
+    end
     plasma = findfirst(r -> r isa Amalthea.Nonlinear.PlasmaCumtrapz, f!.resp)
-    isnothing(plasma) && return n >= _GPU_KERR_ONLY_N_THRESHOLD
+    if isnothing(plasma)
+        if f!.grid isa Amalthea.Grid.EnvGrid
+            return n >= _GPU_ENV_KERR_N_THRESHOLD
+        end
+        return n >= _GPU_KERR_ONLY_N_THRESHOLD
+    end
     ratefunc = f!.resp[plasma].ratefunc
     if ratefunc isa Amalthea.Ionisation.IonRatePPTAccel
         return n >= _GPU_PPT_N_THRESHOLD
@@ -1180,7 +1287,7 @@ function RustNativeStepper(f!, linop, y0, t, dt;
         handle = RustNativeSimHandle(linop; use_gpu=_gpu_native_eligible(f!, linop, n))
     end
 
-    handle.ptr == C_NULL && error("init_native_sim failed")
+    handle.ptr == C_NULL && error("init_$(handle.backend) native simulation failed")
 
     # See `RustNativeStepper`'s `_gc_roots` field doc for why this exists:
     # collects strong references to every Julia object whose Rust-side

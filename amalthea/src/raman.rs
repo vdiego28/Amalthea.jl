@@ -1,3 +1,5 @@
+include!(concat!(env!("OUT_DIR"), "/cuda_raman_limits.rs"));
+
 /// Represents a single damped Raman oscillator transition (Single Damped Oscillator - SDO)
 #[derive(Debug, Clone, Copy)]
 pub struct RamanOscillator {
@@ -150,12 +152,19 @@ impl TimeDomainRamanSolver {
     ) -> Result<(), String> {
         let n_t = intensity.len();
         let num_oscillators = self.oscillators.len();
+        if num_oscillators == 0 || num_oscillators > CUDA_RAMAN_MAX_OSCILLATORS {
+            return Err(format!(
+                "CUDA Raman oscillator count {} exceeds capacity {}",
+                num_oscillators, CUDA_RAMAN_MAX_OSCILLATORS
+            ));
+        }
 
         let d_intensity = crate::cuda::GpuBuffer::alloc(std::mem::size_of_val(intensity))?;
         let d_polarization = crate::cuda::GpuBuffer::alloc(std::mem::size_of_val(intensity))?;
-        let d_coeffs = crate::cuda::GpuBuffer::alloc(
-            num_oscillators * std::mem::size_of::<PrecomputedStepCoeffs>(),
-        )?;
+        let coeff_bytes = num_oscillators
+            .checked_mul(std::mem::size_of::<PrecomputedStepCoeffs>())
+            .ok_or_else(|| "CUDA Raman coefficient buffer size overflow".to_string())?;
+        let d_coeffs = crate::cuda::GpuBuffer::alloc(coeff_bytes)?;
 
         d_intensity.copy_to_device(intensity)?;
         d_coeffs.copy_to_device(&self.step_coeffs)?;

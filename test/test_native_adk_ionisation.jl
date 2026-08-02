@@ -56,7 +56,7 @@ using TestItems
 
         @testset "Not silently ineligible: native stepper actually builds" begin
             s_ru = RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10)
-            @test s_ru isa RustNativeStepper
+            @test RK45._native_backend(s_ru) === :cpu
         end
 
         @testset "Full-solve triangulation (native vs Julia vs no-plasma)" begin

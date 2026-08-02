@@ -52,6 +52,7 @@ using TestItems
             s_jl = PreconStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10)
             s_ru = RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10,
                                       flength=L)
+            @test RK45._native_backend(s_ru) === :cpu
 
             step!(s_jl)
             step!(s_ru)
