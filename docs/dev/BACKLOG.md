@@ -7,21 +7,30 @@ Deferred work and known issues for Amalthea.jl. Severity: 🔴 correctness · �
 > [`ARCHIVE.md`](ARCHIVE.md) with its section names unchanged. Cross-references
 > below to a phase, to S1/S4, or to "Done (recent)" resolve there.
 
-## Start here — current resume queue (2026-07-31)
+## Start here — current resume queue (2026-08-02)
 
 This is the authoritative short queue. The long sections below retain design
 history and measured evidence, but older words such as "next", "not started",
 or "verified" inside a superseded narrative do not outrank this list.
 
-> **Current handoff:** `main` is `1fff51b` (`1.0.2-DEV`). The GPU adaptive
+> **Current handoff:** `main` is `4925c67` (`1.0.3-DEV`), which merges the
+> published `v1.0.2` release branch after its development-metadata bump. The
+> GPU adaptive
 > repair/parallel PPT scan branch and the Windows scheduler portability/
 > visibility hotfix are merged, and their remote branches were deleted after
 > ancestry checks. Main test run `30642534593` passed all **16/16** jobs and
 > documentation run `30642537095` passed. `origin` now has only `main` and the
 > required `gh-pages` deployment branch. The live queue is deliberately short:
-> standing required-CUDA CI remains deferred by the lead (item 2 below), and
-> broader GPU physics/geometries remain open under S3 item 4. Do not recreate a
+> standing required-CUDA CI remains deferred by the lead (item 2 below).
+> Broader mode-averaged SDO Raman was completed and hardware-verified on
+> 2026-08-02; remaining radial/modal/free-space GPU scope stays outside this
+> work item. Do not recreate a
 > completed integration branch as a resume step.
+
+> The upstream Luna.jl review is recorded in
+> [`native-port/UPSTREAM_TRIAGE.md`](native-port/UPSTREAM_TRIAGE.md). Its
+> candidates are not live implementation commitments until they are designed
+> in `PLANS.md` and promoted into this backlog.
 
 > **Completed 2026-07-31 campaign — four bounded work units closed.** The lead
 > selected and completed:
@@ -34,16 +43,17 @@ or "verified" inside a superseded narrative do not outrank this list.
 > thresholded ADK. The retained benchmark is **2.147×** at `n=8193`, so
 > `:auto` selects it at the exact `_GPU_ADK_N_THRESHOLD = 8193`.
 > `threshold=false` remains an explicit CPU fallback. `PLANS.md` §11 and the
-> appended `PORT_LOG.md` entries carry the full evidence. Standing GPU CI and
-> broader GPU geometries/physics remain the only live work; they were not
-> completed or implied by this campaign.
+> appended `PORT_LOG.md` entries carry the full evidence. Standing GPU CI is
+> the remaining live queue item from this campaign; the Raman expansion is
+> recorded in `PLANS.md` §12 and the appended `PORT_LOG.md` entry.
 
 > **Release `v1.0.2` — PUBLISHED 2026-07-31:** the reviewed Campaign 11
 > changes passed the prepared branch's 16-job hosted matrix, then tag-driven
 > release workflow `30658681539` built the canonical Linux/macOS/Windows
 > binaries. GitHub Release `v1.0.2` is public and its downloaded assets all
 > pass `sha256sum -c SHA256SUMS.txt`. Development metadata is now advancing to
-> `1.0.3-DEV` / `1.0.3.dev0` before the release branch is merged into `main`.
+> `1.0.3-DEV` / `1.0.3.dev0`, and the release branch is now merged into `main`
+> at `4925c67`.
 
 > **2026-07-25 agent wave — four of the five queue items below were worked
 > and are resolved or closed.** Four agent branches merged with no conflicts.
@@ -862,7 +872,7 @@ then reproducing the crash directly:**
   must be **bit-identical**, not merely within tolerance — a stronger,
   more testable guarantee than typical parallel-code equivalence.
 
-### 🟡 S3 — GPU-resident propagation (suggestion 1) — mode-averaged Kerr(+PPT/+thresholded ADK) is supported; broader scope remains unbuilt
+### 🟡 S3 — GPU-resident propagation (suggestion 1) — mode-averaged both-grid Kerr/Raman plus RealGrid plasma is supported; broader scope remains unbuilt
 *Large (5+ sessions). Plan's own stated dependency (GPU CI) is **still** not
 met — see "GPU CI coverage" below, and note that item 0 is precisely what
 that gap allowed to happen. This machine has real GPU hardware
@@ -1021,11 +1031,13 @@ implemented), verified on real hardware, wired behind
      `off` forces CPU; `on` restores the old unconditional-GPU behavior
      (kept for forcing GPU on a small/known config, e.g. reproducing a
      specific benchmark); `auto` (**new default**) requires a plasma-free
-     config at `n >= _GPU_KERR_ONLY_N_THRESHOLD = 16384` (chosen with margin
-     above the measured n=8,193 breakeven, since GPU time isn't cleanly
-     monotonic in n at small sizes) — a plasma-bearing config is rejected by
-     `:auto` outright, at any size, since no threshold is supported by data
-     there. `RK45._gpu_native_eligible(f!, linop)` split into a pure
+     RealGrid config at `n >= _GPU_KERR_ONLY_N_THRESHOLD = 16384` and an
+     EnvGrid config at the separately measured `_GPU_ENV_KERR_N_THRESHOLD =
+     32768` (the first stable substantial EnvGrid win; the 16,384 row had one
+     marginal 1.37× batch). The c2c timing curve must not inherit the RealGrid
+     r2c/c2r threshold. A plasma-bearing config is rejected by `:auto`
+     outright, at any size, since no threshold is supported by data there.
+     `RK45._gpu_native_eligible(f!, linop)` split into a pure
      config-shape check (`_gpu_kernel_supports`, unchanged logic) and the
      new size/policy-aware `_gpu_native_eligible(f!, linop, n)` (now 3-arg;
      `n = length(y0)`, threaded through from `RustNativeStepper`'s existing
@@ -1045,20 +1057,45 @@ implemented), verified on real hardware, wired behind
    1.08× at n=4097, and 2.94× at n=8193, so supported PPT configs now use
    their own conservative `_GPU_PPT_N_THRESHOLD=8192`. The Kerr-only
    threshold is unchanged.
-4. 🟡 **Broader physics/geometries remain open; the first ADK slice is DONE
-   2026-07-31.** Mode-averaged RealGrid, constant-linop, scalar-density,
+4. 🟡 **Mode-averaged SDO Raman is DONE 2026-08-02; broader geometries remain
+   open.** Mode-averaged RealGrid, constant-linop, scalar-density,
    plain-Kerr plus at most one **thresholded** ADK `PlasmaCumtrapz` is now
    supported. Its pointwise rate kernel reuses the completed two-level scans;
    independent math/code reviews and strict CUDA integration passed. At
    `n=8193` / `n_time_over=32768`, the retained benchmark is **2.147×**, so
    automatic selection is exactly `_GPU_ADK_N_THRESHOLD=8193` (not 8192).
-   `threshold=false` deliberately remains CPU fallback. Raman ADE and
-   radial/modal/free-space geometries remain on CPU through the explicit
-   eligibility split. Radial support would still need a
+   `threshold=false` deliberately remains CPU fallback. The completed Raman
+   slice supports mode-averaged `RamanPolarField` on RealGrid (`thg=true` and
+   `thg=false`) and `RamanPolarEnv` on EnvGrid, reusing the resident
+   `native_set_raman_params` contract and CUDA ADE kernel. Its explicit
+   capacity is **1–64 flattened SDO oscillators**, covering N₂ rotation (49)
+   and rotation+vibration (50); larger responses remain CPU fallback. `:SiO2`, mixtures,
+   shot noise, z-dependent Raman, and radial/modal/free-space remain excluded.
+   **Plan 05 follow-up, 2026-08-02:** production-shaped CPU/CUDA sweeps for
+   RealGrid THG on/off, EnvGrid, and 50-oscillator rotational Raman reached at
+   most 1.141×, below the established 1.4× retention bar. All four named
+   Raman `:auto` policy thresholds therefore remain unset; supported Raman is
+   CPU-native under `:auto` and CUDA remains explicit via `:on`. The complete
+   table and the bounded large-rotational benchmark gotcha are in
+   `luna-feature-plans/LUNA_FEATURE_PLAN_05_GPU_RAMAN_AUTO_POLICY.md`.
+   Radial support would still need a
    segmented/batched extension over columns rather than reusing the
    one-dimensional mode-averaged launch unchanged.
-5. `test/test_native_gpu.jl`-style coverage of the above, mirroring the
-   phase-test structure used throughout the CPU native port.
+5. 🟢 **Raman CUDA coverage landed 2026-08-02** in
+   `test/test_native_cuda_raman.jl`: direct stage/non-vacuity checks, fixed
+   and rejected-step trajectories, EnvGrid, and `:SiO2` CPU fallback.
+   **Review follow-up, 2026-08-02:** `_gpu_kernel_supports` had independently
+   accepted EnvGrid and plasma even though `compute_rhs_mode_avg_env` applies
+   only Kerr and Raman. A low-level `TransModeAvg` could therefore select CUDA
+   and silently lose its plasma term. The predicate now requires RealGrid for
+   every plasma response; a no-hardware dispatch regression constructs the
+   low-level EnvGrid+ADK shape and compares its forced-`on` CPU fallback with
+   explicit CPU native at the single-step reassociation tier. Documentation
+   now states that CUDA plasma is RealGrid-only.
+   **Rotational-capacity follow-up:** the resident CUDA ADE now shares a
+   generated 64-oscillator limit between Rust and PTX; Julia rejects 65 before
+   CUDA setup. N₂ rotation and rotation+vibration are verified at 49/50
+   oscillators, with no kernel truncation.
 6. 🟢 **The `n_time`-vs-`n_time_over` Kerr/plasma buffer-sizing fidelity gap
    is closed (2026-07-25).** Item 0's nonlinear-pipeline repair resized the
    buffers/plans and added the required crop/pad path; the older item-2 text is

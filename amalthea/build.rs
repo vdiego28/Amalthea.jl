@@ -1,6 +1,9 @@
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+const CUDA_RAMAN_MAX_OSCILLATORS: usize = 64;
 
 fn main() {
     println!("cargo:rerun-if-changed=src/kernels.cu");
@@ -12,10 +15,23 @@ fn main() {
     let dest_path = out_dir.join("kernels.ptx");
     let require_cuda = env::var("AMALTHEA_REQUIRE_CUDA_TESTS").is_ok_and(|value| value == "1");
 
+    write_cuda_raman_limits(&out_dir).expect("failed to write CUDA Raman capacity contract");
+
     let nvcc = find_nvcc();
     if let Err(message) = compile_or_fallback(nvcc.as_deref(), &dest_path, require_cuda) {
         panic!("{message}");
     }
+}
+
+fn write_cuda_raman_limits(out_dir: &Path) -> std::io::Result<()> {
+    fs::write(
+        out_dir.join("cuda_raman_limits.h"),
+        format!("#define AMALTHEA_CUDA_RAMAN_MAX_OSCILLATORS {CUDA_RAMAN_MAX_OSCILLATORS}\n"),
+    )?;
+    fs::write(
+        out_dir.join("cuda_raman_limits.rs"),
+        format!("pub const CUDA_RAMAN_MAX_OSCILLATORS: usize = {CUDA_RAMAN_MAX_OSCILLATORS};\n"),
+    )
 }
 
 fn find_nvcc() -> Option<PathBuf> {
@@ -75,7 +91,9 @@ fn compile_or_fallback(
 
 fn run_nvcc(nvcc: &Path, dest_path: &Path) -> std::io::Result<std::process::ExitStatus> {
     Command::new(nvcc)
-        .args(["--ptx", "src/kernels.cu", "-o"])
+        .args(["--ptx", "-I"])
+        .arg(dest_path.parent().unwrap_or_else(|| Path::new(".")))
+        .args(["src/kernels.cu", "-o"])
         .arg(dest_path)
         .status()
 }

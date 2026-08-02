@@ -15,6 +15,7 @@ test_native_adk_ionisation.jl 27.8
 test_native_cuda.jl::Native-Rust GPU-resident stepper (CUDA, mode-avg ADK plasma) 31.4
 test_native_cuda.jl::Native-Rust GPU-resident stepper (CUDA, mode-avg Kerr) 25.9
 test_native_cuda.jl::Native-Rust GPU-resident stepper (CUDA, mode-avg Kerr+plasma) 31.4
+test_native_cuda_raman.jl 20.0
 test_native_default_workload.jl 39.7
 test_native_dense_order5.jl::Native-Rust dense output: GPU-resident backend (BACKLOG S5 item 3) 28.4
 test_native_dense_order5.jl::Native-Rust dense output: order-5 continuous extension (BACKLOG S5 item 3) 27.9
@@ -31,7 +32,7 @@ test_native_free_plasma.jl 77.9
 test_native_free_raman.jl 77.2
 test_native_free_threading.jl 84.1
 test_native_free_zdep.jl 48.1
-test_native_gpu_dispatch.jl 21.5
+test_native_gpu_dispatch.jl 121.7
 test_native_ineligible_guards.jl 33.8
 test_native_kerr_thg_guard.jl 37.7
 test_native_mixture.jl 23.4

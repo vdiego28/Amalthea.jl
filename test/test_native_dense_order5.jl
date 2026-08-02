@@ -332,7 +332,7 @@ end
                 # Confirm the native stepper really is resident here rather
                 # than having silently fallen back — otherwise this testset
                 # would compare Julia against Julia and prove nothing.
-                @test s_ru isa RustNativeStepper
+                @test RK45._native_backend(s_ru) === :cpu
                 for θ in θs
                     ti = t0 + θ*dt
                     rel = norm(interpolate(s_ru, ti) .- interpolate(s_jl, ti)) /

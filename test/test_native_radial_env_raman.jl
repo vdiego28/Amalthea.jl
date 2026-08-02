@@ -92,7 +92,7 @@ using TestItems
             s_ru = withenv("AMALTHEA_USE_RUST_NATIVE" => "1") do
                 RustNativeStepper(transform, linop, copy(Eω), t0, dt, rtol=1e-6, atol=1e-10)
             end
-            @test s_ru isa RK45.RustNativeStepper
+            @test RK45._native_backend(s_ru) === :cpu
         end
 
         @testset "Non-vacuousness: Raman actually changes the result vs Raman-off" begin

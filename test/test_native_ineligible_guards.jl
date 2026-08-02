@@ -60,7 +60,7 @@ using TestItems
             # `flength` must succeed (confirms this is a targeted rejection
             # of non-finite `flength`, not the z-dependent linop itself).
             s = RustNativeStepper(transform, linop, copy(Eω), 0.0, 0.001; flength=flength)
-            @test s isa RustNativeStepper
+            @test RK45._native_backend(s) === :cpu
         end
 
         @testset "Missing Rust ionisation handle is rejected, not silently ignored" begin

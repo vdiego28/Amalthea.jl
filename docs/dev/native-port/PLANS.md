@@ -19,6 +19,7 @@ the durable rationale.
 | [Multi-mode StepIndex](#5-native-multi-mode-stepindexmode-backlog-phase-i-item-5) | Phase I.5b | **Parked.** Feasible but no consumer; numerical mode-field work is disproportionate |
 | [Beyond-Luna math](#6-beyond-luna-math-options-backlog-phase-j-item-6) | Phase J.6 | **Closed.** Direct error/PPT: do not pursue; short-kernel Raman measured 2026-07-25 and rejected |
 | [2026-07-31 correctness, safety, CI, and GPU campaign](#11-2026-07-31-correctness-safety-ci-and-gpu-campaign) | Correctness, safety, CI, and first ADK slice | **Complete 2026-07-31.** Four reviewed work units landed; thresholded ADK is retained at `_GPU_ADK_N_THRESHOLD = 8193` |
+| [GPU mode-averaged SDO Raman](#12-gpu-mode-averaged-sdo-raman) | S3 broader GPU physics | **Complete 2026-08-02.** RealGrid carrier and EnvGrid envelope verified; `:SiO2` and other geometries remain out of scope |
 
 ---
 
@@ -2703,3 +2704,83 @@ ms/step and GPU **[2.433, 1.965, 1.716]** ms/step: **2.147×**, clearing the
 `>=1.4×` gate. Production `:auto` therefore retains the exact
 `_GPU_ADK_N_THRESHOLD = 8193`; `threshold=false` stays CPU fallback rather
 than selecting the CUDA ADK kernel.
+
+## 12. GPU mode-averaged SDO Raman
+
+Status: **Complete 2026-08-02.** This was the first broader S3 expansion after the
+strict CUDA baseline and thresholded ADK slice. It is deliberately split into
+two ordered subphases because `CudaNativeSim` currently owns only the RealGrid
+r2c/c2r plans; EnvGrid needs a c2c setup without changing the public FFI.
+
+### 12.1 Scope and eligibility
+
+Support exactly the constant-linop, scalar-density, mode-averaged combinations
+already accepted by the CUDA backend, with one plain Kerr response and at most
+one `CombinedRamanResponse` flattened by
+`Raman.flatten_sdo_oscillators`. The resident CUDA ADE capacity is **1–64
+flattened oscillators**; N₂ rotation produces 49 and rotation+vibration 50,
+while larger responses remain CPU fallback. This includes single damped
+oscillators and flattened rotational non-rigid responses. RealGrid uses `RamanPolarField` with
+both `thg=true` and `thg=false`; EnvGrid uses `RamanPolarEnv` and has no THG
+branch. Keep `:SiO2` intermediate broadening, mixtures, shot noise,
+z-dependent Raman, and radial/modal/free-space combinations explicitly
+ineligible and on the CPU fallback.
+
+### 12.2 RealGrid implementation
+
+Extend `CudaNativeSim` with resident device storage for the oscillator
+`PrecomputedStepCoeffs`, intensity, and Raman polarization. Upload the same
+coefficients computed by `raman.rs::PrecomputedStepCoeffs::compute` through the
+existing `native_set_raman_params` call; do not duplicate the coefficient
+formula in Julia or alter the FFI signature. Reuse `raman_ade_kernel` with a
+resident launch over the oversampled mode-averaged time grid. For `thg=true`,
+compute `E²` pointwise. For `thg=false`, add a resident c2c Hilbert plan and
+apply the exact `RamanPolarField` analytic-signal bin convention before the
+ADE launch. Accumulate `pto += density * eto * raman_p` before the shared
+windowing and spectral normalization.
+
+The CUDA path must not allocate/copy a temporary Raman solver per RK stage.
+The existing CPU `TimeDomainRamanSolver::solve_gpu` may remain as a separate
+legacy fallback, but its per-call allocation behavior must not be reused by
+the resident stepper.
+
+### 12.3 EnvGrid implementation
+
+Extend mode-averaged CUDA setup with c2c normal and oversampled plans and
+complex time/frequency buffers, preserving the current RealGrid setup and
+transactional replacement behavior. Compute the envelope intensity as
+`0.5*abs2(E)` in a real device buffer, run the same real ADE recurrence, and
+accumulate `pto += E * (density * raman_p)`. The existing EnvGrid Kerr kernel,
+RK buffers, error path, and frequency normalization remain unchanged.
+
+### 12.4 Julia wiring and dispatch
+
+Broaden `_gpu_native_eligible` only for the two scopes above. The existing
+`native_set_raman_params` FFI symbol is sufficient; CUDA setup failure must
+return a nonzero code and cause `NativeIneligible`, never silently omit Raman.
+Keep `AMALTHEA_USE_RUST_CUDA_NATIVE=1` as the master opt-in and use
+`AMALTHEA_NATIVE_GPU=on` in raw correctness tests. Plan 05 measured the
+production-shaped CPU/GPU classes but reached at most `1.141x`, below the
+repository's established `1.4x` retention bar; each named Raman policy
+threshold therefore remains unset and `:auto` remains CPU for Raman.
+
+### 12.5 Acceptance and tests
+
+`test/test_native_cuda_raman.jl` adds strict-CUDA-gated RealGrid and EnvGrid
+items with direct CPU-ADE/device stage comparisons, Julia Raman-on versus
+Raman-off controls, fixed-step full-solve equivalence, and an adaptive
+rejected trial whose field is bit-exact before retry. The item passed 53/53 on
+the local CUDA 13.3 hardware; RealGrid and EnvGrid GPU-vs-CPU fixed
+trajectories measured about `5e-16` and `2e-16`. Fallback coverage proves
+`:SiO2` does not select CUDA. The test self-skips without hardware, while
+`AMALTHEA_REQUIRE_CUDA_TESTS=1` turns initialization or dispatch failure into
+a test failure. `:auto` deliberately remains CPU for Raman after the Plan 05
+benchmark no-go; `:on` remains the explicit CUDA route.
+
+The capacity follow-up adds direct N₂ rotation and rotation+vibration
+stage/fixed-solve coverage at 49/50 oscillators, hardware-independent dispatch
+coverage for counts 64 and 65, and a generated Rust/PTX capacity contract.
+The 64-oscillator kernel state is 1024 bytes of `Float64` ADE state per active
+thread (`q[64]` plus `dq[64]`), versus 512 bytes at the old 32-oscillator
+limit. The real CUDA 13.3 cubin reports a 1024-byte stack frame, 62 registers,
+and zero spill stores/loads, so the retained mode-averaged workload is usable.

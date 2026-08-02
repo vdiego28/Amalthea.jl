@@ -89,15 +89,29 @@ see the Modal table below).
 ## Cross-cutting notes
 
 - **GPU (`CudaNativeSim`, `AMALTHEA_USE_RUST_CUDA_NATIVE=1`)** is a much
-  narrower slice layered on top of all of the above: mode-averaged RealGrid
-  only, Kerr + PPT plasma only (no Raman, no ADK, no radial/modal/free-space).
+  narrower slice layered on top of all of the above: the landed path is
+  mode-averaged RealGrid/EnvGrid Kerr with matching SDO Raman containing
+  1–64 flattened oscillators (N₂ rotation: 49; rotation+vibration: 50), plus
+  RealGrid-only PPT/thresholded-ADK plasma. EnvGrid plasma is explicitly
+  CPU-only because the CUDA EnvGrid RHS does not implement it.
+  Radial/modal/free-space and
+  intermediate-broadening Raman remain CPU-only until separately designed and
+  verified.
   See `GPU.md` and `BACKLOG.md` S3. **Status 2026-07-27:** the nonlinear RHS,
   adaptive error/acceptance path, and parallel PPT prefix scans are
   hardware-verified. The supported Kerr and Kerr+PPT configurations agree
   with the CPU resident backend through deliberate rejected-step retries and
   adaptive trajectories. It remains 🟡 rather than 🟢 because there is no GPU
   CI to re-measure it automatically between manual runs. `BACKLOG.md` S3
-  items 0 and 2.
+  items 0 and 2. Under `AMALTHEA_NATIVE_GPU=auto`, the measured Kerr
+  thresholds are separate by grid: RealGrid `n≥16384`, EnvGrid `n≥32768`;
+  the latter is documented in Luna feature plan 04 because the c2c timing
+  curve is not interchangeable with RealGrid's r2c/c2r curve. The supported
+  Raman kernels remain explicit/manual under `:auto`: Plan 05 measured
+  RealGrid THG on/off, EnvGrid, and 50-oscillator rotational classes, with a
+  maximum GPU speedup of only 1.141x versus the 1.4x retention bar, so none
+  inherits a Kerr threshold. `:on` remains available for the verified Raman
+  CUDA path.
 - **Arbitrary low-level closures** (a bare `f!` that isn't
   `TransModeAvg`/`TransRadial`/`TransModal`/`TransFree`, or a `densityfun`/
   mode-field that isn't one of the recognized transferable shapes — splines,

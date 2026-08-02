@@ -54,7 +54,7 @@ using TestItems
         @testset "constant densityfun is still eligible" begin
             s_ru = RustNativeStepper(transform, linop, copy(Eω), t0, dt;
                                       rtol=1e-6, atol=1e-10, flength=flength)
-            @test s_ru isa RustNativeStepper
+            @test RK45._native_backend(s_ru) === :cpu
         end
     end
 end

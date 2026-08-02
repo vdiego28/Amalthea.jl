@@ -81,6 +81,24 @@ Notes:
 - Place the file in `test/` and add nothing else — `@run_package_tests`
   auto-discovers every `@testitem`.
 
+### Backend observability and dispatch gates
+
+`RustNativeStepper` exposes the internal diagnostic
+`RK45._native_backend(s)`, which returns exactly `:cpu` or `:cuda` from the
+backend selected at construction. Use this accessor when a test needs to
+prove dispatch; `s isa RustNativeStepper` proves only that the resident API
+was used, not which resident implementation owns the field. The accessor does
+not query CUDA or change eligibility.
+
+Pure eligibility, unsupported-response, capacity-boundary, and CPU-fallback
+assertions must run before any CUDA-device gate. A supported configuration may
+be constructed with `gpu_dispatch=:off` or a below-threshold `:auto` policy to
+prove `:cpu` on every host. A `gpu_dispatch=:on` test on a CPU-only host should
+assert only the pure eligibility result; it must not attempt a supported CUDA
+construction. After the hardware gate succeeds, assert `:cuda` before reading
+GPU stages or comparing trajectories. Z-dependent native constructors are
+CPU-only and should assert `:cpu` explicitly.
+
 ## 2. Tolerance tiers (and the reason each applies)
 
 Pick the **tightest** tier the math justifies. A test that passes at a looser

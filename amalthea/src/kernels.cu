@@ -1,6 +1,6 @@
 #include <math.h>
-
-#define MAX_OSCILLATORS 32
+#include <cuComplex.h>
+#include "cuda_raman_limits.h"
 
 struct PrecomputedStepCoeffs {
     double a11, a12, a21, a22;
@@ -27,10 +27,12 @@ extern "C" __global__ void raman_ade_kernel(
     int s = blockIdx.x * blockDim.x + threadIdx.x;
     if (s >= n_series) return;
     
-    double q_states[MAX_OSCILLATORS];
-    double dq_states[MAX_OSCILLATORS];
-    
-    int num_osc = num_oscillators > MAX_OSCILLATORS ? MAX_OSCILLATORS : num_oscillators;
+    // The Rust FFI setters reject counts outside the generated capacity
+    // contract before this kernel is launched. Do not clamp here: dropping
+    // oscillators silently changes the Raman polarization.
+    double q_states[AMALTHEA_CUDA_RAMAN_MAX_OSCILLATORS];
+    double dq_states[AMALTHEA_CUDA_RAMAN_MAX_OSCILLATORS];
+    int num_osc = num_oscillators;
     for (int i = 0; i < num_osc; i++) {
         q_states[i] = 0.0;
         dq_states[i] = 0.0;
@@ -59,6 +61,98 @@ extern "C" __global__ void raman_ade_kernel(
         }
         raman_polarization[offset + n + 1] = total_q;
     }
+}
+
+// Raman intensity/accumulation helpers used by the resident GPU stepper.
+// The ADE recurrence itself remains in raman_ade_kernel so the CUDA and CPU
+// paths share PrecomputedStepCoeffs exactly.
+extern "C" __global__ void raman_intensity_real_kernel(
+    const double* eto,
+    double* intensity,
+    int n,
+    int thg
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) return;
+    double e = eto[idx];
+    intensity[idx] = thg ? e * e : 0.0;
+}
+
+extern "C" __global__ void raman_hilbert_pack_kernel(
+    const double* eto,
+    cuDoubleComplex* a,
+    int n
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) return;
+    a[idx] = make_cuDoubleComplex(eto[idx], 0.0);
+}
+
+extern "C" __global__ void raman_hilbert_filter_kernel(
+    cuDoubleComplex* spectrum,
+    int n
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) return;
+    int half = n / 2;
+    if (idx == 0 || (n % 2 == 0 && idx == half)) {
+        // DC and (for even n) Nyquist remain single-weighted.
+    } else if (idx <= half) {
+        spectrum[idx].x *= 2.0;
+        spectrum[idx].y *= 2.0;
+    } else {
+        spectrum[idx] = make_cuDoubleComplex(0.0, 0.0);
+    }
+}
+
+extern "C" __global__ void raman_hilbert_intensity_kernel(
+    const cuDoubleComplex* analytic,
+    double* intensity,
+    int n
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) return;
+    double re = analytic[idx].x;
+    double im = analytic[idx].y;
+    intensity[idx] = 0.5 * (re * re + im * im);
+}
+
+extern "C" __global__ void raman_intensity_env_kernel(
+    const cuDoubleComplex* eto,
+    double* intensity,
+    int n
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) return;
+    double re = eto[idx].x;
+    double im = eto[idx].y;
+    intensity[idx] = 0.5 * (re * re + im * im);
+}
+
+extern "C" __global__ void raman_accumulate_real_kernel(
+    double* pto,
+    const double* eto,
+    const double* raman_polarization,
+    double density,
+    int n
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) return;
+    pto[idx] += density * eto[idx] * raman_polarization[idx];
+}
+
+extern "C" __global__ void raman_accumulate_env_kernel(
+    cuDoubleComplex* pto,
+    const cuDoubleComplex* eto,
+    const double* raman_polarization,
+    double density,
+    int n
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) return;
+    double factor = density * raman_polarization[idx];
+    pto[idx].x += factor * eto[idx].x;
+    pto[idx].y += factor * eto[idx].y;
 }
 
 extern "C" __global__ void ppt_ionization_kernel(
@@ -470,22 +564,93 @@ extern "C" __global__ void plasma_polarization_finalize_kernel(
 
 // Mode average env kerr
 extern "C" __global__ void rhs_mode_avg_env_kernel(
-    cuDoubleComplex* poo,
-    const cuDoubleComplex* eoo,
-    const double* towin,
+    cuDoubleComplex* pto,
+    const cuDoubleComplex* eto,
     double kerr_fac,
     int n_time
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n_time) return;
     
-    cuDoubleComplex e = eoo[idx];
-    double w = towin ? towin[idx] : 1.0;
-    
+    cuDoubleComplex e = eto[idx];
     double mag_sq = e.x * e.x + e.y * e.y;
-    double fac = w * kerr_fac * mag_sq;
+    double fac = 0.75 * kerr_fac * mag_sq;
     
-    poo[idx] = make_cuDoubleComplex(fac * e.x, fac * e.y);
+    pto[idx] = make_cuDoubleComplex(fac * e.x, fac * e.y);
+}
+
+extern "C" __global__ void expand_spectrum_env_kernel(
+    const cuDoubleComplex* in,
+    cuDoubleComplex* out,
+    double scale_fwd,
+    int n_spec,
+    int n_spec_over
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n_spec_over) return;
+    int half = n_spec / 2;
+    if (idx < half) {
+        cuDoubleComplex v = in[idx];
+        out[idx] = make_cuDoubleComplex(v.x * scale_fwd, v.y * scale_fwd);
+    } else if (idx >= n_spec_over - half) {
+        int src = n_spec - half + idx - (n_spec_over - half);
+        cuDoubleComplex v = in[src];
+        out[idx] = make_cuDoubleComplex(v.x * scale_fwd, v.y * scale_fwd);
+    } else {
+        out[idx] = make_cuDoubleComplex(0.0, 0.0);
+    }
+}
+
+extern "C" __global__ void scale_complex_kernel(
+    cuDoubleComplex* a,
+    double factor,
+    int n
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) return;
+    a[idx].x *= factor;
+    a[idx].y *= factor;
+}
+
+extern "C" __global__ void apply_time_window_complex_kernel(
+    cuDoubleComplex* pto,
+    const double* towin,
+    int n
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) return;
+    pto[idx].x *= towin[idx];
+    pto[idx].y *= towin[idx];
+}
+
+extern "C" __global__ void finalize_spectrum_env_kernel(
+    const cuDoubleComplex* poo,
+    cuDoubleComplex* ks_out,
+    const cuDoubleComplex* norm_pre_beta,
+    const double* owin,
+    double scale_inv,
+    int n_spec,
+    int n_spec_over
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n_spec) return;
+    int half = n_spec / 2;
+    cuDoubleComplex v;
+    if (idx < half) {
+        v = poo[idx];
+    } else if (idx >= n_spec - half) {
+        int src = n_spec_over - half + idx - (n_spec - half);
+        v = poo[src];
+    } else {
+        v = make_cuDoubleComplex(0.0, 0.0);
+    }
+    v.x *= scale_inv;
+    v.y *= scale_inv;
+    cuDoubleComplex npb = norm_pre_beta[idx];
+    double re = v.x * npb.x - v.y * npb.y;
+    double im = v.x * npb.y + v.y * npb.x;
+    double w = owin[idx];
+    ks_out[idx] = make_cuDoubleComplex(re * w, im * w);
 }
 
 extern "C" __global__ void weaknorm_reduce_kernel(

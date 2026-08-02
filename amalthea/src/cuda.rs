@@ -178,6 +178,8 @@ pub type cufftType = libc::c_int;
 pub const CUFFT_D2Z: cufftType = 106;
 pub const CUFFT_Z2D: cufftType = 108;
 pub const CUFFT_Z2Z: cufftType = 105;
+pub const CUFFT_FORWARD: libc::c_int = -1;
+pub const CUFFT_INVERSE: libc::c_int = 1;
 
 pub struct CufftApi {
     _lib: Library,
@@ -311,6 +313,13 @@ pub struct GpuContext {
     pub cublas_handle: cublasHandle_t,
     pub module: CUmodule,
     pub raman_fn: CUfunction,
+    pub raman_intensity_real_fn: CUfunction,
+    pub raman_hilbert_pack_fn: CUfunction,
+    pub raman_hilbert_filter_fn: CUfunction,
+    pub raman_hilbert_intensity_fn: CUfunction,
+    pub raman_intensity_env_fn: CUfunction,
+    pub raman_accumulate_real_fn: CUfunction,
+    pub raman_accumulate_env_fn: CUfunction,
     pub ppt_fn: CUfunction,
     pub adk_fn: CUfunction,
     pub apply_prop_fn: CUfunction,
@@ -330,11 +339,15 @@ pub struct GpuContext {
     /// Step 1 (zero-pad + scale spectrum into the oversampled buffer) —
     /// BACKLOG.md S3 item 0.
     pub expand_spectrum_fn: CUfunction,
+    pub expand_spectrum_env_fn: CUfunction,
     /// Combined Step 1 (cuFFT unnormalized-inverse factor) + Step 2
     /// (`1/(nlscale*sqrt_aeff)`) scalar rescale.
     pub scale_real_fn: CUfunction,
+    pub scale_complex_fn: CUfunction,
+    pub apply_time_window_complex_fn: CUfunction,
     /// Step 5+6+7 (crop+scale_inv, norm_pre_beta, owin).
     pub finalize_spectrum_fn: CUfunction,
+    pub finalize_spectrum_env_fn: CUfunction,
 }
 
 unsafe impl Send for GpuContext {}
@@ -434,6 +447,28 @@ pub fn init_gpu_context() -> Result<&'static GpuContext, String> {
                         res
                     ));
                 }
+
+                macro_rules! load_kernel {
+                    ($var:ident, $name:literal) => {
+                        let mut $var = std::ptr::null_mut();
+                        res = (driver.cuModuleGetFunction)(
+                            &mut $var,
+                            module,
+                            CString::new($name).unwrap().as_ptr(),
+                        );
+                        if res != 0 {
+                            return Err(format!("cuModuleGetFunction {} failed: {}", $name, res));
+                        }
+                    };
+                }
+
+                load_kernel!(raman_intensity_real_fn, "raman_intensity_real_kernel");
+                load_kernel!(raman_hilbert_pack_fn, "raman_hilbert_pack_kernel");
+                load_kernel!(raman_hilbert_filter_fn, "raman_hilbert_filter_kernel");
+                load_kernel!(raman_hilbert_intensity_fn, "raman_hilbert_intensity_kernel");
+                load_kernel!(raman_intensity_env_fn, "raman_intensity_env_kernel");
+                load_kernel!(raman_accumulate_real_fn, "raman_accumulate_real_kernel");
+                load_kernel!(raman_accumulate_env_fn, "raman_accumulate_env_kernel");
 
                 let mut ppt_fn = std::ptr::null_mut();
                 let fn_name_ppt = CString::new("ppt_ionization_kernel").unwrap();
@@ -637,6 +672,8 @@ pub fn init_gpu_context() -> Result<&'static GpuContext, String> {
                     return Err("cuModuleGetFunction expand_spectrum_kernel failed".to_string());
                 }
 
+                load_kernel!(expand_spectrum_env_fn, "expand_spectrum_env_kernel");
+
                 let mut scale_real_fn = std::ptr::null_mut();
                 res = (driver.cuModuleGetFunction)(
                     &mut scale_real_fn,
@@ -646,6 +683,12 @@ pub fn init_gpu_context() -> Result<&'static GpuContext, String> {
                 if res != 0 {
                     return Err("cuModuleGetFunction scale_real_kernel failed".to_string());
                 }
+
+                load_kernel!(scale_complex_fn, "scale_complex_kernel");
+                load_kernel!(
+                    apply_time_window_complex_fn,
+                    "apply_time_window_complex_kernel"
+                );
 
                 let mut finalize_spectrum_fn = std::ptr::null_mut();
                 res = (driver.cuModuleGetFunction)(
@@ -657,12 +700,21 @@ pub fn init_gpu_context() -> Result<&'static GpuContext, String> {
                     return Err("cuModuleGetFunction finalize_spectrum_kernel failed".to_string());
                 }
 
+                load_kernel!(finalize_spectrum_env_fn, "finalize_spectrum_env_kernel");
+
                 Ok(GpuContext {
                     device,
                     context,
                     cublas_handle,
                     module,
                     raman_fn,
+                    raman_intensity_real_fn,
+                    raman_hilbert_pack_fn,
+                    raman_hilbert_filter_fn,
+                    raman_hilbert_intensity_fn,
+                    raman_intensity_env_fn,
+                    raman_accumulate_real_fn,
+                    raman_accumulate_env_fn,
                     ppt_fn,
                     adk_fn,
                     apply_prop_fn,
@@ -680,8 +732,12 @@ pub fn init_gpu_context() -> Result<&'static GpuContext, String> {
                     plasma_current_finalize_fn,
                     plasma_polarization_finalize_fn,
                     expand_spectrum_fn,
+                    expand_spectrum_env_fn,
                     scale_real_fn,
+                    scale_complex_fn,
+                    apply_time_window_complex_fn,
                     finalize_spectrum_fn,
+                    finalize_spectrum_env_fn,
                 })
             }
         })
