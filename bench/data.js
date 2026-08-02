@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785526632519,
+  "lastUpdate": 1785693685531,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -782,6 +782,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.920845,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "53799316+vdiego28@users.noreply.github.com",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b8cdfaf144db37f2979be587c7e58b66160b7f08",
+          "message": "Complete Luna GPU feature plans 01-05 (#66)",
+          "timestamp": "2026-08-02T13:54:07-04:00",
+          "tree_id": "62103cf4f8a596133fca79a8408565003fe3abf9",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/b8cdfaf144db37f2979be587c7e58b66160b7f08"
+        },
+        "date": 1785693684760,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.653452,
             "unit": "ms/step"
           }
         ]
