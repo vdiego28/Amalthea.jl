@@ -22,6 +22,61 @@ FULL_GATE_SPEC.loader.exec_module(FULL_GATE)
 
 
 class SchedulerTests(unittest.TestCase):
+    def test_parallel_run_precompiles_worker_environment_before_fanout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_dir = Path(tmp)
+            events = []
+
+            def fake_precompile(path, ci=False):
+                self.assertEqual(path, log_dir)
+                self.assertTrue(ci)
+                events.append("preflight")
+
+            def fake_run_bucket(
+                group, bucket_id, items, log_path, n_workers=1, ci=False
+            ):
+                self.assertEqual(events, ["preflight"])
+                log_path.write_text(
+                    "Test Summary: | Pass Total\n"
+                    "Package       | 1    1\n",
+                    encoding="utf-8",
+                )
+                return bucket_id, 0
+
+            with mock.patch.object(
+                SCHEDULER, "precompile_worker_environment", fake_precompile
+            ), mock.patch.object(SCHEDULER, "run_bucket", fake_run_bucket):
+                results, _ = SCHEDULER.run_groups(
+                    {"fields": [["a.jl"], ["b.jl"]]}, log_dir, ci=True
+                )
+
+            self.assertEqual(results["fields"], (0, 2, 2))
+
+    def test_serial_preflight_uses_worker_options_and_reports_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_dir = Path(tmp)
+            failed = mock.Mock(returncode=1)
+            output = io.StringIO()
+
+            def fake_run(command, **kwargs):
+                self.assertIn("--check-bounds=yes", command)
+                self.assertIn("--compiled-modules=yes", command)
+                self.assertIn("using TestItemRunner; import Amalthea", command)
+                kwargs["stdout"].write("extension precompile failed\n")
+                return failed
+
+            with mock.patch.object(
+                SCHEDULER.subprocess, "run", side_effect=fake_run
+            ), contextlib.redirect_stdout(output):
+                with self.assertRaisesRegex(
+                    RuntimeError, "parallel workers were not launched"
+                ):
+                    SCHEDULER.precompile_worker_environment(log_dir, ci=True)
+
+            emitted = output.getvalue()
+            self.assertIn("BEGIN FAILED WORKER LOG", emitted)
+            self.assertIn("extension precompile failed", emitted)
+
     def test_ci_run_prints_assignments_heartbeats_and_completion(self):
         with tempfile.TemporaryDirectory() as tmp:
             log_dir = Path(tmp)

@@ -3350,3 +3350,37 @@ item **104/104**, and the complete elevated `LUNA_TEST_GROUP=rust` gate
 that gate.
 **Next:** Commit the reviewed work on `luna-plans-07-11`. Do not push unless
 the lead explicitly requests it; Plan 12 is the next feature candidate.
+
+## 2026-08-02 — CI scheduler — serialize cold-depot worker precompile — Codex (GPT-5)
+**Status:** complete
+**Did:** Fixed the post-merge GitHub Actions failure in the Linux `fields`
+job by serializing the Julia worker bootstrap before parallel bucket fan-out.
+The scheduler now preloads `TestItemRunner` and `Amalthea` once into the shared
+depot; workers start only after that process succeeds.
+**How:** `test/parallel_group_tests.py:julia_preflight_command` mirrors the CI
+worker's bounds/deprecation/compiled-module/inlining/coverage options and runs
+`using TestItemRunner; import Amalthea` in one Julia process.
+`precompile_worker_environment` uses one-thread Julia/BLAS/OMP settings,
+captures a dedicated log, emits it in full on failure, and aborts before
+fan-out. `run_groups` invokes it whenever more than one bucket will run;
+parallel timing refreshes use the same guard. Two unit tests in
+`test/test_parallel_group_tests.py` prove ordering and failure visibility.
+No workflow-specific step or numerical source changed.
+**Decisions:** Put the repair in the shared scheduler instead of
+`.github/workflows/run_tests.yml`, so local cold-depot runs and hosted jobs use
+the same startup discipline. Skip the extra process for a single worker,
+where no compile race exists. Preserve all existing CI compile/coverage flags
+in the preflight so it warms the same cache mode used by workers.
+**Gotchas:** Fork Actions run `30759899291` failed after Plans 01–05 merged to
+main, but it was not a test assertion failure: worker 0 passed 204/204 and
+worker 1 died during concurrent `DSP → OffsetArraysExt` precompilation with
+`ArgumentError: No value arguments present`. The PR run and every other job
+were green. Local `pytest` was unavailable (`pytest: command not found`), so
+the dependency-free unittest entry point was used directly.
+**Tests:** `python3 test/test_parallel_group_tests.py` passed **14/14**. The
+exact CI-shaped command `python3 test/parallel_group_tests.py --group fields
+--max-workers 2 --ci` passed **339/339** in 330.5s after the serial preflight
+(worker 0: 204/204; worker 1: 135/135). `git diff --check` passed.
+**Next:** Commit this follow-up on `luna-plans-07-11`. Do not push unless the
+lead explicitly requests it; after push, confirm both the branch and eventual
+main Actions runs use the preflight and finish green.

@@ -189,13 +189,8 @@ def safe_log_stem(identity):
     return f"{slug}-{digest}"
 
 
-def julia_bucket_command(log_path, ci=False):
-    """Build the Julia invocation for one bucket.
-
-    CI mode preserves the safety and coverage flags previously supplied by
-    julia-actions/julia-runtest. Each worker receives a distinct LCOV path,
-    avoiding concurrent writes to Julia's default per-source `.cov` files.
-    """
+def julia_worker_command_prefix(log_path, ci=False):
+    """Build the common Julia invocation prefix for a worker or preflight."""
     cmd = ["julia", "--project"]
     if ci:
         coverage_path = Path(log_path).with_suffix(".coverage.info").resolve()
@@ -207,8 +202,60 @@ def julia_bucket_command(log_path, ci=False):
             "--code-coverage=user",
             f"--code-coverage={coverage_path}",
         ])
+    return cmd
+
+
+def julia_bucket_command(log_path, ci=False):
+    """Build the Julia invocation for one bucket.
+
+    CI mode preserves the safety and coverage flags previously supplied by
+    julia-actions/julia-runtest. Each worker receives a distinct LCOV path,
+    avoiding concurrent writes to Julia's default per-source `.cov` files.
+    """
+    cmd = julia_worker_command_prefix(log_path, ci)
     cmd.append(str(BUCKET_RUNNER))
     return cmd
+
+
+def julia_preflight_command(log_path, ci=False):
+    """Build a serial module-load command matching worker compile options."""
+    cmd = julia_worker_command_prefix(log_path, ci)
+    cmd.extend(["-e", "using TestItemRunner; import Amalthea"])
+    return cmd
+
+
+def precompile_worker_environment(log_dir, ci=False):
+    """Populate the shared Julia compile cache before parallel fan-out.
+
+    Fresh-depot workers otherwise race while compiling the same package
+    extensions. Julia's pidfiles normally serialize that work, but hosted
+    Julia 1.12 has produced an invalid DSP/OffsetArrays extension load under
+    two-process startup. One serial load of the exact bucket bootstrap removes
+    that race for both CI and local cold-depot runs.
+    """
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "worker_preflight.log"
+    env = {
+        **os.environ,
+        "JULIA_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+    }
+    print("Precompiling parallel-worker Julia environment serially...", flush=True)
+    with open(log_path, "w") as log:
+        proc = subprocess.run(
+            julia_preflight_command(log_path, ci),
+            cwd=REPO_ROOT,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            env=env,
+        )
+    if proc.returncode != 0:
+        emit_failure_log(log_path)
+        raise RuntimeError(
+            "Serial Julia worker preflight failed; parallel workers were not launched"
+        )
+    print(f"Parallel-worker Julia preflight complete (log: {log_path})", flush=True)
 
 
 def run_bucket(group, bucket_id, items, log_path, n_workers=1, ci=False):
@@ -328,6 +375,9 @@ def update_timings(group, files, max_workers, log_dir, timings_file):
     durations = {}
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
+    if max_workers > 1 and len(files) > 1:
+        precompile_worker_environment(log_dir)
+
     blas_threads = str(_blas_threads_for(max_workers))
 
     def run_one(name):
@@ -421,6 +471,9 @@ def run_groups(group_bins, log_dir, ci=False):
         for i, files in enumerate(bins) if files
     ]
     total_workers = len(tasks)
+
+    if total_workers > 1:
+        precompile_worker_environment(log_dir, ci)
 
     if ci:
         for group, bucket_id, items in tasks:

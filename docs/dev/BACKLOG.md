@@ -527,6 +527,22 @@ or "verified" inside a superseded narrative do not outrank this list.
     Windows Rust passed **42569/42569**, and its retained log proves assignments
     were flushed before launch followed by one-minute live heartbeats. This
     first-push portability/visibility follow-up is closed.
+    **2026-08-02 post-merge precompile-race follow-up:** main push run
+    `30759899291` failed only in the two-worker Linux `fields` job. Worker 0
+    passed 204/204; worker 1 exited before test discovery while both fresh
+    Julia processes compiled the shared depot, with `DSP → OffsetArraysExt`
+    failing inside `_include_from_serialized` (`ArgumentError: No value
+    arguments present`). The pull-request run and every other push job passed,
+    so this is worker bootstrap concurrency rather than a fields/Luna
+    regression. Before launching a parallel bucket, the shared scheduler now
+    runs one serial Julia preflight that loads the same `TestItemRunner` and
+    `Amalthea` modules as `run_group_bucket.jl`. A failed preflight must emit
+    its complete log and abort; a successful one populates the shared compiled
+    cache before worker fan-out. Keep this in the scheduler so local cold-depot
+    runs receive the same protection as GitHub Actions. The scheduler unit
+    suite passes **14/14**, and the exact local two-worker `fields --ci` path
+    passes **339/339** (worker 0: 204/204; worker 1: 135/135) after the serial
+    preflight, with no concurrent package-precompile activity.
 
 Explicitly parked, and therefore **not** resume points without a new user need:
 multi-mode `StepIndexMode` (no consumer), the full SoA conversion (~1% ceiling),
