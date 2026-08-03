@@ -178,15 +178,18 @@ using TestItems
                 @test RK45._native_backend(s_env_auto) === :cpu
             end
 
-            # :SiO2 uses the intermediate-broadening response, which the CUDA
-            # setter does not implement. Forced-on construction must therefore
-            # select the CPU resident backend, not a partially configured GPU.
+            # :SiO2 uses the intermediate-broadening response and is supported
+            # only by the EnvGrid resident FFT-convolution CUDA path. It is
+            # eligible under explicit `:on`, while the measured Raman `:auto`
+            # policy remains deliberately disabled.
             grid = Grid.EnvGrid(flength, λ0, (400e-9, 2000e-9), 0.5e-12)
             mode = Capillary.MarcatiliMode(radius, gas, pressure;
                                            kind=:HE, n=1, m=1)
             density = PhysData.density(gas, pressure)
             densityfun(z) = density
-            rr = Raman.raman_response(grid.to, :SiO2)
+            rr = Raman.raman_response(
+                grid.to, :SiO2,
+                2 * 0.18 * PhysData.ε_0 * PhysData.γ3_gas(gas))
             responses = (Nonlinear.Kerr_env(PhysData.γ3_gas(gas)),
                          Nonlinear.RamanPolarEnv(grid.to, rr))
             linop, βfun!, _, _ = LinearOps.make_const_linop(grid, mode, grid.referenceλ)
@@ -195,14 +198,25 @@ using TestItems
             Eω, transform, _ = with_logger(NullLogger()) do
                 Amalthea.setup(grid, densityfun, responses, input, βfun!, aeff)
             end
-            @test !RK45._gpu_kernel_supports(transform, linop)
+            @test RK45._gpu_kernel_supports(transform, linop)
             withenv("AMALTHEA_USE_RUST_CUDA_NATIVE" => "1",
                     "AMALTHEA_NATIVE_GPU" => "on") do
+                @test RK45._gpu_native_eligible(transform, linop, length(Eω))
+            end
+            withenv("AMALTHEA_USE_RUST_CUDA_NATIVE" => "1",
+                    "AMALTHEA_NATIVE_GPU" => "auto") do
                 @test !RK45._gpu_native_eligible(transform, linop, length(Eω))
-                s_fallback = RustNativeStepper(transform, linop, copy(Eω), 0.0, dt;
-                                                rtol=1e-6, atol=1e-10,
-                                                max_dt=dt, min_dt=dt)
-                @test RK45._native_backend(s_fallback) === :cpu
+                s_auto = RustNativeStepper(transform, linop, copy(Eω), 0.0, dt;
+                                           rtol=1e-6, atol=1e-10,
+                                           max_dt=dt, min_dt=dt)
+                @test RK45._native_backend(s_auto) === :cpu
+            end
+            withenv("AMALTHEA_USE_RUST_CUDA_NATIVE" => "0",
+                    "AMALTHEA_NATIVE_GPU" => "on") do
+                s_cpu = RustNativeStepper(transform, linop, copy(Eω), 0.0, dt;
+                                           rtol=1e-6, atol=1e-10,
+                                           max_dt=dt, min_dt=dt)
+                @test RK45._native_backend(s_cpu) === :cpu
             end
         end
 
@@ -424,6 +438,111 @@ using TestItems
                             norm(s_cpu_fixed.yn)
                 println("EnvGrid Raman GPU/CPU fixed-solve rel: ", rel_fixed)
                 @test rel_fixed < 1e-7
+            end
+
+            @testset "EnvGrid :SiO2 Raman FFT convolution" begin
+                Eω, grid, linop, transform, _, densityfun, aeff = begin
+                    grid = Grid.EnvGrid(flength, λ0, (400e-9, 2000e-9), 0.5e-12)
+                    mode = Capillary.MarcatiliMode(radius, gas, pressure;
+                                                    kind=:HE, n=1, m=1)
+                    density = PhysData.density(gas, pressure)
+                    densityfun(z) = density
+                    # Match the physical per-molecule scaling used by the
+                    # capillary Kerr response; density is supplied separately
+                    # to the nonlinear transform.
+                    rr = Raman.raman_response(
+                        grid.to, :SiO2,
+                        2 * 0.18 * PhysData.ε_0 * PhysData.γ3_gas(gas))
+                    responses = (Nonlinear.Kerr_env(PhysData.γ3_gas(gas)),
+                                 Nonlinear.RamanPolarEnv(grid.to, rr))
+                    linop, βfun!, _, _ = LinearOps.make_const_linop(
+                        grid, mode, grid.referenceλ)
+                    aeff = z -> Modes.Aeff(mode, z=z)
+                    input = Fields.GaussField(λ0=λ0, τfwhm=τfwhm, energy=energy)
+                    Eω, transform, _ = with_logger(NullLogger()) do
+                        Amalthea.setup(grid, densityfun, responses, input,
+                                       βfun!, aeff)
+                    end
+                    Eω, grid, linop, transform, nothing, densityfun, aeff
+                end
+                # Keep the hardware trajectory in the stable regime while
+                # retaining the production-sized spectral grid and response.
+                # The dedicated CPU triangulation test exercises the full
+                # high-power prop_gnlse workload.
+                Eω .*= 1e-2
+                @test grid isa Grid.EnvGrid
+                @test transform.resp[2].r isa Raman.RamanRespIntermediateBroadening
+                @test RK45._gpu_kernel_supports(transform, linop)
+                withenv("AMALTHEA_USE_RUST_CUDA_NATIVE" => "1",
+                        "AMALTHEA_NATIVE_GPU" => "on") do
+                    @test RK45._gpu_native_eligible(transform, linop, length(Eω))
+                end
+
+                s_cpu = make_stepper(transform, linop, Eω; gpu=false)
+                s_gpu = make_stepper(transform, linop, Eω; gpu=true)
+                @test RK45._native_backend(s_cpu) === :cpu
+                @test RK45._native_backend(s_gpu) === :cuda
+                n = length(Eω)
+                k_cpu0 = get_ks(s_cpu._handle.ptr, 0, n)
+                k_gpu0 = get_ks(s_gpu._handle.ptr, 0, n)
+                @test maximum(abs.(k_cpu0)) > 1e-8
+                rel_stage = norm(k_gpu0 - k_cpu0) / norm(k_cpu0)
+                println("EnvGrid :SiO2 Raman GPU/CPU stage rel: ", rel_stage)
+                @test rel_stage < 1e-9
+
+                dt_fixed = dt
+                s_cpu_fixed = make_stepper(transform, linop, Eω; gpu=false,
+                                           dt=dt_fixed)
+                s_gpu_fixed = make_stepper(transform, linop, Eω; gpu=true,
+                                           dt=dt_fixed)
+                for _ in 1:6
+                    cpu_ok = step!(s_cpu_fixed)
+                    gpu_ok = step!(s_gpu_fixed)
+                    @test cpu_ok == gpu_ok
+                    @test cpu_ok
+                    @test all(isfinite, s_cpu_fixed.yn)
+                    @test all(isfinite, s_gpu_fixed.yn)
+                end
+                rel_fixed = norm(s_gpu_fixed.yn - s_cpu_fixed.yn) /
+                            norm(s_cpu_fixed.yn)
+                println("EnvGrid :SiO2 Raman GPU/CPU fixed-solve rel: ", rel_fixed,
+                        " cpu_finite=", all(isfinite, s_cpu_fixed.yn),
+                        " gpu_finite=", all(isfinite, s_gpu_fixed.yn),
+                        " cpu_norm=", norm(s_cpu_fixed.yn),
+                        " gpu_norm=", norm(s_gpu_fixed.yn))
+                @test rel_fixed < 1e-7
+
+                dt_reject = 100.0
+                s_cpu_adapt = make_stepper(transform, linop, Eω; gpu=false,
+                                           dt=dt_reject, max_dt=200.0, min_dt=0.0)
+                s_gpu_adapt = make_stepper(transform, linop, Eω; gpu=true,
+                                           dt=dt_reject, max_dt=200.0, min_dt=0.0)
+                field_before = copy(s_gpu_adapt.yn)
+                @test !step!(s_cpu_adapt)
+                @test !step!(s_gpu_adapt)
+                @test s_gpu_adapt.yn == field_before
+                @test s_gpu_adapt.tn == 0.0
+                @test s_gpu_adapt.err > 1
+                @test isapprox(s_gpu_adapt.err, s_cpu_adapt.err; rtol=1e-8)
+                @test isapprox(s_gpu_adapt.dtn, s_cpu_adapt.dtn; rtol=1e-8)
+                accepted = false
+                for _ in 1:8
+                    cpu_ok = step!(s_cpu_adapt)
+                    gpu_ok = step!(s_gpu_adapt)
+                    @test gpu_ok == cpu_ok
+                    @test isapprox(s_gpu_adapt.err, s_cpu_adapt.err; rtol=1e-7)
+                    if cpu_ok
+                        accepted = true
+                        break
+                    end
+                end
+                @test accepted
+                @test norm(s_gpu_adapt.yn - s_cpu_adapt.yn) /
+                      norm(s_cpu_adapt.yn) < 1e-7
+                solve(s_cpu_adapt, flength)
+                solve(s_gpu_adapt, flength)
+                @test norm(s_gpu_adapt.yn - s_cpu_adapt.yn) /
+                      norm(s_cpu_adapt.yn) < 1e-6
             end
 
         end

@@ -318,6 +318,8 @@ pub struct GpuContext {
     pub raman_hilbert_filter_fn: CUfunction,
     pub raman_hilbert_intensity_fn: CUfunction,
     pub raman_intensity_env_fn: CUfunction,
+    pub raman_fft_pack_env_fn: CUfunction,
+    pub raman_fft_multiply_fn: CUfunction,
     pub raman_accumulate_real_fn: CUfunction,
     pub raman_accumulate_env_fn: CUfunction,
     pub ppt_fn: CUfunction,
@@ -336,9 +338,22 @@ pub struct GpuContext {
     pub plasma_phase_fn: CUfunction,
     pub plasma_current_finalize_fn: CUfunction,
     pub plasma_polarization_finalize_fn: CUfunction,
+    pub plasma_scan_radial_blocks_fn: CUfunction,
+    pub plasma_fraction_radial_finalize_fn: CUfunction,
+    pub plasma_phase_radial_fn: CUfunction,
+    pub plasma_current_radial_finalize_fn: CUfunction,
+    pub plasma_polarization_radial_finalize_fn: CUfunction,
     /// Step 1 (zero-pad + scale spectrum into the oversampled buffer) —
     /// BACKLOG.md S3 item 0.
     pub expand_spectrum_fn: CUfunction,
+    pub expand_radial_spectrum_fn: CUfunction,
+    pub expand_radial_spectrum_env_fn: CUfunction,
+    pub qdht_radial_real_fn: CUfunction,
+    pub qdht_radial_complex_fn: CUfunction,
+    pub finalize_radial_spectrum_fn: CUfunction,
+    pub finalize_radial_spectrum_env_fn: CUfunction,
+    pub apply_radial_time_window_fn: CUfunction,
+    pub apply_radial_time_window_complex_fn: CUfunction,
     pub expand_spectrum_env_fn: CUfunction,
     /// Combined Step 1 (cuFFT unnormalized-inverse factor) + Step 2
     /// (`1/(nlscale*sqrt_aeff)`) scalar rescale.
@@ -467,6 +482,8 @@ pub fn init_gpu_context() -> Result<&'static GpuContext, String> {
                 load_kernel!(raman_hilbert_filter_fn, "raman_hilbert_filter_kernel");
                 load_kernel!(raman_hilbert_intensity_fn, "raman_hilbert_intensity_kernel");
                 load_kernel!(raman_intensity_env_fn, "raman_intensity_env_kernel");
+                load_kernel!(raman_fft_pack_env_fn, "raman_fft_pack_env_kernel");
+                load_kernel!(raman_fft_multiply_fn, "raman_fft_multiply_kernel");
                 load_kernel!(raman_accumulate_real_fn, "raman_accumulate_real_kernel");
                 load_kernel!(raman_accumulate_env_fn, "raman_accumulate_env_kernel");
 
@@ -662,6 +679,24 @@ pub fn init_gpu_context() -> Result<&'static GpuContext, String> {
                     );
                 }
 
+                load_kernel!(
+                    plasma_scan_radial_blocks_fn,
+                    "plasma_scan_radial_blocks_kernel"
+                );
+                load_kernel!(
+                    plasma_fraction_radial_finalize_fn,
+                    "plasma_fraction_radial_finalize_kernel"
+                );
+                load_kernel!(plasma_phase_radial_fn, "plasma_phase_radial_kernel");
+                load_kernel!(
+                    plasma_current_radial_finalize_fn,
+                    "plasma_current_radial_finalize_kernel"
+                );
+                load_kernel!(
+                    plasma_polarization_radial_finalize_fn,
+                    "plasma_polarization_radial_finalize_kernel"
+                );
+
                 let mut expand_spectrum_fn = std::ptr::null_mut();
                 res = (driver.cuModuleGetFunction)(
                     &mut expand_spectrum_fn,
@@ -671,6 +706,30 @@ pub fn init_gpu_context() -> Result<&'static GpuContext, String> {
                 if res != 0 {
                     return Err("cuModuleGetFunction expand_spectrum_kernel failed".to_string());
                 }
+
+                load_kernel!(expand_radial_spectrum_fn, "expand_radial_spectrum_kernel");
+                load_kernel!(
+                    expand_radial_spectrum_env_fn,
+                    "expand_radial_spectrum_env_kernel"
+                );
+                load_kernel!(qdht_radial_real_fn, "qdht_radial_real_kernel");
+                load_kernel!(qdht_radial_complex_fn, "qdht_radial_complex_kernel");
+                load_kernel!(
+                    finalize_radial_spectrum_fn,
+                    "finalize_radial_spectrum_kernel"
+                );
+                load_kernel!(
+                    finalize_radial_spectrum_env_fn,
+                    "finalize_radial_spectrum_env_kernel"
+                );
+                load_kernel!(
+                    apply_radial_time_window_fn,
+                    "apply_radial_time_window_kernel"
+                );
+                load_kernel!(
+                    apply_radial_time_window_complex_fn,
+                    "apply_radial_time_window_complex_kernel"
+                );
 
                 load_kernel!(expand_spectrum_env_fn, "expand_spectrum_env_kernel");
 
@@ -713,6 +772,8 @@ pub fn init_gpu_context() -> Result<&'static GpuContext, String> {
                     raman_hilbert_filter_fn,
                     raman_hilbert_intensity_fn,
                     raman_intensity_env_fn,
+                    raman_fft_pack_env_fn,
+                    raman_fft_multiply_fn,
                     raman_accumulate_real_fn,
                     raman_accumulate_env_fn,
                     ppt_fn,
@@ -731,7 +792,20 @@ pub fn init_gpu_context() -> Result<&'static GpuContext, String> {
                     plasma_phase_fn,
                     plasma_current_finalize_fn,
                     plasma_polarization_finalize_fn,
+                    plasma_scan_radial_blocks_fn,
+                    plasma_fraction_radial_finalize_fn,
+                    plasma_phase_radial_fn,
+                    plasma_current_radial_finalize_fn,
+                    plasma_polarization_radial_finalize_fn,
                     expand_spectrum_fn,
+                    expand_radial_spectrum_fn,
+                    expand_radial_spectrum_env_fn,
+                    qdht_radial_real_fn,
+                    qdht_radial_complex_fn,
+                    finalize_radial_spectrum_fn,
+                    finalize_radial_spectrum_env_fn,
+                    apply_radial_time_window_fn,
+                    apply_radial_time_window_complex_fn,
                     expand_spectrum_env_fn,
                     scale_real_fn,
                     scale_complex_fn,

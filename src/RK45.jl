@@ -1037,27 +1037,48 @@ end
     _gpu_kernel_supports(f!, linop)
 
 True iff the experimental GPU-resident stepper (`CudaNativeSim`,
-`amalthea/src/cuda_native.rs`) can handle this exact config: mode-averaged
-(`TransModeAvg`), RealGrid or EnvGrid, a constant (non-z-dependent) linop, a
-scalar (non-mixture) density, no shot noise, exactly one plain Kerr response,
-at most one RealGrid-only plasma response using PPT (`IonRatePPTAccel`) or
-analytic ADK (`IonRateADK`) ionisation, and at most one SDO Raman response
-matching the grid (`RamanPolarField` for RealGrid or `RamanPolarEnv` for
-EnvGrid). Raman must flatten to `RamanRespSingleDampedOscillator` terms;
-intermediate-broadening and other convolution-only responses remain CPU-only.
+`amalthea/src/cuda_native.rs`) can handle this exact config. The supported
+families are mode-averaged (`TransModeAvg`) with the existing RealGrid/EnvGrid
+Kerr/plasma/Raman matrix, and the radial (`TransRadial`) RealGrid/EnvGrid
+scalar-Kerr paths. Radial RealGrid may add at most one PPT or thresholded ADK
+`PlasmaCumtrapz`; EnvGrid plasma remains unsupported. Radial CUDA is
+deliberately narrower:
+constant linop, scalar density, no shot noise, and no Raman or mixture
+response; its QDHT, temporal FFT, and column-segmented plasma scans remain
+resident on the device.
 
 Pure config-shape check: does not read the `cuda_native`/`gpu_dispatch`
 toggles or the problem size — see [`_gpu_native_eligible`](@ref) for the full
 dispatch decision.
 """
 function _gpu_kernel_supports(f!, linop)
-    f! isa Amalthea.NonlinearRHS.TransModeAvg || return false
+    (f! isa Amalthea.NonlinearRHS.TransModeAvg ||
+     f! isa Amalthea.NonlinearRHS.TransRadial) || return false
     linop isa Array{ComplexF64} || return false
     is_real_grid = f!.grid isa Amalthea.Grid.RealGrid
     is_env_grid = f!.grid isa Amalthea.Grid.EnvGrid
     (is_real_grid || is_env_grid) || return false
     f!.densityfun(0.0) isa Real || return false
     isnothing(f!.Et_noise) || return false
+
+    # Radial CUDA covers scalar Kerr on both grids, plus at most one PPT or
+    # thresholded ADK cumtrapz plasma response on RealGrid. EnvGrid plasma
+    # remains on the CPU-native path, and Raman/noise/mixtures stay rejected
+    # because their radial GPU kernels are not part of this support slice.
+    if f! isa Amalthea.NonlinearRHS.TransRadial
+        kerr_resps = filter(_is_plain_kerr_resp, f!.resp)
+        plasma_resps = filter(r -> r isa Amalthea.Nonlinear.PlasmaCumtrapz, f!.resp)
+        length(kerr_resps) == 1 || return false
+        length(plasma_resps) <= 1 || return false
+        length(kerr_resps) + length(plasma_resps) == length(f!.resp) || return false
+        isempty(plasma_resps) && return true
+        is_real_grid || return false
+        ratefunc = plasma_resps[1].ratefunc
+        return ratefunc isa Amalthea.Ionisation.IonRatePPTAccel ||
+               (ratefunc isa Amalthea.Ionisation.IonRateADK && ratefunc.threshold)
+    end
+
+    f! isa Amalthea.NonlinearRHS.TransModeAvg || return false
     kerr_resps = filter(_is_plain_kerr_resp, f!.resp)
     plasma_resps = filter(r -> r isa Amalthea.Nonlinear.PlasmaCumtrapz, f!.resp)
     raman_resps = filter(r -> r isa Amalthea.Nonlinear.RamanPolarField ||
@@ -1083,6 +1104,9 @@ function _gpu_kernel_supports(f!, linop)
         (is_real_grid && raman isa Amalthea.Nonlinear.RamanPolarField) ||
             (is_env_grid && raman isa Amalthea.Nonlinear.RamanPolarEnv) || return false
         rr = raman.r
+        if is_env_grid && rr isa Amalthea.Raman.RamanRespIntermediateBroadening
+            return true
+        end
         rr isa Amalthea.Raman.CombinedRamanResponse || return false
         Rs = Amalthea.Raman.flatten_sdo_oscillators(rr)
         !isnothing(Rs) && !isempty(Rs) && length(Rs) <= _GPU_RAMAN_MAX_OSCILLATORS || return false
@@ -1229,6 +1253,7 @@ function _gpu_raman_auto_threshold(f!)
                                   r isa Amalthea.Nonlinear.RamanPolarEnv, f!.resp)
     isnothing(raman_idx) && return nothing
     raman = f!.resp[raman_idx]
+    raman.r isa Amalthea.Raman.RamanRespIntermediateBroadening && return nothing
     Rs = Amalthea.Raman.flatten_sdo_oscillators(raman.r)
     # N₂ rotational responses are the multi-oscillator policy class. A future
     # benchmark may retain this separately from the one-oscillator paths.
@@ -1246,6 +1271,9 @@ function _gpu_native_eligible(f!, linop, n::Integer)
     _gpu_kernel_supports(f!, linop) || return false
     cfg.gpu_dispatch === :off && return false
     cfg.gpu_dispatch === :on && return true
+    # No measured radial automatic-dispatch threshold exists yet. Explicit
+    # `:on` is the Plan 08 policy; `:auto` keeps the CPU-native radial path.
+    f! isa Amalthea.NonlinearRHS.TransRadial && return false
     if any(r -> r isa Amalthea.Nonlinear.RamanPolarField ||
                r isa Amalthea.Nonlinear.RamanPolarEnv, f!.resp)
         threshold = _gpu_raman_auto_threshold(f!)

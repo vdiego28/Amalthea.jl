@@ -16,6 +16,10 @@ test_native_cuda.jl::Native-Rust GPU-resident stepper (CUDA, mode-avg ADK plasma
 test_native_cuda.jl::Native-Rust GPU-resident stepper (CUDA, mode-avg Kerr) 25.9
 test_native_cuda.jl::Native-Rust GPU-resident stepper (CUDA, mode-avg Kerr+plasma) 31.4
 test_native_cuda_raman.jl 20.0
+test_native_cuda_radial.jl 3.9
+test_native_cuda_radial_adk.jl 19.5
+test_native_cuda_radial_env.jl 3.9
+test_native_cuda_radial_plasma.jl 34.3
 test_native_default_workload.jl 39.7
 test_native_dense_order5.jl::Native-Rust dense output: GPU-resident backend (BACKLOG S5 item 3) 28.4
 test_native_dense_order5.jl::Native-Rust dense output: order-5 continuous extension (BACKLOG S5 item 3) 27.9

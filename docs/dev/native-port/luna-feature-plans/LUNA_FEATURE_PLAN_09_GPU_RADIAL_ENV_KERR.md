@@ -1,6 +1,6 @@
 # Luna feature plan 09 — CUDA radial EnvGrid Kerr
 
-Status: depends on plan 08.
+Status: complete (2026-08-02).
 
 ## Outcome
 
@@ -30,6 +30,13 @@ CUDA. Run strict CUDA, focused radial EnvGrid, existing CPU radial EnvGrid and
 QDHT tests, Rust group, and `git diff --check`.
 
 Update support docs and append `PORT_LOG.md` with scaling and layout evidence.
+
+Verification: the strict CUDA item passed **24/24** on the RTX 5060 Ti. The
+asymmetric direct stage relative error was `4.262893614543232e-16`, and the
+fixed full-solve relative error was `2.871085295458848e-15`; invalid setup
+rollback and rejected adaptive retry also passed. CPU EnvGrid radial coverage
+passed 3/3, and the Rust group completed with 42,717 passing assertions and
+one pre-existing CUDA-driver broken item in the non-hardware sandbox.
 
 ## Non-goals
 

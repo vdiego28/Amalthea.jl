@@ -1,6 +1,6 @@
 # Luna feature plan 11 — CUDA radial RealGrid thresholded ADK
 
-Status: depends on plan 10.
+Status: complete 2026-08-02 (depends on plan 10).
 
 ## Outcome
 
@@ -34,3 +34,32 @@ Update docs and append exact rate/trajectory results to `PORT_LOG.md`.
 
 Unthresholded ADK, EnvGrid plasma, radial automatic dispatch, or new ionization
 physics.
+
+## Verification — complete 2026-08-02
+
+The radial series uses the existing flat column-major layout
+`i = column*n_time_over + t`.  The ADK kernel reads the post-QDHT radial field
+and applies the Julia-precomputed constants to each element; its exact
+boundary is `abs(E) >= thr`, while non-finite fields produce zero.  The
+subsequent fraction, phase/current, and polarization recurrences are the
+Plan 10 segmented cumtrapz contract, with each 256-thread block total and
+every finalizer offset restricted to the same radial column.  Therefore the
+only new numerical operation is the pointwise rate launch; no radial scan
+normalization or QDHT convention changes were introduced.
+
+`set_plasma_params_adk` validates all constants and radial RealGrid shape,
+allocates the flattened scratch and per-column block totals in locals, and
+commits those buffers and parameters only after all allocations succeed.  An
+invalid/null ADK replacement consequently leaves the active radial state
+unchanged.  The Julia capability predicate admits only `threshold=true`; the
+resident path remains explicit-on and radial `:auto` remains disabled.
+
+On the RTX 5060 Ti (CUDA 13.3, driver 610.43.02), strict
+`test_native_cuda_radial_adk.jl` passed **43/43**.  The direct CPU-vs-CUDA
+stage relative error was `1.4991322388752626e-15`; the fixed five-step solve
+error was `1.712696193041123e-16`; the strong-field Julia ADK-on/off effect
+was `2.786765208889846e-8` (at least 278× the `1e-10` comparison floor); and
+the strong native-vs-Julia error was `3.253050910467547e-16`.  The test also
+covers below/above threshold columns, the existing Rust exact-threshold and
+non-finite pointwise kernel contract, failed setup rollback, rejected-state
+preservation, and adaptive retry.

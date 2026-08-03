@@ -18,10 +18,15 @@ include!(concat!(env!("OUT_DIR"), "/cuda_raman_limits.rs"));
 static MODE_AVG_SETUP_FAIL_POINT: AtomicU8 = AtomicU8::new(0);
 #[cfg(test)]
 static MODE_AVG_SETUP_TEST_LOCK: Mutex<()> = Mutex::new(());
+#[cfg(test)]
+static RAMAN_FFT_SETUP_FAIL_POINT: AtomicU8 = AtomicU8::new(0);
 
 const MODE_AVG_FAIL_ALLOC: u8 = 1;
 const MODE_AVG_FAIL_COPY: u8 = 2;
 const MODE_AVG_FAIL_SECOND_PLAN: u8 = 3;
+const RAMAN_FFT_FAIL_ALLOC: u8 = 1;
+const RAMAN_FFT_FAIL_COPY: u8 = 2;
+const RAMAN_FFT_FAIL_SECOND_PLAN: u8 = 3;
 
 /// Test seam for deterministic failures at each transactional boundary. In
 /// production this is an inline no-op; hardware tests can select an exact
@@ -33,6 +38,16 @@ fn mode_avg_setup_failpoint(point: u8) -> Result<(), String> {
         return Err(format!(
             "injected mode-averaged setup failure at point {point}"
         ));
+    }
+    let _ = point;
+    Ok(())
+}
+
+#[inline]
+fn raman_fft_setup_failpoint(point: u8) -> Result<(), String> {
+    #[cfg(test)]
+    if RAMAN_FFT_SETUP_FAIL_POINT.load(Ordering::SeqCst) == point {
+        return Err(format!("injected Raman FFT setup failure at point {point}"));
     }
     let _ = point;
     Ok(())
@@ -67,6 +82,80 @@ struct ModeAvgSetup {
     fft_r2c: cufftHandle,
     fft_c2r: cufftHandle,
     fft_c2c: cufftHandle,
+}
+
+/// Fully prepared replacement for the EnvGrid intermediate-broadening Raman
+/// convolution state. The response spectrum, zero-padded intensity scratch,
+/// and both cuFFT plans remain device-resident after commit; staging keeps the
+/// active configuration usable if allocation, planning, or setup execution
+/// fails partway through.
+struct RamanFftSetup {
+    e2_d: Option<GpuBuffer>,
+    ew_d: Option<GpuBuffer>,
+    hw_d: Option<GpuBuffer>,
+    density: c_double,
+    fft_r2c: cufftHandle,
+    fft_c2r: cufftHandle,
+}
+
+/// Fully prepared replacement for the CUDA radial RealGrid configuration.
+/// The QDHT matrix and normalization are transferred once at setup; the RHS
+/// keeps every field buffer and both temporal FFT plans resident on the device.
+/// `Option` ownership makes setup transactional: until commit, dropping this
+/// value releases only the staged resources and cannot disturb the active
+/// configuration.
+struct RadialSetup {
+    n_time: usize,
+    n_time_over: usize,
+    n_spec_over: usize,
+    n_r: usize,
+    eto_d: Option<GpuBuffer>,
+    pto_d: Option<GpuBuffer>,
+    qdht_d: Option<GpuBuffer>,
+    eoo_d: Option<GpuBuffer>,
+    poo_d: Option<GpuBuffer>,
+    qdht_matrix_d: Option<GpuBuffer>,
+    towin_d: Option<GpuBuffer>,
+    norm_d: Option<GpuBuffer>,
+    kerr_fac: c_double,
+    scale_fwd: c_double,
+    scale_inv: c_double,
+    fft_r2c: cufftHandle,
+    fft_c2r: cufftHandle,
+    fft_c2c: cufftHandle,
+}
+
+impl Drop for RadialSetup {
+    fn drop(&mut self) {
+        if let Ok(cufft) = get_cufft_api() {
+            unsafe {
+                if self.fft_r2c != 0 {
+                    (cufft.cufftDestroy)(self.fft_r2c);
+                }
+                if self.fft_c2r != 0 {
+                    (cufft.cufftDestroy)(self.fft_c2r);
+                }
+                if self.fft_c2c != 0 {
+                    (cufft.cufftDestroy)(self.fft_c2c);
+                }
+            }
+        }
+    }
+}
+
+impl Drop for RamanFftSetup {
+    fn drop(&mut self) {
+        if let Ok(cufft) = get_cufft_api() {
+            unsafe {
+                if self.fft_r2c != 0 {
+                    (cufft.cufftDestroy)(self.fft_r2c);
+                }
+                if self.fft_c2r != 0 {
+                    (cufft.cufftDestroy)(self.fft_c2r);
+                }
+            }
+        }
+    }
 }
 
 impl Drop for ModeAvgSetup {
@@ -110,6 +199,29 @@ pub struct CudaNativeSim {
     /// convention) — mirrors `CpuNativeSim::n_spec_over`. Zero until
     /// `set_mode_avg_params` runs.
     pub n_spec_over: usize,
+
+    // ── Plan 08: radial RealGrid resident QDHT + scalar Kerr ──────────────
+    // This state is separate from the mode-averaged buffers above.  A radial
+    // field is column-major `(n_spec,n_r)` and needs the same temporal FFT
+    // applied independently to each radial column, plus a device-resident
+    // QDHT matrix and a separate real scratch output for its non-elementwise
+    // matrix multiply.
+    pub is_radial: bool,
+    pub n_r: usize,
+    pub radial_eto_d: GpuBuffer,
+    pub radial_pto_d: GpuBuffer,
+    pub radial_qdht_d: GpuBuffer,
+    pub radial_eoo_d: GpuBuffer,
+    pub radial_poo_d: GpuBuffer,
+    pub radial_qdht_matrix_d: GpuBuffer,
+    pub radial_towin_d: GpuBuffer,
+    pub radial_norm_d: GpuBuffer,
+    pub radial_kerr_fac: c_double,
+    pub radial_scale_fwd: c_double,
+    pub radial_scale_inv: c_double,
+    pub radial_fft_r2c: cufftHandle,
+    pub radial_fft_c2r: cufftHandle,
+    pub radial_fft_c2c: cufftHandle,
 
     pub field_d: GpuBuffer,
     pub linop_d: GpuBuffer,
@@ -205,6 +317,19 @@ pub struct CudaNativeSim {
     pub raman_hilbert_a_d: GpuBuffer,
     pub raman_hilbert_b_d: GpuBuffer,
     pub raman_hilbert_fft: cufftHandle,
+
+    // Resident EnvGrid intermediate-broadening (`:SiO2`) Raman convolution.
+    // `raman_fft_e2_d` has length 2*n_time_over and is real; both complex
+    // spectra have length n_time_over+1. The response spectrum is prepared
+    // once at setup and multiplied with each padded intensity spectrum in the
+    // RHS without a host transfer.
+    pub has_raman_fft: bool,
+    pub raman_fft_density: c_double,
+    pub raman_fft_e2_d: GpuBuffer,
+    pub raman_fft_ew_d: GpuBuffer,
+    pub raman_fft_hw_d: GpuBuffer,
+    pub raman_fft_r2c: cufftHandle,
+    pub raman_fft_c2r: cufftHandle,
 }
 
 impl CudaNativeSim {
@@ -245,6 +370,18 @@ impl CudaNativeSim {
         // metric array and scratch at arbitrary n.
         let reduced_d = GpuBuffer::alloc(n * 8)?;
 
+        // Sized down to one element until Plan 08's radial setter stages a
+        // real configuration. Keeping valid RAII buffers here lets the
+        // resident handle remain constructible before geometry-specific setup.
+        let radial_eto_d = GpuBuffer::alloc(8)?;
+        let radial_pto_d = GpuBuffer::alloc(8)?;
+        let radial_qdht_d = GpuBuffer::alloc(8)?;
+        let radial_eoo_d = GpuBuffer::alloc(16)?;
+        let radial_poo_d = GpuBuffer::alloc(16)?;
+        let radial_qdht_matrix_d = GpuBuffer::alloc(8)?;
+        let radial_towin_d = GpuBuffer::alloc(8)?;
+        let radial_norm_d = GpuBuffer::alloc(16)?;
+
         let eto_d = GpuBuffer::alloc(8)?;
         let pto_d = GpuBuffer::alloc(8)?;
         let eoo_d = GpuBuffer::alloc(16)?;
@@ -264,6 +401,9 @@ impl CudaNativeSim {
         let raman_p_d = GpuBuffer::alloc(8)?;
         let raman_hilbert_a_d = GpuBuffer::alloc(16)?;
         let raman_hilbert_b_d = GpuBuffer::alloc(16)?;
+        let raman_fft_e2_d = GpuBuffer::alloc(8)?;
+        let raman_fft_ew_d = GpuBuffer::alloc(16)?;
+        let raman_fft_hw_d = GpuBuffer::alloc(16)?;
 
         Ok(Self {
             n,
@@ -271,6 +411,22 @@ impl CudaNativeSim {
             n_time: 0,
             n_time_over: 0,
             n_spec_over: 0,
+            is_radial: false,
+            n_r: 0,
+            radial_eto_d,
+            radial_pto_d,
+            radial_qdht_d,
+            radial_eoo_d,
+            radial_poo_d,
+            radial_qdht_matrix_d,
+            radial_towin_d,
+            radial_norm_d,
+            radial_kerr_fac: 0.0,
+            radial_scale_fwd: 1.0,
+            radial_scale_inv: 1.0,
+            radial_fft_r2c: 0,
+            radial_fft_c2r: 0,
+            radial_fft_c2c: 0,
             field_d,
             linop_d,
             ks_d,
@@ -330,11 +486,391 @@ impl CudaNativeSim {
             raman_hilbert_a_d,
             raman_hilbert_b_d,
             raman_hilbert_fft: 0,
+            has_raman_fft: false,
+            raman_fft_density: 0.0,
+            raman_fft_e2_d,
+            raman_fft_ew_d,
+            raman_fft_hw_d,
+            raman_fft_r2c: 0,
+            raman_fft_c2r: 0,
         })
     }
 }
 
 impl CudaNativeSim {
+    /// Stage the resident CUDA radial RealGrid buffers and QDHT matrix.
+    ///
+    /// The matrix is copied from Julia's `HT.T` into row-major storage, the
+    /// same convention as `QdhtFfiHandle`; no transform convention is
+    /// reconstructed in Rust.  The two rank-1 cuFFT plans are intentionally
+    /// separate because cuFFT requires transform-specific handles for D2Z and
+    /// Z2D.  Every pointer read and allocation happens before commit.
+    unsafe fn stage_radial_real_setup(
+        &self,
+        n_time: usize,
+        n_time_over: usize,
+        n_r: usize,
+        t_matrix: *const c_double,
+        scale_fwd: c_double,
+        scale_inv: c_double,
+        towin: *const c_double,
+        kerr_fac: c_double,
+        m_re: *const c_double,
+        m_im: *const c_double,
+    ) -> Result<RadialSetup, String> {
+        if n_time == 0
+            || n_time_over < n_time
+            || !n_time.is_multiple_of(2)
+            || !n_time_over.is_multiple_of(2)
+            || n_r == 0
+            || !self.n.is_multiple_of(n_r)
+            || t_matrix.is_null()
+            || m_re.is_null()
+            || m_im.is_null()
+            || !scale_fwd.is_finite()
+            || !scale_inv.is_finite()
+            || !kerr_fac.is_finite()
+        {
+            return Err("invalid CUDA radial dimensions or parameters".to_string());
+        }
+        let n_spec = self.n / n_r;
+        if n_spec != n_time / 2 + 1 {
+            return Err("CUDA radial RealGrid spectral dimension mismatch".to_string());
+        }
+        let n_spec_over = n_time_over / 2 + 1;
+        let _n_r_i32 = i32::try_from(n_r)
+            .map_err(|_| "CUDA radial radial dimension exceeds kernel i32 range".to_string())?;
+        let _n_spec_i32 = i32::try_from(n_spec)
+            .map_err(|_| "CUDA radial spectral dimension exceeds kernel i32 range".to_string())?;
+        let _n_spec_over_i32 = i32::try_from(n_spec_over).map_err(|_| {
+            "CUDA radial oversampled spectral dimension exceeds kernel i32 range".to_string()
+        })?;
+        let n_time_over_i32 = i32::try_from(n_time_over)
+            .map_err(|_| "CUDA radial time dimension exceeds cuFFT i32 range".to_string())?;
+        let matrix_len = n_r
+            .checked_mul(n_r)
+            .ok_or_else(|| "CUDA radial QDHT matrix size overflow".to_string())?;
+        let field_time_len = n_time_over
+            .checked_mul(n_r)
+            .ok_or_else(|| "CUDA radial time buffer size overflow".to_string())?;
+        let field_spec_over_len = n_spec_over
+            .checked_mul(n_r)
+            .ok_or_else(|| "CUDA radial spectral buffer size overflow".to_string())?;
+        let field_spec_len = n_spec
+            .checked_mul(n_r)
+            .ok_or_else(|| "CUDA radial normalization size overflow".to_string())?;
+
+        let t_host = unsafe { std::slice::from_raw_parts(t_matrix, matrix_len) };
+        if t_host.iter().any(|value| !value.is_finite()) {
+            return Err("non-finite CUDA radial QDHT matrix".to_string());
+        }
+        // Julia's Matrix is column-major.  The CUDA kernel consumes rows, so
+        // transpose the storage once, exactly as QdhtFfiHandle::new does.
+        let mut matrix = vec![0.0; matrix_len];
+        for r in 0..n_r {
+            for s in 0..n_r {
+                matrix[r * n_r + s] = t_host[r + n_r * s];
+            }
+        }
+        let towin_vec = if towin.is_null() {
+            vec![1.0; n_time_over]
+        } else {
+            unsafe { std::slice::from_raw_parts(towin, n_time_over) }.to_vec()
+        };
+        let m_re_host = unsafe { std::slice::from_raw_parts(m_re, field_spec_len) };
+        let m_im_host = unsafe { std::slice::from_raw_parts(m_im, field_spec_len) };
+        if towin_vec.iter().any(|value| !value.is_finite())
+            || m_re_host
+                .iter()
+                .chain(m_im_host.iter())
+                .any(|value| !value.is_finite())
+        {
+            return Err("non-finite CUDA radial window or normalization".to_string());
+        }
+        let norm = m_re_host
+            .iter()
+            .zip(m_im_host.iter())
+            .map(|(&re, &im)| Complex::new(re, im))
+            .collect::<Vec<_>>();
+
+        let eto_d = GpuBuffer::alloc(checked_bytes(field_time_len, 8)?)?;
+        let pto_d = GpuBuffer::alloc(checked_bytes(field_time_len, 8)?)?;
+        let qdht_d = GpuBuffer::alloc(checked_bytes(field_time_len, 8)?)?;
+        let eoo_d = GpuBuffer::alloc(checked_bytes(field_spec_over_len, 16)?)?;
+        let poo_d = GpuBuffer::alloc(checked_bytes(field_spec_over_len, 16)?)?;
+        let qdht_matrix_d = GpuBuffer::alloc(checked_bytes(matrix_len, 8)?)?;
+        let towin_d = GpuBuffer::alloc(checked_bytes(n_time_over, 8)?)?;
+        let norm_d = GpuBuffer::alloc(checked_bytes(field_spec_len, 16)?)?;
+
+        qdht_matrix_d.copy_to_device(&matrix)?;
+        towin_d.copy_to_device(&towin_vec)?;
+        norm_d.copy_to_device(&norm)?;
+
+        let cufft = get_cufft_api()?;
+        crate::cuda::activate_context()?;
+        let mut fft_r2c = 0;
+        let rc = unsafe { (cufft.cufftPlan1d)(&mut fft_r2c, n_time_over_i32, CUFFT_D2Z, 1) };
+        if rc != 0 {
+            return Err(format!("cufftPlan1d (radial D2Z) failed: {rc}"));
+        }
+        let mut fft_c2r = 0;
+        let rc = unsafe { (cufft.cufftPlan1d)(&mut fft_c2r, n_time_over_i32, CUFFT_Z2D, 1) };
+        if rc != 0 {
+            unsafe { (cufft.cufftDestroy)(fft_r2c) };
+            return Err(format!("cufftPlan1d (radial Z2D) failed: {rc}"));
+        }
+
+        Ok(RadialSetup {
+            n_time,
+            n_time_over,
+            n_spec_over,
+            n_r,
+            eto_d: Some(eto_d),
+            pto_d: Some(pto_d),
+            qdht_d: Some(qdht_d),
+            eoo_d: Some(eoo_d),
+            poo_d: Some(poo_d),
+            qdht_matrix_d: Some(qdht_matrix_d),
+            towin_d: Some(towin_d),
+            norm_d: Some(norm_d),
+            kerr_fac,
+            scale_fwd,
+            scale_inv,
+            fft_r2c,
+            fft_c2r,
+            fft_c2c: 0,
+        })
+    }
+
+    /// Stage the resident CUDA radial EnvGrid buffers.  EnvGrid keeps the
+    /// complete c2c spectrum in each radial column, so the time-domain
+    /// scratch buffers are complex and the oversampled spectral length is the
+    /// full `n_time_over`, unlike RealGrid's `n_time_over/2+1`.
+    unsafe fn stage_radial_env_setup(
+        &self,
+        n_time: usize,
+        n_time_over: usize,
+        n_r: usize,
+        t_matrix: *const c_double,
+        scale_fwd: c_double,
+        scale_inv: c_double,
+        towin: *const c_double,
+        kerr_fac: c_double,
+        m_re: *const c_double,
+        m_im: *const c_double,
+    ) -> Result<RadialSetup, String> {
+        if self.is_real
+            || n_time == 0
+            || n_time_over < n_time
+            || !n_time.is_multiple_of(2)
+            || !n_time_over.is_multiple_of(2)
+            || n_r == 0
+            || !self.n.is_multiple_of(n_r)
+            || t_matrix.is_null()
+            || m_re.is_null()
+            || m_im.is_null()
+            || !scale_fwd.is_finite()
+            || !scale_inv.is_finite()
+            || !kerr_fac.is_finite()
+        {
+            return Err("invalid CUDA radial EnvGrid dimensions or parameters".to_string());
+        }
+        let n_spec = self.n / n_r;
+        if n_spec != n_time {
+            return Err("CUDA radial EnvGrid spectral dimension mismatch".to_string());
+        }
+        let _n_r_i32 = i32::try_from(n_r)
+            .map_err(|_| "CUDA radial radial dimension exceeds kernel i32 range".to_string())?;
+        let _n_spec_i32 = i32::try_from(n_spec)
+            .map_err(|_| "CUDA radial spectral dimension exceeds kernel i32 range".to_string())?;
+        let _n_time_over_i32 = i32::try_from(n_time_over)
+            .map_err(|_| "CUDA radial time dimension exceeds cuFFT i32 range".to_string())?;
+        let matrix_len = n_r
+            .checked_mul(n_r)
+            .ok_or_else(|| "CUDA radial QDHT matrix size overflow".to_string())?;
+        let field_time_len = n_time_over
+            .checked_mul(n_r)
+            .ok_or_else(|| "CUDA radial EnvGrid time buffer size overflow".to_string())?;
+        let field_spec_len = n_spec
+            .checked_mul(n_r)
+            .ok_or_else(|| "CUDA radial EnvGrid normalization size overflow".to_string())?;
+        let field_spec_over_len = n_time_over
+            .checked_mul(n_r)
+            .ok_or_else(|| "CUDA radial EnvGrid spectrum size overflow".to_string())?;
+
+        let t_host = unsafe { std::slice::from_raw_parts(t_matrix, matrix_len) };
+        if t_host.iter().any(|value| !value.is_finite()) {
+            return Err("non-finite CUDA radial EnvGrid QDHT matrix".to_string());
+        }
+        let mut matrix = vec![0.0; matrix_len];
+        for r in 0..n_r {
+            for s in 0..n_r {
+                matrix[r * n_r + s] = t_host[r + n_r * s];
+            }
+        }
+        let towin_vec = if towin.is_null() {
+            vec![1.0; n_time_over]
+        } else {
+            unsafe { std::slice::from_raw_parts(towin, n_time_over) }.to_vec()
+        };
+        let m_re_host = unsafe { std::slice::from_raw_parts(m_re, field_spec_len) };
+        let m_im_host = unsafe { std::slice::from_raw_parts(m_im, field_spec_len) };
+        if towin_vec.iter().any(|value| !value.is_finite())
+            || m_re_host
+                .iter()
+                .chain(m_im_host.iter())
+                .any(|value| !value.is_finite())
+        {
+            return Err("non-finite CUDA radial EnvGrid window or normalization".to_string());
+        }
+        let norm = m_re_host
+            .iter()
+            .zip(m_im_host.iter())
+            .map(|(&re, &im)| Complex::new(re, im))
+            .collect::<Vec<_>>();
+
+        let eto_d = GpuBuffer::alloc(checked_bytes(field_time_len, 16)?)?;
+        let pto_d = GpuBuffer::alloc(checked_bytes(field_time_len, 16)?)?;
+        let qdht_d = GpuBuffer::alloc(checked_bytes(field_time_len, 16)?)?;
+        let eoo_d = GpuBuffer::alloc(checked_bytes(field_spec_over_len, 16)?)?;
+        let poo_d = GpuBuffer::alloc(checked_bytes(field_spec_over_len, 16)?)?;
+        let qdht_matrix_d = GpuBuffer::alloc(checked_bytes(matrix_len, 8)?)?;
+        let towin_d = GpuBuffer::alloc(checked_bytes(n_time_over, 8)?)?;
+        let norm_d = GpuBuffer::alloc(checked_bytes(field_spec_len, 16)?)?;
+        qdht_matrix_d.copy_to_device(&matrix)?;
+        towin_d.copy_to_device(&towin_vec)?;
+        norm_d.copy_to_device(&norm)?;
+
+        let cufft = get_cufft_api()?;
+        crate::cuda::activate_context()?;
+        let mut fft_c2c = 0;
+        let n_time_over_i32 = i32::try_from(n_time_over).map_err(|_| {
+            "CUDA radial EnvGrid time dimension exceeds cuFFT i32 range".to_string()
+        })?;
+        let rc = unsafe { (cufft.cufftPlan1d)(&mut fft_c2c, n_time_over_i32, CUFFT_Z2Z, 1) };
+        if rc != 0 {
+            return Err(format!("cufftPlan1d (radial EnvGrid Z2Z) failed: {rc}"));
+        }
+
+        Ok(RadialSetup {
+            n_time,
+            n_time_over,
+            n_spec_over: n_time_over,
+            n_r,
+            eto_d: Some(eto_d),
+            pto_d: Some(pto_d),
+            qdht_d: Some(qdht_d),
+            eoo_d: Some(eoo_d),
+            poo_d: Some(poo_d),
+            qdht_matrix_d: Some(qdht_matrix_d),
+            towin_d: Some(towin_d),
+            norm_d: Some(norm_d),
+            kerr_fac,
+            scale_fwd,
+            scale_inv,
+            fft_r2c: 0,
+            fft_c2r: 0,
+            fft_c2c,
+        })
+    }
+
+    unsafe fn stage_radial_setup(
+        &self,
+        n_time: usize,
+        n_time_over: usize,
+        n_r: usize,
+        t_matrix: *const c_double,
+        scale_fwd: c_double,
+        scale_inv: c_double,
+        towin: *const c_double,
+        kerr_fac: c_double,
+        m_re: *const c_double,
+        m_im: *const c_double,
+    ) -> Result<RadialSetup, String> {
+        if self.is_real {
+            unsafe {
+                self.stage_radial_real_setup(
+                    n_time,
+                    n_time_over,
+                    n_r,
+                    t_matrix,
+                    scale_fwd,
+                    scale_inv,
+                    towin,
+                    kerr_fac,
+                    m_re,
+                    m_im,
+                )
+            }
+        } else {
+            unsafe {
+                self.stage_radial_env_setup(
+                    n_time,
+                    n_time_over,
+                    n_r,
+                    t_matrix,
+                    scale_fwd,
+                    scale_inv,
+                    towin,
+                    kerr_fac,
+                    m_re,
+                    m_im,
+                )
+            }
+        }
+    }
+
+    fn commit_radial_setup(&mut self, mut staged: RadialSetup) {
+        let cufft = get_cufft_api().ok();
+        let old_r2c = std::mem::replace(
+            &mut self.radial_fft_r2c,
+            std::mem::replace(&mut staged.fft_r2c, 0),
+        );
+        let old_c2r = std::mem::replace(
+            &mut self.radial_fft_c2r,
+            std::mem::replace(&mut staged.fft_c2r, 0),
+        );
+        let old_c2c = std::mem::replace(
+            &mut self.radial_fft_c2c,
+            std::mem::replace(&mut staged.fft_c2c, 0),
+        );
+        self.n_time = staged.n_time;
+        self.n_time_over = staged.n_time_over;
+        self.n_spec_over = staged.n_spec_over;
+        self.is_radial = true;
+        self.n_r = staged.n_r;
+        self.radial_eto_d = staged.eto_d.take().expect("staged radial eto buffer");
+        self.radial_pto_d = staged.pto_d.take().expect("staged radial pto buffer");
+        self.radial_qdht_d = staged.qdht_d.take().expect("staged radial QDHT buffer");
+        self.radial_eoo_d = staged.eoo_d.take().expect("staged radial eoo buffer");
+        self.radial_poo_d = staged.poo_d.take().expect("staged radial poo buffer");
+        self.radial_qdht_matrix_d = staged
+            .qdht_matrix_d
+            .take()
+            .expect("staged radial QDHT matrix");
+        self.radial_towin_d = staged.towin_d.take().expect("staged radial time window");
+        self.radial_norm_d = staged.norm_d.take().expect("staged radial normalization");
+        self.radial_kerr_fac = staged.kerr_fac;
+        self.radial_scale_fwd = staged.scale_fwd;
+        self.radial_scale_inv = staged.scale_inv;
+        self.has_plasma = false;
+        self.has_raman = false;
+        self.has_raman_fft = false;
+        if let Some(cufft) = cufft {
+            unsafe {
+                if old_r2c != 0 {
+                    (cufft.cufftDestroy)(old_r2c);
+                }
+                if old_c2r != 0 {
+                    (cufft.cufftDestroy)(old_c2r);
+                }
+                if old_c2c != 0 {
+                    (cufft.cufftDestroy)(old_c2c);
+                }
+            }
+        }
+    }
+
     /// Stage all resources for a replacement mode-averaged configuration.
     /// Nothing in `self` is changed here; callers may therefore return an
     /// error at any point without invalidating the active setup.
@@ -580,6 +1116,186 @@ impl CudaNativeSim {
             }
         }
     }
+
+    /// Stage the resident r2c/c2r convolution for
+    /// `RamanRespIntermediateBroadening`. The host only constructs and
+    /// uploads the fixed response spectrum here; the RHS uses the staged
+    /// buffers and plans entirely on the device.
+    unsafe fn stage_raman_fft_setup(
+        &self,
+        omega: *const c_double,
+        amp: *const c_double,
+        gauss_w: *const c_double,
+        lorentz_w: *const c_double,
+        n_osc: usize,
+        scale: c_double,
+        dt: c_double,
+        n_time: usize,
+        density: c_double,
+    ) -> Result<RamanFftSetup, String> {
+        if self.is_real
+            || self.n_time_over == 0
+            || n_time != self.n_time_over
+            || omega.is_null()
+            || amp.is_null()
+            || gauss_w.is_null()
+            || lorentz_w.is_null()
+            || n_osc == 0
+            || !scale.is_finite()
+            || !dt.is_finite()
+            || dt <= 0.0
+            || !density.is_finite()
+        {
+            return Err("invalid EnvGrid Raman FFT setup arguments".to_string());
+        }
+
+        let omegas = unsafe { std::slice::from_raw_parts(omega, n_osc) };
+        let amps = unsafe { std::slice::from_raw_parts(amp, n_osc) };
+        let gauss = unsafe { std::slice::from_raw_parts(gauss_w, n_osc) };
+        let lorentz = unsafe { std::slice::from_raw_parts(lorentz_w, n_osc) };
+        if omegas
+            .iter()
+            .chain(amps)
+            .chain(gauss)
+            .chain(lorentz)
+            .any(|value| !value.is_finite())
+        {
+            return Err("non-finite EnvGrid Raman FFT response parameter".to_string());
+        }
+
+        let n_over = n_time
+            .checked_mul(2)
+            .ok_or_else(|| "EnvGrid Raman FFT length overflow".to_string())?;
+        let n_spec_over = n_over
+            .checked_div(2)
+            .and_then(|n| n.checked_add(1))
+            .ok_or_else(|| "EnvGrid Raman FFT spectral length overflow".to_string())?;
+        let n_over_i32 = i32::try_from(n_over)
+            .map_err(|_| "EnvGrid Raman FFT length exceeds cuFFT i32 range".to_string())?;
+        let mut h = vec![0.0f64; n_over];
+        for (idx, value) in h[..n_time].iter_mut().enumerate() {
+            let t = idx as f64 * dt;
+            if !t.is_finite() {
+                return Err("EnvGrid Raman FFT time grid is non-finite".to_string());
+            }
+            let mut response = 0.0;
+            for oscillator in 0..n_osc {
+                response += amps[oscillator]
+                    * (-lorentz[oscillator] * t).exp()
+                    * (-gauss[oscillator] * gauss[oscillator] * t * t / 4.0).exp()
+                    * (omegas[oscillator] * t).sin();
+            }
+            *value = scale * response;
+        }
+
+        raman_fft_setup_failpoint(RAMAN_FFT_FAIL_ALLOC)?;
+        let e2_d = GpuBuffer::alloc(checked_bytes(n_over, std::mem::size_of::<f64>())?)?;
+        let ew_d = GpuBuffer::alloc(checked_bytes(
+            n_spec_over,
+            std::mem::size_of::<Complex<f64>>(),
+        )?)?;
+        let hw_d = GpuBuffer::alloc(checked_bytes(
+            n_spec_over,
+            std::mem::size_of::<Complex<f64>>(),
+        )?)?;
+        let h_d = GpuBuffer::alloc(checked_bytes(n_over, std::mem::size_of::<f64>())?)?;
+
+        let cufft = get_cufft_api()?;
+        crate::cuda::activate_context()?;
+        let mut fft_r2c = 0;
+        let rc = unsafe { (cufft.cufftPlan1d)(&mut fft_r2c, n_over_i32, CUFFT_D2Z, 1) };
+        if rc != 0 {
+            return Err(format!("cufftPlan1d (Raman D2Z) failed: {rc}"));
+        }
+        if let Err(e) = raman_fft_setup_failpoint(RAMAN_FFT_FAIL_SECOND_PLAN) {
+            unsafe { (cufft.cufftDestroy)(fft_r2c) };
+            return Err(e);
+        }
+        let mut fft_c2r = 0;
+        let rc = unsafe { (cufft.cufftPlan1d)(&mut fft_c2r, n_over_i32, CUFFT_Z2D, 1) };
+        if rc != 0 {
+            unsafe { (cufft.cufftDestroy)(fft_r2c) };
+            return Err(format!("cufftPlan1d (Raman Z2D) failed: {rc}"));
+        }
+
+        let staged = RamanFftSetup {
+            e2_d: Some(e2_d),
+            ew_d: Some(ew_d),
+            hw_d: Some(hw_d),
+            density,
+            fft_r2c,
+            fft_c2r,
+        };
+        raman_fft_setup_failpoint(RAMAN_FFT_FAIL_COPY)?;
+        h_d.copy_to_device(&h)?;
+        let rc = unsafe {
+            (cufft.cufftExecD2Z)(
+                staged.fft_r2c,
+                h_d.dptr as *mut f64,
+                staged.hw_d.as_ref().expect("staged Raman hw").dptr as *mut _,
+            )
+        };
+        if rc != 0 {
+            return Err(format!("cufftExecD2Z (Raman response) failed: {rc}"));
+        }
+
+        let ctx = get_gpu_context().ok_or_else(|| "GPU context not initialized".to_string())?;
+        let driver = get_driver_api()?;
+        let block_size = 256u32;
+        let grid = (n_spec_over as u32).div_ceil(block_size);
+        let mut hw_ptr = staged.hw_d.as_ref().expect("staged Raman hw").dptr;
+        let mut scale_factor = dt / n_over as f64;
+        let mut n_spec_i = n_spec_over as c_int;
+        let mut scale_args: [*mut libc::c_void; 3] = [
+            &mut hw_ptr as *mut _ as *mut _,
+            &mut scale_factor as *mut _ as *mut _,
+            &mut n_spec_i as *mut _ as *mut _,
+        ];
+        unsafe {
+            launch_checked(
+                driver,
+                ctx.scale_complex_fn,
+                grid,
+                block_size,
+                0,
+                &mut scale_args,
+                "raman_fft_response_scale",
+            )?;
+        }
+        Ok(staged)
+    }
+
+    fn commit_raman_fft_setup(&mut self, mut staged: RamanFftSetup) {
+        let cufft = get_cufft_api().ok();
+        let old_hilbert = std::mem::replace(&mut self.raman_hilbert_fft, 0);
+        let old_r2c = std::mem::replace(
+            &mut self.raman_fft_r2c,
+            std::mem::replace(&mut staged.fft_r2c, 0),
+        );
+        let old_c2r = std::mem::replace(
+            &mut self.raman_fft_c2r,
+            std::mem::replace(&mut staged.fft_c2r, 0),
+        );
+        self.raman_fft_e2_d = staged.e2_d.take().expect("staged Raman e2 buffer");
+        self.raman_fft_ew_d = staged.ew_d.take().expect("staged Raman ew buffer");
+        self.raman_fft_hw_d = staged.hw_d.take().expect("staged Raman hw buffer");
+        self.raman_fft_density = staged.density;
+        self.has_raman_fft = true;
+        self.has_raman = false;
+        if let Some(cufft) = cufft {
+            unsafe {
+                if old_hilbert != 0 {
+                    (cufft.cufftDestroy)(old_hilbert);
+                }
+                if old_r2c != 0 {
+                    (cufft.cufftDestroy)(old_r2c);
+                }
+                if old_c2r != 0 {
+                    (cufft.cufftDestroy)(old_c2r);
+                }
+            }
+        }
+    }
 }
 
 /// Launches `f` then synchronizes and checks for a device-side error before
@@ -734,6 +1450,683 @@ impl CudaNativeSim {
                 0,
                 &mut sums_args,
                 &format!("{label}:block_sums"),
+            )
+        }
+    }
+
+    /// Segmented trapezoidal prefix scan for radial plasma fields.  The
+    /// device layout is column-major `(n_time_over, n_r)`, so the first
+    /// launch assigns several 256-sample blocks to every column and records
+    /// one total per `(column, block)`.  The radial finalizers below add the
+    /// column-local preceding-block offset; no scan state is shared between
+    /// adjacent radial columns.
+    unsafe fn plasma_scan_radial(
+        &mut self,
+        input_dptr: u64,
+        output_dptr: u64,
+        label: &str,
+    ) -> Result<(), String> {
+        unsafe {
+            let ctx = get_gpu_context().ok_or_else(|| "GPU context not initialized".to_string())?;
+            let driver = get_driver_api()?;
+            let block_size = 256u32;
+            let n_blocks = self.n_time_over.div_ceil(block_size as usize);
+            let grid = self
+                .n_r
+                .checked_mul(n_blocks)
+                .ok_or_else(|| "CUDA radial plasma scan grid size overflow".to_string())?;
+            let mut input = input_dptr;
+            let mut output = output_dptr;
+            let mut dt = self.plasma_dt;
+            let mut n_time = c_int::try_from(self.n_time_over).map_err(|_| {
+                "CUDA radial plasma time dimension exceeds kernel range".to_string()
+            })?;
+            let mut n_r = c_int::try_from(self.n_r).map_err(|_| {
+                "CUDA radial plasma radial dimension exceeds kernel range".to_string()
+            })?;
+            let mut n_blocks_i = c_int::try_from(n_blocks)
+                .map_err(|_| "CUDA radial plasma block count exceeds kernel range".to_string())?;
+            let mut scan_args: [*mut libc::c_void; 7] = [
+                &mut input as *mut _ as *mut _,
+                &mut output as *mut _ as *mut _,
+                &mut self.plas_scan_sums_d.dptr as *mut _ as *mut _,
+                &mut dt as *mut _ as *mut _,
+                &mut n_time as *mut _ as *mut _,
+                &mut n_r as *mut _ as *mut _,
+                &mut n_blocks_i as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.plasma_scan_radial_blocks_fn,
+                u32::try_from(grid)
+                    .map_err(|_| "CUDA radial plasma scan grid exceeds launch range".to_string())?,
+                block_size,
+                block_size * 8,
+                &mut scan_args,
+                &format!("{label}:radial_blocks"),
+            )
+        }
+    }
+
+    /// CUDA radial RealGrid RHS — mirrors `CpuNativeSim::rhs_radial` for the
+    /// Plan 08 scope (scalar Kerr, no plasma/Raman/noise).  The field remains
+    /// resident on the device for the complete pipeline:
+    ///
+    /// `expand → per-column inverse r2c → QDHT ldiv → Kerr → window →
+    /// QDHT mul → per-column forward r2c → crop/normalization`.
+    ///
+    /// The only host-side work in this function is launching kernels and
+    /// cuFFT plans.  In particular, no stage field or QDHT result is copied to
+    /// the host; `get_field` remains a diagnostic/step-boundary operation.
+    unsafe fn compute_rhs_radial(&mut self, idx: usize) -> Result<(), String> {
+        if self.is_real {
+            unsafe { self.compute_rhs_radial_real(idx) }
+        } else {
+            unsafe { self.compute_rhs_radial_env(idx) }
+        }
+    }
+
+    unsafe fn compute_rhs_radial_real(&mut self, idx: usize) -> Result<(), String> {
+        if !self.is_radial || self.n_r == 0 || self.radial_fft_r2c == 0 || self.radial_fft_c2r == 0
+        {
+            return Err("CUDA radial configuration is not initialized".to_string());
+        }
+        let ctx = get_gpu_context().ok_or_else(|| "GPU context not initialized".to_string())?;
+        let driver = get_driver_api()?;
+        let cufft = get_cufft_api()?;
+        unsafe {
+            crate::cuda::activate_context()?;
+            let block_size = 256u32;
+            let n_spec = self.n / self.n_r;
+            let total_time = self
+                .n_time_over
+                .checked_mul(self.n_r)
+                .ok_or_else(|| "CUDA radial time launch size overflow".to_string())?;
+            let total_spec_over = self
+                .n_spec_over
+                .checked_mul(self.n_r)
+                .ok_or_else(|| "CUDA radial spectral launch size overflow".to_string())?;
+            let total_time_u32 = u32::try_from(total_time)
+                .map_err(|_| "CUDA radial time launch size exceeds grid range".to_string())?;
+            let total_spec_over_u32 = u32::try_from(total_spec_over)
+                .map_err(|_| "CUDA radial spectral launch size exceeds grid range".to_string())?;
+            let n_u32 = u32::try_from(self.n)
+                .map_err(|_| "CUDA radial field size exceeds grid range".to_string())?;
+            let grid_time = total_time_u32.div_ceil(block_size);
+            let grid_spec_over = total_spec_over_u32.div_ceil(block_size);
+            let grid_spec = n_u32.div_ceil(block_size);
+            let mut n_spec_i = c_int::try_from(n_spec)
+                .map_err(|_| "CUDA radial spectral dimension exceeds kernel range".to_string())?;
+            let mut n_spec_over_i = c_int::try_from(self.n_spec_over).map_err(|_| {
+                "CUDA radial oversampled spectral dimension exceeds kernel range".to_string()
+            })?;
+            let mut n_time_over_i = c_int::try_from(self.n_time_over)
+                .map_err(|_| "CUDA radial time dimension exceeds kernel range".to_string())?;
+            let mut n_r_i = c_int::try_from(self.n_r)
+                .map_err(|_| "CUDA radial radial dimension exceeds kernel range".to_string())?;
+
+            // Temporal zero-padding scale is independent of the QDHT
+            // `scaleRK` transferred in `radial_scale_fwd`.  The CPU oracle
+            // uses `(n_spec_over-1)/(n_spec-1)` here and `scaleRK` only for
+            // the two QDHT directions below; conflating them was the Plan 08
+            // stage-scale bug found by the non-symmetric primitive test.
+            let mut scale_fwd = (self.n_spec_over - 1) as f64 / (n_spec - 1) as f64;
+            let mut expand_args: [*mut libc::c_void; 6] = [
+                &mut self.ystage_d.dptr as *mut _ as *mut _,
+                &mut self.radial_eoo_d.dptr as *mut _ as *mut _,
+                &mut scale_fwd as *mut _ as *mut _,
+                &mut n_spec_i as *mut _ as *mut _,
+                &mut n_spec_over_i as *mut _ as *mut _,
+                &mut n_r_i as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.expand_radial_spectrum_fn,
+                grid_spec_over,
+                block_size,
+                0,
+                &mut expand_args,
+                "expand_radial_spectrum",
+            )?;
+
+            // cuFFT's inverse is unnormalized.  Rebuild eoo on every call,
+            // so its documented input-clobbering behavior is harmless.
+            for r in 0..self.n_r {
+                let eoo_ptr = (self.radial_eoo_d.dptr
+                    + (r * self.n_spec_over * std::mem::size_of::<Complex<f64>>()) as u64)
+                    as *mut libc::c_void;
+                let eto_ptr = (self.radial_eto_d.dptr
+                    + (r * self.n_time_over * std::mem::size_of::<f64>()) as u64)
+                    as *mut f64;
+                let rc = (cufft.cufftExecZ2D)(self.radial_fft_c2r, eoo_ptr, eto_ptr);
+                if rc != 0 {
+                    return Err(format!("cufftExecZ2D (radial column {r}) failed: {rc}"));
+                }
+            }
+            let mut inverse_scale = 1.0 / self.n_time_over as f64;
+            let mut total_time_i = c_int::try_from(total_time)
+                .map_err(|_| "CUDA radial time launch size exceeds kernel range".to_string())?;
+            let mut scale_args: [*mut libc::c_void; 3] = [
+                &mut self.radial_eto_d.dptr as *mut _ as *mut _,
+                &mut inverse_scale as *mut _ as *mut _,
+                &mut total_time_i as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.scale_real_fn,
+                grid_time,
+                block_size,
+                0,
+                &mut scale_args,
+                "scale_radial_inverse_fft",
+            )?;
+
+            let mut qdht_scale = self.radial_scale_inv;
+            let mut qdht_args: [*mut libc::c_void; 6] = [
+                &mut self.radial_eto_d.dptr as *mut _ as *mut _,
+                &mut self.radial_qdht_d.dptr as *mut _ as *mut _,
+                &mut self.radial_qdht_matrix_d.dptr as *mut _ as *mut _,
+                &mut qdht_scale as *mut _ as *mut _,
+                &mut n_time_over_i as *mut _ as *mut _,
+                &mut n_r_i as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.qdht_radial_real_fn,
+                grid_time,
+                block_size,
+                0,
+                &mut qdht_args,
+                "qdht_radial_ldiv",
+            )?;
+
+            let mut kerr_fac = self.radial_kerr_fac;
+            let mut kerr_args: [*mut libc::c_void; 4] = [
+                &mut self.radial_pto_d.dptr as *mut _ as *mut _,
+                &mut self.radial_qdht_d.dptr as *mut _ as *mut _,
+                &mut kerr_fac as *mut _ as *mut _,
+                &mut total_time_i as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.rhs_mode_avg_real_fn,
+                grid_time,
+                block_size,
+                0,
+                &mut kerr_args,
+                "rhs_radial_kerr",
+            )?;
+
+            // Plans 10-11: one PPT or thresholded ADK plasma response,
+            // evaluated independently for every radial time column.  The
+            // rate kernel is pointwise over the flattened `(time,
+            // radial-column)` field; all three cumulative integrals use the
+            // segmented scan above, followed by the same
+            // rho/phase/current/polarization transforms as the CPU radial
+            // oracle.  EnvGrid plasma and unthresholded ADK remain outside
+            // this GPU slice.
+            if self.has_plasma {
+                if !self.is_real {
+                    return Err(
+                        "CUDA radial plasma currently requires RealGrid ionization".to_string()
+                    );
+                }
+                match self.plasma_rate_kind {
+                    PlasmaRateKind::Ppt => {
+                        let mut err_code_d = GpuBuffer::alloc(4)?;
+                        let zero = [0i32];
+                        err_code_d.copy_to_device(&zero)?;
+                        let mut num_segments_val = self.plasma_num_segments as c_int;
+                        let mut strict_val = self.plasma_strict;
+                        let mut e_min = self.plasma_e_min;
+                        let mut e_max = self.plasma_e_max;
+                        let mut rate_args: [*mut libc::c_void; 9] = [
+                            &mut self.radial_qdht_d.dptr as *mut _ as *mut _,
+                            &mut self.plas_rate_d.dptr as *mut _ as *mut _,
+                            &mut self.plasma_segments_d.dptr as *mut _ as *mut _,
+                            &mut e_min as *mut _ as *mut _,
+                            &mut e_max as *mut _ as *mut _,
+                            &mut num_segments_val as *mut _ as *mut _,
+                            &mut total_time_i as *mut _ as *mut _,
+                            &mut err_code_d.dptr as *mut _ as *mut _,
+                            &mut strict_val as *mut _ as *mut _,
+                        ];
+                        launch_checked(
+                            driver,
+                            ctx.ppt_fn,
+                            grid_time,
+                            block_size,
+                            0,
+                            &mut rate_args,
+                            "plasma_radial_rate_ppt",
+                        )?;
+                    }
+                    PlasmaRateKind::Adk => {
+                        let mut occupancy = self.plasma_adk_occupancy;
+                        let mut omega_p = self.plasma_adk_omega_p;
+                        let mut cn_sq = self.plasma_adk_cn_sq;
+                        let mut nstar = self.plasma_adk_nstar;
+                        let mut omega_t_prefac = self.plasma_adk_omega_t_prefac;
+                        let mut thr = self.plasma_adk_thr;
+                        let mut avfac = self.plasma_adk_avfac;
+                        let mut rate_args: [*mut libc::c_void; 10] = [
+                            &mut self.radial_qdht_d.dptr as *mut _ as *mut _,
+                            &mut self.plas_rate_d.dptr as *mut _ as *mut _,
+                            &mut occupancy as *mut _ as *mut _,
+                            &mut omega_p as *mut _ as *mut _,
+                            &mut cn_sq as *mut _ as *mut _,
+                            &mut nstar as *mut _ as *mut _,
+                            &mut omega_t_prefac as *mut _ as *mut _,
+                            &mut thr as *mut _ as *mut _,
+                            &mut avfac as *mut _ as *mut _,
+                            &mut total_time_i as *mut _ as *mut _,
+                        ];
+                        launch_checked(
+                            driver,
+                            ctx.adk_fn,
+                            grid_time,
+                            block_size,
+                            0,
+                            &mut rate_args,
+                            "plasma_radial_rate_adk",
+                        )?;
+                    }
+                }
+
+                let n_blocks = self.n_time_over.div_ceil(block_size as usize);
+                let mut n_time_i = c_int::try_from(self.n_time_over).map_err(|_| {
+                    "CUDA radial plasma time dimension exceeds kernel range".to_string()
+                })?;
+                let mut n_r_i = c_int::try_from(self.n_r).map_err(|_| {
+                    "CUDA radial plasma radial dimension exceeds kernel range".to_string()
+                })?;
+                let mut n_blocks_i = c_int::try_from(n_blocks).map_err(|_| {
+                    "CUDA radial plasma block count exceeds kernel range".to_string()
+                })?;
+                let mut preionfrac = self.plasma_preionfrac;
+                let mut fraction_args: [*mut libc::c_void; 6] = [
+                    &mut self.plas_fraction_d.dptr as *mut _ as *mut _,
+                    &mut self.plas_scan_sums_d.dptr as *mut _ as *mut _,
+                    &mut preionfrac as *mut _ as *mut _,
+                    &mut n_time_i as *mut _ as *mut _,
+                    &mut n_r_i as *mut _ as *mut _,
+                    &mut n_blocks_i as *mut _ as *mut _,
+                ];
+                self.plasma_scan_radial(
+                    self.plas_rate_d.dptr,
+                    self.plas_fraction_d.dptr,
+                    "plasma_radial_fraction_scan",
+                )?;
+                launch_checked(
+                    driver,
+                    ctx.plasma_fraction_radial_finalize_fn,
+                    grid_time,
+                    block_size,
+                    0,
+                    &mut fraction_args,
+                    "plasma_radial_fraction_finalize",
+                )?;
+
+                let mut e_ratio = self.plasma_e_ratio;
+                let mut phase_args: [*mut libc::c_void; 5] = [
+                    &mut self.plas_fraction_d.dptr as *mut _ as *mut _,
+                    &mut self.radial_qdht_d.dptr as *mut _ as *mut _,
+                    &mut e_ratio as *mut _ as *mut _,
+                    &mut self.plas_phase_d.dptr as *mut _ as *mut _,
+                    &mut total_time_i as *mut _ as *mut _,
+                ];
+                launch_checked(
+                    driver,
+                    ctx.plasma_phase_radial_fn,
+                    grid_time,
+                    block_size,
+                    0,
+                    &mut phase_args,
+                    "plasma_radial_phase",
+                )?;
+
+                self.plasma_scan_radial(
+                    self.plas_phase_d.dptr,
+                    self.plas_current_d.dptr,
+                    "plasma_radial_current_scan",
+                )?;
+                let mut ionpot = self.plasma_ionpot;
+                let mut current_args: [*mut libc::c_void; 9] = [
+                    &mut self.plas_current_d.dptr as *mut _ as *mut _,
+                    &mut self.plas_scan_sums_d.dptr as *mut _ as *mut _,
+                    &mut self.plas_rate_d.dptr as *mut _ as *mut _,
+                    &mut self.plas_fraction_d.dptr as *mut _ as *mut _,
+                    &mut self.radial_qdht_d.dptr as *mut _ as *mut _,
+                    &mut ionpot as *mut _ as *mut _,
+                    &mut n_time_i as *mut _ as *mut _,
+                    &mut n_r_i as *mut _ as *mut _,
+                    &mut n_blocks_i as *mut _ as *mut _,
+                ];
+                launch_checked(
+                    driver,
+                    ctx.plasma_current_radial_finalize_fn,
+                    grid_time,
+                    block_size,
+                    0,
+                    &mut current_args,
+                    "plasma_radial_current_finalize",
+                )?;
+
+                self.plasma_scan_radial(
+                    self.plas_current_d.dptr,
+                    self.plas_phase_d.dptr,
+                    "plasma_radial_polarization_scan",
+                )?;
+                let mut density = self.plasma_density;
+                let mut polarization_args: [*mut libc::c_void; 7] = [
+                    &mut self.plas_phase_d.dptr as *mut _ as *mut _,
+                    &mut self.plas_scan_sums_d.dptr as *mut _ as *mut _,
+                    &mut self.radial_pto_d.dptr as *mut _ as *mut _,
+                    &mut density as *mut _ as *mut _,
+                    &mut n_time_i as *mut _ as *mut _,
+                    &mut n_r_i as *mut _ as *mut _,
+                    &mut n_blocks_i as *mut _ as *mut _,
+                ];
+                launch_checked(
+                    driver,
+                    ctx.plasma_polarization_radial_finalize_fn,
+                    grid_time,
+                    block_size,
+                    0,
+                    &mut polarization_args,
+                    "plasma_radial_polarization_finalize",
+                )?;
+            }
+
+            let mut n_time_i = self.n_time_over as c_int;
+            let mut window_args: [*mut libc::c_void; 4] = [
+                &mut self.radial_pto_d.dptr as *mut _ as *mut _,
+                &mut self.radial_towin_d.dptr as *mut _ as *mut _,
+                &mut n_time_i as *mut _ as *mut _,
+                &mut n_r_i as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.apply_radial_time_window_fn,
+                grid_time,
+                block_size,
+                0,
+                &mut window_args,
+                "apply_radial_time_window",
+            )?;
+
+            let mut qdht_scale = self.radial_scale_fwd;
+            let mut qdht_args: [*mut libc::c_void; 6] = [
+                &mut self.radial_pto_d.dptr as *mut _ as *mut _,
+                &mut self.radial_qdht_d.dptr as *mut _ as *mut _,
+                &mut self.radial_qdht_matrix_d.dptr as *mut _ as *mut _,
+                &mut qdht_scale as *mut _ as *mut _,
+                &mut n_time_over_i as *mut _ as *mut _,
+                &mut n_r_i as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.qdht_radial_real_fn,
+                grid_time,
+                block_size,
+                0,
+                &mut qdht_args,
+                "qdht_radial_mul",
+            )?;
+
+            for r in 0..self.n_r {
+                let qdht_ptr = (self.radial_qdht_d.dptr
+                    + (r * self.n_time_over * std::mem::size_of::<f64>()) as u64)
+                    as *mut f64;
+                let poo_ptr = (self.radial_poo_d.dptr
+                    + (r * self.n_spec_over * std::mem::size_of::<Complex<f64>>()) as u64)
+                    as *mut libc::c_void;
+                let rc = (cufft.cufftExecD2Z)(self.radial_fft_r2c, qdht_ptr, poo_ptr);
+                if rc != 0 {
+                    return Err(format!("cufftExecD2Z (radial column {r}) failed: {rc}"));
+                }
+            }
+
+            let mut scale_inv = (n_spec - 1) as f64 / (self.n_spec_over - 1) as f64;
+            let mut finalize_args: [*mut libc::c_void; 7] = [
+                &mut self.radial_poo_d.dptr as *mut _ as *mut _,
+                &mut self.ks_d[idx].dptr as *mut _ as *mut _,
+                &mut self.radial_norm_d.dptr as *mut _ as *mut _,
+                &mut scale_inv as *mut _ as *mut _,
+                &mut n_spec_i as *mut _ as *mut _,
+                &mut n_spec_over_i as *mut _ as *mut _,
+                &mut n_r_i as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.finalize_radial_spectrum_fn,
+                grid_spec,
+                block_size,
+                0,
+                &mut finalize_args,
+                "finalize_radial_spectrum",
+            )
+        }
+    }
+
+    /// CUDA radial EnvGrid RHS — mirrors `CpuNativeSim::rhs_radial_env` for
+    /// scalar envelope Kerr.  Each radial column uses the full complex c2c
+    /// spectrum, complex QDHT directions, the `3/4` envelope Kerr factor from
+    /// `rhs_mode_avg_env_kernel`, and the same crop/normalization order as the
+    /// CPU oracle.
+    unsafe fn compute_rhs_radial_env(&mut self, idx: usize) -> Result<(), String> {
+        if !self.is_radial || self.n_r == 0 || self.radial_fft_c2c == 0 {
+            return Err("CUDA radial EnvGrid configuration is not initialized".to_string());
+        }
+        let ctx = get_gpu_context().ok_or_else(|| "GPU context not initialized".to_string())?;
+        let driver = get_driver_api()?;
+        let cufft = get_cufft_api()?;
+        unsafe {
+            crate::cuda::activate_context()?;
+            let block_size = 256u32;
+            let n_spec = self.n / self.n_r;
+            let total_time = self
+                .n_time_over
+                .checked_mul(self.n_r)
+                .ok_or_else(|| "CUDA radial EnvGrid time launch size overflow".to_string())?;
+            let total_spec = self
+                .n_spec_over
+                .checked_mul(self.n_r)
+                .ok_or_else(|| "CUDA radial EnvGrid spectral launch size overflow".to_string())?;
+            let total_time_u32 = u32::try_from(total_time).map_err(|_| {
+                "CUDA radial EnvGrid time launch size exceeds grid range".to_string()
+            })?;
+            let total_spec_u32 = u32::try_from(total_spec).map_err(|_| {
+                "CUDA radial EnvGrid spectral launch size exceeds grid range".to_string()
+            })?;
+            let n_u32 = u32::try_from(self.n)
+                .map_err(|_| "CUDA radial EnvGrid field size exceeds grid range".to_string())?;
+            let grid_time = total_time_u32.div_ceil(block_size);
+            let grid_spec_over = total_spec_u32.div_ceil(block_size);
+            let grid_spec = n_u32.div_ceil(block_size);
+            let mut n_spec_i = c_int::try_from(n_spec).map_err(|_| {
+                "CUDA radial EnvGrid spectral dimension exceeds kernel range".to_string()
+            })?;
+            let mut n_spec_over_i = c_int::try_from(self.n_spec_over).map_err(|_| {
+                "CUDA radial EnvGrid oversampled spectral dimension exceeds kernel range"
+                    .to_string()
+            })?;
+            let mut n_time_over_i = c_int::try_from(self.n_time_over).map_err(|_| {
+                "CUDA radial EnvGrid time dimension exceeds kernel range".to_string()
+            })?;
+            let mut n_r_i = c_int::try_from(self.n_r).map_err(|_| {
+                "CUDA radial EnvGrid radial dimension exceeds kernel range".to_string()
+            })?;
+
+            // CPU rhs_radial_env's to_time! copies the low and high halves and
+            // scales by no/n.  The radial kernel applies that rule per column.
+            let mut scale_fwd = self.n_spec_over as f64 / n_spec as f64;
+            let mut expand_args: [*mut libc::c_void; 6] = [
+                &mut self.ystage_d.dptr as *mut _ as *mut _,
+                &mut self.radial_eoo_d.dptr as *mut _ as *mut _,
+                &mut scale_fwd as *mut _ as *mut _,
+                &mut n_spec_i as *mut _ as *mut _,
+                &mut n_spec_over_i as *mut _ as *mut _,
+                &mut n_r_i as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.expand_radial_spectrum_env_fn,
+                grid_spec_over,
+                block_size,
+                0,
+                &mut expand_args,
+                "expand_radial_spectrum_env",
+            )?;
+
+            for r in 0..self.n_r {
+                let eoo_ptr = self.radial_eoo_d.dptr
+                    + (r * self.n_spec_over * std::mem::size_of::<Complex<f64>>()) as u64;
+                let eto_ptr = self.radial_eto_d.dptr
+                    + (r * self.n_time_over * std::mem::size_of::<Complex<f64>>()) as u64;
+                let rc = (cufft.cufftExecZ2Z)(
+                    self.radial_fft_c2c,
+                    eoo_ptr as *mut _,
+                    eto_ptr as *mut _,
+                    CUFFT_INVERSE,
+                );
+                if rc != 0 {
+                    return Err(format!(
+                        "cufftExecZ2Z (radial EnvGrid inverse column {r}) failed: {rc}"
+                    ));
+                }
+            }
+
+            let mut inverse_scale = 1.0 / self.n_time_over as f64;
+            // Keep the launch argument alive for the complete call; the
+            // explicit local avoids passing a pointer to a cast temporary.
+            let mut total_time_i = c_int::try_from(total_time).map_err(|_| {
+                "CUDA radial EnvGrid time launch size exceeds kernel range".to_string()
+            })?;
+            let mut scale_args: [*mut libc::c_void; 3] = [
+                &mut self.radial_eto_d.dptr as *mut _ as *mut _,
+                &mut inverse_scale as *mut _ as *mut _,
+                &mut total_time_i as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.scale_complex_fn,
+                grid_time,
+                block_size,
+                0,
+                &mut scale_args,
+                "scale_radial_env_inverse_fft",
+            )?;
+
+            let mut qdht_scale = self.radial_scale_inv;
+            let mut qdht_args: [*mut libc::c_void; 6] = [
+                &mut self.radial_eto_d.dptr as *mut _ as *mut _,
+                &mut self.radial_qdht_d.dptr as *mut _ as *mut _,
+                &mut self.radial_qdht_matrix_d.dptr as *mut _ as *mut _,
+                &mut qdht_scale as *mut _ as *mut _,
+                &mut n_time_over_i as *mut _ as *mut _,
+                &mut n_r_i as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.qdht_radial_complex_fn,
+                grid_time,
+                block_size,
+                0,
+                &mut qdht_args,
+                "qdht_radial_env_ldiv",
+            )?;
+
+            let mut kerr_fac = self.radial_kerr_fac;
+            let mut kerr_args: [*mut libc::c_void; 4] = [
+                &mut self.radial_pto_d.dptr as *mut _ as *mut _,
+                &mut self.radial_qdht_d.dptr as *mut _ as *mut _,
+                &mut kerr_fac as *mut _ as *mut _,
+                &mut total_time_i as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.rhs_mode_avg_env_fn,
+                grid_time,
+                block_size,
+                0,
+                &mut kerr_args,
+                "rhs_radial_env_kerr",
+            )?;
+
+            let mut window_args: [*mut libc::c_void; 4] = [
+                &mut self.radial_pto_d.dptr as *mut _ as *mut _,
+                &mut self.radial_towin_d.dptr as *mut _ as *mut _,
+                &mut n_time_over_i as *mut _ as *mut _,
+                &mut n_r_i as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.apply_radial_time_window_complex_fn,
+                grid_time,
+                block_size,
+                0,
+                &mut window_args,
+                "apply_radial_env_time_window",
+            )?;
+
+            let mut qdht_scale = self.radial_scale_fwd;
+            let mut qdht_args: [*mut libc::c_void; 6] = [
+                &mut self.radial_pto_d.dptr as *mut _ as *mut _,
+                &mut self.radial_qdht_d.dptr as *mut _ as *mut _,
+                &mut self.radial_qdht_matrix_d.dptr as *mut _ as *mut _,
+                &mut qdht_scale as *mut _ as *mut _,
+                &mut n_time_over_i as *mut _ as *mut _,
+                &mut n_r_i as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.qdht_radial_complex_fn,
+                grid_time,
+                block_size,
+                0,
+                &mut qdht_args,
+                "qdht_radial_env_mul",
+            )?;
+
+            for r in 0..self.n_r {
+                let qdht_ptr = self.radial_qdht_d.dptr
+                    + (r * self.n_time_over * std::mem::size_of::<Complex<f64>>()) as u64;
+                let poo_ptr = self.radial_poo_d.dptr
+                    + (r * self.n_spec_over * std::mem::size_of::<Complex<f64>>()) as u64;
+                let rc = (cufft.cufftExecZ2Z)(
+                    self.radial_fft_c2c,
+                    qdht_ptr as *mut _,
+                    poo_ptr as *mut _,
+                    CUFFT_FORWARD,
+                );
+                if rc != 0 {
+                    return Err(format!(
+                        "cufftExecZ2Z (radial EnvGrid forward column {r}) failed: {rc}"
+                    ));
+                }
+            }
+
+            // The unnormalized forward c2c transform is cropped back from no
+            // to n samples, matching rhs_radial_env's n/no factor.
+            let mut scale_inv = n_spec as f64 / self.n_spec_over as f64;
+            let mut finalize_args: [*mut libc::c_void; 7] = [
+                &mut self.radial_poo_d.dptr as *mut _ as *mut _,
+                &mut self.ks_d[idx].dptr as *mut _ as *mut _,
+                &mut self.radial_norm_d.dptr as *mut _ as *mut _,
+                &mut scale_inv as *mut _ as *mut _,
+                &mut n_spec_i as *mut _ as *mut _,
+                &mut n_spec_over_i as *mut _ as *mut _,
+                &mut n_r_i as *mut _ as *mut _,
+            ];
+            launch_checked(
+                driver,
+                ctx.finalize_radial_spectrum_env_fn,
+                grid_spec,
+                block_size,
+                0,
+                &mut finalize_args,
+                "finalize_radial_spectrum_env",
             )
         }
     }
@@ -1302,6 +2695,93 @@ impl CudaNativeSim {
                 )?;
             }
 
+            // ── Step 3c: resident EnvGrid intermediate-broadening Raman.
+            // The padded 0.5*|E|² and response impulse are real, so use the
+            // resident D2Z/Z2D pair at length 2*n_time_over. The response
+            // spectrum already includes dt/n_over and is multiplied in place;
+            // no host transfer occurs during an RHS evaluation.
+            if self.has_raman_fft {
+                let n_over = self
+                    .n_time_over
+                    .checked_mul(2)
+                    .ok_or_else(|| "EnvGrid Raman FFT length overflow".to_string())?;
+                let n_over_i = n_over as c_int;
+                let n_spec_over = self.n_time_over + 1;
+                let n_spec_over_i = n_spec_over as c_int;
+                let grid_padded = (n_over as u32).div_ceil(block_size);
+                let grid_spectrum = (n_spec_over as u32).div_ceil(block_size);
+
+                let mut n_time_over_i = self.n_time_over as c_int;
+                let mut pack_n_over_i = n_over_i;
+                let mut pack_args: [*mut libc::c_void; 4] = [
+                    &mut self.eto_d.dptr as *mut _ as *mut _,
+                    &mut self.raman_fft_e2_d.dptr as *mut _ as *mut _,
+                    &mut n_time_over_i as *mut _ as *mut _,
+                    &mut pack_n_over_i as *mut _ as *mut _,
+                ];
+                launch_checked(
+                    driver,
+                    ctx.raman_fft_pack_env_fn,
+                    grid_padded,
+                    block_size,
+                    0,
+                    &mut pack_args,
+                    "raman_fft_pack_env",
+                )?;
+
+                let rc = (cufft.cufftExecD2Z)(
+                    self.raman_fft_r2c,
+                    self.raman_fft_e2_d.dptr as *mut _,
+                    self.raman_fft_ew_d.dptr as *mut _,
+                );
+                if rc != 0 {
+                    return Err(format!("cufftExecD2Z (Raman convolution) failed: {rc}"));
+                }
+
+                let mut n_spec_i = n_spec_over_i;
+                let mut multiply_args: [*mut libc::c_void; 3] = [
+                    &mut self.raman_fft_ew_d.dptr as *mut _ as *mut _,
+                    &mut self.raman_fft_hw_d.dptr as *mut _ as *mut _,
+                    &mut n_spec_i as *mut _ as *mut _,
+                ];
+                launch_checked(
+                    driver,
+                    ctx.raman_fft_multiply_fn,
+                    grid_spectrum,
+                    block_size,
+                    0,
+                    &mut multiply_args,
+                    "raman_fft_multiply",
+                )?;
+
+                let rc = (cufft.cufftExecZ2D)(
+                    self.raman_fft_c2r,
+                    self.raman_fft_ew_d.dptr as *mut _,
+                    self.raman_fft_e2_d.dptr as *mut _,
+                );
+                if rc != 0 {
+                    return Err(format!("cufftExecZ2D (Raman convolution) failed: {rc}"));
+                }
+
+                let mut density = self.raman_fft_density;
+                let mut accumulate_args: [*mut libc::c_void; 5] = [
+                    &mut self.pto_d.dptr as *mut _ as *mut _,
+                    &mut self.eto_d.dptr as *mut _ as *mut _,
+                    &mut self.raman_fft_e2_d.dptr as *mut _ as *mut _,
+                    &mut density as *mut _ as *mut _,
+                    &mut n_time_over_i as *mut _ as *mut _,
+                ];
+                launch_checked(
+                    driver,
+                    ctx.raman_accumulate_env_fn,
+                    grid_over,
+                    block_size,
+                    0,
+                    &mut accumulate_args,
+                    "raman_fft_accumulate_env",
+                )?;
+            }
+
             let mut window_args: [*mut libc::c_void; 3] = [
                 &mut self.pto_d.dptr as *mut _ as *mut _,
                 &mut self.towin_d.dptr as *mut _ as *mut _,
@@ -1404,7 +2884,12 @@ impl NativeBackend for CudaNativeSim {
             if self.ystage_d.copy_from_device(&self.field_d).is_err() {
                 return -1;
             }
-            if self.compute_rhs_mode_avg(0).is_err() {
+            let rhs_result = if self.is_radial {
+                self.compute_rhs_radial(0)
+            } else {
+                self.compute_rhs_mode_avg(0)
+            };
+            if rhs_result.is_err() {
                 return -1;
             }
         }
@@ -1664,7 +3149,10 @@ impl NativeBackend for CudaNativeSim {
         dt: c_double,
         density: c_double,
     ) -> i32 {
-        if self.n_time == 0 || ion_ptr.is_null() {
+        if self.n_time == 0 || ion_ptr.is_null() || !dt.is_finite() {
+            return -2;
+        }
+        if self.is_radial && (!self.is_real || self.n_r == 0) {
             return -2;
         }
         let ion = unsafe { &*ion_ptr };
@@ -1672,15 +3160,64 @@ impl NativeBackend for CudaNativeSim {
         if segments.is_empty() {
             return -2;
         }
-        self.plasma_segments_d = match GpuBuffer::alloc(
-            segments.len() * std::mem::size_of::<crate::ionization::SplineSegment>(),
+        let n_series = if self.is_radial { self.n_r } else { 1 };
+        let scratch_len = match self.n_time_over.checked_mul(n_series) {
+            Some(len) if len > 0 => len,
+            _ => return -2,
+        };
+        let n_blocks = self.n_time_over.div_ceil(256);
+        let scan_len = match n_blocks.checked_mul(n_series) {
+            Some(len) if len > 0 => len,
+            _ => return -2,
+        };
+        let segments_bytes = match checked_bytes(
+            segments.len(),
+            std::mem::size_of::<crate::ionization::SplineSegment>(),
         ) {
+            Ok(bytes) => bytes,
+            Err(_) => return -2,
+        };
+        let scratch_bytes = match checked_bytes(scratch_len, 8) {
+            Ok(bytes) => bytes,
+            Err(_) => return -2,
+        };
+        let scan_bytes = match checked_bytes(scan_len, 8) {
+            Ok(bytes) => bytes,
+            Err(_) => return -2,
+        };
+        let segments_d = match GpuBuffer::alloc(segments_bytes) {
             Ok(b) => b,
             Err(_) => return -1,
         };
-        if self.plasma_segments_d.copy_to_device(segments).is_err() {
+        let plas_rate_d = match GpuBuffer::alloc(scratch_bytes) {
+            Ok(b) => b,
+            Err(_) => return -1,
+        };
+        let plas_fraction_d = match GpuBuffer::alloc(scratch_bytes) {
+            Ok(b) => b,
+            Err(_) => return -1,
+        };
+        let plas_phase_d = match GpuBuffer::alloc(scratch_bytes) {
+            Ok(b) => b,
+            Err(_) => return -1,
+        };
+        let plas_current_d = match GpuBuffer::alloc(scratch_bytes) {
+            Ok(b) => b,
+            Err(_) => return -1,
+        };
+        let plas_scan_sums_d = match GpuBuffer::alloc(scan_bytes) {
+            Ok(b) => b,
+            Err(_) => return -1,
+        };
+        if segments_d.copy_to_device(segments).is_err() {
             return -1;
         }
+        self.plasma_segments_d = segments_d;
+        self.plas_rate_d = plas_rate_d;
+        self.plas_fraction_d = plas_fraction_d;
+        self.plas_phase_d = plas_phase_d;
+        self.plas_current_d = plas_current_d;
+        self.plas_scan_sums_d = plas_scan_sums_d;
         self.plasma_num_segments = segments.len();
         self.plasma_rate_kind = PlasmaRateKind::Ppt;
         self.plasma_e_min = ion.e_min;
@@ -1706,6 +3243,9 @@ impl NativeBackend for CudaNativeSim {
         if self.n_time == 0 || ion_ptr.is_null() {
             return -2;
         }
+        if self.is_radial && (!self.is_real || self.n_r == 0) {
+            return -2;
+        }
         let ion = unsafe { &*ion_ptr };
         // The rate function's documented non-finite *field* handling belongs
         // on the device. Parameter non-finites instead mean setup is invalid:
@@ -1727,6 +3267,79 @@ impl NativeBackend for CudaNativeSim {
         {
             return -2;
         }
+
+        // Mode-averaged setup allocates these resident arrays in
+        // `set_mode_avg_params`.  A radial setup has no mode-averaged
+        // allocation to reuse, so stage the column-segmented scratch here
+        // before changing any live plasma state.  This keeps invalid ADK
+        // setup and allocation failures transactional, just like the PPT
+        // setter above, and lets the same scan/finalizer pipeline serve both
+        // rate kernels.
+        let radial_buffers = if self.is_radial {
+            let n_series = self.n_r;
+            let scratch_len = match self.n_time_over.checked_mul(n_series) {
+                Some(len) if len > 0 => len,
+                _ => return -2,
+            };
+            let n_blocks = self.n_time_over.div_ceil(256);
+            let scan_len = match n_blocks.checked_mul(n_series) {
+                Some(len) if len > 0 => len,
+                _ => return -2,
+            };
+            let scratch_bytes = match checked_bytes(scratch_len, 8) {
+                Ok(bytes) => bytes,
+                Err(_) => return -2,
+            };
+            let scan_bytes = match checked_bytes(scan_len, 8) {
+                Ok(bytes) => bytes,
+                Err(_) => return -2,
+            };
+            let plas_rate_d = match GpuBuffer::alloc(scratch_bytes) {
+                Ok(b) => b,
+                Err(_) => return -1,
+            };
+            let plas_fraction_d = match GpuBuffer::alloc(scratch_bytes) {
+                Ok(b) => b,
+                Err(_) => return -1,
+            };
+            let plas_phase_d = match GpuBuffer::alloc(scratch_bytes) {
+                Ok(b) => b,
+                Err(_) => return -1,
+            };
+            let plas_current_d = match GpuBuffer::alloc(scratch_bytes) {
+                Ok(b) => b,
+                Err(_) => return -1,
+            };
+            let plas_scan_sums_d = match GpuBuffer::alloc(scan_bytes) {
+                Ok(b) => b,
+                Err(_) => return -1,
+            };
+            Some((
+                plas_rate_d,
+                plas_fraction_d,
+                plas_phase_d,
+                plas_current_d,
+                plas_scan_sums_d,
+            ))
+        } else {
+            None
+        };
+
+        if let Some((
+            plas_rate_d,
+            plas_fraction_d,
+            plas_phase_d,
+            plas_current_d,
+            plas_scan_sums_d,
+        )) = radial_buffers
+        {
+            self.plas_rate_d = plas_rate_d;
+            self.plas_fraction_d = plas_fraction_d;
+            self.plas_phase_d = plas_phase_d;
+            self.plas_current_d = plas_current_d;
+            self.plas_scan_sums_d = plas_scan_sums_d;
+            self.plasma_num_segments = 0;
+        }
         self.plasma_rate_kind = PlasmaRateKind::Adk;
         self.plasma_adk_occupancy = ion.occupancy;
         self.plasma_adk_omega_p = ion.omega_p;
@@ -1746,18 +3359,37 @@ impl NativeBackend for CudaNativeSim {
 
     unsafe fn set_radial_params(
         &mut self,
-        _n_time: size_t,
-        _n_time_over: size_t,
-        _n_r: size_t,
-        _t_matrix: *const c_double,
-        _scale_fwd: c_double,
-        _scale_inv: c_double,
-        _towin: *const c_double,
-        _kerr_fac: c_double,
-        _m_re: *const c_double,
-        _m_im: *const c_double,
+        n_time: size_t,
+        n_time_over: size_t,
+        n_r: size_t,
+        t_matrix: *const c_double,
+        scale_fwd: c_double,
+        scale_inv: c_double,
+        towin: *const c_double,
+        kerr_fac: c_double,
+        m_re: *const c_double,
+        m_im: *const c_double,
     ) -> i32 {
-        -1
+        unsafe {
+            match self.stage_radial_setup(
+                n_time,
+                n_time_over,
+                n_r,
+                t_matrix,
+                scale_fwd,
+                scale_inv,
+                towin,
+                kerr_fac,
+                m_re,
+                m_im,
+            ) {
+                Ok(staged) => {
+                    self.commit_radial_setup(staged);
+                    0
+                }
+                Err(_) => -1,
+            }
+        }
     }
     unsafe fn set_radial_noise(&mut self, _noise: *const c_double, _n: size_t) -> i32 {
         -1
@@ -1867,10 +3499,21 @@ impl NativeBackend for CudaNativeSim {
             }
         }
 
-        if let Ok(cufft) = get_cufft_api()
-            && self.raman_hilbert_fft != 0
-        {
-            unsafe { (cufft.cufftDestroy)(self.raman_hilbert_fft) };
+        if let Ok(cufft) = get_cufft_api() {
+            unsafe {
+                if self.raman_hilbert_fft != 0 {
+                    (cufft.cufftDestroy)(self.raman_hilbert_fft);
+                    self.raman_hilbert_fft = 0;
+                }
+                if self.raman_fft_r2c != 0 {
+                    (cufft.cufftDestroy)(self.raman_fft_r2c);
+                    self.raman_fft_r2c = 0;
+                }
+                if self.raman_fft_c2r != 0 {
+                    (cufft.cufftDestroy)(self.raman_fft_c2r);
+                    self.raman_fft_c2r = 0;
+                }
+            }
         }
         self.raman_coeffs_d = coeffs_d;
         self.raman_intensity_d = intensity_d;
@@ -1881,22 +3524,47 @@ impl NativeBackend for CudaNativeSim {
         self.raman_num_osc = n_osc;
         self.raman_density = density;
         self.raman_thg = thg != 0;
+        self.has_raman_fft = false;
         self.has_raman = true;
         0
     }
     unsafe fn set_raman_fft_params(
         &mut self,
-        _omega: *const c_double,
-        _amp: *const c_double,
-        _gauss_w: *const c_double,
-        _lorentz_w: *const c_double,
-        _n_osc: size_t,
-        _scale: c_double,
-        _dt: c_double,
-        _n_time: size_t,
-        _density: c_double,
+        omega: *const c_double,
+        amp: *const c_double,
+        gauss_w: *const c_double,
+        lorentz_w: *const c_double,
+        n_osc: size_t,
+        scale: c_double,
+        dt: c_double,
+        n_time: size_t,
+        density: c_double,
     ) -> i32 {
-        -1
+        if self.is_real || self.n_time_over == 0 || n_time != self.n_time_over {
+            return -2;
+        }
+        if omega.is_null()
+            || amp.is_null()
+            || gauss_w.is_null()
+            || lorentz_w.is_null()
+            || n_osc == 0
+        {
+            return -1;
+        }
+        match unsafe {
+            self.stage_raman_fft_setup(
+                omega, amp, gauss_w, lorentz_w, n_osc, scale, dt, n_time, density,
+            )
+        } {
+            Ok(staged) => {
+                self.commit_raman_fft_setup(staged);
+                0
+            }
+            Err(error) => {
+                eprintln!("Amalthea GPU error: EnvGrid Raman FFT setup failed: {error}");
+                -1
+            }
+        }
     }
 
     unsafe fn set_modal_params(
@@ -2138,15 +3806,14 @@ impl NativeBackend for CudaNativeSim {
                         &format!("apply_prop(ystage, ii={ii})"),
                     )?;
 
-                    // Full CPU-oracle RHS pipeline (Steps 1-7) — see
-                    // `compute_rhs_mode_avg`'s doc and
-                    // `docs/dev/native-port/portlog-inbox/gpu-nonlinearity.md`
-                    // for the step-by-step correspondence. This replaces the
-                    // previous inline "Kerr [+plasma] +window, FFT sized to
-                    // n_time" block, which skipped Steps 1/2/5/6/7 entirely
-                    // (the root cause of the GPU RHS computing ~zero
-                    // nonlinearity — BACKLOG.md S3 item 0).
-                    self.compute_rhs_mode_avg(ii + 1)?;
+                    // Dispatch the complete resident RHS for the configured
+                    // geometry.  Both branches keep the stage on device;
+                    // radial additionally applies the resident QDHT matrix.
+                    if self.is_radial {
+                        self.compute_rhs_radial(ii + 1)?;
+                    } else {
+                        self.compute_rhs_mode_avg(ii + 1)?;
+                    }
 
                     let mut dt_prop_neg = -dt_prop;
                     let mut apply_args_inv: [*mut libc::c_void; 4] = [
@@ -2384,9 +4051,34 @@ impl Drop for CudaNativeSim {
                     (cufft.cufftDestroy)(self.fft_c2c);
                 }
             }
+            if self.radial_fft_r2c != 0 {
+                unsafe {
+                    (cufft.cufftDestroy)(self.radial_fft_r2c);
+                }
+            }
+            if self.radial_fft_c2r != 0 {
+                unsafe {
+                    (cufft.cufftDestroy)(self.radial_fft_c2r);
+                }
+            }
+            if self.radial_fft_c2c != 0 {
+                unsafe {
+                    (cufft.cufftDestroy)(self.radial_fft_c2c);
+                }
+            }
             if self.raman_hilbert_fft != 0 {
                 unsafe {
                     (cufft.cufftDestroy)(self.raman_hilbert_fft);
+                }
+            }
+            if self.raman_fft_r2c != 0 {
+                unsafe {
+                    (cufft.cufftDestroy)(self.raman_fft_r2c);
+                }
+            }
+            if self.raman_fft_c2r != 0 {
+                unsafe {
+                    (cufft.cufftDestroy)(self.raman_fft_c2r);
                 }
             }
         }
@@ -2680,6 +4372,104 @@ mod tests {
             assert_eq!(
                 got, field,
                 "fault point {point} damaged active field/config"
+            );
+        }
+    }
+
+    #[test]
+    fn raman_fft_setup_failures_preserve_the_active_cuda_configuration() {
+        if !cuda_or_skip("CUDA Raman FFT setup transaction test") {
+            return;
+        }
+        let _serial = MODE_AVG_SETUP_TEST_LOCK.lock().unwrap();
+        let n = 4usize;
+        let mut sim =
+            CudaNativeSim::new(n, &vec![Complex::new(0.0, 0.0); n]).expect("CudaNativeSim::new");
+        let towin = [1.0; 8];
+        let owin = vec![1.0; n];
+        let sidx = vec![1u8; n];
+        let pre = vec![0.0; n];
+        let beta = vec![1.0; n];
+        unsafe {
+            assert_eq!(
+                sim.set_fftw_plans(std::ptr::null(), 4, 8, 0, 0, std::ptr::null()),
+                0
+            );
+            assert_eq!(
+                sim.set_mode_avg_params(
+                    4,
+                    8,
+                    towin.as_ptr(),
+                    owin.as_ptr(),
+                    sidx.as_ptr(),
+                    pre.as_ptr(),
+                    pre.as_ptr(),
+                    beta.as_ptr(),
+                    0.0,
+                    1.0,
+                    1.0,
+                ),
+                0
+            );
+        }
+        let field: Vec<Complex<f64>> = (0..n)
+            .map(|i| Complex::new(i as f64 + 1.0, -0.25 * i as f64))
+            .collect();
+        let omega = [1.0];
+        let amp = [1.0];
+        let gauss = [0.0];
+        let lorentz = [0.0];
+        unsafe {
+            assert_eq!(
+                sim.set_raman_fft_params(
+                    omega.as_ptr(),
+                    amp.as_ptr(),
+                    gauss.as_ptr(),
+                    lorentz.as_ptr(),
+                    1,
+                    1.0,
+                    1e-3,
+                    8,
+                    1.0,
+                ),
+                0
+            );
+            assert_eq!(sim.set_field(field.as_ptr() as *const c_double, n), 0);
+        }
+
+        for point in [
+            RAMAN_FFT_FAIL_ALLOC,
+            RAMAN_FFT_FAIL_COPY,
+            RAMAN_FFT_FAIL_SECOND_PLAN,
+        ] {
+            RAMAN_FFT_SETUP_FAIL_POINT.store(point, Ordering::SeqCst);
+            let rc = unsafe {
+                sim.set_raman_fft_params(
+                    omega.as_ptr(),
+                    amp.as_ptr(),
+                    gauss.as_ptr(),
+                    lorentz.as_ptr(),
+                    1,
+                    1.0,
+                    1e-3,
+                    8,
+                    1.0,
+                )
+            };
+            RAMAN_FFT_SETUP_FAIL_POINT.store(0, Ordering::SeqCst);
+            assert_ne!(rc, 0, "fault point {point} must fail setup");
+
+            // The old response spectrum and scratch buffers remain active.
+            unsafe {
+                assert_eq!(sim.set_field(field.as_ptr() as *const c_double, n), 0);
+            }
+            let mut got = vec![Complex::new(0.0, 0.0); n];
+            unsafe {
+                assert_eq!(sim.get_field(got.as_mut_ptr() as *mut c_double, n), 0);
+            }
+            assert_eq!(
+                got, field,
+                "fault point {point} damaged active Raman configuration"
             );
         }
     }

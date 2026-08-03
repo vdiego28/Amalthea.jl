@@ -93,11 +93,11 @@ repairs at the head of this queue.
 | 4 | `LUNA_FEATURE_PLAN_04_GPU_ENVGRID_AUTO_POLICY.md` | measured EnvGrid Kerr `:auto` policy | 03 |
 | 5 | `LUNA_FEATURE_PLAN_05_GPU_RAMAN_AUTO_POLICY.md` | measured Raman `:auto` policy | 02, 03 |
 | 6 | `LUNA_FEATURE_PLAN_06_STANDING_REQUIRED_CUDA_CI.md` | strict CUDA tests run continuously | approved runner |
-| 7 | `LUNA_FEATURE_PLAN_07_GPU_MODEAVG_SIO2_RAMAN.md` | mode-averaged EnvGrid `:SiO2` Raman | 03, preferably 06 |
-| 8 | `LUNA_FEATURE_PLAN_08_GPU_RADIAL_REAL_KERR.md` | radial RealGrid Kerr foundation | 03, preferably 06 |
-| 9 | `LUNA_FEATURE_PLAN_09_GPU_RADIAL_ENV_KERR.md` | radial EnvGrid Kerr | 08 |
-| 10 | `LUNA_FEATURE_PLAN_10_GPU_RADIAL_PPT.md` | radial RealGrid PPT plasma | 08 |
-| 11 | `LUNA_FEATURE_PLAN_11_GPU_RADIAL_ADK.md` | radial RealGrid thresholded ADK | 10 |
+| 7 | `LUNA_FEATURE_PLAN_07_GPU_MODEAVG_SIO2_RAMAN.md` | mode-averaged EnvGrid `:SiO2` Raman (complete 2026-08-02) | 03, preferably 06 |
+| 8 | `LUNA_FEATURE_PLAN_08_GPU_RADIAL_REAL_KERR.md` | radial RealGrid Kerr foundation (complete 2026-08-02) | 03, preferably 06 |
+| 9 | `LUNA_FEATURE_PLAN_09_GPU_RADIAL_ENV_KERR.md` | radial EnvGrid Kerr (complete 2026-08-02) | 08 |
+| 10 | `LUNA_FEATURE_PLAN_10_GPU_RADIAL_PPT.md` | radial RealGrid PPT plasma (complete 2026-08-02) | 08 |
+| 11 | `LUNA_FEATURE_PLAN_11_GPU_RADIAL_ADK.md` | radial RealGrid thresholded ADK (complete 2026-08-02) | 10 |
 | 12 | `LUNA_FEATURE_PLAN_12_GPU_RADIAL_REAL_RAMAN.md` | radial RealGrid SDO Raman | 02, 08 |
 | 13 | `LUNA_FEATURE_PLAN_13_GPU_RADIAL_ENV_RAMAN.md` | radial EnvGrid SDO Raman | 09, 12 |
 | 14 | `LUNA_FEATURE_PLAN_14_GPU_MODAL_REAL_KERR.md` | modal RealGrid Kerr | 03, preferably 06 |

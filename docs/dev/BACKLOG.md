@@ -23,8 +23,9 @@ or "verified" inside a superseded narrative do not outrank this list.
 > required `gh-pages` deployment branch. The live queue is deliberately short:
 > standing required-CUDA CI remains deferred by the lead (item 2 below).
 > Broader mode-averaged SDO Raman was completed and hardware-verified on
-> 2026-08-02; remaining radial/modal/free-space GPU scope stays outside this
-> work item. Do not recreate a
+> 2026-08-02; radial RealGrid and EnvGrid scalar-Kerr GPU slices are now also
+> complete, while remaining radial/modal/free-space GPU scope stays outside
+> this work item. Do not recreate a
 > completed integration branch as a resume step.
 
 > The upstream Luna.jl review is recorded in
@@ -872,7 +873,7 @@ then reproducing the crash directly:**
   must be **bit-identical**, not merely within tolerance — a stronger,
   more testable guarantee than typical parallel-code equivalence.
 
-### 🟡 S3 — GPU-resident propagation (suggestion 1) — mode-averaged both-grid Kerr/Raman plus RealGrid plasma is supported; broader scope remains unbuilt
+### 🟡 S3 — GPU-resident propagation (suggestion 1) — mode-averaged both-grid Kerr/Raman plus radial RealGrid/EnvGrid scalar Kerr and RealGrid plasma are supported; broader scope remains unbuilt
 *Large (5+ sessions). Plan's own stated dependency (GPU CI) is **still** not
 met — see "GPU CI coverage" below, and note that item 0 is precisely what
 that gap allowed to happen. This machine has real GPU hardware
@@ -1069,8 +1070,10 @@ implemented), verified on real hardware, wired behind
    `thg=false`) and `RamanPolarEnv` on EnvGrid, reusing the resident
    `native_set_raman_params` contract and CUDA ADE kernel. Its explicit
    capacity is **1–64 flattened SDO oscillators**, covering N₂ rotation (49)
-   and rotation+vibration (50); larger responses remain CPU fallback. `:SiO2`, mixtures,
-   shot noise, z-dependent Raman, and radial/modal/free-space remain excluded.
+   and rotation+vibration (50); larger responses remain CPU fallback. At the
+   time this SDO slice landed, `:SiO2`, mixtures, shot noise, z-dependent
+   Raman, and radial/modal/free-space remained excluded; Plan 07 below now
+   closes the explicit mode-averaged EnvGrid `:SiO2` slice.
    **Plan 05 follow-up, 2026-08-02:** production-shaped CPU/CUDA sweeps for
    RealGrid THG on/off, EnvGrid, and 50-oscillator rotational Raman reached at
    most 1.141×, below the established 1.4× retention bar. All four named
@@ -1078,12 +1081,13 @@ implemented), verified on real hardware, wired behind
    CPU-native under `:auto` and CUDA remains explicit via `:on`. The complete
    table and the bounded large-rotational benchmark gotcha are in
    `luna-feature-plans/LUNA_FEATURE_PLAN_05_GPU_RAMAN_AUTO_POLICY.md`.
-   Radial support would still need a
-   segmented/batched extension over columns rather than reusing the
-   one-dimensional mode-averaged launch unchanged.
+   Radial Raman support would still need a segmented/batched extension over
+   columns rather than reusing the one-dimensional mode-averaged launch
+   unchanged.
 5. 🟢 **Raman CUDA coverage landed 2026-08-02** in
    `test/test_native_cuda_raman.jl`: direct stage/non-vacuity checks, fixed
-   and rejected-step trajectories, EnvGrid, and `:SiO2` CPU fallback.
+   and rejected-step trajectories, EnvGrid, and `:SiO2` CPU fallback for the
+   pre-Plan-07 path.
    **Review follow-up, 2026-08-02:** `_gpu_kernel_supports` had independently
    accepted EnvGrid and plasma even though `compute_rhs_mode_avg_env` applies
    only Kerr and Raman. A low-level `TransModeAvg` could therefore select CUDA
@@ -1096,10 +1100,68 @@ implemented), verified on real hardware, wired behind
    generated 64-oscillator limit between Rust and PTX; Julia rejects 65 before
    CUDA setup. N₂ rotation and rotation+vibration are verified at 49/50
    oscillators, with no kernel truncation.
+   **Plan 07 follow-up, 2026-08-02:** mode-averaged EnvGrid
+   `RamanRespIntermediateBroadening`/`:SiO2` now uses the existing
+   `native_set_raman_fft_params` contract and resident r2c/c2r convolution;
+   no host field transfer occurs inside an RHS evaluation. Transactional
+   allocation/copy/plan failures preserve the active setup. The strict CUDA
+   bucket passed **157/157**, with direct stage error `5.74e-16` and a
+   six-step fixed trajectory error `1.46e-16`; `:auto` remains CPU-selected.
 6. 🟢 **The `n_time`-vs-`n_time_over` Kerr/plasma buffer-sizing fidelity gap
    is closed (2026-07-25).** Item 0's nonlinear-pipeline repair resized the
    buffers/plans and added the required crop/pad path; the older item-2 text is
    historical and does not reopen it.
+7. 🟢 **Plan 08 — radial RealGrid scalar Kerr — DONE 2026-08-02.** The CUDA
+   backend now stages `TransRadial` + RealGrid + scalar-density + constant
+   linop/norm + one plain Kerr through the existing
+   `native_set_radial_params` FFI symbol. Julia's QDHT matrix, normalization,
+   and time window are resident; the CUDA RHS performs spectrum expansion,
+   per-column D2Z/Z2D cuFFT, QDHT matrix products, Kerr/windowing, and final
+   crop/normalization without host field transfers. Setup is transactional and
+   validates shapes, finite values, allocation sizes, integer ranges, and plan
+   return codes. Explicit `AMALTHEA_NATIVE_GPU=on` is supported; radial `:auto`
+   remains disabled, and plasma/Raman/noise/mixtures/z-dependence plus other
+   geometries remain CPU fallback. The focused CUDA item passed 25/25 on the
+   RTX 5060 Ti, with fixed-solve relative error `4.772174254620178e-16`, a
+   nonsymmetric QDHT probe, rollback, and adaptive reject/retry. The temporal
+   pad scale is kept separate from QDHT `scaleRK`; this distinction fixed the
+   stage-scale defect found during hardware verification. See Plan 08 and the
+   latest `PORT_LOG.md` entry.
+8. 🟢 **Plan 09 — radial EnvGrid scalar Kerr — DONE 2026-08-02.** The CUDA
+   backend now admits the complementary `TransRadial` + EnvGrid + scalar-Kerr
+   slice under the same explicit `AMALTHEA_NATIVE_GPU=on` policy. It stages
+   complex time/spectrum/QDHT buffers and a resident c2c plan transactionally;
+   the RHS mirrors `CpuNativeSim::rhs_radial_env`'s low/high spectrum
+   placement, inverse/forward c2c normalization, complex QDHT directions,
+   `3/4` envelope Kerr, window, crop, and normalization. The CUDA test covers
+   an asymmetric complex stage, nonsymmetric QDHT, invalid replacement
+   rollback, fixed solve, and adaptive rejection/retry. Radial `:auto` remains
+   disabled, and plasma/Raman/noise/mixtures/z-dependence remain CPU fallback.
+   See Plan 09, `GPU.md`, and the latest `PORT_LOG.md` entry.
+9. 🟢 **Plan 10 — radial RealGrid PPT plasma — DONE 2026-08-02.** The CUDA
+   backend now extends the radial RealGrid Kerr slice with one resident PPT
+   `PlasmaCumtrapz`. Rate, fraction, current, and polarization use independent
+   256-thread segmented scans for each radial column, including multi-block
+   and partial-final columns; the PPT kernels read the post-QDHT field and
+   accumulate plasma polarization before the radial time window. Setup is
+   transactional, explicit `AMALTHEA_NATIVE_GPU=on` only, and the eligibility
+   gate remains limited to scalar density, constant linop/norm, one Kerr, and
+   one PPT response. The strict focused CUDA test passed 27/27 on the RTX 5060
+   Ti, with direct-stage error `1.5647312256418479e-15` and fixed-solve error
+   `4.756600300395168e-16`; radial EnvGrid plasma, ADK, Raman, noise, and
+   automatic dispatch remain deferred. See Plan 10, `GPU.md`, and the latest
+   `PORT_LOG.md` entry.
+10. 🟢 **Plan 11 — radial RealGrid thresholded ADK — DONE 2026-08-02.** The
+   radial RealGrid CUDA slice now accepts one thresholded `IonRateADK` beside
+   scalar Kerr and reuses the Plan 10 per-column segmented fraction/current/
+   polarization scans. The post-QDHT field, exact threshold/non-finite kernel
+   contract, transactional ADK setup, and explicit-on-only dispatch were
+   verified on the RTX 5060 Ti: the focused strict CUDA item passed 43/43,
+   with direct-stage error `1.4991322388752626e-15`, fixed-solve error
+   `1.712696193041123e-16`, and native-vs-Julia strong-field error
+   `3.253050910467547e-16`. Unthresholded ADK, EnvGrid plasma, and radial
+   automatic dispatch remain CPU-selected. See Plan 11, `GPU.md`, and the
+   latest `PORT_LOG.md` entry.
 
 ### 🟢 S5 — Numerics options (suggestions 10, 11, 12) — COMPLETE (all 3 items, closed 2026-07-23)
 *Item 2 done 2026-07-11 (re-scoped). Items 1 and 3 investigated 2026-07-19

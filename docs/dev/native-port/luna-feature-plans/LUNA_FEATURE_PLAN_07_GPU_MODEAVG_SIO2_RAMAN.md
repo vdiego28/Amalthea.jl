@@ -1,6 +1,6 @@
 # Luna feature plan 07 — CUDA mode-averaged EnvGrid `:SiO2` Raman
 
-Status: ready after plan 03; standing CUDA CI is strongly preferred.
+Status: complete (2026-08-02); standing CUDA CI remains strongly preferred.
 
 ## Outcome
 
@@ -44,3 +44,16 @@ group, and `git diff --check`. Update all support docs and append `PORT_LOG.md`.
 
 No short-kernel convolution, radial/modal/free-space support, or `:auto`
 threshold.
+
+## Completion evidence
+
+`amalthea/src/cuda_native.rs` now stages and commits resident r2c/c2r buffers
+and cuFFT plans transactionally; `amalthea/src/kernels.cu` supplies the
+envelope-intensity pack and resident spectrum multiply kernels. The Julia
+eligibility gate admits only the matching mode-averaged EnvGrid response, and
+`:auto` remains disabled for Raman. Strict hardware verification passed the
+focused CUDA bucket at **157/157**, including direct stage agreement
+(`5.74e-16`), a six-step CPU/GPU trajectory (`1.46e-16`), adaptive rejection
+and rollback, and the Rust failpoint test for allocation, copy, and plan
+failure. The CPU `:SiO2` regression passed **5/5** with native-vs-Julia
+full-solve agreement `5.37e-13`.

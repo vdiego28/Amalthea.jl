@@ -92,14 +92,22 @@ see the Modal table below).
   narrower slice layered on top of all of the above: the landed path is
   mode-averaged RealGrid/EnvGrid Kerr with matching SDO Raman containing
   1–64 flattened oscillators (N₂ rotation: 49; rotation+vibration: 50), plus
-  RealGrid-only PPT/thresholded-ADK plasma. EnvGrid plasma is explicitly
-  CPU-only because the CUDA EnvGrid RHS does not implement it.
-  Radial/modal/free-space and
-  intermediate-broadening Raman remain CPU-only until separately designed and
-  verified.
-  See `GPU.md` and `BACKLOG.md` S3. **Status 2026-07-27:** the nonlinear RHS,
+  RealGrid-only PPT/thresholded-ADK plasma. It also supports mode-averaged
+  EnvGrid intermediate-broadening `:SiO2` Raman through resident r2c/c2r
+  convolution when explicitly forced with `AMALTHEA_NATIVE_GPU=on`.
+  EnvGrid plasma is explicitly CPU-only because the CUDA EnvGrid RHS does not
+  implement it. Plans 08 and 09 add explicit-`on` CUDA slices for radial
+  RealGrid and EnvGrid scalar Kerr with resident QDHT/per-column FFT state;
+  Plans 10–11 add one PPT or thresholded ADK plasma response to the radial
+  RealGrid slice with independent segmented scans per radial column. Radial
+  EnvGrid plasma,
+  radial Raman/noise, modal, free-space, and `:SiO2` outside mode-averaged
+  EnvGrid remain CPU-only. Radial CUDA `:auto` is deliberately
+  disabled.
+  See `GPU.md` and `BACKLOG.md` S3. **Status 2026-08-02:** the nonlinear RHS,
   adaptive error/acceptance path, and parallel PPT prefix scans are
-  hardware-verified. The supported Kerr and Kerr+PPT configurations agree
+  hardware-verified. The supported Kerr, Kerr+PPT, and radial Kerr+ADK
+  configurations agree
   with the CPU resident backend through deliberate rejected-step retries and
   adaptive trajectories. It remains 🟡 rather than 🟢 because there is no GPU
   CI to re-measure it automatically between manual runs. `BACKLOG.md` S3

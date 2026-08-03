@@ -3035,3 +3035,318 @@ sandbox CUDA-driver broken item; the audit's subsequent edits were
 formatting/lint-only.
 **Next:** Commit and push branch `luna-plans-01-05`. Plan 06 remains the next
 candidate but is externally gated on hosted GPU CI provisioning.
+
+## 2026-08-02 — Luna feature plan 07 — CUDA mode-averaged EnvGrid `:SiO2` Raman — Codex (GPT-5)
+**Status:** complete
+**Did:** Implemented the resident CUDA r2c/c2r convolution for
+`RamanRespIntermediateBroadening`/`:SiO2` on mode-averaged EnvGrid, wired its
+explicit `:on` eligibility, added strict direct/fixed/adaptive CUDA coverage,
+and documented the completed scope.
+**How:** Added `raman_fft_pack_env_kernel` and `raman_fft_multiply_kernel` in
+`amalthea/src/kernels.cu`, loaded them through `amalthea/src/cuda.rs`, and
+implemented staged `RamanFftSetup` ownership, response-spectrum preparation,
+resident RHS convolution, and transactional commit in
+`amalthea/src/cuda_native.rs:657-838` and `:1550-1640`. The FFI symbol is the
+existing `native_set_raman_fft_params`; Julia wiring at `src/RK45.jl:1054-1090`
+and `:1230-1236` admits only the matching EnvGrid response and keeps Raman
+`:auto` disabled. Setter replacement now also retires the opposite Raman plan
+family so repeated configuration cannot double-count or leak cuFFT handles.
+**Decisions:** Use the established r2c/c2r halved convolution with a real
+`0.5|E|²` envelope and the existing `dt/n_over` normalization; keep the
+response spectrum resident and perform no host field transfer during an RHS;
+retain explicit `AMALTHEA_NATIVE_GPU=on` because no Raman class cleared the
+`:auto` performance bar. The physical test response uses the same per-molecule
+`2f_r ε₀ γ₃` scaling as the CPU capillary path, while density remains a
+separate runtime factor.
+**Gotchas:** Unscaled test response coefficients produced overflow/NaN on the
+hardware; that was a test normalization error, not a CUDA convolution defect.
+CUDA hardware tests require the elevated environment. The parallel strict Rust
+suite once showed a pre-existing CUDA smoke-test ordering flake (`79/80`),
+but the isolated test and subsequent full run passed.
+**Tests:** `cargo build --release` passed. Final strict CUDA Rust tests passed
+**80/80** unit tests plus **3/3** build-policy tests; focused CUDA Raman passed
+**157/157** with direct stage relative error `5.7401e-16`, six-step fixed
+trajectory error `1.4603e-16`, adaptive rejection/rollback, and transactional
+allocation/copy/plan failpoints. CPU `:SiO2` passed **5/5** (single-step `0.0`,
+native-vs-Julia full solve `5.37e-13`, Raman-on/off effect `1.44`); dispatch
+coverage passed **63/63**; the full `LUNA_TEST_GROUP=rust` gate passed
+**42,952/42,952** assertions. `rustfmt --check` for touched Rust files and
+`git diff --check` passed.
+**Next:** Plan 07 is closed. Do not commit or push without the lead's explicit
+request; Plan 08 is the next unimplemented feature candidate.
+
+## 2026-08-02 — Luna feature plan 08 — CUDA radial RealGrid scalar Kerr — Codex (GPT-5)
+**Status:** complete
+**Did:** Implemented the narrow CUDA `TransRadial` + RealGrid + scalar Kerr
+slice, with resident QDHT/FFT/RHS state, Julia dispatch eligibility, focused
+equivalence coverage, and the required documentation/support-matrix updates.
+**How:** `amalthea/src/kernels.cu` adds
+`expand_radial_spectrum_kernel`, `qdht_radial_real_kernel`,
+`apply_radial_time_window_kernel`, and `finalize_radial_spectrum_kernel`.
+`amalthea/src/cuda.rs` loads those PTX symbols. In
+`amalthea/src/cuda_native.rs:107-160`, `RadialSetup` owns staged buffers and
+cuFFT plans; `:502-673` validates, uploads, and transactionally commits the
+configuration; `:1270-1455` implements the resident
+`expand → Z2D columns → QDHT ldiv → Kerr → window → QDHT mul → D2Z columns →
+crop/normalization` RHS. The existing `native_set_radial_params` FFI symbol is
+reused. `src/RK45.jl` admits only RealGrid scalar-density constant-linop
+scalar-Kerr radial configurations and keeps radial `:auto` false.
+**Decisions:** Pass Julia's QDHT `T` and `scaleRK` unchanged; transpose only
+the column-major matrix storage into the kernel's row-major convention. Keep
+the temporal pad scale `(n_spec_over-1)/(n_spec-1)` separate from QDHT
+`scaleRK`. The first hardware pass incorrectly reused `scaleRK` for temporal
+expansion: symmetric physics hid it, while the nonsymmetric primitive exposed
+the suppressed stage. The corrected distinction is now explicit in
+`compute_rhs_radial`. Separate D2Z/Z2D plans are retained because the cuFFT
+transform directions require distinct handles. No host field transfer occurs
+inside the RHS; unsupported radial physics and all other geometries remain
+CPU fallback.
+**Gotchas:** Setup checks even time lengths, shape/divisibility, finite host
+arrays, checked allocation products, cuFFT/kernel integer ranges, and plan
+return codes before commit. A failed/null replacement leaves the live radial
+configuration usable. The focused CUDA test self-breaks when the driver is
+absent, so strict hardware evidence must be run outside the normal sandbox.
+The new `test/test_native_cuda_radial.jl` also required a
+`test/rust_test_timings.txt` entry; that manifest repair is included.
+**Tests:** `cargo build --release` passed. `AMALTHEA_REQUIRE_CUDA_TESTS=1
+cargo test` passed **80/80** unit tests and **3/3** build-policy tests.
+`test_native_cuda_radial.jl` passed **25/25** on the RTX 5060 Ti, including
+the nonsymmetric QDHT probe, non-vacuity, invalid/null rollback, fixed solve,
+and adaptive rejection/retry; fixed CPU-vs-CUDA relative error was
+`4.772174254620178e-16`. CPU `test_native_radial.jl` passed **3/3** with
+single-step `1.142189692971526e-17` and full-solve
+`1.2869428033620095e-16`. Dispatch coverage passed **63/63**. The writable
+depot full Rust run reached **42,712 passed**, one expected CUDA-driver-broken
+item, and one timing-manifest failure; the missing timing entry is now fixed,
+and the standalone maintained-manifest rerun passed **345/345**.
+`git diff --check` passed.
+**Next:** Plan 08 is closed. Plan 09 (radial EnvGrid Kerr) is the next feature
+candidate. Do not commit or push unless the lead explicitly asks.
+
+## 2026-08-02 — Luna feature plan 09 — CUDA radial EnvGrid scalar Kerr — Codex (GPT-5)
+**Status:** complete
+**Did:** Implemented the explicit-on CUDA `TransRadial` + EnvGrid + scalar-Kerr
+slice. The resident radial state now supports complex time/QDHT scratch,
+full-spectrum c2c columns, and transactional replacement alongside the existing
+RealGrid radial path. Julia's GPU eligibility gate admits this exact EnvGrid
+shape while retaining radial `:auto` false and CPU fallback for unsupported
+physics.
+**How:** `amalthea/src/kernels.cu:464-627` adds the radial EnvGrid spectrum
+half-copy/zero-pad kernel, complex QDHT matrix product, complex finalizer, and
+radial complex time-window kernel. They are loaded in `amalthea/src/cuda.rs:345`
+and `:689-780`. `amalthea/src/cuda_native.rs:649-804` stages complex buffers and
+a Z2Z plan, `:806-854` commits all three radial plan families atomically, and
+`:1450-1855` dispatches the resident EnvGrid RHS through
+`expand → inverse c2c → 1/no → complex QDHT ldiv → 3/4 Kerr → window →
+complex QDHT mul → forward c2c → n/no crop → M`. The existing FFI symbol
+`native_set_radial_params` remains the setup contract; no new exported FFI
+symbol was needed. `src/RK45.jl:1051-1069` admits EnvGrid radial scalar Kerr.
+The focused test is `test/test_native_cuda_radial_env.jl`.
+**Decisions:** Reuse the transferred Julia QDHT matrix and `scaleRK` exactly;
+only transpose its storage for the CUDA row-major kernel. Keep temporal c2c
+normalization separate from QDHT scaling, and preserve both low/high spectrum
+halves so an asymmetric complex field tests the EnvGrid convention. Reuse the
+existing envelope Kerr kernel for its `3/4` factor. Keep radial GPU dispatch
+explicit-on because no radial performance threshold has been measured.
+**Gotchas:** `CudaNativeSim::is_real` is set by
+`native_set_fftw_plans` before radial setup, so `native_set_radial_params`
+selects RealGrid or EnvGrid staging from that state. The radial buffers are raw
+device allocations and are intentionally replaced as one staged bundle; an
+invalid EnvGrid replacement must not disturb a live RealGrid or EnvGrid setup.
+The sandboxed Julia process returned `cuInit failed: 100`, but the same focused
+test with direct GPU access succeeded on the RTX 5060 Ti. Do not use the
+installed package `.so`; the release library under `amalthea/target/release`
+contains the current kernels/symbols.
+**Tests:** `cargo build --release` passed; strict
+`AMALTHEA_REQUIRE_CUDA_TESTS=1 cargo test` passed **80/80** unit tests and
+**3/3** build-policy tests. CPU `test_native_radial_env.jl` passed **3/3**:
+single-step `6.272449485655243e-17`, fixed full solve
+`1.5832650524071802e-15`, and Kerr non-vacuity
+`6.816132432424807e-5`. GPU dispatch coverage passed **63/63**. The strict
+`test_native_cuda_radial_env.jl` run passed **24/24** on the RTX 5060 Ti, with
+asymmetric direct-stage error `4.262893614543232e-16` and fixed full-solve
+error `2.871085295458848e-15`. The existing strict Plan 08 radial regression
+passed **25/25** with fixed-solve error `4.763665041105297e-16`. The full
+Rust group completed with **42,717 passed / 1 broken**, the broken item being
+the expected CUDA-driver-unavailable path in the non-hardware group run.
+`git diff --check` passed.
+**Next:** Keep Plan 09 closed; the next unimplemented candidate is Plan 10.
+Do not commit or push unless the lead explicitly asks.
+
+## 2026-08-02 — Luna feature plan 10 — CUDA radial RealGrid PPT plasma — Codex (GPT-5)
+**Status:** complete
+**Did:** Extended the resident CUDA radial RealGrid Kerr path with one PPT
+`PlasmaCumtrapz` response. Rate, fraction, current, and polarization are now
+computed over independent radial-column scan segments, and the resulting
+plasma polarization is accumulated before the radial time window.
+**How:** `amalthea/src/kernels.cu` adds
+`plasma_scan_radial_blocks_kernel`, `plasma_fraction_radial_finalize_kernel`,
+`plasma_phase_radial_kernel`, `plasma_current_radial_finalize_kernel`, and
+`plasma_polarization_radial_finalize_kernel`; their function pointers are
+loaded in `amalthea/src/cuda.rs`. `amalthea/src/cuda_native.rs` adds the
+segmented `plasma_scan_radial` launcher and wires the PPT rate plus three
+finalizers into `compute_rhs_radial_real`. The existing FFI setup symbol
+`native_set_plasma_params` now stages flattened radial scratch and per-column
+block totals transactionally. `src/RK45.jl` admits only radial RealGrid with
+scalar density, constant linop/norm, one plain Kerr, and one
+`IonRatePPTAccel`; `AMALTHEA_NATIVE_GPU=on` is required and radial `:auto`
+remains false. The focused regression is
+`test/test_native_cuda_radial_plasma.jl`.
+**Decisions:** Use flat `column*n_time_over + t` storage and a deterministic
+256-thread Blelloch scan. Finalizers sum block totals only within their own
+column, which handles multiple blocks and a partial final block without a
+cross-column offset. Reuse Julia's QDHT and scale/normalization conventions;
+the PPT field must be the post-QDHT `radial_qdht_d`, because the radial QDHT
+is out-of-place. Keep setup transactional so a failed plasma replacement
+leaves radial Kerr-only state usable. Do not add EnvGrid plasma, ADK, Raman,
+mixtures, noise, or automatic radial dispatch.
+**Gotchas:** The first hardware diagnostic used `radial_eto_d` for the PPT
+rate/phase/loss reads. That is the pre-QDHT scratch and made the plasma effect
+look absent; switching all reads to `radial_qdht_d` restored CPU parity. The
+focused test also required a deterministic DC-column sentinel because the
+physical beam sample alone was too close to zero for a useful isolation
+assertion. CUDA direct access may require the elevated strict execution path;
+the installed package `.so` must not be used for new FFI exports/kernels.
+**Tests:** `cargo build --release` passed. Strict
+`AMALTHEA_REQUIRE_CUDA_TESTS=1 cargo test` passed **80/80** unit tests and
+**3/3** build-policy tests. The strict
+`test_native_cuda_radial_plasma.jl` run passed **27/27** on the RTX 5060 Ti:
+direct stage relative error `1.5647312256418479e-15`, fixed-solve error
+`4.756600300395168e-16`, CUDA strong plasma-on/off effect
+`1.7924786820029344e-5`, Julia control effect
+`1.7924786820007026e-5`, and strong native-vs-Julia error
+`5.848007396073851e-16`. CPU `test_native_radial_plasma.jl` passed **6/6**,
+including native-vs-Julia strong-field error `3.5579615263050297e-16` and
+plasma-on/off effect `1.7924786820090896e-5`. `git diff --check` passed.
+**Next:** Run the full Rust group and final formatting/review checks; leave
+all Plan 10 changes uncommitted unless the lead explicitly asks.
+
+## 2026-08-02 — Plan 10 follow-up — preserve radial EnvGrid eligibility — Codex (GPT-5)
+**Status:** complete
+**Did:** Corrected the radial GPU capability predicate so the Plan 10 plasma
+restriction does not regress Plan 09's already-supported EnvGrid scalar-Kerr
+path. Radial EnvGrid remains Kerr-only; radial RealGrid may additionally use
+one PPT plasma response.
+**How:** `src/RK45.jl:_gpu_kernel_supports` now accepts a radial config with
+one plain Kerr on either grid, rejects any radial plasma on EnvGrid, and
+requires `IonRatePPTAccel` for the optional RealGrid plasma response. The
+radial `:auto` policy remains false in `_gpu_native_eligible`; no CUDA kernel
+or FFI lifecycle change was needed.
+**Decisions:** Keep the Plan 09 EnvGrid exception as a separate no-plasma
+branch, rather than broadening the Plan 10 CUDA plasma implementation to
+EnvGrid. This preserves the documented geometry matrix and makes the
+capability predicate match the resident RHS implementations.
+**Gotchas:** The first shared-process full Rust run exposed this as three
+dispatch assertion failures in `test_native_cuda_radial_env.jl`, while its
+numerical checks still passed. Focused hardware runs are not sufficient to
+catch this kind of cross-plan capability regression; the complete Rust group
+must be rerun after a gate change.
+**Tests:** Strict `AMALTHEA_REQUIRE_CUDA_TESTS=1 cargo test` passed **80/80**
+unit tests and **3/3** build-policy tests. The strict Plan 09 focused CUDA
+item passed **24/24**, with asymmetric-stage error
+`5.041665227776549e-16` and fixed-solve error
+`2.8870733749609877e-15`. The strict Plan 10 focused CUDA item passed
+**27/27**, with direct-stage error `1.5647312256418479e-15`, fixed-solve
+error `4.756600300395168e-16`, and strong native-vs-Julia error
+`5.848007396073851e-16`. The elevated full Rust group passed **43,037/43,037**
+tests in 11m28.7s. `git diff --check` passed.
+**Next:** Final source/docs review and handoff; do not commit or push unless
+the lead explicitly asks.
+
+## 2026-08-02 — Luna feature plan 11 — CUDA radial RealGrid thresholded ADK — Codex (GPT-5)
+**Status:** complete
+**Did:** Extended the resident CUDA radial RealGrid Kerr+PPT pipeline with one
+thresholded `IonRateADK` `PlasmaCumtrapz` response. The pointwise ADK rate now
+runs over every radial time column, while Plan 10's segmented fraction,
+phase/current, and polarization scans remain shared and unchanged. The radial
+capability gate admits thresholded ADK under explicit GPU dispatch; unthresholded
+ADK and radial `:auto` remain CPU-selected.
+**How:** `amalthea/src/cuda_native.rs:1660` dispatches
+`ctx.adk_fn` with the seven constants copied from
+`AdkIonizationRate`, using `radial_qdht_d` and the flat
+`column*n_time_over + t` layout before the existing radial scan/finalizer
+sequence. `amalthea/src/cuda_native.rs:3234` validates radial RealGrid shape
+and finite ADK
+parameters, stages `plas_rate_d`, `plas_fraction_d`, `plas_phase_d`,
+`plas_current_d`, and per-column `plas_scan_sums_d`, then commits them only
+after allocation succeeds. No new FFI export was needed:
+`native_set_plasma_params_adk` in `amalthea/src/native.rs` reaches the updated
+setter. `src/RK45.jl:1040` now recognizes only
+`IonRateADK(threshold=true)` in the radial RealGrid plasma shape and leaves
+radial `:auto` disabled. The focused regression is
+`test/test_native_cuda_radial_adk.jl`.
+**Decisions:** Reuse Julia's precomputed ADK constants and exact kernel
+contract (`abs(E) >= thr` active; non-finite and below-threshold fields zero)
+instead of reconstructing ADK physics in Rust. Reuse the Plan 10 segmented
+scans to preserve the CPU cumtrapz recurrence and independent radial-column
+prefixes. Keep setup transactional so null/invalid handles and allocation
+failures cannot replace a live radial Kerr/PPT state. A deterministic DC
+sentinel uses below/above-threshold finite fields across columns; the existing
+Rust CUDA ADK unit test supplies exact-threshold, sign, and non-finite kernel
+coverage. No EnvGrid plasma, unthresholded ADK, radial Raman/noise/mixtures,
+new ionization model, or automatic radial benchmark was added.
+**Gotchas:** The radial spectral oversampling dimension is
+`n_spec_over = n_time_over/2 + 1`, not `n_time_over/n_r`; the focused boundary
+fixture initially used the latter and falsely drove a below-threshold column
+above threshold. ADK's exact threshold rate is numerically tiny, so the radial
+sentinel asserts a zero below-threshold response and ordered positive
+above-threshold responses; exact-threshold/non-finite behavior is checked by
+the direct CUDA kernel contract. Use `amalthea/target/release/libamalthea.so`
+for new exports and run CUDA commands with strict mode/elevated access when
+the normal sandbox cannot see the driver.
+**Tests:** `cargo build --release` passed. Strict
+`AMALTHEA_REQUIRE_CUDA_TESTS=1 cargo test` passed **80/80** unit tests and
+**3/3** build-policy tests. The focused strict
+`test_native_cuda_radial_adk.jl` passed **43/43** on the RTX 5060 Ti (CUDA
+13.3, driver 610.43.02): direct stage relative error
+`1.4991322388752626e-15`, fixed-solve error `1.712696193041123e-16`, Julia
+ADK-on/off effect `2.786765208889846e-8`, and strong native-vs-Julia error
+`3.253050910467547e-16`. Existing mode-averaged CUDA coverage passed
+**104/104**, CPU/native ADK passed **4/4**, and CPU radial PPT plasma passed
+**6/6** (single-step `1.737026244136978e-18`, full-solve
+`3.2305573654145965e-16`, native-vs-Julia strong-field
+`3.5579615263050297e-16`). The full elevated `LUNA_TEST_GROUP=rust julia
+--project test/runtests.jl` passed **43,083/43,083** in 11m59.6s. `git diff
+--check` passed.
+**Next:** Plan 11 is complete. Leave the inherited Plans 07–10 work and this
+Plan 11 worktree uncommitted and unpushed unless the lead explicitly requests
+a commit/push; the next implementation item is Plan 12.
+
+## 2026-08-02 — Luna feature plans 07–11 — integrated review and branch handoff — Codex (GPT-5)
+**Status:** complete
+**Did:** Reviewed the accumulated Plans 07–11 source, Julia dispatch, focused
+tests, timing manifest, support docs, and completion records as one integrated
+change. No implementation defect was found. Corrected three handoff-only
+documentation leftovers: marked Plan 07 complete in the plan index, marked
+Plan 10 complete in its header, and clarified the radial/API scope wording.
+Created the cumulative `luna-plans-07-11` branch from the existing
+`luna-plans-01-05` ancestry so it can be merged later as one branch.
+**How:** Cross-checked `amalthea/src/cuda.rs` symbol loading,
+`amalthea/src/kernels.cu` kernel layouts, `amalthea/src/cuda_native.rs`
+transactional setup/commit and resident RHS dispatch, and
+`src/RK45.jl:_gpu_kernel_supports`/`_gpu_native_eligible` against the five plan
+contracts and their focused tests. The existing FFI contracts remain
+`native_set_raman_fft_params`, `native_set_radial_params`,
+`native_set_plasma_params`, and `native_set_plasma_params_adk`; this review
+introduced no new symbol or numerical path.
+**Decisions:** Keep Plans 07–11 together because Plans 09–11 depend on the
+resident radial foundation in Plan 08, while Plan 07 shares the same reviewed
+CUDA backend expansion. Keep Plan 06 out: standing required-CUDA CI remains a
+separately deferred infrastructure item. Preserve explicit-only radial and
+Raman dispatch; no benchmark supports broadening `:auto`.
+**Gotchas:** The branch is cumulative and descends from the Plans 01–05 branch;
+merging it into a main branch that lacks Plans 01–05 will bring those earlier
+commits too. The full Rust-group result below was obtained after the final
+Plan 11 test strengthening; only documentation wording changed during this
+review. Full `cargo fmt --check` still includes unrelated pre-existing style
+deviations, so the touched Rust files were checked directly with `rustfmt`.
+**Tests:** Fresh strict `AMALTHEA_REQUIRE_CUDA_TESTS=1 cargo test` passed
+**80/80** unit tests plus **3/3** build-policy tests. Targeted `rustfmt
+--edition 2024 --check amalthea/src/cuda_native.rs amalthea/src/cuda.rs` and
+`git diff --check` passed. The final implementation state had already passed
+the strict focused Plan 11 CUDA item **43/43**, the existing mode-averaged CUDA
+item **104/104**, and the complete elevated `LUNA_TEST_GROUP=rust` gate
+**43,083/43,083** in 11m59.6s; the review made no source/test changes after
+that gate.
+**Next:** Commit the reviewed work on `luna-plans-07-11`. Do not push unless
+the lead explicitly requests it; Plan 12 is the next feature candidate.

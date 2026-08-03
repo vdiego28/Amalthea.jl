@@ -129,6 +129,42 @@ extern "C" __global__ void raman_intensity_env_kernel(
     intensity[idx] = 0.5 * (re * re + im * im);
 }
 
+// Zero-pad the real envelope intensity for the resident intermediate-
+// broadening convolution. The first n samples are 0.5*|E|^2 and the second
+// half is zero on every RHS call, so no previous inverse-transform tail can
+// wrap around into the next convolution.
+extern "C" __global__ void raman_fft_pack_env_kernel(
+    const cuDoubleComplex* eto,
+    double* padded_intensity,
+    int n,
+    int n_padded
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n_padded) return;
+    if (idx < n) {
+        double re = eto[idx].x;
+        double im = eto[idx].y;
+        padded_intensity[idx] = 0.5 * (re * re + im * im);
+    } else {
+        padded_intensity[idx] = 0.0;
+    }
+}
+
+extern "C" __global__ void raman_fft_multiply_kernel(
+    cuDoubleComplex* spectrum,
+    const cuDoubleComplex* response_spectrum,
+    int n
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) return;
+    cuDoubleComplex a = spectrum[idx];
+    cuDoubleComplex b = response_spectrum[idx];
+    spectrum[idx] = make_cuDoubleComplex(
+        a.x * b.x - a.y * b.y,
+        a.x * b.y + a.y * b.x
+    );
+}
+
 extern "C" __global__ void raman_accumulate_real_kernel(
     double* pto,
     const double* eto,
@@ -397,6 +433,195 @@ extern "C" __global__ void expand_spectrum_kernel(
     }
 }
 
+// Radial RealGrid counterpart of expand_spectrum_kernel.  The resident radial
+// buffers are column-major `(n_spec, n_r)`: each radial column is one
+// independent temporal spectrum.  Keeping the column index in the kernel
+// avoids a host-side loop and preserves the CPU oracle's layout exactly.
+extern "C" __global__ void expand_radial_spectrum_kernel(
+    const cuDoubleComplex* in,
+    cuDoubleComplex* out,
+    double scale_fwd,
+    int n_spec,
+    int n_spec_over,
+    int n_r
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = n_spec_over * n_r;
+    if (idx >= total) return;
+    int i = idx % n_spec_over;
+    int r = idx / n_spec_over;
+    if (i < n_spec) {
+        cuDoubleComplex v = in[r * n_spec + i];
+        out[idx] = make_cuDoubleComplex(v.x * scale_fwd, v.y * scale_fwd);
+    } else {
+        out[idx] = make_cuDoubleComplex(0.0, 0.0);
+    }
+}
+
+// Radial EnvGrid counterpart of expand_radial_spectrum_kernel.  EnvGrid uses
+// the full c2c spectrum: preserve both low and high temporal-frequency halves
+// and zero the oversampled middle, independently for every radial column.
+extern "C" __global__ void expand_radial_spectrum_env_kernel(
+    const cuDoubleComplex* in,
+    cuDoubleComplex* out,
+    double scale_fwd,
+    int n_spec,
+    int n_spec_over,
+    int n_r
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = n_spec_over * n_r;
+    if (idx >= total) return;
+    int i = idx % n_spec_over;
+    int r = idx / n_spec_over;
+    int half = n_spec / 2;
+    int src = -1;
+    if (i < half) {
+        src = i;
+    } else if (i >= n_spec_over - half) {
+        src = n_spec - half + i - (n_spec_over - half);
+    }
+    if (src >= 0) {
+        cuDoubleComplex v = in[r * n_spec + src];
+        out[idx] = make_cuDoubleComplex(v.x * scale_fwd, v.y * scale_fwd);
+    } else {
+        out[idx] = make_cuDoubleComplex(0.0, 0.0);
+    }
+}
+
+// Apply Julia's resident QDHT matrix to every time sample.  `matrix` is the
+// row-major copy of Julia's column-major `HT.T`, so output radial row `r` is
+// `scale * sum_s T[r,s] * input[s]`.  Input and output are separate because
+// the transform is not elementwise; this is also the directionality seam used
+// by the Plan 08 primitive test.
+extern "C" __global__ void qdht_radial_real_kernel(
+    const double* input,
+    double* output,
+    const double* matrix,
+    double scale,
+    int n_time,
+    int n_r
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = n_time * n_r;
+    if (idx >= total) return;
+    int t = idx % n_time;
+    int r_out = idx / n_time;
+    double sum = 0.0;
+    const double* row = matrix + r_out * n_r;
+    for (int r_in = 0; r_in < n_r; r_in++) {
+        sum += row[r_in] * input[r_in * n_time + t];
+    }
+    output[idx] = scale * sum;
+}
+
+// Complex counterpart used by the resident EnvGrid radial path.  The QDHT
+// matrix is real and is deliberately transferred from Julia in the same
+// row-major convention as qdht_radial_real_kernel; real and imaginary parts
+// are accumulated independently so an asymmetric probe matrix remains a
+// useful directionality/normalization test.
+extern "C" __global__ void qdht_radial_complex_kernel(
+    const cuDoubleComplex* input,
+    cuDoubleComplex* output,
+    const double* matrix,
+    double scale,
+    int n_time,
+    int n_r
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = n_time * n_r;
+    if (idx >= total) return;
+    int t = idx % n_time;
+    int r_out = idx / n_time;
+    double sum_re = 0.0;
+    double sum_im = 0.0;
+    const double* row = matrix + r_out * n_r;
+    for (int r_in = 0; r_in < n_r; r_in++) {
+        cuDoubleComplex v = input[r_in * n_time + t];
+        double a = row[r_in];
+        sum_re += a * v.x;
+        sum_im += a * v.y;
+    }
+    output[idx] = make_cuDoubleComplex(scale * sum_re, scale * sum_im);
+}
+
+// Radial RealGrid counterpart of finalize_spectrum_kernel.  It crops the
+// oversampled temporal spectrum independently for each radial column and
+// applies the transferred complex normalization M[n_spec,n_r].
+extern "C" __global__ void finalize_radial_spectrum_kernel(
+    const cuDoubleComplex* poo,
+    cuDoubleComplex* ks_out,
+    const cuDoubleComplex* norm,
+    double scale_inv,
+    int n_spec,
+    int n_spec_over,
+    int n_r
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = n_spec * n_r;
+    if (idx >= total) return;
+    int i = idx % n_spec;
+    int r = idx / n_spec;
+    cuDoubleComplex v = poo[r * n_spec_over + i];
+    cuDoubleComplex m = norm[idx];
+    double re = (v.x * scale_inv) * m.x - (v.y * scale_inv) * m.y;
+    double im = (v.x * scale_inv) * m.y + (v.y * scale_inv) * m.x;
+    ks_out[idx] = make_cuDoubleComplex(re, im);
+}
+
+// EnvGrid finalizer: retain the full c2c spectrum after the oversampled
+// forward transform, apply the temporal crop scale, then multiply Julia's
+// transferred complex normalization M for each (frequency, radial) entry.
+extern "C" __global__ void finalize_radial_spectrum_env_kernel(
+    const cuDoubleComplex* poo,
+    cuDoubleComplex* ks_out,
+    const cuDoubleComplex* norm,
+    double scale_inv,
+    int n_spec,
+    int n_spec_over,
+    int n_r
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = n_spec * n_r;
+    if (idx >= total) return;
+    int i = idx % n_spec;
+    int r = idx / n_spec;
+    cuDoubleComplex v = poo[r * n_spec_over + i];
+    cuDoubleComplex m = norm[idx];
+    double re = (v.x * scale_inv) * m.x - (v.y * scale_inv) * m.y;
+    double im = (v.x * scale_inv) * m.y + (v.y * scale_inv) * m.x;
+    ks_out[idx] = make_cuDoubleComplex(re, im);
+}
+
+// The temporal window is shared by all radial columns.  The existing
+// mode-averaged window kernel indexes `towin[idx]`, which is correct for one
+// column but would read past the one-dimensional window on a radial buffer.
+extern "C" __global__ void apply_radial_time_window_kernel(
+    double* pto,
+    const double* towin,
+    int n_time,
+    int n_r
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = n_time * n_r;
+    if (idx >= total) return;
+    pto[idx] *= towin[idx % n_time];
+}
+
+extern "C" __global__ void apply_radial_time_window_complex_kernel(
+    cuDoubleComplex* pto,
+    const double* towin,
+    int n_time,
+    int n_r
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = n_time * n_r;
+    if (idx >= total) return;
+    double w = towin[idx % n_time];
+    pto[idx].x *= w;
+    pto[idx].y *= w;
+}
+
 // Generic real-array scalar multiply. Used to fold native.rs's Step 1
 // (cuFFT's unnormalized-inverse `1/n_time_over` factor) together with
 // Step 2 (`1/(nlscale*sqrt_aeff)`) into a single pass over `eto`.
@@ -559,6 +784,152 @@ extern "C" __global__ void plasma_polarization_finalize_kernel(
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n_time) return;
     double offset = blockIdx.x == 0 ? 0.0 : block_sums[blockIdx.x - 1];
+    pto[idx] += density * (polarization_prefix[idx] + offset);
+}
+
+// Radial RealGrid plasma counterparts.  A radial field is laid out as
+// `n_time` contiguous samples for each of `n_r` columns.  The scan launch
+// flattens `(column, block)` into one grid dimension, while every finalizer
+// reconstructs the column-local block offset.  Consequently no prefix ever
+// crosses a radial boundary, even when a column spans several blocks and the
+// final block is partial.
+extern "C" __global__ void plasma_scan_radial_blocks_kernel(
+    const double* input,
+    double* local_prefix,
+    double* block_sums,
+    double dt,
+    int n_time,
+    int n_r,
+    int n_blocks
+) {
+    extern __shared__ double temp[];
+    int tid = threadIdx.x;
+    int flat_block = blockIdx.x;
+    int column = flat_block / n_blocks;
+    int scan_block = flat_block - column * n_blocks;
+    if (column >= n_r) return;
+    int local_idx = scan_block * blockDim.x + tid;
+    int idx = column * n_time + local_idx;
+
+    double q = 0.0;
+    if (local_idx > 0 && local_idx < n_time) {
+        q = 0.5 * (input[idx - 1] + input[idx]) * dt;
+    }
+    temp[tid] = q;
+    __syncthreads();
+
+    for (int offset = 1; offset < blockDim.x; offset <<= 1) {
+        int ai = (tid + 1) * offset * 2 - 1;
+        if (ai < blockDim.x) temp[ai] += temp[ai - offset];
+        __syncthreads();
+    }
+
+    if (tid == 0) {
+        block_sums[column * n_blocks + scan_block] = temp[blockDim.x - 1];
+        temp[blockDim.x - 1] = 0.0;
+    }
+    __syncthreads();
+
+    for (int offset = blockDim.x >> 1; offset > 0; offset >>= 1) {
+        int ai = (tid + 1) * offset * 2 - 1;
+        if (ai < blockDim.x) {
+            double left = temp[ai - offset];
+            temp[ai - offset] = temp[ai];
+            temp[ai] += left;
+        }
+        __syncthreads();
+    }
+
+    if (local_idx < n_time) local_prefix[idx] = temp[tid] + q;
+}
+
+__device__ inline double plasma_radial_block_offset(
+    const double* block_sums,
+    int column,
+    int scan_block,
+    int n_blocks
+) {
+    double offset = 0.0;
+    for (int block = 0; block < scan_block; ++block) {
+        offset += block_sums[column * n_blocks + block];
+    }
+    return offset;
+}
+
+extern "C" __global__ void plasma_fraction_radial_finalize_kernel(
+    double* fraction,
+    const double* block_sums,
+    double preionfrac,
+    int n_time,
+    int n_r,
+    int n_blocks
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = n_time * n_r;
+    if (idx >= total) return;
+    int column = idx / n_time;
+    int local_idx = idx - column * n_time;
+    int scan_block = local_idx / blockDim.x;
+    double acc = fraction[idx] + plasma_radial_block_offset(
+        block_sums, column, scan_block, n_blocks);
+    fraction[idx] = preionfrac + 1.0 - exp(-acc);
+}
+
+extern "C" __global__ void plasma_phase_radial_kernel(
+    const double* fraction,
+    const double* eto,
+    double e_ratio,
+    double* phase,
+    int total
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= total) return;
+    phase[idx] = fraction[idx] * e_ratio * eto[idx];
+}
+
+extern "C" __global__ void plasma_current_radial_finalize_kernel(
+    double* current,
+    const double* block_sums,
+    const double* rate,
+    const double* fraction,
+    const double* eto,
+    double ionpot,
+    int n_time,
+    int n_r,
+    int n_blocks
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = n_time * n_r;
+    if (idx >= total) return;
+    int column = idx / n_time;
+    int local_idx = idx - column * n_time;
+    int scan_block = local_idx / blockDim.x;
+    double offset = plasma_radial_block_offset(
+        block_sums, column, scan_block, n_blocks);
+    double e = eto[idx];
+    double loss = (e != 0.0)
+        ? ionpot * rate[idx] * (1.0 - fraction[idx]) / e
+        : 0.0;
+    current[idx] += offset + loss;
+}
+
+extern "C" __global__ void plasma_polarization_radial_finalize_kernel(
+    const double* polarization_prefix,
+    const double* block_sums,
+    double* pto,
+    double density,
+    int n_time,
+    int n_r,
+    int n_blocks
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = n_time * n_r;
+    if (idx >= total) return;
+    int column = idx / n_time;
+    int local_idx = idx - column * n_time;
+    int scan_block = local_idx / blockDim.x;
+    double offset = plasma_radial_block_offset(
+        block_sums, column, scan_block, n_blocks);
     pto[idx] += density * (polarization_prefix[idx] + offset);
 }
 
