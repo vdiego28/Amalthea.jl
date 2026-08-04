@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785693685531,
+  "lastUpdate": 1785802463531,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -811,6 +811,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.653452,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "distinct": true,
+          "id": "4944b1b3ef6d84d3b069bcc49dd79556bbfa0a51",
+          "message": "Serialize Julia worker precompilation",
+          "timestamp": "2026-08-03T20:03:35-04:00",
+          "tree_id": "4ab32258b8a44b977b46e8a049c8898d89b86e69",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/4944b1b3ef6d84d3b069bcc49dd79556bbfa0a51"
+        },
+        "date": 1785802462383,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.964381,
             "unit": "ms/step"
           }
         ]
