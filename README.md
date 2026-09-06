@@ -66,9 +66,11 @@ The `amalthea` crate provides the high-performance numerical engine that powers 
 
 - **Resident CPU propagation**: eligible simulations use the native CPU
   backend by default. LLVM performs target-appropriate auto-vectorization;
-  the CUDA-resident backend is opt-in, hardware-verified for its narrow
-  mode-averaged RealGrid Kerr/PPT scope, and not yet covered by standing GPU
-  CI. `dispatch.rs` detects hardware for its own tests but is not a
+  the CUDA-resident backend is opt-in, with hardware-verified slices across
+  mode-averaged, radial, modal, and free-space geometries. Supported grids,
+  responses, and dispatch restrictions are listed in the
+  [support matrix](docs/dev/native-port/NATIVE_SUPPORT_MATRIX.md#cross-cutting-notes).
+  Standing GPU CI remains deferred. `dispatch.rs` detects hardware for its own tests but is not a
   propagation dispatcher, and there is no Vulkan implementation.
 - **Parallelised transforms**: resident radial QDHT automatically uses Julia's
   configured BLAS provider for production-sized batches, with a Rayon fallback

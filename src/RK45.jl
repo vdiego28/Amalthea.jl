@@ -324,10 +324,12 @@ function evaluate!(s::Stepper)
     # the interpolant still requires the old values after the step has finished
     # (`s.ks[1]` included: the FSAL carry k7→k1 is done here, not at accept
     # time, for exactly that reason — see `step!`).
-    s.ok && (s.ks[1] .= s.ks[end])
+    s.locextrap && s.ok && (s.ks[1] .= s.ks[end])
     s.dt = s.dtn
     s.t = s.tn
     s.y .= s.yn
+    # The final stage is evaluated at y5, not at false-mode's accepted y4.
+    s.locextrap || s.f!(s.ks[1], s.y, s.t)
     for ii = 1:6
         s.yn .= s.y
         for jj = 1:ii
@@ -344,11 +346,13 @@ function evaluate!(s::PreconStepper)
     # time, for exactly that reason — see `step!`). It must precede the
     # `prop!` below, which re-expresses the carried stage in the new
     # interaction-picture frame; that ordering is unchanged.
-    s.ok && (s.ks[1] .= s.ks[end])
+    s.locextrap && s.ok && (s.ks[1] .= s.ks[end])
     s.y .= s.yn
-    s.prop!(s.ks[1], s.t, s.tn)
+    s.locextrap && s.prop!(s.ks[1], s.t, s.tn)
     s.dt = s.dtn
     s.t = s.tn
+    # Recompute directly in the new interaction-picture frame on each attempt.
+    s.locextrap || s.fbar!(s.ks[1], s.y, s.t, s.t)
     for ii = 1:6
         s.yn .= s.y
         for jj = 1:ii
@@ -411,6 +415,19 @@ function _dp5_extra_stages!(k8, k9, fbar!, y0, ks7, t0, dt)
     return nothing
 end
 
+"""
+Quartic dense weights. False mode adds q(σ)*(y4-y5), q=σ²*(3-2σ),
+to reach its accepted endpoint with uniform local O(h⁵) accuracy (PLANS §18).
+"""
+function interpC4_weights(σ, locextrap=true)
+    σ2 = σ^2; σ3 = σ2*σ; σ4 = σ3*σ
+    b = ntuple(ii -> σ*interpC[1,ii] + σ2*interpC[2,ii] +
+                    σ3*interpC[3,ii] + σ4*interpC[4,ii], Val(7))
+    locextrap && return b
+    q = σ2 * (3 - 2σ)
+    ntuple(ii -> b[ii] + q*errest[ii], Val(7))
+end
+
 "Interpolate solution, aka dense output."
 function interpolate(s::Stepper, ti::Float64)
     if ti > s.tn
@@ -422,10 +439,7 @@ function interpolate(s::Stepper, ti::Float64)
         return s.yn
     end
     σ = (ti - s.t)/s.dt
-    σ2 = σ^2
-    σ3 = σ2*σ
-    σ4 = σ3*σ
-    b = ntuple(ii -> σ*interpC[1,ii] + σ2*interpC[2,ii] + σ3*interpC[3,ii] + σ4*interpC[4,ii], Val(7))
+    b = interpC4_weights(σ, s.locextrap)
     fill!(s.yi, 0)
     for ii = 1:7
          s.yi .+= s.ks[ii].*b[ii]
@@ -441,6 +455,7 @@ all 9 stages with `interpC5_weights`, replacing the old order-4-only
 `interpC` combination. `s.fbar!` is always callable here (no backend
 eligibility question, unlike `RustNativeStepper`), so there is no fallback
 path to maintain.
+With `locextrap=false`, use the endpoint-corrected quartic instead (order 4).
 """
 function interpolate(s::PreconStepper, ti::Float64)
     if ti > s.tn
@@ -452,6 +467,16 @@ function interpolate(s::PreconStepper, ti::Float64)
         return s.yn
     end
     σ = (ti - s.t)/s.dt
+    if !s.locextrap
+        b = interpC4_weights(σ, false)
+        fill!(s.yi, 0)
+        for ii = 1:7
+            s.yi .+= s.ks[ii].*b[ii]
+        end
+        out = @. s.y + s.dt*s.yi
+        s.prop!(out, s.t, ti)
+        return out
+    end
     k8 = similar(s.y)
     k9 = similar(s.y)
     _dp5_extra_stages!(k8, k9, s.fbar!, s.y, s.ks, s.t, s.dt)
@@ -819,8 +844,7 @@ function interpolate(s::RustPreconStepper, ti::Float64)
         return s.yn
     end
     σ = (ti - s.t)/s.dt
-    σ2 = σ^2; σ3 = σ2*σ; σ4 = σ3*σ
-    b = ntuple(ii -> σ*interpC[1,ii] + σ2*interpC[2,ii] + σ3*interpC[3,ii] + σ4*interpC[4,ii], Val(7))
+    b = interpC4_weights(σ, s.locextrap)
     fill!(s.yi, 0)
     for ii = 1:7
         s.yi .+= s.ks[ii].*b[ii]
@@ -2634,9 +2658,10 @@ function interpolate(s::RustNativeStepper, ti::Float64)
     yi = zero(s.yn)
     kbuf = similar(s.yn)
 
-    rc5 = ccall((:native_compute_extra_stages, _LIBAMALTHEA_RK45), Cint,
+    # Embedded fourth-order output uses the corrected quartic directly.
+    rc5 = s.locextrap ? ccall((:native_compute_extra_stages, _LIBAMALTHEA_RK45), Cint,
           (Ptr{Cvoid}, Ptr{ComplexF64}, Csize_t, Float64, Float64),
-          s._handle.ptr, s.y, Csize_t(n), s.t, s.dt)
+          s._handle.ptr, s.y, Csize_t(n), s.t, s.dt) : -1
 
     if rc5 == 0
         b = interpC5_weights(σ)
@@ -2655,8 +2680,7 @@ function interpolate(s::RustNativeStepper, ti::Float64)
             yi .+= kbuf .* b[7 + jj]
         end
     else
-        σ2 = σ^2; σ3 = σ2*σ; σ4 = σ3*σ
-        b4 = ntuple(ii -> σ*interpC[1,ii] + σ2*interpC[2,ii] + σ3*interpC[3,ii] + σ4*interpC[4,ii], Val(7))
+        b4 = interpC4_weights(σ, s.locextrap)
         for ii = 1:7
             rc = ccall((:get_ks_stage, _LIBAMALTHEA_RK45), Cint,
                   (Ptr{Cvoid}, Csize_t, Ptr{ComplexF64}, Csize_t),

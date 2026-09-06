@@ -1316,12 +1316,16 @@ unsafe fn precon_step_inner(
         // previous step was accepted": Julia leaves `s.tn == s.t` on a
         // rejected step and on the not-yet-stepped initial state, in both of
         // which `ks[0]` is already the correct k1 and must not be clobbered.
-        if t_new > t_old {
-            std::ptr::copy_nonoverlapping(ks[6], ks[0], n);
+        if locextrap == 0 {
+            // k7 belongs to y5, not the accepted y4. Evaluate at the actual
+            // starting state in the new frame, including on rejected retries.
+            fbar_fn(t_new, t_new, y, ks[0], n, userdata);
+        } else {
+            if t_new > t_old {
+                std::ptr::copy_nonoverlapping(ks[6], ks[0], n);
+            }
+            prop_fn(t_old, t_new, ks[0], n, userdata);
         }
-
-        // s.prop!(s.ks[1], s.t, s.tn)  — FSAL: propagate k1 from t_old to t_new
-        prop_fn(t_old, t_new, ks[0], n, userdata);
 
         let dt = dtn;
         let t = t_new; // s.t = s.tn after evaluate!

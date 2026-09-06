@@ -5079,3 +5079,186 @@ and `33069608489` (documentation) passed for DOPRI commit `30d26fd`.
 **Next:** Commit/push this metadata, require its exact-main test and
 documentation workflows to pass, then create/push the lightweight `v1.0.4`
 tag and verify all published assets against `SHA256SUMS.txt`.
+
+## 2026-09-05 — Project-state review and false-mode solver defects — Codex
+**Status:** review complete; correctness findings remain open, no implementation requested.
+**Did:** Reviewed the current checkout (`f7c9d74`), architecture, testing policy,
+support matrix, recent handoffs, CI, and DOPRI implementation. Reproduced two
+remaining `locextrap=false` defects: invalid endpoint-derivative reuse and a
+dense-output endpoint discontinuity. Preserved existing README/installation
+edits and the untracked `install.sh`; no source, commit, or external state changed.
+**How:** `src/RK45.jl:327,347` reuse k7 after every accepted step even though
+false mode advances y4 and k7 was evaluated at y5. `interpolate` at
+`src/RK45.jl:415,445,2596` uses an extension ending at y5 but returns y4 at
+the exact endpoint. Static inspection found matching unconditional carry in
+`amalthea/src/ffi.rs:1320`, `native.rs:4974`, and `cuda_native.rs:6171`
+(`precon_step_ffi` / `native_step` paths); Rust/CUDA runtime reproduction was
+not performed. Current `test/test_dopri.jl:60` checks endpoint FSAL only in
+true mode; false-mode convergence and cross-implementation parity do not
+establish that the reused derivative belongs to the accepted state.
+**Decisions:** Recommend repairing false-mode derivative lifecycle and endpoint
+consistency first, with independent restart/endpoint tests across backends.
+Keep the Julia reference path. Favor stabilization, maintained current-status
+docs, and representative end-to-end performance evidence over additional scope.
+Standing required-CUDA CI remains a recommendation, not an authorized change
+to the lead's prior deferral. README/ARCHITECTURE still describe an older GPU
+scope than NATIVE_SUPPORT_MATRIX, and ARCHITECTURE §7 retains pre-DOPRI
+false-mode buffer semantics; current handoff paragraphs also contradict one another.
+**Gotchas:** The default `locextrap=true` passed the diagnostic controls; these
+findings do not demonstrate a default-mode defect. Full package loading with
+a temporary first depot produced no result and was interrupted; use the isolated
+probe below only as evidence about the actual scalar solver methods, not a
+full package or release gate. Live hosted release/CI status was not checked.
+**Tests:** `julia --startup-file=no /tmp/amalthea-review-dopri.jl` passed all
+diagnostic assertions. The temporary probe loads `src/dopri.jl` and the exact
+`src/RK45.jl` method slice 213:606 via `include_string`, without reimplementing
+solver arithmetic. For both Stepper and zero-linop PreconStepper, solve
+`y'=y^2`, `y(0)=1`, fixed `dt=min_dt=max_dt=0.25`, `rtol=1e6`, `atol=0`.
+False mode gives `abs(interpolate(s,prevfloat(s.tn))-s.yn) = 1.63508e-5`,
+`abs(k7-f(s.yn)) = 4.36023e-5`, and a second-step difference of `2.19353e-6`
+against a freshly initialized solver at the same accepted endpoint. True-mode
+endpoint gaps are at most `1.12e-15`, with zero derivative/restart differences;
+the control threshold is `1e-13`. No full Rust/Julia/CUDA suite was run.
+**Next:** If implementation is requested, document the coordinated false-mode
+repair before changing source, then validate accepted/rejected steps, endpoint
+continuity, restart consistency, convergence, and Julia/legacy/resident/CUDA parity.
+
+## 2026-09-05 — Documentation reconciliation and embedded-fourth-order repair — Codex
+**Status:** implemented; full CPU and Julia CUDA validation in progress.
+**Did:** Reconciled release/GPU/current-work documentation first, wrote PLANS
+§18, then repaired `locextrap=false` in Julia, legacy Rust, resident CPU, and
+CUDA. Fourth-order mode now recomputes its starting derivative and uses dense
+weights that reach its actual accepted endpoint. Preserved the existing
+installer and installation-document edits; no commit or publication performed.
+**How:** `src/RK45.jl::{evaluate!,interpC4_weights,interpolate}`;
+`amalthea/src/ffi.rs::precon_step_inner`,
+`native.rs::CpuNativeSim::step`, and `cuda_native.rs::CudaNativeSim::step`.
+The existing `precon_step_ffi`/`native_step` ABI is unchanged. False mode
+evaluates k1 from the current state/time at the start of each attempt, including
+retries; CPU refreshes z-dependent setup first, and CUDA uses its geometry RHS
+dispatch on resident scratch. Default-mode FSAL/reframing remains unchanged.
+All four interpolation implementations use the common quartic plus
+σ²(3-2σ)(y4-y5) in false mode, before any linear propagation. Original stages
+remain untouched until the next attempt; no quintic extra stages are needed.
+**Decisions:** Maintain fourth-order compatibility with one additional RHS per
+false-mode attempt, avoiding extra handle state or ABI changes. Validate each
+solver against a fresh restart and nonlinear analytic solution, not only other
+backends. The BACKLOG resume queue owns current release/work state; GPU scope
+summaries point to NATIVE_SUPPORT_MATRIX. The public GitHub release API verified
+v1.0.4 publication on 2026-08-29, non-draft/non-prerelease, and four libraries
+plus the checksum manifest; no new checksum/hosted-CI claim is inferred. Apple
+performance evidence remains pending under the recorded release waiver, and
+standing GPU CI remains deferred. Local ignored AGENTS.md/CLAUDE.md summaries
+were also synchronized.
+**Gotchas:** New Riccati false-mode tests pass fourth-order convergence, but
+fifth-order errors cancel at the same sample sizes; the established exponential
+test remains the fifth-order control. Independently adaptive Julia/Rust retries
+can choose slightly different times, so restart assertions compare each solver
+at its own requested retry time. Initial test failures exposed these fixture
+assumptions and were corrected without relaxing the 1e-13 restart tolerance.
+`cargo fmt --check` reports existing differences in untouched benches and
+`src/io.rs`; `rustfmt --check --edition 2024 src/{ffi,native,cuda_native}.rs`
+passes. Sandbox full-package loading was slow; host-depot runs completed.
+**Tests (so far):**
+- `AMALTHEA_CUDA_BUILD=off cargo build --release` and
+  `AMALTHEA_CUDA_BUILD=off cargo test --release --no-fail-fast`: 83 unit tests
+  and five build-policy tests passed.
+- Focused host `julia --startup-file=no --project -e 'using TestItemRunner;
+  wanted=Set(["test_dopri.jl","test_native_phase1.jl","test_stepper_rust.jl"]);
+  @run_package_tests filter=ti->basename(String(ti.filename)) in wanted'`:
+  729/729, including independent continuity/restart/rejection/convergence,
+  nonzero-linop legacy FFI, and native dense full-solve checks.
+- Original y'=y², y(0)=1, h=0.25 review probe: endpoint jump fell from
+  1.63508e-5 to 8.88e-16 in both Julia steppers; restart and starting-derivative
+  differences are exactly zero. Full default native phase-1 error is 2.93e-16.
+- `julia --startup-file=no --project=docs docs/make.jl`: doctests,
+  cross-references, checks, and HTML rendering passed; local deployment skipped.
+- Host `PATH=/usr/local/cuda-13.3/bin:$PATH AMALTHEA_CUDA_BUILD=required
+  AMALTHEA_REQUIRE_CUDA_TESTS=1 CARGO_TARGET_DIR=/tmp/amalthea-falsemode-cuda-target
+  cargo test --release -- --test-threads=1`: 83 unit plus five build-policy
+  tests passed. Separate target preserves the CPU library during its full gate.
+**Next:** Finish the eight-group CPU gate, build the local CUDA-enabled release
+library and run strict Julia CUDA/dense tests, then finalize this entry and the
+resume queue with their results. Do not commit without the lead's request.
+
+## 2026-09-06 — Embedded-fourth-order repair final validation — Codex
+**Status:** complete locally; uncommitted and unreleased.
+**Did:** Finished the remaining CPU groups and strict Julia CUDA/dense-output
+validation for the preceding entry. Updated BACKLOG's authoritative resume
+queue, PLANS §18, ARCHITECTURE, and GPU status to describe the completed
+working-tree repair, explicitly separate from published v1.0.4.
+**How:** The implementation remains `src/RK45.jl:322,342` (starting derivative),
+`:422` (shared corrected quartic), and the existing `precon_step_ffi` /
+`native_step` paths at `amalthea/src/ffi.rs:1319`, `native.rs:4984`, and
+`cuda_native.rs:6195`. Regression coverage is in `test/test_dopri.jl:87`,
+`test/test_stepper_rust.jl:109`, and the false-mode sections of
+`test/test_native_phase1.jl` / `test/test_native_cuda.jl`. Only stale test
+comments changed during this final validation; no numerical changes followed
+the preceding entry's focused 729/729 run.
+**Decisions:** Preserve the initial successful physics/Rust results rather than
+rerunning them after the session interruption; rerun only the six groups whose
+completion was unrecorded. Retain the built CUDA-enabled local release library
+after hardware validation; normal runtime dispatch still defaults to CPU.
+No commit, push, release, external documentation write, or standing-CI change.
+**Gotchas:** The old process and `/tmp` logs did not survive the interruption.
+The successful physics/Rust output was captured before it, but the other six
+groups required a new run. The hyphenated `--groups` arguments run simulation
+groups as separate batches; underscore names retain the default joint batching.
+The multimode group's one skip is the existing test requiring four Julia
+threads; its single-thread workers do not satisfy that guard. The Rust group's
+11 skips are the expected CUDA cases in the CPU-only build. Neither is a failure.
+**Tests:**
+- Before interruption: `AMALTHEA_CUDA_BUILD=off AMALTHEA_REQUIRE_CUDA_TESTS=0
+  python3 test/run_full_gate.py --max-workers 4 --log-dir
+  /tmp/amalthea-falsemode-full-gate` completed physics 2014/2014 and Rust
+  42990 passed / 11 expected skips / 43001 total, both exit 0.
+- Resumed: CPU-only `cargo build --release`, then
+  `AMALTHEA_CUDA_BUILD=off AMALTHEA_REQUIRE_CUDA_TESTS=0 python3
+  test/run_full_gate.py --max-workers 4 --groups sim-multimode sim-interface
+  sim-propagation io fields examples --log-dir
+  /tmp/amalthea-falsemode-remaining-gate`: exit 0, 592.6 s. I/O 2326/2326,
+  fields 339/339, examples 20/20, multimode 53 pass / 1 expected skip,
+  interface 314/314, propagation 18/18. Across all eight groups: 48074 passed,
+  12 expected skips, no failures.
+- Host `PATH=/usr/local/cuda-13.3/bin:$PATH AMALTHEA_CUDA_BUILD=required
+  AMALTHEA_REQUIRE_CUDA_TESTS=1 cargo build --release` passed. The previous
+  entry already records the strict CUDA Rust 83+5 test gate.
+- Host `PATH=/usr/local/cuda-13.3/bin:$PATH AMALTHEA_REQUIRE_CUDA_TESTS=1
+  JULIA_NUM_THREADS=1 julia --startup-file=no --project -e 'using Amalthea,
+  TestItemRunner; Amalthea.set_fftw_mode(:estimate);
+  Amalthea.set_fftw_threads(1);
+  @assert realpath(Amalthea.RK45._LIBAMALTHEA_RK45) ==
+  realpath("amalthea/target/release/libamalthea.so");
+  wanted=Set(["test_native_cuda.jl","test_native_dense_order5.jl"]);
+  @run_package_tests filter=ti->basename(String(ti.filename)) in wanted'`:
+  175/175 in 35.7 s, no skips. False-mode endpoint, fresh-restart, and sampled
+  CPU/Julia/GPU parity satisfy 1e-13; false-mode dense full-solve parity satisfies
+  1e-6. Default Kerr and Kerr+PPT full-solve errors are 3.90e-16 and 2.00e-16;
+  adaptive errors are 6.71e-15 and 9.63e-15. Default CPU quintic local-error
+  ratios approach 64, and CUDA quartic ratios approach 32, as required.
+- Documentation build, focused independent nonlinear convergence/restart
+  tests, exact reproduction improvements, and Rust formatting limitations are
+  recorded in the preceding entry. Final `git diff --check` passed.
+**Next:** Lead review. Commit/push only when explicitly requested; hosted and
+release gates belong to subsequent authorized publication work. Apple-specific
+performance evidence and standing required-CUDA CI remain separately deferred.
+
+## 2026-09-06 — Authorized repair delivery — Codex
+**Status:** locally validated; prepared for authorized commit/push on
+`fix/dopri-fourth-order`.
+**Did:** Selected the documentation reconciliation and embedded-fourth-order
+repair for delivery following the lead's explicit "commit and push" request.
+Updated the current resume queue and PLANS §18 delivery status.
+**How:** Branch from `main` at `f7c9d74`; stage the repair/docs/tests plus only
+the README GPU-support hunk. Existing `install.sh`, installation-manual edits,
+and the README installer hunk remain outside the commit. No source arithmetic
+changed after the preceding validation entry; existing FFI symbols are unchanged.
+**Decisions:** Push the feature branch to `origin` (vdiego28/Amalthea.jl), without
+merging, tagging, force-pushing, or adding a Co-Authored-By trailer. Keep unrelated
+installer work available in the working tree.
+**Gotchas:** AGENTS.md and CLAUDE.md are ignored local guides in this checkout;
+their synchronized summaries are not part of the tracked commit.
+**Tests:** Prior entries contain the eight-group CPU, strict CUDA, independent
+solver, and documentation gates. Delivery checks are staged diff validation,
+commit-content inspection, and remote branch-tip verification after push.
+**Next:** Inspect the feature branch's hosted CI before integration or release.

@@ -21,7 +21,7 @@ The narrower, opt-in CUDA layer is called out separately under Cross-cutting
 notes.
 
 Legend: ✅ native · ⚠️ native with a restriction (see note) · ❌ falls back
-(Julia `PreconStepper`, correct but slower) · — not applicable / no such
+(Julia `PreconStepper`, retained reference/fallback) · — not applicable / no such
 Julia response exists.
 
 ## Mode-averaged (`TransModeAvg`)

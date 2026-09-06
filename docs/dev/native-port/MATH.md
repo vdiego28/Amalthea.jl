@@ -65,8 +65,11 @@ later time, reuse if unchanged" memoization to stay bit-comparable.
 Standard Dormand-Prince 5(4) (7 stages, the coefficients live in
 `src/dopri.jl`). Properties the native loop must preserve exactly:
 
-- **FSAL** (First Same As Last): stage 7 of the accepted step is stage 1 of the
-  next — one RHS evaluation per step is reused, not recomputed.
+- **FSAL** (First Same As Last): in default fifth-order mode, stage 7 of an
+  accepted step supplies stage 1 of the next. This identity does not hold for
+  `locextrap=false`: k7 is evaluated at y5, not the accepted y4. The §18 repair
+  evaluates k1 at the actual starting state and current time on every false-mode
+  attempt, including retries, without altering the completed interval's stages.
 - **Propagated solution:** default `locextrap=true` advances the fifth-order
   DOPRI5 state; `locextrap=false` advances the embedded fourth-order state.
   Both are formed explicitly from their respective weights rather than relying
@@ -82,8 +85,11 @@ Standard Dormand-Prince 5(4) (7 stages, the coefficients live in
   fixed an inherited FSAL bug: carrying k7→k1 at accept time destroyed the
   completed interval's k1 before interpolation and collapsed both extensions
   to first order. FSAL carry is now deferred to the top of the next step.
-  See `PORT_LOG.md`'s latest entry and
-  `portlog-inbox/dense-order5.md`.
+  Default-mode details are in `portlog-inbox/dense-order5.md`. False mode uses
+  the quartic extension plus `q(σ)*(y4-y5)`, with
+  `q(σ)=σ²*(3-2σ)`, applied in the interaction picture before propagation.
+  This reaches y4 at σ=1, preserves the starting derivative, and has uniform
+  local error O(h⁵), hence fourth-order dense accuracy; see `PLANS.md` §18.
 
 ### 2.1a Per-step external field mutation must be pushed back to Rust (Phase 8)
 `Luna.run`'s `stepfun` callback (grid frequency/time windowing) mutates the
@@ -100,10 +106,12 @@ stepper except `RustNativeStepper`), called right after `stepfun` in the
 generic `solve(s, tmax; stepfun, ...)` loop, via a new `native_resync_field`
 FFI. It deliberately does **not** recompute the FSAL stage-0 RHS (unlike the
 construction-time `set_field`, which correctly does, for the no-history
-initial-condition case) — Julia's own `PreconStepper` doesn't re-evaluate the
-nonlinear RHS after windowing either, it only re-propagates the FSAL-carried
+initial-condition case) — in default fifth-order mode, Julia's `PreconStepper`
+doesn't re-evaluate the nonlinear RHS after windowing either, it only re-propagates the FSAL-carried
 last stage linearly into the new frame, and matching that (not "improving" on
-it) is what reproduces Julia's number.
+it) is what reproduces Julia's number. In false mode, both implementations
+recompute k1 at the beginning of the next attempt, using the synchronized field
+(PLANS §18); the resync operation itself still only transfers the field.
 
 ### 2.2 Lund PI step controller
 The accepted/rejected decision uses a normalized error `err = norm(yerr, y, yn,

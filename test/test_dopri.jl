@@ -84,6 +84,80 @@ using TestItems
         @test p4.yn ≈ plain4.yn rtol=1e-13 atol=1e-14
     end
 
+    @testset "Fourth-order endpoint, restart, and dense convergence" begin
+        # Independent nonlinear solution: y' = a*y + y², y(0)=1.
+        # Nonzero a exposes accidental re-propagation of a freshly computed k1.
+        for precon in (false, true), a in (0.0, -0.7)
+            rhs! = (out, y, _) -> (out .= y.^2)
+            total! = (out, y, _) -> (out .= a.*y .+ y.^2)
+            exact(t) = a == 0 ? inv(1-t) : exp(a*t)/(1-expm1(a*t)/a)
+            function make(y, t, h; locextrap=false, rtol=1e6, fixed=true)
+                kw = (; locextrap, rtol, atol=0.0,
+                       min_dt=fixed ? h : 0.0, max_dt=h)
+                precon ? RK45.PreconStepper(rhs!, [a], copy(y), t, h; kw...) :
+                         RK45.Stepper(total!, copy(y), t, h; kw...)
+            end
+
+            s = make([1.0], 0.0, 0.25)
+            @test RK45.step!(s)
+            # Reconstruct y5 independently to prove this fixture would expose
+            # interpolation ending at the wrong candidate.
+            y5 = s.y + s.dt * sum(RK45.b5[i]*s.ks[i] for i in 1:7)
+            precon && (y5 .*= exp(a*s.dt))
+            @test abs(y5[1]-s.yn[1]) > 1e-10
+            stages = deepcopy(s.ks)
+            for _ in 1:2
+                @test RK45.interpolate(s, prevfloat(s.tn)) ≈ s.yn rtol=1e-13
+                @test RK45.interpolate(s, s.t + 1e-9*s.dt) ≈ s.y rtol=1e-8
+                RK45.interpolate(s, s.t + 0.37*s.dt)
+            end
+            @test s.ks == stages
+            endpoint = copy(s.yn)
+            fresh = make(endpoint, s.tn, s.dtn)
+            @test RK45.step!(s)
+            @test RK45.step!(fresh)
+            @test s.yn ≈ fresh.yn rtol=1e-13
+            expected_k1 = precon ? endpoint.^2 : a.*endpoint .+ endpoint.^2
+            @test s.ks[1] ≈ expected_k1 rtol=1e-13
+
+            # Rejection after accepted history, followed by controller retries.
+            s = make([1.0], 0.0, 0.125)
+            @test RK45.step!(s)
+            endpoint = copy(s.yn)
+            s.rtol = 1e-12; s.min_dt = 0; s.max_dt = 0.25; s.dtn = 0.25
+            fresh = make(endpoint, s.tn, 0.25; rtol=1e-12, fixed=false)
+            fresh.errlast = s.errlast
+            @test !RK45.step!(s)
+            @test !RK45.step!(fresh)
+            @test s.yn == fresh.yn == endpoint
+            for _ in 1:20
+                @test RK45.step!(s) == RK45.step!(fresh)
+                @test s.yn ≈ fresh.yn rtol=1e-13
+                s.ok && break
+            end
+            @test s.ok
+
+            function errors(h; locextrap)
+                s = make([1.0], 0.0, h; locextrap)
+                dense_error = 0.0
+                for _ in 1:round(Int, 0.5/h)
+                    @test RK45.step!(s)
+                    ti = s.t + 0.37*s.dt
+                    dense_error = max(dense_error,
+                        abs(RK45.interpolate(s, ti)[1]-exact(ti)))
+                end
+                abs(s.yn[1]-exact(0.5)), dense_error
+            end
+            e4, d4 = errors(1/32; locextrap=false)
+            e4h, d4h = errors(1/64; locextrap=false)
+            @test 3.6 < log2(e4/e4h) < 4.4
+            @test 3.6 < log2(d4/d4h) < 4.4
+            # The exponential test above supplies the fifth-order control.
+            # For this Riccati problem, fifth-order error terms cancel near
+            # these step sizes, so their ratio is not a stable order estimate.
+        end
+    end
+
     # Analytic tests
     # 1. Exponential decay: y' = -y => y(t) = y(0)*exp(-t)
     f_decay! = function(out, y, t)

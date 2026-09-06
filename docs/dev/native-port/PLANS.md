@@ -3110,8 +3110,10 @@ python3 test/performance_audit/run_apple_quick_test.py
 
 ## 16. v1.0.4 release-candidate preparation
 
-Status: **candidate prepared 2026-08-24; hosted matrix, Apple diagnostic, and
-Dormand–Prince correction remain gates.**
+Status: **historical candidate plan; v1.0.4 published 2026-08-29.**
+The lead waived the Apple diagnostic for that release. The following describes
+the original preparation checkpoint, not current release gates or authorization.
+Current state is maintained in the BACKLOG resume queue.
 
 The CPU optimization work is collected on
 `codex/cpu-apple-concurrency-optimization`. Release metadata may advance from
@@ -3136,14 +3138,16 @@ against the same mistaken coefficients.
 
 ## 17. Dormand–Prince propagated-solution correction
 
-Status: **designed 2026-08-26; implementation and validation in progress.**
+Status: **implemented at `30d26fd`, released in v1.0.4.**
+The following records the original defect and repair. The remaining false-mode
+derivative/dense-output defects are addressed separately in §18.
 
 Upstream Luna commit `1d7e4c3` establishes that the historical `dopri.jl`
 names were reversed: `[35/384, 0, 500/1113, 125/192, -2187/6784, 11/84, 0]`
 is the fifth-order DOPRI5 weight vector, while
 `[5179/57600, 0, 7571/16695, 393/640, -92097/339200, 187/2100, 1/40]` is the
-embedded fourth-order vector. The default `locextrap=true` therefore currently
-propagates the lower-order state in Julia, the legacy callback Rust stepper,
+embedded fourth-order vector. The default `locextrap=true` therefore previously
+propagated the lower-order state in Julia, the legacy callback Rust stepper,
 the resident CPU backend, and CUDA. Their mutual equivalence cannot expose the
 shared error.
 
@@ -3153,9 +3157,10 @@ retains the numerical error vector as `b4 - b5`, and forms
 `locextrap=true` and `b4` otherwise. No propagation path may retain a final
 internal stage as an accidental false-mode result. This makes DOPRI5 FSAL
 exact—stage 7 is evaluated at the accepted fifth-order endpoint—and makes the
-free quartic dense polynomial reproduce that endpoint. Deferred k7→k1 carry
-remains unchanged, preserving the completed interval's genuine k1 for dense
-output.
+free quartic dense polynomial reproduce that endpoint. That repair left
+deferred k7→k1 carry unchanged. It is valid for y5 only;
+§18 repairs y4 derivative reuse while preserving the completed interval's
+genuine k1 and k7 for dense output.
 
 Independent tests use exact rational order conditions, the analytic exponential
 ODE at two fixed step sizes, direct FSAL evaluation, and direct quartic
@@ -3165,3 +3170,50 @@ residual below `1e-12` for the fifth-order branch. Julia/legacy Rust/resident
 CPU/CUDA tests then verify parity, rejected-step restoration, dense output, and
 multi-step FSAL behavior without treating parity as the physics oracle. CUDA
 execution remains subject to the real-device procedure in `AGENTS.md`.
+
+## 18. Embedded-fourth-order derivative lifecycle and dense output
+
+Status: **designed 2026-09-05; implemented and locally validated 2026-09-06,
+delivery branch `fix/dopri-fourth-order`.** All eight CPU groups and the strict Julia CUDA/dense gate passed;
+the 2026-09-06 PORT_LOG entry records results and expected skips.
+
+The review reproduced two false-mode defects after §17: k7=f(y5) was reused
+at accepted y4, and dense output approached y5 but returned y4 at the endpoint.
+For y'=y², y(0)=1, h=0.25, the endpoint jump was 1.63508e-5 and the next-step
+difference against a restart at the identical endpoint was 2.19353e-6.
+
+Keep the two public propagation modes. On every `locextrap=false` attempt,
+evaluate k1 from the actual starting field at the current time, in the new
+interaction-picture frame (zero propagation offset). This costs one RHS per
+attempt, including retries, but removes invalid FSAL reuse without adding
+handle state or an FFI ABI change. Julia Stepper/PreconStepper, legacy callback
+Rust, resident CPU, and CUDA must all follow this rule. Default fifth-order
+carry/reframe behavior stays unchanged. Re-evaluation occurs at the beginning
+of the next attempt, so the previous interval's k1/k7 remain intact for output;
+rejected trials never commit their field. The CPU must refresh z-dependent
+linop/norm state before evaluating the new k1. CUDA must route k1 through the
+same geometry-specific RHS as its other stages, using resident scratch.
+
+For false-mode dense output use the existing quartic polynomial P5(σ) plus
+`q(σ)*(y4-y5)`, q=σ²(3-2σ), in the interaction picture, followed by the usual
+linear propagation. Implement this as common weights
+`interpC4_weights(σ, false)[i] = interpC4_weights(σ, true)[i] + q(σ)*errest[i]`.
+q(0)=q'(0)=0, q(1)=1, q'(1)=0. Since y4-y5=O(h⁵) and q is bounded on [0,1],
+the corrected extension retains uniform local O(h⁵) error, or fourth-order
+dense accuracy, while reaching the propagated y4 endpoint. It does not claim
+that its endpoint derivative equals f(y4). All four Julia interpolation paths
+use these weights in false mode; no extra quintic stages are needed there.
+True-mode quartic/quintic choices remain unchanged.
+
+Validation must establish more than Julia/native parity: fourth-order nonlinear
+analytic convergence and retained fifth-order analytic controls, continuity
+approaching both endpoints,
+independent reconstruction of the y4 candidate, and equivalence of a continued
+step to a fresh solver initialized at the same accepted endpoint. Include a
+nonzero linear operator to expose double-reframing, deliberately rejected
+attempts and retries, repeated dense queries that leave stage history intact,
+and a measured y4/y5 difference exceeding the assertion tolerance. Resident
+CPU/CUDA optical tests require tight single-step/restart checks (~1e-13) plus
+full-solve/dense agreement at the existing 1e-6 tier and explicit dispatch.
+Run the Rust and affected Julia groups and strict real-hardware CUDA tests.
+No publication, commit, CI-policy change, or optimization is part of this task.

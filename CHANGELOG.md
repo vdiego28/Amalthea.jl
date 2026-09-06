@@ -4,6 +4,16 @@ All notable changes to Amalthea.jl are documented here. This project is a
 fork of [Luna.jl](https://github.com/LupoLab/Luna.jl); versions below are
 this fork's own, starting from the point the Rust backend was introduced.
 
+## [Unreleased]
+
+### Fixed
+- Repair `locextrap=false` across Julia, legacy Rust, resident CPU, and CUDA:
+  evaluate the starting derivative at the accepted fourth-order state, and
+  make fourth-order dense output reach that state continuously. Default
+  fifth-order propagation is unchanged.
+- Reconcile release and GPU-support documentation; maintain current work and
+  release status in the backlog's resume queue.
+
 ## [1.0.4]
 
 CPU performance, Apple Silicon, and concurrency update for the native backend.

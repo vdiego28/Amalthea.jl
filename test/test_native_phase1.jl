@@ -80,6 +80,26 @@ using TestItems
             # without this check a backend that ignored `locextrap` could pass.
             @test norm(s_jl.yn - s_true.yn) / norm(s_jl.yn) > 1e-12
 
+            # Endpoint continuity and a fresh restart are independent of
+            # Julia/native agreement: both previously shared invalid k7 reuse.
+            for s in (s_jl, s_ru)
+                endpoint = copy(s.yn)
+                for σ in (0.25, 0.75, 0.25)
+                    @test norm(RK45.interpolate(s_ru, s_ru.t+σ*s_ru.dt) -
+                               RK45.interpolate(s_jl, s_jl.t+σ*s_jl.dt)) /
+                          norm(endpoint) < 1e-13
+                end
+                @test norm(RK45.interpolate(s, prevfloat(s.tn))-endpoint) /
+                      norm(endpoint) < 1e-13
+            end
+            for (ctor, s) in ((PreconStepper, s_jl), (RustNativeStepper, s_ru))
+                fresh = ctor(transform, linop, copy(s.yn), s.tn, s.dtn; false_kw...)
+                fresh.errlast = s.errlast
+                @test step!(s) == step!(fresh)
+                @test norm(s.yn-fresh.yn)/norm(fresh.yn) < 1e-13
+                @test s.err ≈ fresh.err rtol=1e-10
+            end
+
             # A deliberately rejected trial must use the same candidate for
             # its norm and then restore the resident field transactionally.
             dt_reject = 0.1
@@ -96,7 +116,14 @@ using TestItems
             @test isapprox(rejected_ru.err, rejected_jl.err; rtol=1e-11)
             @test isapprox(rejected_ru.dtn, rejected_jl.dtn; rtol=1e-11)
 
-            # Four fixed accepted steps cross the deferred FSAL carry seam.
+            for _ in 1:20
+                @test step!(rejected_ru) == step!(rejected_jl)
+                @test norm(rejected_ru.yn-rejected_jl.yn)/norm(Eω) < 1e-13
+                rejected_ru.ok && break
+            end
+            @test rejected_ru.ok
+
+            # Four fixed accepted steps exercise stage-0 re-evaluation.
             fixed_kw = (; rtol=1e-6, atol=1e-10, locextrap=false,
                         max_dt=dt, min_dt=dt)
             multi_jl = PreconStepper(transform, linop, copy(Eω), t0, dt;
@@ -108,6 +135,12 @@ using TestItems
                 @test step!(multi_ru)
             end
             @test norm(multi_ru.yn - multi_jl.yn) / norm(multi_jl.yn) < 1e-13
+            full_jl = PreconStepper(transform, linop, copy(Eω), t0, dt; fixed_kw...)
+            full_ru = RustNativeStepper(transform, linop, copy(Eω), t0, dt; fixed_kw...)
+            tj, yj, _ = solve(full_jl, flength; output=true, outputN=21)
+            tr, yr, _ = solve(full_ru, flength; output=true, outputN=21)
+            @test tj == tr
+            @test norm(yr-yj)/norm(yj) < 1e-6
         end
         
         @testset "Full-solve equivalence (~1e-6)" begin

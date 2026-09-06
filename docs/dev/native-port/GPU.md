@@ -1,5 +1,12 @@
 # GPU-Resident Propagation (Track S3) Design Document
 
+> Current capabilities are maintained in [NATIVE_SUPPORT_MATRIX.md](NATIVE_SUPPORT_MATRIX.md),
+> and release/active-work status in the [BACKLOG resume queue](../BACKLOG.md).
+> The dated implementation records below describe each plan's original scope;
+> later plans supersede earlier exclusions. The shared `locextrap=false`
+> lifecycle repair is implemented and documented in `PLANS.md` §18. Standing GPU CI remains
+> deferred; changes require strict real-hardware validation.
+
 > **Build prerequisite:** release binaries and ordinary `Pkg.build` installs
 > are CPU-only. Before using the runtime switches described below, compile real
 > PTX from a CUDA toolkit with `AMALTHEA_CUDA_BUILD=required`, close that Julia

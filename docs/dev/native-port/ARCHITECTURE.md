@@ -2,9 +2,11 @@
 
 > Status: implemented architecture and decision record. The CPU resident
 > backend (Phases 0-8 and D-I) is complete and is the default. The optional
-> CUDA implementation is hardware-verified for its narrow, explicitly opt-in
-> mode-averaged RealGrid Kerr/PPT scope; standing GPU CI and broader physics
-> remain open. See `GPU.md` and `BACKLOG.md` S3 before touching GPU code.
+> CUDA implementation has hardware-verified, opt-in slices across mode-averaged,
+> radial, modal, and free-space geometries. Current grids, responses, and
+> restrictions are maintained in [NATIVE_SUPPORT_MATRIX.md](NATIVE_SUPPORT_MATRIX.md).
+> Standing GPU CI remains deferred. See `GPU.md` before touching GPU code;
+> current release and work status live in the `BACKLOG.md` resume queue.
 > Companion docs: [MATH.md](MATH.md), [TESTING.md](TESTING.md),
 > [PORT_LOG.md](PORT_LOG.md), [BETA1_ANALYTIC.md](BETA1_ANALYTIC.md). Agent
 > workflow: `AGENTS.md`.
@@ -197,20 +199,18 @@ genuine technical barrier; the first two are choices.
 The high-level `Interface.jl` / `Output.jl` / `Grid.jl` / `Fields.jl`
 setup code (grid construction, mode solvers, Sellmeier/gas data, pulse
 synthesis), HDF5 output (`Output.jl`), parameter scans (`Scans.jl`),
-plotting/processing/stats. This runs once per simulation, costs
-milliseconds, and porting it buys nothing. The port's goal was "the
-*per-step hot loop* is 100% Rust", and that is achieved for every
+plotting/processing/stats. This is outside the resident-loop port; its cost
+depends on the workload and any optimization requires setup measurements.
+The port's goal was "the *per-step hot loop* is 100% Rust", achieved for every
 native-eligible configuration; ineligible configurations intentionally use
 the whole-pipeline Julia fallback listed in the support matrix.
 
 **(b) Ineligible-but-portable configs — "won't", not "can't".**
-BACKLOG.md Phase I items 5-6: `StepIndexMode`/`ZeisbergerMode`/
-`VincettiMode` in modal, plasma/Raman in free-space, mixtures in
-modal/free-space, and similar low-level-API-only combinations. These
-are ordinary numerics that *could* be ported exactly like everything
-else was — they fall back via `NativeIneligible` because they are only
-reachable through the low-level API in combinations almost nobody
-uses, so effort/value rules them out, not feasibility.
+Examples include multi-mode `StepIndexMode`, modal plasma, and free-space
+EnvGrid Raman. These are ordinary numerics that could be ported with an
+appropriate design and validation gate. They currently fall back via
+`NativeIneligible`; their priority depends on demonstrated demand and measured
+benefit rather than a fundamental inability to represent the physics in Rust.
 
 **(c) Arbitrary user closures — the one genuine barrier.**
 The low-level API accepts any Julia function as a nonlinear response,
@@ -246,9 +246,13 @@ The resident stepper now has one allocation-free attempt boundary:
 `RustNativeStepper.step!` copies the left endpoint into its existing `y`
 buffer, and Rust temporarily transfers ownership of `field`/`ystage` while an
 RHS is evaluated. The vectors are restored before return or panic propagation;
-the FFI panic boundary therefore remains usable. `locextrap=false` copies the
-unpropagated final stage into `yn` before the last RHS, while the normal
-local-extrapolation path stays copy-free. The solve loop skips field resync only
+the FFI panic boundary therefore remains usable. Both modes form their trial
+explicitly from the appropriate DOPRI weights: `locextrap=true` advances y5 and
+`false` advances y4. The earlier residual-stage shortcut was removed by the
+DOPRI correction. False mode re-evaluates k1 at the actual starting state on
+each attempt and uses an endpoint-corrected quartic interpolant; default-mode
+FSAL and quintic output remain unchanged (`PLANS.md` §18).
+The solve loop skips field resync only
 for the exact built-in `donothing!`; all user callbacks remain conservative.
 
 Resident radial construction initializes Julia's configured

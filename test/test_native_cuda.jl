@@ -253,6 +253,27 @@ using TestItems
                 @test norm(s_jl_false.yn - s_jl_true.yn) /
                       norm(s_jl_false.yn) > 1e-12
 
+                @test RK45._native_backend(s_cpu_false) === :cpu
+                @test RK45._native_backend(s_gpu_false) === :cuda
+                for s in (s_jl_false, s_cpu_false, s_gpu_false)
+                    @test norm(RK45.interpolate(s, prevfloat(s.tn))-s.yn) /
+                          norm(s.yn) < 1e-13
+                    for σ in (0.25, 0.75, 0.25)
+                        @test norm(RK45.interpolate(s, s.t+σ*s.dt) -
+                                   RK45.interpolate(s_jl_false, s_jl_false.t+σ*s_jl_false.dt)) /
+                              norm(s.yn) < 1e-13
+                    end
+                end
+                fresh_gpu = RustNativeStepper(transform, linop, copy(s_gpu_false.yn),
+                                               s_gpu_false.tn, dt; false_kw...)
+                @test RK45._native_backend(fresh_gpu) === :cuda
+                @test step!(s_jl_false)
+                @test step!(s_cpu_false)
+                @test step!(s_gpu_false)
+                @test step!(fresh_gpu)
+                @test norm(s_gpu_false.yn-fresh_gpu.yn)/norm(fresh_gpu.yn) < 1e-13
+                @test norm(s_gpu_false.yn-s_jl_false.yn)/norm(s_jl_false.yn) < 1e-13
+
                 # The false-mode trial buffer is also transactional on a
                 # deliberate rejection; neither backend may expose it as the
                 # resident field until the controller accepts.
@@ -274,8 +295,15 @@ using TestItems
                 @test isapprox(rejected_gpu.err, rejected_cpu.err; rtol=1e-10)
                 @test isapprox(rejected_gpu.dtn, rejected_cpu.dtn; rtol=1e-10)
 
+                for _ in 1:20
+                    @test step!(rejected_gpu) == step!(rejected_cpu)
+                    @test norm(rejected_gpu.yn-rejected_cpu.yn)/norm(Eω) < 1e-13
+                    rejected_gpu.ok && break
+                end
+                @test rejected_gpu.ok
+
                 # Continue the accepted fixed trajectory through several
-                # deferred FSAL carries.
+                # stage-0 re-evaluations at the accepted fourth-order state.
                 for _ in 1:3
                     @test step!(s_jl_false)
                     @test step!(s_cpu_false)
@@ -285,6 +313,12 @@ using TestItems
                       norm(s_jl_false.yn) < 1e-13
                 @test norm(s_gpu_false.yn - s_jl_false.yn) /
                       norm(s_jl_false.yn) < 1e-12
+                full_jl = PreconStepper(transform, linop, copy(Eω), t0, dt; false_kw...)
+                full_gpu = RustNativeStepper(transform, linop, copy(Eω), t0, dt; false_kw...)
+                tj, yj, _ = solve(full_jl, flength; output=true, outputN=21)
+                tg, yg, _ = solve(full_gpu, flength; output=true, outputN=21)
+                @test tj == tg
+                @test norm(yg-yj)/norm(yj) < 1e-6
             end
 
             @testset "Full-solve equivalence (fixed step size)" begin

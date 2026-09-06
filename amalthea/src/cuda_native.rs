@@ -6168,7 +6168,7 @@ impl NativeBackend for CudaNativeSim {
                 // docs/dev/BACKLOG.md S5 item 3. `_t_new > _t_old` is exactly
                 // "the previous step was accepted" — Julia leaves `s.tn == s.t`
                 // on a rejected step and on the not-yet-stepped initial state.
-                if _t_new > _t_old {
+                if _t_new > _t_old && _locextrap != 0 {
                     let (left, right) = self.ks_d.split_at_mut(6);
                     left[0].copy_from_device(&right[0])?;
                 }
@@ -6192,15 +6192,31 @@ impl NativeBackend for CudaNativeSim {
                     &mut self.n as *mut _ as *mut _,
                     &mut dt0 as *mut _ as *mut _,
                 ];
-                launch_checked(
-                    driver,
-                    ctx.apply_prop_fn,
-                    grid_size,
-                    block_size,
-                    0,
-                    &mut apply_args_k0,
-                    "apply_prop(ks[0])",
-                )?;
+                if _locextrap == 0 {
+                    // The actual y4 field is already in the new frame.
+                    // Preserve the old interval's stages until this attempt,
+                    // then recompute k1 instead of reusing f(y5).
+                    self.ystage_d.copy_from_device(&self.field_d)?;
+                    if self.is_modal {
+                        self.compute_rhs_modal(0)?;
+                    } else if self.is_radial {
+                        self.compute_rhs_radial(0)?;
+                    } else if self.is_free {
+                        self.compute_rhs_free(0)?;
+                    } else {
+                        self.compute_rhs_mode_avg(0)?;
+                    }
+                } else {
+                    launch_checked(
+                        driver,
+                        ctx.apply_prop_fn,
+                        grid_size,
+                        block_size,
+                        0,
+                        &mut apply_args_k0,
+                        "apply_prop(ks[0])",
+                    )?;
+                }
 
                 for ii in 0..6 {
                     self.ystage_d.copy_from_device(&self.field_d)?;

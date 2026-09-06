@@ -4971,23 +4971,29 @@ impl NativeBackend for CpuNativeSim {
         // side of the FFI boundary. Skipped on a rejected-step retry
         // (`fsal_pending` is only armed on accept), where `ks[0]` is already
         // the correct k1 for the interval being retried.
-        if s.fsal_pending {
+        if s.fsal_pending && locextrap != 0 {
             let (left, right) = s.ks.split_at_mut(6);
             left[0].copy_from_slice(&right[0]);
-            s.fsal_pending = false;
         }
+        s.fsal_pending = false;
 
         // prop!(s.ks[1], s.t, s.tn)  — linop evaluated at the later time, t_new
         s.ensure_linop_at(t_new);
         s.ensure_free_norm_at(t_new);
         s.ensure_modal_linop_at(t_new);
-        apply_prop_cached(
-            &mut s.ks[0],
-            &s.linop,
-            t_new - t_old,
-            &mut s.exp_cache,
-            s.linop_version,
-        );
+        if locextrap == 0 {
+            // k7=f(y5) cannot seed a step starting at y4. The field is already
+            // in the new frame; refresh its RHS after z-dependent setup above.
+            s.eval_field_stage_zero();
+        } else {
+            apply_prop_cached(
+                &mut s.ks[0],
+                &s.linop,
+                t_new - t_old,
+                &mut s.exp_cache,
+                s.linop_version,
+            );
+        }
 
         let dt = dtn;
         let t = t_new;

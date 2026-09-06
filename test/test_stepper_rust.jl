@@ -92,7 +92,7 @@ using TestItems
         @test isapprox(rejected_ru.err, rejected_jl.err; rtol=1e-13)
         @test isapprox(rejected_ru.dtn, rejected_jl.dtn; rtol=1e-13)
 
-        # Fixed accepted steps exercise the deferred k7→k1 FSAL carry.
+        # Fixed accepted steps exercise stage-0 re-evaluation in false mode.
         fixed = (; rtol=1e-2, atol=0.0, locextrap=false,
                  min_dt=0.25, max_dt=0.25)
         multi_jl = PreconStepper(distributed_error_rhs!, linop, copy(y0),
@@ -104,6 +104,62 @@ using TestItems
             @test step!(multi_ru)
         end
         @test norm(multi_ru.yn - multi_jl.yn) / norm(multi_jl.yn) < 1e-13
+    end
+
+    @testset "Legacy nonlinear false-mode endpoint and restart" begin
+        nonlinear! = (out, y, _) -> (out .= y.^2)
+        for a in (0.0, -0.7)
+            fixed = (; locextrap=false, rtol=1e6, atol=0.0,
+                       min_dt=0.25, max_dt=0.25)
+            jl = PreconStepper(nonlinear!, ComplexF64[a], ComplexF64[1], 0.0, 0.25;
+                                fixed...)
+            ru = RustPreconStepper(nonlinear!, ComplexF64[a], ComplexF64[1], 0.0, 0.25;
+                                    fixed...)
+            @test step!(jl)
+            @test step!(ru)
+            @test ru.yn ≈ jl.yn rtol=1e-13
+            y5 = jl.y + jl.dt * sum(RK45.b5[i]*jl.ks[i] for i in 1:7)
+            y5 .*= exp(a*jl.dt)
+            @test norm(y5-jl.yn) > 1e-10
+            for s in (jl, ru)
+                stages = deepcopy(s.ks)
+                @test RK45.interpolate(s, prevfloat(s.tn)) ≈ s.yn rtol=1e-13
+                for σ in (0.25, 0.75, 0.25)
+                    @test RK45.interpolate(ru, ru.t+σ*ru.dt) ≈
+                          RK45.interpolate(jl, jl.t+σ*jl.dt) rtol=1e-13
+                end
+                @test s.ks == stages
+            end
+            fresh = RustPreconStepper(nonlinear!, ComplexF64[a], copy(ru.yn), ru.tn,
+                                       ru.dtn; fixed...)
+            @test step!(jl)
+            @test step!(ru)
+            @test step!(fresh)
+            @test ru.yn ≈ fresh.yn rtol=1e-13
+            @test ru.yn ≈ jl.yn rtol=1e-13
+
+            # The cache must also remain valid through rejected retries.
+            ru.rtol = jl.rtol = 1e-12
+            ru.min_dt = jl.min_dt = 0.0
+            endpoint = copy(ru.yn)
+            @test !step!(ru)
+            @test !step!(jl)
+            @test ru.yn == endpoint
+            # Each controller may choose a slightly different retry time.
+            # Compare each retry to a fresh solver at its own requested time.
+            for (ctor, s) in ((PreconStepper, jl), (RustPreconStepper, ru))
+                for _ in 1:20
+                    retry = ctor(nonlinear!, ComplexF64[a], copy(s.yn), s.tn, s.dtn;
+                                 locextrap=false, rtol=s.rtol, atol=0.0,
+                                 min_dt=0.0, max_dt=s.max_dt)
+                    retry.errlast = s.errlast
+                    @test step!(s) == step!(retry)
+                    @test s.yn ≈ retry.yn rtol=1e-13
+                    s.ok && break
+                end
+                @test s.ok
+            end
+        end
     end
 
     # ─────────────────────────────────────────────────────────────────────────

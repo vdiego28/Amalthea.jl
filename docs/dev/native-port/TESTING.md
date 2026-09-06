@@ -26,7 +26,7 @@ using TestItems
 
 @testitem "Native <phase> equivalence" tags=[:rust] begin
     import Test: @test, @testset
-    using Luna
+    using Amalthea
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
 
@@ -78,8 +78,9 @@ Notes:
   the comparison tolerance. The CUDA test failed this rule: a zero-nonlinearity
   backend passed because its `1e-3` tolerance exceeded the entire `4.5e-4`
   nonlinear effect.
-- Place the file in `test/` and add nothing else — `@run_package_tests`
-  auto-discovers every `@testitem`.
+- Place the file in `test/` and register any new testitem in the corresponding
+  `test/*_test_timings.txt` manifest used by the parallel CI scheduler.
+  The serial `@run_package_tests` runner discovers testitems automatically.
 
 ### Backend observability and dispatch gates
 
@@ -271,6 +272,15 @@ and retry, with full adaptive trajectory differences of `5.42e-15` and
 
 ### CPU optimization/concurrency gate (2026-08-24)
 
+**Embedded fourth-order mode (PLANS §18).** Test both propagation modes against
+an independent nonlinear analytic solution and test each solver against a fresh
+restart from its own accepted endpoint. False-mode interpolation must converge
+to y4 from inside the interval and retain fourth-order dense convergence.
+Exercise nonzero linear operators, rejected attempts/retries, and repeated
+dense queries before the next step. A Julia/native parity check alone cannot
+detect shared invalid k7 reuse. The y4/y5 gap must exceed the continuity test's
+tolerance. Default fifth-order FSAL and dense-order gates remain required.
+
 Allocation removal is accepted only with the existing rejected-step,
 `locextrap=false`, dense-output, and callback/window lifecycle suites green.
 The matched medium audit additionally records Julia-visible allocations: the
@@ -322,7 +332,7 @@ python3 test/parallel_group_tests.py --group rust --max-workers 10 \
 AMALTHEA_REQUIRE_CUDA_TESTS=1 LUNA_TEST_GROUP=rust julia --project test/runtests.jl
 
 # Full Julia suite (Phase 8 gate)
-julia --project -e 'using Pkg; Pkg.test("Luna")'
+julia --project -e 'using Pkg; Pkg.test("Amalthea")'
 ```
 
 Main-gate `LUNA_TEST_GROUP` values: `physics`, `rust`, `sim-interface`,
