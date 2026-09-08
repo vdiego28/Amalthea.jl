@@ -1,0 +1,22 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "amalthea-native"
+version = "0.0.1.dev0"
+description = "Internal Julia-free Amalthea frontend under development"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = ["numpy>=2.0"]
+classifiers = ["Development Status :: 2 - Pre-Alpha"]
+
+[tool.maturin]
+python-source = "python"
+module-name = "amalthea_native._native"
+include = [{ path = ".cargo/config.toml", format = "sdist" }]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

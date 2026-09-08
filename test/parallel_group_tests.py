@@ -268,15 +268,28 @@ def run_bucket(group, bucket_id, items, log_path, n_workers=1, ci=False):
         "OPENBLAS_NUM_THREADS": blas_threads,
         "OMP_NUM_THREADS": blas_threads,
     }
-    with open(log_path, "w") as log:
-        proc = subprocess.run(
-            julia_bucket_command(log_path, ci),
-            cwd=REPO_ROOT,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            env=env,
-        )
-    return bucket_id, proc.returncode
+    command = julia_bucket_command(log_path, ci)
+    metadata = {
+        "group": group, "bucket_id": bucket_id, "items": items,
+        "argv": command, "cwd": str(REPO_ROOT), "exit_code": None,
+        "environment_overrides": {key: env[key] for key in (
+            "LUNA_BUCKET_TAG", "LUNA_BUCKET_ITEMS", "JULIA_NUM_THREADS",
+            "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS")},
+    }
+    metadata_path = log_path.with_suffix(".json")
+    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    start = time.monotonic()
+    try:
+        with open(log_path, "w") as log:
+            proc = subprocess.run(
+                command, cwd=REPO_ROOT, stdout=log,
+                stderr=subprocess.STDOUT, env=env,
+            )
+        metadata["exit_code"] = proc.returncode
+        return bucket_id, proc.returncode
+    finally:
+        metadata["elapsed_seconds"] = time.monotonic() - start
+        metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
 
 
 # Julia honours FORCE_COLOR (and a tty) and will emit SGR escapes into the

@@ -2,26 +2,28 @@
 
 The four per-task plan documents that used to live beside this file, merged
 2026-07-22 so the native-port doc set is one reference set plus one plans file.
-Each section below preserves the original design narrative, with status
-labels and short supersession notes refreshed against the current code.
+Each section below preserves the original design narrative. Historical status
+labels describe their checkpoint; only BACKLOG maintains live status.
+Follow its [documentation ownership rules](../BACKLOG.md#documentation-ownership).
 
 **These are decision records, not a queue.** Several record a deliberate
 *no* or a parked scope — read them before proposing that work again.
 Live status for every item is in [`../BACKLOG.md`](../BACKLOG.md); this file is
 the durable rationale.
 
-| Section | Item | Status |
-|---|---|---|
-| [FFTW wisdom persistence](#1-fftw-wisdom-persistence-in-the-native-path-backlog-s1-item-1) | S1 item 1 | **Implemented** — opt-in via `AMALTHEA_NATIVE_FFTW_WISDOM`, default OFF |
-| [SoA conversion](#2-full-soa-conversion-of-the-resident-field-backlog-s1-item-6) | S1 item 6 | **Parked — negative ROI.** Phase 0 committed as infrastructure; Phases 1-4 will not be built |
-| [Threading the native RHS](#3-threading-the-native-rhs-backlog-s2) | S2 | **Complete 2026-07-22.** Radial, modal, and free-space seams landed |
-| [Standalone CLI](#4-standalone-cli-luna-cli-backlog-s6-item-3) | S6 item 3 | **Parked — recommend against building as specified.** A smaller "dump-and-replay" alternative is sketched |
-| [Multi-mode StepIndex](#5-native-multi-mode-stepindexmode-backlog-phase-i-item-5) | Phase I.5b | **Parked.** Feasible but no consumer; numerical mode-field work is disproportionate |
-| [Beyond-Luna math](#6-beyond-luna-math-options-backlog-phase-j-item-6) | Phase J.6 | **Closed.** Direct error/PPT: do not pursue; short-kernel Raman measured 2026-07-25 and rejected |
-| [2026-07-31 correctness, safety, CI, and GPU campaign](#11-2026-07-31-correctness-safety-ci-and-gpu-campaign) | Correctness, safety, CI, and first ADK slice | **Complete 2026-07-31.** Four reviewed work units landed; thresholded ADK is retained at `_GPU_ADK_N_THRESHOLD = 8193` |
-| [GPU mode-averaged SDO Raman](#12-gpu-mode-averaged-sdo-raman) | S3 broader GPU physics | **Complete 2026-08-02.** RealGrid carrier and EnvGrid envelope verified; `:SiO2` and other geometries remain out of scope |
-| [Portable installation on ARM64 and CPU-only hosts](#13-portable-installation-on-arm64-and-cpu-only-hosts) | S6 item 4 | **Complete 2026-08-10.** Native ARM64 install/FFI CI passed and v1.0.3 published the checksum-verified Linux AArch64 asset |
-| [Public claims and backend comparison benchmark](#14-public-claims-and-backend-comparison-benchmark) | Public release audit | **Complete 2026-08-11.** Repository, GitHub, and Zenodo claims are corrected and the equivalence-checked comparison is reproducible |
+| Section | Item |
+| --- | --- |
+| [FFTW wisdom persistence](#1-fftw-wisdom-persistence-in-the-native-path-backlog-s1-item-1) | S1 item 1 |
+| [SoA conversion](#2-full-soa-conversion-of-the-resident-field-backlog-s1-item-6) | S1 item 6 |
+| [Threading the native RHS](#3-threading-the-native-rhs-backlog-s2) | S2 |
+| [Standalone CLI](#4-standalone-cli-luna-cli-backlog-s6-item-3) | S6 item 3 |
+| [Multi-mode StepIndex](#5-native-multi-mode-stepindexmode-backlog-phase-i-item-5) | Phase I.5b |
+| [Beyond-Luna math](#6-beyond-luna-math-options-backlog-phase-j-item-6) | Phase J.6 |
+| [2026-07-31 correctness, safety, CI, and GPU campaign](#11-2026-07-31-correctness-safety-ci-and-gpu-campaign) | Correctness, safety, CI, and first ADK slice |
+| [GPU mode-averaged SDO Raman](#12-gpu-mode-averaged-sdo-raman) | S3 broader GPU physics |
+| [Portable installation on ARM64 and CPU-only hosts](#13-portable-installation-on-arm64-and-cpu-only-hosts) | S6 item 4 |
+| [Public claims and backend comparison benchmark](#14-public-claims-and-backend-comparison-benchmark) | Public release audit |
+| [Julia-free Python distribution](#20-julia-free-python-distribution) | Python roadmap |
 
 ---
 
@@ -3217,3 +3219,59 @@ CPU/CUDA optical tests require tight single-step/restart checks (~1e-13) plus
 full-solve/dense agreement at the existing 1e-6 tier and explicit dispatch.
 Run the Rust and affected Julia groups and strict real-hardware CUDA tests.
 No publication, commit, CI-policy change, or optimization is part of this task.
+
+## 19. Documentation ownership and recorded local validation
+
+Design agreed 2026-09-06. Current work state belongs only in
+[`BACKLOG.md`](../BACKLOG.md); this section records the implementation choices.
+
+- Keep one authoritative home per fact: BACKLOG for current status/next action,
+  PLANS (or an explicitly linked specialist design) for decisions and rationale,
+  PORT_LOG for dated execution evidence, TESTING for validation commands and
+  acceptance rules. Historical entries stay intact; their status is a dated
+  checkpoint, not a second live queue. New summaries link instead of copying.
+- Replace mandatory log line numbers and repeated decision narratives with file
+  paths plus symbols, a design link, test commands/results, evidence paths, and
+  unexpected gotchas. Put new decisions into the design first and link them.
+- Add `python3 test/validate.py`: CPU by default, Rust group by default;
+  `--groups` selects maintained groups and `--all` selects all eight. Always
+  build the checkout release library and run Cargo tests, then use the existing
+  `run_full_gate.py` scheduler. Validate nonempty group discovery before launch.
+  Do not reimplement test discovery, scheduling, or Julia assertion parsing.
+- Pin Cargo output to `amalthea/target`, use explicit CPU-off or required-CUDA
+  build mode, preserve explicit RUSTFLAGS (empty by default for portability),
+  and disable prebuilt downloads. Julia preflight must assert both package
+  source and RK45 library resolve inside this checkout and dlopen the library.
+- `--cuda` sets `AMALTHEA_REQUIRE_CUDA_TESTS=1`, requires real PTX at build time,
+  and includes the Rust group even with other selected groups. Existing strict
+  CUDA tests assert actual GPU dispatch. CUDA invocation requires host execution
+  with the toolkit PATH prefix per AGENTS; the wrapper cannot grant escalation.
+- Allocate a new evidence directory under `.rust_test_logs/validation/` on every
+  invocation. Save revision/dirty status, platform/tool versions, selected
+  groups, relevant effective environment (never the entire environment), local
+  library SHA-256, exact commands, durations, exit codes, full command/worker
+  output, and a machine-readable final status. A build/preflight failure stops
+  dependent tests; a Cargo test failure still allows Julia evidence collection.
+  Interruptions/errors must leave a non-passing record. Do not claim numerical
+  tolerances from process exit codes; those remain test/log evidence.
+- Verification: isolated orchestration regression tests for argument rejection,
+  failure propagation, CPU/CUDA environment, local-path checks, and retained
+  evidence; run the real default CPU gate. Hardware validation of the CUDA
+  option is required before claiming it hardware-verified.
+
+Implementation detail: each existing scheduler worker also writes a JSON sidecar
+with its exact Julia command, assigned items, effective Julia/BLAS/OMP thread
+counts, duration, and exit code. This covers environment overrides introduced
+after the wrapper starts. Add orchestration regression tests to the existing
+Python CI invocation so these safeguards remain exercised.
+
+## 20. Julia-free Python distribution
+
+The 2026-09-07 user roadmap authorizes a separate Julia-free Python frontend,
+with full Julia-valid GNLSE/capillary coverage before a public Linux preview.
+The design, lifecycle contracts, planned capability assignments, artifact gates,
+and subsequent performance sequence are in
+[PYTHON_NATIVE_PLAN.md](PYTHON_NATIVE_PLAN.md). This supersedes §4's parked
+decision for this Python scope; it does not change the existing Julia ABI or
+authorize separate CLI/free-space/step-index interfaces. Current progress and
+the exact repaired-baseline gate belong in the BACKLOG resume queue.

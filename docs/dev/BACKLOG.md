@@ -7,6 +7,26 @@ Deferred work and known issues for Amalthea.jl. Severity: 🔴 correctness · �
 > [`ARCHIVE.md`](ARCHIVE.md) with its section names unchanged. Cross-references
 > below to a phase, to S1/S4, or to "Done (recent)" resolve there.
 
+## Documentation ownership
+
+Each fact has one authoritative home. Other documents link to it instead of
+copying its narrative or maintaining another live status field.
+
+| Fact | Authoritative home |
+|---|---|
+| Current status, blockers, waivers, and next action | This backlog's resume queue / live item |
+| Design decisions, alternatives, and rationale | [PLANS.md](native-port/PLANS.md), or the specialist design it explicitly links |
+| Dated changes, commands, measured results, and unexpected gotchas | [PORT_LOG.md](native-port/PORT_LOG.md), with links to retained validation artifacts |
+| Validation commands and acceptance rules | [TESTING.md](native-port/TESTING.md) |
+| Implemented architecture, equations, and supported configurations | Existing specialist references; link from the design rather than copying them |
+
+Historical entries remain dated evidence, including their old status and next
+steps. Do not rewrite the append-only log or propagate status changes through
+historical narratives. When revising a live summary, replace duplicated detail
+with a link; preserve unique evidence in its authoritative home. New work logs
+use file paths and symbols; line numbers are optional. New decisions go into
+the design before code and are linked from the log.
+
 ## Start here — current resume queue (2026-09-06)
 
 This is the authoritative short queue. The long sections below retain design
@@ -33,16 +53,19 @@ or "verified" inside a superseded narrative do not outrank this list.
 > diagnostic for that release; Apple performance evidence and LTO promotion
 > remain pending.
 
-> **Post-release correctness repair — locally complete 2026-09-06:**
+> **Post-release correctness repair — hosted gate complete 2026-09-08:**
 > the `locextrap=false` derivative-reuse and dense-output endpoint defects are
 > repaired across Julia, legacy Rust, resident CPU, and CUDA under `PLANS.md`
 > §18. All eight CPU groups passed across the recorded runs (expected CUDA
 > and single-thread skips); strict CUDA Julia solver/dense tests passed 175/175.
-> Default fifth-order controls remain green. This working-tree repair is not
+> Default fifth-order controls remain green. This committed repair is not
 > part of published v1.0.4 and is separate from its weight-label correction.
 > Delivery branch: `fix/dopri-fourth-order`; the lead authorized commit/push.
-> Hosted validation is the next gate before integration or any new release.
-> See the latest PORT_LOG entry for commands and delivery scope.
+> Hosted validation passed at `7f707842259cd9ff7cfa4f8c55418b75c3ca140c`
+> ([run 34169347939](https://github.com/vdiego28/Amalthea.jl/actions/runs/34169347939));
+> integration and any new release remain separate actions.
+> See the [repair delivery entry](native-port/PORT_LOG.md#2026-09-06--authorized-repair-delivery--codex)
+> and its preceding validation entry for commands and delivery scope.
 
 > **Deferred:** standing required-CUDA CI remains the lead's deliberate
 > deferral. GPU capability is maintained in
@@ -51,6 +74,33 @@ or "verified" inside a superseded narrative do not outrank this list.
 > and the focused optimization landed; its frozen baseline remains the
 > comparison reference, not a future task to restart. Refresh end-to-end
 > performance evidence after numerical changes before broadening claims.
+
+> **Validation workflow — complete 2026-09-06:** use the recorded local gate in
+> [TESTING §5](native-port/TESTING.md#5-commands). Design:
+> [PLANS §19](native-port/PLANS.md#19-documentation-ownership-and-recorded-local-validation).
+> Execution evidence: the 2026-09-06 documentation/validation entry in
+> [PORT_LOG](native-port/PORT_LOG.md). Next: use this command for subsequent
+> work; existing repair delivery and deferred hardware work remain above.
+
+> **Julia-free Python roadmap — callback driver implemented 2026-09-08:**
+> design and source-derived capability assignments are recorded in
+> [PYTHON_NATIVE_PLAN.md](native-port/PYTHON_NATIVE_PLAN.md), linked by
+> [PLANS §20](native-port/PLANS.md#20-julia-free-python-distribution).
+> `python-native/` provides real/envelope grids, reusable portable FFT bindings,
+> and a safe Rust-owned `solve_precon` driver with serial Python callbacks,
+> corrected fourth/fifth-order dense output, rejection, and accepted filtering.
+> The installed CPython 3.14 wheel rebuilt from its source archive passes all
+> 47 Python tests, including independently prepared Julia oracle comparisons.
+> Hosted repair CI is green; local CPU coverage passes across the full run and
+> the corrected multimode-group rerun. Exact evidence and the test skip-guard
+> repair are in the 2026-09-08 callback-driver entry in
+> [PORT_LOG](native-port/PORT_LOG.md).
+> Milestone 2 and the public preview remain incomplete: portable plans are not
+> yet integrated into resident NativeSim, and `prop_gnlse`/`prop_capillary` are
+> not implemented. Next: integrate native portable execution and port physical
+> setup/response construction, retaining the roadmap's full release coverage.
+> The local wheel's manylinux_2_35 tag is internal evidence, not the release
+> baseline. Existing installer and validation edits are preserved.
 
 ## Historical campaign summaries
 

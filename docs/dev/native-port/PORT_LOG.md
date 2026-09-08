@@ -9,20 +9,21 @@
 ## How to read this log
 - Entries are chronological. To pick up a phase, read the **latest** entry for
   that phase, then the most recent entry overall (for cross-cutting gotchas).
-- "Decisions" and "Gotchas" are the highest-value fields — they capture what the
-  plan docs could not predict.
+- Use BACKLOG for current status and next action. Entry status is a dated
+  checkpoint. Follow the [documentation ownership rules](../BACKLOG.md#documentation-ownership).
+- Link to the design for decisions/rationale; retain unexpected gotchas and
+  measured evidence here. Keep historical entries unchanged.
 
 ## Entry template (copy this)
 
 ```
-## YYYY-MM-DD — Phase N — <title> — <agent/model>
-**Status:** in-progress | complete | blocked
-**Did:** what was implemented/changed (1–3 sentences).
-**How:** approach, key code paths (file:line), FFI symbols added/changed.
-**Decisions:** any choice made + the reason.
-**Gotchas:** anything non-obvious the next person needs to know.
-**Tests:** what was run, the result, the tolerance achieved (single-step + full-run).
-**Next:** the immediate next step.
+## YYYY-MM-DD — <work item> — <agent/model>
+**Status at this checkpoint:** in-progress | complete | blocked
+**Did:** what changed (1–3 sentences), with file paths and symbols; line numbers optional.
+**Design:** link to PLANS section or its linked specialist design; put new decisions there first.
+**Gotchas:** unexpected findings or blockers; omit if none.
+**Tests:** exact commands, results, achieved tolerances where applicable, and evidence directory.
+**Tracking:** link to BACKLOG item for current status and next action.
 ```
 
 ---
@@ -5262,3 +5263,254 @@ their synchronized summaries are not part of the tracked commit.
 solver, and documentation gates. Delivery checks are staged diff validation,
 commit-content inspection, and remote branch-tip verification after push.
 **Next:** Inspect the feature branch's hosted CI before integration or release.
+
+## 2026-09-06 — Documentation ownership and recorded validation — Codex
+**Status at this checkpoint:** complete.
+**Did:** Simplified the log template and PLANS index, established documentation
+ownership in BACKLOG, and updated the local AGENTS/CLAUDE guides. Added
+`test/validate.py` (`main`, `Evidence`, `validation_environment`) and worker
+JSON records in `test/parallel_group_tests.py::run_bucket`; added orchestration
+regression coverage to the existing Python CI invocation. No numerical source
+or FFI exports changed.
+**Design:** [PLANS §19](PLANS.md#19-documentation-ownership-and-recorded-local-validation).
+Command reference: [TESTING §5](TESTING.md#5-commands).
+**Gotchas:** AGENTS.md and CLAUDE.md remain ignored local guides. Historical
+PORT_LOG entries were preserved verbatim. Existing README/installation edits
+and untracked install.sh were untouched. The sandbox permits reading Julia's
+depot but prevents Scratch from updating `~/.julia/logs/scratch_usage.toml`;
+the initial CPU attempt correctly failed and retained its evidence. Host
+execution resolved that environment limitation. The CUDA-enabled release
+library from the final gate remains in the local target directory.
+**Tests:**
+- `python3 -m unittest discover -s test -p 'test_*py'`: 24/24 passed
+  (scheduler plus validation orchestration, including missing-library,
+  empty-selection, build/preflight failure, test failure, and interruption).
+  Earlier focused runs passed 8/8, then the expanded suite passed 23/23 before
+  the final missing-library regression was added. Initial mocked tests exposed
+  a platform-detection mock interaction, corrected in the test fixture.
+- `python3 -m pytest test/test_parallel_group_tests.py test/test_validate.py -q`
+  could not launch because local Python lacks pytest; the same unittest test
+  classes passed via the standard-library command above. CI already installs
+  pytest and now includes the new file.
+- `python3 test/validate.py --max-workers 4`: sandbox attempt exit 1 due to
+  the Scratch write restriction; full evidence at
+  `.rust_test_logs/validation/20260906T220425Z-qroo_fk5/`.
+  Host retry exit 0: Cargo 83 unit + 5 build-policy tests; Julia 42990 passed,
+  11 expected CUDA skips, 43001 total, scheduler 237.8 s. Evidence:
+  `.rust_test_logs/validation/20260906T220603Z-dstrcpka/`.
+- Host `PATH=/usr/local/cuda-13.3/bin:$PATH python3 test/validate.py --cuda
+  --max-workers 4`: exit 0, required-CUDA build and Cargo 83+5 tests passed;
+  Julia 43613/43613, no skips, scheduler 503.0 s. Evidence:
+  `.rust_test_logs/validation/20260906T221028Z-ki2ghd0g/`. All four worker JSON
+  sidecars record successful exits, exact assignments, and thread overrides.
+- CLI help, Python 3.11 syntax parsing, workflow link-target checks, historical
+  log preservation comparison, and `git diff --check` passed. Numerical
+  acceptance thresholds were unchanged; full per-test output is in the bundles.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06)
+contains current status and next action.
+
+## 2026-09-07 — Julia-free Python baseline and gate attempt — Codex
+**Status at this checkpoint:** blocked at the hosted baseline prerequisite;
+design and source-derived capability inventory prepared, implementation not begun.
+**Did:** Recorded the supplied roadmap in `PYTHON_NATIVE_PLAN.md`, linked it
+from `PLANS.md` §20, and added the current gate and next action to BACKLOG.
+Mapped setup, GNLSE, capillary, molecular, mixture, modal/polarization, and
+custom-model coverage to planned native/Python evaluation paths using
+`Interface.jl` and `RK45.jl` guards. Preserved all pre-existing installer,
+workflow, and validation-tool changes. No source or FFI exports changed.
+**Design:** [PLANS §20](PLANS.md#20-julia-free-python-distribution) and
+[Python design](PYTHON_NATIVE_PLAN.md).
+**Gotchas:** The repair commit exists locally as
+`7f707842259cd9ff7cfa4f8c55418b75c3ca140c`, but the GitHub checks API returns
+HTTP 422, "No commit found for SHA: 7f70784", and an explicit remote branch
+lookup returns no ref. An initial unqualified `gh run list` returned `[]`;
+only the explicit repository queries and remote lookup underpin this finding.
+The historical delivery log records push authorization, but automatic approval
+review rejected `git push --set-upstream origin fix/dopri-fourth-order`: it
+requires a trusted user message explicitly authorizing remote mutation under
+AGENTS.md. No push occurred. Milestone 1's hosted gate is not satisfied by the
+previous local CPU/CUDA successes. Source inspection also found modal
+`Kerr_field_nothg`/`Kerr_env_thg` guards and sampled taper tables that must be
+handled by Python coverage, not assumed native eligibility.
+**Tests:** Read-only `git rev-parse HEAD`, `git show --stat HEAD`,
+`gh api repos/vdiego28/Amalthea.jl/commits/7f70784/check-runs`, and
+`git ls-remote origin refs/heads/fix/dopri-fourth-order` establish the local
+revision and missing remote baseline. Re-inspected retained CPU and strict-CUDA
+`summary.json` files from `20260906T220603Z-dstrcpka` and
+`20260906T221028Z-ki2ghd0g`: both report `passed`; these are prior working-tree
+evidence, not fresh hosted checks. Their numerical results remain in the
+preceding entries (including phase-1 full-solve error `2.93e-16` and false-mode
+restart/endpoint threshold `1e-13`). No numerical suite was rerun for this
+documentation-only attempt, and no new Python parity numbers are claimed.
+Baseline snapshot and gate record: `.rust_test_logs/python-baseline/`.
+New design relative-link checks and `git diff --check` passed. The initial
+working-tree PORT_LOG was reconstructed from HEAD plus the saved pre-existing
+patch and verified as a verbatim prefix of the final log. A first comparison
+against HEAD alone failed because the previous agent's template edits were
+already uncommitted; reconstruction confirms they were preserved as well.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-07 — Authorized baseline push and Python grids/portable FFT foundation — Codex
+**Status at this checkpoint:** first setup/FFT unit locally validated; overall
+roadmap in progress. Hosted solver baseline still running, not claimed green.
+**Did:** With the lead's new explicit approval, pushed the existing
+`fix/dopri-fourth-order` branch; remote tip equals
+`7f707842259cd9ff7cfa4f8c55418b75c3ca140c`. The lead then explicitly directed
+implementation while CI runs. Added the separate `python-native/` mixed
+PyO3/maturin package: `grid.py::{RealGrid,EnvGrid,planck_taper}` and private
+`src/lib.rs::{RealFft,ComplexFft}` own reusable RustFFT/RealFFT plans and scratch.
+Added independent Julia fixture export, Python tests, MIT attribution, and an
+internal-development README. Documented its gate in TESTING and current next
+action in BACKLOG. Existing Julia/Rust numerical sources and C ABI unchanged;
+all pre-existing installer/validation edits preserved. No new commit or
+publication; the push contains only the already committed solver repair.
+**Design:** [Python design](PYTHON_NATIVE_PLAN.md), including the lead's updated
+gate order and the first implementation unit, linked by [PLANS §20](PLANS.md#20-julia-free-python-distribution).
+**Gotchas:** Julia's one-based crop index must be rounded before converting to
+Python slices. Window centering arithmetic matters at edge bins. RealFFT's
+inverse requires explicit removal of imaginary DC/even-N Nyquist values to
+match FFTW's ignored-bin convention. An initial fixture exporter used unavailable
+JSON; it now uses Julia/Python standard-library TOML. A large-grid negative test
+exposed a NumPy overflow warning, fixed by validating scalar spacing and using
+Python scalar division before allocation. No tolerance was loosened.
+The local wheel is `cp314-cp314-manylinux_2_34_x86_64`, not the planned release
+baseline. Portable FFTs are isolated bindings, **not integrated into NativeSim**;
+no propagation driver, `prop_gnlse`, or `prop_capillary` is implemented yet.
+**Tests:**
+- `RUSTFLAGS='' maturin build --release --interpreter
+  /tmp/amalthea-python-native-venv/bin/python` in `python-native/`: internal
+  wheel built and installed with `pip install --no-deps --force-reinstall`.
+  PyO3 0.27.2, RustFFT 6.4.1, RealFFT 3.5.0 are locked in its Cargo.lock.
+- Host `julia --startup-file=no --project
+  python-native/tools/export_grid_oracle.jl
+  .rust_test_logs/python-baseline/grid-oracle`: five independently constructed
+  Julia grids exported (real/envelope, fine sampling, THG). Installed Python
+  axes are bit-identical; masks equal exactly; maximum window relative error
+  `1.1102230246251565e-16`, below the `1e-13` acceptance threshold.
+- From `/tmp`, `AMALTHEA_GRID_ORACLE=<absolute grid-oracle directory>
+  /tmp/amalthea-python-native-venv/bin/python -m pytest
+  <repo>/python-native/tests -q -s`: **30 passed**, no skips/warnings. Includes
+  portable complex/real FFTs at lengths 1,2,7,8,31,64,257,1024; invalid inputs;
+  reusable plans; Hilbert phase and padded causal convolution; grid limits and
+  independently generated Julia parity. First pre-oracle run was 27 passed /
+  1 skipped; the final run includes the oracle and both convolution cases.
+- `maturin sdist --manifest-path python-native/Cargo.toml`: complete source
+  archive including LICENSE/tests/exporter. Extracted to
+  `/tmp/amalthea-final-sdist-r8romrl6/amalthea_native-0.0.1.dev0`; rebuilt there
+  with `RUSTFLAGS='' CARGO_NET_OFFLINE=true maturin build --release`, installed
+  that wheel, and ran its extracted tests: **30 passed**. This establishes an
+  offline rebuild with cached build dependencies, not offline dependency
+  acquisition or public platform support.
+- Installed smoke from `/tmp` using `python -I`, with Julia/Cargo absent from
+  PATH: grid and FFT run, no juliacall/juliapkg imports, no loaded libjulia,
+  libfftw, or libcubature in `/proc/self/maps`. Example FFT max absolute error
+  against NumPy: `1.1430445635548515e-15`.
+- Host `python3 test/validate.py --max-workers 4`: **passed**, Cargo 83 unit +
+  5 build-policy tests; Julia **42990 passed / 11 expected CUDA skips**,
+  scheduler 236.0 s. Evidence:
+  `.rust_test_logs/validation/20260907T232312Z-68qcpv0j/`.
+- `cargo fmt --manifest-path python-native/Cargo.toml -- --check` and
+  `git diff --check` passed after formatting the new Rust file.
+**Hosted evidence:** Run
+[34169347939](https://github.com/vdiego28/Amalthea.jl/actions/runs/34169347939)
+matches the pushed repair revision. Checked after Python implementation:
+8 successful jobs, 9 still running, 1 expected benchmark-publication skip;
+no failures at this checkpoint. Per lead instruction, did not wait for its
+full completion. Snapshot and Python artifact/numerical logs:
+`.rust_test_logs/python-baseline/{hosted-run.json,hosted-jobs.jsonl,
+python-tests.log,sdist-build.log,sdist-tests.log,installed-smoke.json}`;
+artifacts in `wheels/` and `sdist/`. This CI run does not contain the uncommitted
+Python changes.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-08 — Julia-free callback solver and completed repair CI — Codex
+**Status at this checkpoint:** callback-driver unit complete; standalone roadmap in progress.
+**Did:** Added `python-native/src/solver.rs::{solve,Handle,Context}` around the
+existing corrected `precon_step_ffi` kernel, with Rust-owned buffers, lifecycle,
+adaptive loop, output sampling, deferred FSAL, and accepted-field filtering.
+`src/dense.rs` transcribes Julia's dense coefficients. The safe Python API in
+`python/amalthea_native/solver.py` preserves full array shapes, owns callback
+inputs/results, retains original Python exceptions, and rejects invalid/nonfinite
+outputs. Added independent Julia solver fixtures, lifecycle/analytic/oracle tests,
+and `examples/solver_analytic.py`. Linked the existing Rust crate without changing
+its numerical sources or C ABI. The package `.cargo/config.toml` forces CPU-only
+builds and portable flags; the sdist includes the complete engine dependency.
+Replaced the top-level return skip guard in `test/test_transmodal_julia_threading.jl`
+with a conditional around the test body. Updated TESTING and BACKLOG. No commit
+or new push; pre-existing installer/validation work remains preserved.
+**Design:** [Python design, callback driver implementation unit](PYTHON_NATIVE_PLAN.md),
+including the documented range-rounding and Julia test-harness corrections.
+**Gotchas:** NumPy linspace and Julia range can differ by one ULP at an accepted
+step boundary; because output precedes filtering this changes which filtered
+field is saved. Small rational range construction reproduces the oracle cases;
+other endpoints use exact binary rational interpolation (not a universal bitwise
+claim about Julia's double-double fallback). A top-level return under
+TestItemRunner skipped only one evaluated expression, allowing the one-thread
+multimode test to continue into unavailable threaded scratch. The conditional
+fix preserves four-thread execution. No tolerance was loosened.
+**Tests and numerical evidence:** `.rust_test_logs/python-driver/` contains
+`oracle/`, `tests.log`, `sdist-tests.log`, `sdist-build.log`, `installed-smoke.json`,
+and focused modal-thread logs.
+- Host `julia --startup-file=no --project python-native/tools/export_solver_oracle.jl
+  .rust_test_logs/python-driver/oracle` exported independently prepared pure-Julia
+  fixed/adaptive trajectories in both orders, output/filter boundaries, and
+  nonlinear component-dependent windows. The existing grid exporter was retained.
+- Installed-wheel pytest with `AMALTHEA_GRID_ORACLE` and
+  `AMALTHEA_SOLVER_ORACLE` set to those absolute fixture directories:
+  **47 passed**. Fourth-order adaptive/fixed full-solve relative errors
+  `4.579e-16` / `2.616e-16`; fifth-order `4.837e-16` / `1.309e-16`.
+  Fixed single-interval comparisons were exactly equal in both orders.
+  Nonlinear component windows: fourth `1.098e-16`, fifth `1.116e-16`.
+  Independent analytic full-solve errors: fourth `6.787e-10`, fifth `3.327e-12`;
+  nonlinear effect exceeds `0.1`. Dense refinement ratios reach `27.37` (fourth)
+  and `52.36` (fifth), approaching the local orders 32 and 64. Tests include
+  rejection, fresh restarts, filter cadence, retained callback arrays, original
+  exception identity, invalid outputs, limits, and repeated construction/destruction.
+- `maturin sdist --manifest-path python-native/Cargo.toml`, extraction to
+  `/tmp/amalthea-driver-final-wjz7a09y/amalthea_native-0.0.1.dev0`, then
+  `RUSTFLAGS='' CARGO_NET_OFFLINE=true maturin build --release` in that archive:
+  wheel built, installed with `pip install --no-deps --force-reinstall`, and
+  extracted `python-native/tests` passed **47/47**. Cached build dependencies were
+  used. Local wheel is `cp314-cp314-manylinux_2_35_x86_64`; this is not the planned
+  manylinux release baseline or a multi-platform installation acceptance claim.
+- Installed analytic example ran from `/tmp` with `python -I`, Julia/Cargo absent
+  from PATH, no juliacall/juliapkg imports, and no loaded libjulia/libfftw/libcubature.
+  Relative error `3.302e-12`, 26 accepted and 2 rejected steps.
+- Host `python3 test/validate.py --all --max-workers 4`: Cargo tests passed;
+  seven Julia groups passed (physics 2014, Rust 42990 plus 11 expected CUDA skips,
+  sim_interface 314, sim_propagation 18, io 2326, fields 339, examples 20).
+  This run correctly remains **failed** because the original multimode skip guard
+  produced two assertion failures and one error; evidence
+  `.rust_test_logs/validation/20260908T121642Z-nm7ulosp/`.
+- After the guard correction, host `python3 test/validate.py --groups sim-multimode
+  --max-workers 4`: **passed**, Cargo 83 unit + 5 build-policy tests, multimode
+  **41 passed / 1 expected one-thread skip**, scheduler 230.0 s. Evidence
+  `.rust_test_logs/validation/20260908T122955Z-izcckzpe/`.
+  Focused `@run_package_tests` for `test_transmodal_julia_threading.jl`, with
+  `JULIA_NUM_THREADS=1` and `4`: **1 expected skip** and **12/12 passed**, respectively.
+- `cargo fmt --manifest-path python-native/Cargo.toml -- --check` and
+  `git diff --check` passed. Shared CUDA code was not modified.
+**Hosted baseline:** Run [34169347939](https://github.com/vdiego28/Amalthea.jl/actions/runs/34169347939)
+is completed/success at exact pushed revision
+`7f707842259cd9ff7cfa4f8c55418b75c3ca140c`; snapshots in
+`.rust_test_logs/python-driver/{hosted-baseline.json,hosted-jobs.jsonl}`.
+This closes the hosted repair gate, not hosted validation of these uncommitted
+Python files. Native-resident portable integration and high-level GNLSE/capillary
+physics remain unfinished; callbacks currently copy complete arrays and have no
+native-performance claim.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-08 — Authorized Python foundation delivery — Codex
+**Status at this checkpoint:** prepared for commit and push at the lead's request.
+**Did:** Reviewed the Python foundation, callback driver, numerical fixtures,
+multimode skip-guard correction, and the recorded validation tooling and docs
+as one delivery on `fix/dopri-fourth-order`. Preserved the separate installer
+changes in README, installation docs, and `install.sh` outside this delivery.
+Updated the testing introduction to reflect the implemented low-level driver.
+**Design:** [Python roadmap](PYTHON_NATIVE_PLAN.md) and [validation workflow](PLANS.md#19-documentation-ownership-and-recorded-local-validation).
+**Tests:** Numerical and installed-artifact evidence is in the preceding entry;
+no numerical source changed during delivery. Re-ran
+`python3 -m unittest discover -s test -p 'test_*py'`: **24/24 passed**.
+Delivery checks: diff whitespace validation, explicit staged-file review,
+commit inspection, and remote branch-tip verification after push.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).

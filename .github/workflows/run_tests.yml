@@ -375,7 +375,7 @@ jobs:
 
       - name: Run Python API tests
         run: |
-          pytest python/tests/ test/test_parallel_group_tests.py
+          pytest python/tests/ test/test_parallel_group_tests.py test/test_validate.py
         env:
           PYTHON_JULIAPKG_JULIA: julia
           # This job builds the Rust library and installs Julia above, so the

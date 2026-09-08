@@ -8,8 +8,7 @@ using TestItems
 
     if Threads.nthreads() < 4
         @test_skip "requires JULIA_NUM_THREADS=4"
-        return
-    end
+    else
 
     Amalthea.set_fftw_mode(:estimate)
     a = 40e-6
@@ -82,4 +81,5 @@ using TestItems
         @test plasma_transform.modal_threaded
         @test all(s -> s.resp[2] !== plasma, plasma_transform.modal_scratch)
     end
+    end # thread-count guard (top-level return does not skip later expressions)
 end

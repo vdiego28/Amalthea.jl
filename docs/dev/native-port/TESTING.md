@@ -307,31 +307,58 @@ resident handles, and no leaked `Distributed` workers.
 
 ## 5. Commands
 
+Use the recorded local gate for work-item validation:
+
 ```bash
-# Build the library first (required for any :rust test to run, else it skips)
-(cd amalthea && cargo build --release)
+# CPU build + Cargo tests + Rust/native Julia group
+python3 test/validate.py
 
-# Run only the Rust/native equivalence group
+# Include affected groups, or run all eight
+python3 test/validate.py --groups rust physics --max-workers 4
+python3 test/validate.py --all --max-workers 4
+
+# Required CUDA build/tests: run on the host, outside the agent sandbox
+PATH=/usr/local/cuda-13.3/bin:$PATH python3 test/validate.py --cuda
+```
+
+The wrapper builds into `amalthea/target/release`, disables prebuilt downloads,
+and verifies Julia loads both the package and RK45 library from this checkout.
+CPU mode sets `AMALTHEA_CUDA_BUILD=off` and strict-CUDA tests off. `--cuda`
+sets the build to `required` and `AMALTHEA_REQUIRE_CUDA_TESTS=1`, and always
+includes the Rust group: missing real PTX or GPU dispatch fails validation.
+It does not globally force GPU dispatch for CPU control tests. CUDA commands
+still require host execution; the wrapper does not request sandbox escalation.
+Explicit RUSTFLAGS are preserved; unset means empty for portability. Encoded
+Cargo flags and a cross-compilation target override are removed so this gate
+builds a host-loadable library with the recorded RUSTFLAGS.
+
+Every run creates a unique directory under `.rust_test_logs/validation/`
+(or under the parent supplied with `--log-dir`). `summary.json` records the
+revision, dirty status, selected groups, platform, effective relevant environment,
+library SHA-256, commands, durations, exit codes, and final status. Version
+logs, `inventory.json`, command logs, and `workers/` retain complete output.
+Each worker JSON sidecar records its exact Julia command, assigned items,
+thread overrides, duration, and exit code.
+Build or preflight failure stops dependent tests; Cargo test failure still
+allows Julia tests to collect evidence. A failed or interrupted run is not a
+passing gate. Logs are ignored local artifacts: retain/share the evidence
+bundle when handing work to another machine, and record concise measured
+results in PORT_LOG. Exit codes do not establish numerical tolerances or
+replace feature-sensitivity and actual-backend assertions.
+
+To check the validation tooling itself without Julia or CUDA, run
+`python3 -m unittest discover -s test -p 'test_*py'`. These tests also run in
+the existing Python CI job.
+
+Lower-level commands remain useful for focused diagnostics (they do not create
+the wrapper's evidence bundle):
+
+```bash
+AMALTHEA_CUDA_BUILD=off cargo build --release --manifest-path amalthea/Cargo.toml
 LUNA_TEST_GROUP=rust julia --project test/runtests.jl
-
-# Run one group through the timing-aware item scheduler (same path as CI)
 python3 test/parallel_group_tests.py --group rust --max-workers 2
-
-# Run the balanced eight-group local gate
 python3 test/run_full_gate.py
-
-# Refresh one group's item timings without immediately rerunning the group
-python3 test/parallel_group_tests.py --group rust --max-workers 10 \
-    --update-timings-only
-
-# Rust unit tests
-(cd amalthea && cargo test)
-
-# Required-hardware CUDA gate (initialization/dispatch failures cannot skip)
-(cd amalthea && AMALTHEA_REQUIRE_CUDA_TESTS=1 cargo test)
-AMALTHEA_REQUIRE_CUDA_TESTS=1 LUNA_TEST_GROUP=rust julia --project test/runtests.jl
-
-# Full Julia suite (Phase 8 gate)
+python3 test/parallel_group_tests.py --group rust --max-workers 10 --update-timings-only
 julia --project -e 'using Pkg; Pkg.test("Amalthea")'
 ```
 
@@ -354,6 +381,55 @@ python3 test/parallel_group_tests.py --group physics --max-workers 2 --ci
 ```
 
 ## 6. Definition of done for a native work item
+
+### Internal Python foundation gate
+
+The separate `python-native/` package tests grids, portable FFTs, and the
+low-level callback solver described below. High-level optical propagation APIs
+remain unfinished. Build/install it in an isolated
+Python environment with `RUSTFLAGS="" maturin build --release` from that
+directory, then install the resulting wheel. From the repository root export
+independent setup fixtures:
+
+```bash
+julia --startup-file=no --project python-native/tools/export_grid_oracle.jl /tmp/amalthea-grid-oracle
+AMALTHEA_GRID_ORACLE=/tmp/amalthea-grid-oracle python -m pytest python-native/tests -q -s
+```
+
+Use the environment's Python executable for pytest. No environment variable
+means the Julia-fixture test skips; an acceptance run must supply the exported
+fixtures. It asserts all axis/window max-relative errors below `1e-13`, exact
+selection masks, and matching shapes. Portable FFT checks cover odd/even
+lengths, direction/normalization, DC/Nyquist, input ownership, repeated use,
+Hilbert phase, and causal convolution. The documented final propagation gates
+still apply when the driver/physics are implemented.
+
+Also build an sdist (`maturin sdist`), extract outside the checkout, rebuild
+with `CARGO_NET_OFFLINE=true` after development dependencies are cached, and
+run that extracted suite against its installed wheel. Record the actual wheel
+tag: a locally produced `manylinux_2_34` wheel is not evidence for the planned
+`manylinux_2_28` release baseline. These are internal artifact checks.
+
+### Native work-item acceptance
+
+For the standalone callback driver, additionally export and supply its solver
+oracle directory:
+
+```bash
+julia --startup-file=no --project python-native/tools/export_solver_oracle.jl /tmp/amalthea-solver-oracle
+AMALTHEA_GRID_ORACLE=/tmp/amalthea-grid-oracle AMALTHEA_SOLVER_ORACLE=/tmp/amalthea-solver-oracle python -m pytest python-native/tests -q -s
+```
+
+These development-only exporters use the Julia fallback, not the new Python
+code. Driver acceptance covers first-interval dense equivalence (`1e-13`),
+fixed/adaptive trajectories (respectively `1e-13`/`1e-6`), independent nonlinear
+analytic accuracy, order-4/order-5 dense convergence, rejected trials, restart,
+nonuniform nonlinear filters, exception identity, and field-array ownership.
+Exact saved-position and filtered-output checks guard against NumPy/Julia
+range rounding placing nominal boundary samples on opposite sides of a filter.
+An exported-oracle skip is not a passing acceptance gate. Rebuild/install the
+sdist outside the checkout and run its nested `python-native/tests` suite and
+`python-native/examples/solver_analytic.py` against the installed wheel.
 
 A native work item is complete when **all** hold:
 
