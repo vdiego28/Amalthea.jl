@@ -10,7 +10,7 @@ from scipy.interpolate import splrep, splev
 from scipy.special import jn_zeros, jv
 
 from . import materials
-from .differentiation import derivative
+from .differentiation import derivative, _batched_derivative
 from .grid import C
 
 _ELECTRON = 1.6021766208e-19
@@ -140,6 +140,8 @@ class MarcatiliMode(Mode):
         self._pressure=pressure if callable(pressure) else _scalar(pressure,'pressure',nonnegative=True)
         self.gas=None if gas is None else materials._gas(gas)
         self._core=options['core_index']; self._cladding=options['cladding_index']
+        # Public/custom mode construction always keeps scalar callback semantics.
+        self._batch_dispersion=False
         for name,callback in [('core_index',self._core),('cladding_index',self._cladding)]:
             if callback is not None and not callable(callback):
                 raise TypeError(f'{name} must be callable')
@@ -202,7 +204,8 @@ class MarcatiliMode(Mode):
     α=alpha
 
     def dispersion(self,order,omega,*,z=0.):
-        return derivative(lambda w:self.beta(w,z=z),omega,order)
+        evaluate=_batched_derivative if self._batch_dispersion and order==1 else derivative
+        return evaluate(lambda w:self.beta(w,z=z),omega,order)
 
     def field(self,coordinates,*,z=0.,normalized=False):
         if len(coordinates)!=2:

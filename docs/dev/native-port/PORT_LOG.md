@@ -7891,3 +7891,429 @@ five corrected manifests and their 32/913 no-skip counts. State/log:
 failed prerequisite/timing state remains preserved separately. No full-suite
 pass or controlled performance result is claimed at this restart checkpoint.
 **Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Cache correction delivered and corrected suites underway — Codex
+**Status at this checkpoint:** follow-up committed/pushed; corrected local and
+hosted validation running. No final platform or performance pass claimed yet.
+**Did:** Delivered the fixture-cache correction, post-test reference checks,
+report generator and prepared Apple diagnostic as
+`fbb8b458595524e0fbdb84e389db5355e380d95e` on `feat/julia-free-python` (15 files,
+593 additions/17 deletions). The isolated delivery worktree is clean; original
+checkout HEAD/source stays fixed for local validation. Installer edits remain
+preserved. No production physics/shared-engine changes were made in this follow-up.
+**Design:** [Cache correction](PYTHON_NATIVE_PLAN.md#consumer-local-ppt-fixture-caches--portability-correction),
+[Apple diagnostic](PYTHON_NATIVE_PLAN.md#apple-diagnostic-during-platform-validation--implementation-design).
+**Tests:** Push succeeds to the previously verified origin. Read-only GitHub
+status confirms [run 34651952194](https://github.com/vdiego28/Amalthea.jl/actions/runs/34651952194)
+**in_progress** at exact head `fbb8b45`; prior run 34650062532 is cancelled by
+branch concurrency after this necessary correction. The new run includes the
+Apple diagnostic and the reference-dependent sixteen wheel cells.
+
+All five corrected local environments have now installed both wheel variants,
+run **all seventeen examples per wheel offline**, passed checkout **32 tests**
+with zero failures/skips, and started the complete source suites. This includes
+every Python 3.11–3.14 actual-glibc environment and the maintained host runner.
+The post-checkout reference checks pass. Combined session **25983** and deferred
+controlled measurement **34589** remain indexed in
+`.rust_test_logs/roadmap-live-jobs.json`. Their final results are pending.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Installed Python guide and executable examples — Codex
+**Status at this checkpoint:** guide/navigation implemented and checked;
+README reconciliation prepared separately while package source remains frozen.
+**Did:** Added `docs/src/python_native.md` and its `docs/make.jl` navigation
+entry. The guide covers actual-wheel installation, units, both entrypoints,
+backend diagnostics, axes/energy normalization, pulses/modes, profiles/custom
+responses and optional output. Prepared eight obsolete-status corrections to
+the package README in `/tmp/amalthea-python-guide-20260911/{README.md,README.patch}`;
+the live package README is unchanged during installed acceptance and timing.
+No runtime source, FFI, physical model or tolerance changed. The independent
+installer files remain preserved; no documentation deployment was run.
+**Design:** [Installed user guide](PYTHON_NATIVE_PLAN.md#installed-python-user-guide--documentation-delivery).
+**Tests:** Extracted and executed all **six Python blocks in order** with the
+actual installed CPython 3.14.6 source wheel, SHA-256
+`a7498f02d5e8faaa8c017d053da3009edd73f89021e665d8f84ee93311a0142b`,
+outside the checkout under `unshare --user --map-root-user --net`, with
+`PATH=/nonexistent` and one BLAS/OMP/Rayon thread. Both entrypoints, carrier ADK,
+modal native points, energy processing and exact NPZ/HDF5 comparisons pass.
+Custom scalar Kerr agrees with built-in Kerr at **2.197674551701493e-16**
+(assertion unchanged at 1e-13); final carrier energy is
+**9.999985814821428e-5 J**. The guide checks API use; established independent
+physics/non-vacuity gates remain the numerical acceptance evidence.
+Documentation navigation points to the real page. Post-run package source maps
+and the recovered reference inventory remain unchanged. No CUDA process ran.
+Evidence: `/tmp/amalthea-python-guide-20260911/{guide.py,manifest.json}`.
+The five full installed suites, hosted platform gate and deferred controlled
+snapshot remain running/pending as indexed in `.rust_test_logs/roadmap-live-jobs.json`.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Apple auxiliary argument failure reproduced and repaired — Codex
+**Status at this checkpoint:** local process-helper correction verified;
+delivery and actual Apple acceptance remain pending.
+**Did:** Downloaded the failed actual-Apple artifact from hosted run
+`34651952194`, job `103436037352`, at exact `fbb8b45` to
+`/tmp/amalthea-apple-ci-fbb8b45-20260911`. Its log shows `too many arguments`
+when `apple_quick_aux.jl scan OUTPUT_JSON` constructs `Scan`: the production
+API intentionally parses nonempty global `ARGS`, including explicitly supplied
+execution policies. The auxiliary now clears its own arguments after copying
+them to locals. `src/Scans.jl` and its argument precedence are unchanged.
+**Design:** [Apple argument isolation](PYTHON_NATIVE_PLAN.md#apple-scan-diagnostic-argument-isolation--correction).
+**Gotchas:** The existing quick runner removes intermediate temporary samples
+when an auxiliary fails. No accepted Apple timing or completed numerical result
+is inferred from the earlier subprocesses; the retained hosted artifact is
+failed. This helper was introduced after the frozen audit in `30d2eec`.
+Its previous hash is `64ed26bc71f1b356e6f5a6e51a8018afc785bc0791c1dca638791e817182f7ae`;
+all **65 other tracked audit files** remain byte-identical, including the
+frozen workload/result files and Python runner. The new helper hash is retained
+with the source snapshot below.
+**Tests:** Real local Julia CLI before repair reproduces exit 1 and the exact
+argument error. After repair, `julia --threads=1 --startup-file=no --project
+test/performance_audit/apple_quick_aux.jl scan OUTPUT_JSON` completes all eight
+points exactly once, reports one thread per worker and successful cleanup.
+The same CLI with `modal` passes at `--threads=1`, `2` and `4`, with **bit-exact**
+fields for all three; threaded evaluation is active for two/four threads.
+These are Linux helper correctness checks, not Apple performance evidence.
+CUDA was explicitly disabled; no library rebuild was performed. Shared library
+SHA remains `6e2c0cc7bb91890bf44a30166b2f54bc428d8e40504f1232575bed741537ff07`.
+Package source hashes and recovered oracle inventory are unchanged.
+Evidence: `.rust_test_logs/python-apple-arguments/{before.json,reproduction.json,
+validation.json,scan-t1.json,modal-t1.json,modal-t2.json,modal-t4.json}` and
+corresponding command/log records. The correction is held for the next platform
+follow-up so an isolated diagnostic push does not cancel active wheel jobs.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Downloaded wheel-matrix collector — Codex
+**Status at this checkpoint:** collector implemented and transport-checked;
+completed hosted matrix evidence remains pending.
+**Did:** Added `test/standalone_wheels/collect.py`, eight regressions in
+`test/test_wheel_collection.py`, and collection commands in `TESTING.md`.
+The collector checks exact hosted/build/reference revisions, downloaded archive
+and wheel hashes, package source inventories, platform/interpreter tags,
+installed-module ownership, all seventeen offline examples, OS network-denial
+and loaded-library records, command success and no-skip JUnit counts. Producer
+absolute paths are resolved only by filename inside the downloaded layout.
+Windows text checks permit LF/CRLF conversion only; binary files remain exact.
+Missing or malformed cells are retained while the other cells are inspected.
+Reports explicitly retain requested scope and parent-workflow failures; a wheel
+matrix pass cannot substitute for Apple/performance/release acceptance.
+**Design:** [Downloaded matrix evidence](PYTHON_NATIVE_PLAN.md#downloaded-wheel-matrix-evidence--collection-contract).
+**Tests:** `python3 test/test_wheel_collection.py -v`: **8 passed**, covering
+four native-platform record layouts, Windows newline conversion, empty scope,
+changed revision/source/target/interpreter/reference, changed/missing artifacts,
+failed/skipped/truncated JUnit, incomplete examples, unproved network denial,
+wrong installed paths/interpreter, forbidden libraries and continuation after
+malformed XML. These fixtures contain synthetic wheels and are **not** platform
+execution evidence. Inspection of the actual corrected host build at
+`/tmp/amalthea-cache-fixed-builds-20260911/3.14.6` correctly rejects its unfinished
+installed manifest with `installed validation incomplete`; no pass is inferred.
+Whitespace checks pass. Evidence:
+`.rust_test_logs/python-wheel-collection/validation.json` records command,
+collector/test hashes and the real incomplete-artifact rejection. Runtime,
+shared-engine, package/test/exporter sources and the frozen audit are unchanged
+by this collector unit. The live local/hosted jobs continue independently.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Corrected host acceptance and prepared CI follow-up — Codex
+**Status at this checkpoint:** corrected maintained host gate complete;
+four actual-glibc gates and hosted reference/platform jobs continue.
+**Did:** Collected `/tmp/amalthea-cache-fixed-builds-20260911/3.14.6/validation.json`
+after actual completion at 22:31:47 UTC. Independently inspected this real
+artifact through the new collector after its earlier incomplete-state rejection.
+Added the collector's eight transport regressions alongside the existing 23
+validation-tool checks in the reference and sixteen wheel jobs. Copied/staged
+the ten-file follow-up (guide/navigation, Apple auxiliary fix, collector,
+workflow wiring and documentation) in `/tmp/amalthea-python-delivery-20260911`.
+HEAD remains `fbb8b45`; no commit/push cancels the current hosted run. Original
+checkout package source/HEAD and the prepared package README remain untouched.
+**Design:** [Downloaded matrix evidence](PYTHON_NATIVE_PLAN.md#downloaded-wheel-matrix-evidence--collection-contract),
+[Apple helper](PYTHON_NATIVE_PLAN.md#apple-scan-diagnostic-argument-isolation--correction).
+**Tests:** Actual installed CPython **3.14.6** source suite: **913 passed in
+2076.25 s**, zero failures/skips; checkout **32 passed**, zero failures/skips.
+Both wheels run all **17 examples offline**. Post-test reference inventory
+checks pass; manifest remains
+`0bc977d51eef2818077e02eef703c6dece6fd7463c5f2a10e64b477d5e5a3ba0`.
+Source wheel SHA `a7498f02d5e8faaa8c017d053da3009edd73f89021e665d8f84ee93311a0142b`;
+checkout SHA `f5a068ecaddae3c42e199d25ed8fc509190df36b781ddf00bef9efe9504e12d4`;
+source archive SHA `c6534f836df57d9ecef99a4df2c3181197301b5c431fe73b8b441831ba7f750f`.
+Full modal plasma spatial refinement retains trajectory differences
+**1.1157215861188605e-10 → 1.5982248233560766e-14**. Fifth-order filtering changes
+the oracle by **9.103040939411227e-4**. Full raw setup/step/trajectory results
+and JUnit remain under the host artifact's `logs/` and root.
+
+Collector verifies actual archive/wheel/package bytes, installed paths,
+offline records and XML counts: `.rust_test_logs/python-wheel-collection/real-host-cell.json`.
+The exact new CI tooling sequence passes **23 + 8 tests**, with retained command
+logs in that directory. Parsed workflow comparison proves only the two intended
+tooling `run` steps changed from delivered `fbb8b45`. Staged whitespace checks
+pass; copied-file hashes/exclusions are in
+`.rust_test_logs/python-followup-preparation.json`. No complete hosted matrix or
+controlled timing pass is inferred from this one local cell.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Final corrected minimum-glibc acceptance complete — Codex
+**Status at this checkpoint:** all five corrected local installed gates pass;
+controlled CPU snapshot started after their completion. Hosted platforms remain
+separate pending evidence.
+**Did:** Collected every terminal result from session **25983** and independently
+checked the four glibc manifests, exact build/wheel hashes, XML counts, actual
+libc probe and installed offline library inventories. The source and checkout
+wheels load `/lib/x86_64-linux-gnu/libc-2.28.so`; every interpreter reports
+glibc **2.28**. The pinned userspace rootfs SHA remains
+`2bc7ec77d5d367039d49548f479aaebab87641f0c51dceb5e8c2e595c5170c32`.
+The host kernel/CPU remain modern, as recorded by the original runtime design.
+**Design:** [Minimum-glibc runtime](PYTHON_NATIVE_PLAN.md#linux-glibc-228-runtime--implementation-design),
+[cache correction](PYTHON_NATIVE_PLAN.md#consumer-local-ppt-fixture-caches--portability-correction).
+**Tests:** All four corrected source-wheel suites pass **913 tests**, all four
+checkout suites pass **32 tests**, with **zero failures/skips**. JUnit source
+suite times: Python **3.11.16 2247.936 s**, **3.12.12 2169.709 s**,
+**3.13.11 2218.518 s**, **3.14.6 2175.889 s**. Both wheels per interpreter run
+all **17 complete examples** in the isolated network namespace. Full modal
+plasma/refinement, callbacks, setup, solver lifecycle and output assertions are
+included in each complete suite. The corrected maintained host 913/32 pass is
+recorded immediately above. All build source maps and the recovered reference
+manifest/files still verify after every suite; no reference mutation recurred.
+**Gotchas:** The first ad-hoc duration summary expected `32 passed in ...`,
+but checkout output also includes deselections. Corrected that summary to read
+the existing JUnit time; no test or artifact was changed. This failed parse and
+resolution are recorded in `summary-parse-note.json`.
+
+Evidence: `.rust_test_logs/python-cache-fix/{full-runs.json,final-acceptance.json,
+summary-parse-note.json}` and `/tmp/amalthea-cache-fixed-full-20260911/VERSION/`.
+The preceding build entry and the consolidated summary retain exact source and
+eight wheel digests. Session **34589** now executes the controlled eleven-case
+snapshot in `/tmp/amalthea-python-performance-controlled-20260911` after the
+final prerequisite passed at 22:34:45 UTC. Its record confirms no competing
+heavy validation and CPU affinity `[11]`; no accepted final timings are claimed
+before that run finishes. No library or runtime source was changed for this
+acceptance/collection unit.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Controlled post-repair snapshot accepted — Codex
+**Status at this checkpoint:** eleven-case controlled snapshot and report
+complete; existing method exclusions retained. Platform CI remains separate.
+**Did:** Collected terminal success from session **34589** after all five
+corrected installed gates passed. The snapshot uses the actual corrected
+source wheel, current Julia/Rust paths, one computational thread and CPU
+affinity `[11]`, with no competing heavy validation. Source/library checks
+remain intact. Raw samples and the standalone report are retained under
+`/tmp/amalthea-python-performance-controlled-20260911`.
+**Design:** [Post-repair snapshot](PYTHON_NATIVE_PLAN.md#post-repair-python-performance-snapshot--implementation-design).
+**Tests/results:** **11 workloads pass** with **10–11 admitted samples** per
+path after two warmups. Worst complete-workload relative MAD is **2.8055%**;
+worst bootstrap 95% relative CI half-width is **3.5038%**, below the unchanged
+3%/5% limits. Maximum admitted same-input RHS error is
+**1.1604281338270224e-14**; maximum complete/public field error is
+**9.473233898277356e-7** (existing Julia-native molecular Raman). Initial field
+maximum is **3.712622896231499e-16**; time/frequency/saved axes agree exactly.
+The smallest feature control is **4.4643272232807536e-4**; custom Kerr agrees
+with built-in Python at **1.4216285777929688e-15**.
+
+Coarse and first-refined GNLSE SDO comparisons with old Julia-native ADE remain
+explicitly inadmissible; the finest refinement passes the existing 1e-6 gate.
+Envelope gradient native fallback is reported unavailable. No excluded path
+contributes an accepted speedup. Scalar Python-auto complete-workload ratios
+versus Julia range **1.291×–7.711×**; modal-envelope/vector are **0.219×/0.245×**,
+so those two Python workloads remain slower. Import/first-public/RSS/HDF5 scope
+limits remain in the report. Snapshot SHA-256
+`8a3202f739e820b2030359bcb432eee564098f374126916212f489b9c6eb307e`;
+report SHA-256 `4c174ea5a544526c9d7027d21bf96e2677b728b567dca4fd163f2a72c01ef224`.
+Summary: `.rust_test_logs/python-performance-accepted.json`. This completes the
+baseline measurement, not the next measured optimization or platform release.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Largest-workload profile and batching feasibility — Codex
+**Status at this checkpoint:** root cause measured and temporary prototype
+verified; production eligibility/integration and installed acceptance are next.
+**Did:** Profiled the exact accepted `capillary-gradient` setup/solve using the
+installed baseline and existing worker routines. This is the largest auto
+workload, **288.452 ms**, with **277.271 ms** in solve. Five cProfile executions
+attribute **1.527/2.223 s (~69%)** to finite-difference group velocity, including
+9,520 scalar finite-difference function calls and repeated material/density
+validation/interpolation. Profiled fields are bit-exact with the accepted
+baseline; accepted/rejected counts remain **20/0**.
+**Design:** [Gradient profiling/retention](PYTHON_NATIVE_PLAN.md#measured-gradient-workload--profiling-and-optimization-gate).
+**Prototype:** A temporary process-only replacement batches the existing
+frequency samples for this known pure built-in gradient. It retains scalar
+sample-position arithmetic, adaptive bound/step selection, conversion to Python
+scalar values and left-fold reduction. It changes no package file and restores
+the original evaluator on exit. Complete fields and linear operators at
+`z=0, .001, .0073, .02, .023` are **bit-exact**; counts remain **20/0**. Eight
+alternating diagnostic pairs yield medians **282.401 ms baseline / 134.928 ms
+prototype**. These process-local/profiler observations are **not accepted
+optimization timings** and do not broaden arbitrary callback semantics.
+**Tests/evidence:** `/tmp/amalthea-gradient-profile-20260911/{profile.py,
+profile.txt,profile.json,gradient.pstats,batch_prototype.py,batch-prototype.json}`
+retain scripts, source/snapshot hashes, call attribution, raw diagnostic pairs,
+fields/count agreement and the prototype's scope. Next production design must
+limit batching to verified built-in data-defined modes/profiles, preserve
+serial arbitrary callback calls, and pass separately installed comparison,
+strict math/full-trajectory tests and the >=5% retention gate. No runtime source,
+shared library, C ABI, frozen audit result or accepted snapshot was modified.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Built-in gradient batching accepted — Codex
+**Status at this checkpoint:** production optimization passes focused scientific
+and controlled installed-performance gates; final artifact suites are starting.
+**Did:** Added a private batch evaluator in
+`python-native/python/amalthea_native/differentiation.py` while keeping public
+`derivative` serial. `modes.py::MarcatiliMode.dispersion` enables only first-order
+batching through a private flag, disabled on every public constructor.
+`capillary.py::_Capillary` enables it only for internally owned variable modes
+with numeric radius and entirely data-defined pressure profiles, including all
+mixture constituents. Sample-coordinate arithmetic, adaptive stencil selection,
+Python scalar reductions and the `mode.dispersion` override seam are preserved.
+Custom modes, callable profiles/radii and other derivative orders remain serial;
+complete nonlinear callbacks retain their calls, shapes and original exceptions.
+Applied the prepared package README reconciliation. No Rust, Julia, C ABI,
+portable FFT kernel or CUDA source changed.
+**Design:** [Production batching](PYTHON_NATIVE_PLAN.md#built-in-scalar-gradient-batching--production-design).
+**Tests:** Actual source-rebuilt CPython 3.14.6 wheel
+`4c323bb205e9a02e81cfb4f0d558c7a345e4fa792b80b718b7c127cec48617db`
+passes **24 new batching tests (2.43 s)** and **274 existing independent
+mode/profile/mixture/callback tests (508.32 s)**, no failures/skips. New tests
+cover strict operators/full fields on both grids, molecular responses and
+mixtures; scalar callback order/eligibility, other orders, trace equality and
+exception identity. Independent rising-Ar envelope interval error is
+**1.736048657831284e-16**, fixed/adaptive **8.316833544166188e-14**;
+carrier interval **2.320856893337461e-16**, fixed/adaptive
+**2.999129483227994e-12**. Setup group-velocity maximum for this case is
+**3.3579614818155136e-14**, below the unchanged 1e-13 gate.
+**Controlled retention:** separate immutable baseline and candidate installed
+processes pass **all eleven workloads**, two warmups and **10–14 samples** per
+path, one computational thread, affinity `[11]`, no heavy competing validation.
+Every checked and timed Python field is **bit-exact** with the accepted snapshot,
+and accepted/rejected counts agree. Gradient counts remain **20/0**; error
+against independent Julia stays **8.351160541017229e-12**, with feature effect
+**0.011982258061689817**. Complete gradient medians are **295.2395 → 137.1163 ms
+(53.56% lower)**; solve **284.1991 → 127.1136 ms (55.27% lower)**. Worst other
+complete-workload slowdown is **1.737%**. Maximum complete/solve relative MAD is
+**2.677%**; bootstrap 95% relative CI half-width **4.674%**. No exclusions or
+numerical thresholds were changed. Performance evidence is host/workload-specific.
+
+Evidence: `/tmp/amalthea-gradient-acceptance-20260911/{focused.py,focused.json,
+batching.log,independent.log,compare.py,comparison.log}` and
+`/tmp/amalthea-gradient-comparison-20260911/{comparison.json,report.md}` with
+all worker samples. Comparison SHA-256
+`24cc20c6cb186ff9ee70a8755ba170fb05263d9ba752088eb6767b5c580df4a2`;
+summary `.rust_test_logs/python-gradient-accepted.json`. Installed package,
+archive/wheel, source, original snapshot/harness, shared-library and oracle
+hashes pass before/after comparison. Shared CPU/CUDA/FFI gates above remain
+applicable to the unchanged engine. The final example-only correction below
+is outside this timed source snapshot; final wheels are being rebuilt and
+validated separately. Original frozen audits and accepted snapshots are intact.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Hosted platform failures isolated and corrections prepared — Codex
+**Status at this checkpoint:** reference producer independently verified;
+Windows fixture and ARM64 example corrections implemented locally; actual
+platform reruns and final installed suites remain pending.
+**Did:** Hosted `fbb8b45` reference export completed. Downloaded and verified
+its **20 families / 7,130 files** against the clean exact-commit worktree
+`/tmp/amalthea-hosted-fbb8b45`; manifest SHA-256
+`4ac73ed81b838f4e1ad99864e0624a389468bf8363b29beb3ef316d30ca96286`.
+Downloaded all four failed ARM64 artifacts, retained job logs and applied the
+collector: it correctly reports an incomplete sixteen-cell matrix, with
+Windows/ARM64/Apple diagnostic failures explicit. Remaining Linux x86_64 and
+Apple wheel suites continue; no platform acceptance is inferred from builds.
+**Design:** [Hosted corrections](PYTHON_NATIVE_PLAN.md#hosted-platform-validation-corrections--windows-fixtures-and-sliced-ffts).
+**Windows:** `test/test_python_native_validation.py` now explicitly exercises
+both LF and CRLF bytes without duplicating existing CR, and its simulated
+export failure uses `Path(...).name` instead of a Unix suffix. Reproduced the
+original CRCRLF hash mismatch and Windows-path hook miss; production provenance
+checks are unchanged. Corrected tooling **23 tests pass**, collector **8 tests
+pass** locally. Real Windows rerun is still required.
+**ARM64:** Every interpreter's two wheels build/audit/install; the first sixteen
+offline examples pass. All four fail the seventeenth example's bitwise
+comparison of sliced versus full-batch inverse FFTs, maximum absolute difference
+**7.73070497e-12** in the recorded carrier modal field. Updated
+`python-native/examples/output_processing.py` to compare saved spectral values
+**exactly before transformation** and check the reconstructed FFTs at the
+established **1e-13 norm reassociation tier**, with shape/finiteness checks and
+printed achieved error. This separates exact serialization from FFT batch
+rounding; no solver, physical model or Julia acceptance tolerance changed.
+The corrected complete example passes against the installed candidate on Linux
+x86_64, with reconstruction errors **0/0** for GNLSE/carrier-modal. ARM64 norm
+errors are not claimed before rerun. Existing independent output tests remain
+unchanged.
+
+Evidence: `/tmp/amalthea-hosted-artifacts-fbb8b45/{python-native-oracles,
+python-native-linux-arm64-*,arm64-failures.json,collection-incomplete.json,
+collection-incomplete.md}`, `/tmp/amalthea-ci-{linux-arm64,windows}-fbb8b45.log`,
+`.rust_test_logs/python-hosted-reference-fbb8b45.json`, and
+`/tmp/amalthea-gradient-acceptance-20260911/{windows-fixture-reproduction.json,
+windows-fixture-tests.log,collector-tests.log,output-draft.log}`.
+Final rebuild/actual-glibc validation launcher:
+`/tmp/amalthea-gradient-acceptance-20260911/final_artifacts.py`, session **41144**,
+state `/tmp/amalthea-gradient-final-20260911/state.json`; four interpreters,
+two concurrent installed suites, all examples offline. These results are
+pending. Delivery staging contains the reviewed follow-up; push is held while
+useful current hosted suites finish. Independent installer edits are preserved.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Final gradient artifacts built; isolated suites started — Codex
+**Status at this checkpoint:** all eight final wheels build/audit; installed
+acceptance is running, not complete.
+**Did:** Built checkout and source-rebuilt manylinux_2_28 wheels for CPython
+3.11.16, 3.12.12, 3.13.11 and 3.14.6 under
+`/tmp/amalthea-gradient-final-20260911/VERSION/build`. Final source archive SHA
+`a0d476c0a18c5ce5843c38fdffc3d8097543e5a41023942f4d03f40730a3e209`;
+all eight wheel hashes are in `.rust_test_logs/python-gradient-final-builds.json`.
+Source-map comparison proves the **only** difference from the timed candidate
+is `python-native/examples/output_processing.py`; runtime/math are unchanged.
+**Design:** [Gradient acceptance](PYTHON_NATIVE_PLAN.md#built-in-scalar-gradient-batching--production-design),
+[platform correction](PYTHON_NATIVE_PLAN.md#hosted-platform-validation-corrections--windows-fixtures-and-sliced-ffts).
+**Gotcha:** The first installed launcher ran inside the tool sandbox. All four
+container probes failed before Python startup because the sandbox denies the
+NETLINK_ROUTE socket required to configure the isolated loopback interface.
+The prior `bwrap` user-namespace-only probe was insufficient to detect that
+network restriction. Failed records remain under each `VERSION/validation`.
+No scientific test ran or failed in that attempt, and no wheel was rebuilt.
+
+The approved host execution uses the same maintained container runner, with
+network/process/user isolation and read-only rootfs, interpreters, references,
+wheels and examples. New launcher
+`/tmp/amalthea-gradient-acceptance-20260911/final_installed.py`, session **27143**,
+state `/tmp/amalthea-gradient-final-host-20260911/state.json`. Both first
+interpreters prove loaded **glibc 2.28**, then pass binary-only installation,
+dependency and interpreter-version checks and start offline examples. Two
+bounded suites run at once; Python 3.13/3.14 are queued. Full source suites
+expect 937 tests without skips. The live handle replaces completed/failed
+session 41144 in `.rust_test_logs/roadmap-live-jobs.json`. No complete installed
+pass is claimed yet; hosted Linux x86_64/Apple suites also remain in progress.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Verified follow-up prepared for immediate delivery — Codex
+**Status at this checkpoint:** 17-file follow-up staged and reviewed;
+commit/push is the immediate next action, already authorized by the lead.
+**Decision:** The current hosted run has eight terminal Windows/ARM64 failures
+with reproduced causes. Deliver their corrections, the Apple helper, installed
+guide/collector and accepted gradient optimization now; a new matrix must test
+the final source in any case. This follows the lead's instruction to continue
+without waiting for long CI. The known-failed run may be superseded by branch
+concurrency; its pending cells will not be counted as passed.
+**Design:** [Delivery scheduling](PYTHON_NATIVE_PLAN.md#delivery-scheduling-after-confirmed-platform-failures).
+**Checks:** Remote `feat/julia-free-python` still resolves to `fbb8b45`, matching
+the delivery worktree's parent. Staged whitespace checks pass; no unstaged
+changes or installer files are included. Existing evidence: 298 focused tests,
+eleven controlled workloads with unchanged fields/counts, eight final portable
+wheel builds and local tooling checks recorded above. Both first final glibc
+interpreters now pass **all seventeen examples per wheel** and **34 checkout
+tests without skips**; complete 937-test source suites run under live session
+27143. Checkout count increased from 32 because the existing `-k output` filter
+also selects two array-shape regression parameter cases. Remaining interpreters
+are queued. No full final-suite or corrected hosted platform pass is claimed.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06);
+failed-run snapshot `/tmp/amalthea-hosted-fbb8b45-run-latest.json` and retained
+artifacts remain available for subsequent collection.

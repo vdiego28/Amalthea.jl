@@ -9,6 +9,7 @@ makedocs(
     pages = Any[
         "Home" => "index.md",
         "Installation and configuration" => "installation.md",
+        "Julia-free Python" => "python_native.md",
         "The numerical model" => [
             "General description" => "model/model.md",
             "Modal decompositions" => "model/modal_decompositions.md",

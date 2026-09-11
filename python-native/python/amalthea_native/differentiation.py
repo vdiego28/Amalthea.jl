@@ -63,22 +63,43 @@ def _evaluate(function, grid, x, step):
     return values
 
 
+def _evaluate_batched(function, grid, x, step):
+    # Preserve the scalar coordinate arithmetic and the scalar left fold below.
+    # Only internally owned, data-defined frequency models use this evaluator.
+    positions = np.array([x+step*g for g in grid])
+    values = np.asarray(function(positions))
+    if values.shape != positions.shape:
+        raise ValueError('batched derivative must return the frequency-sample shape')
+    if not np.all(np.isfinite(values)):
+        raise ValueError('batched derivative returned nonfinite values')
+    return values.tolist()
+
+
 def derivative(function, x, order=1):
     """Derivative of a scalar function; optional array x is evaluated serially."""
+    return _derivative(function, x, order, _evaluate)
+
+
+def _batched_derivative(function, x, order=1):
+    """Internal frequency batching; callers must exclude arbitrary callbacks."""
+    return _derivative(function, x, order, _evaluate_batched)
+
+
+def _derivative(function, x, order, evaluate):
     order = operator.index(order)
     if not 0 <= order <= 7:
         raise ValueError('derivative order must be in 0..7')
     axis = np.asarray(x,dtype=float)
     if not np.all(np.isfinite(axis)):
         raise ValueError('derivative positions must be finite')
-    values = [_derivative_scalar(function,float(value),order) for value in axis.flat]
+    values = [_derivative_scalar(function,float(value),order,evaluate) for value in axis.flat]
     output = np.array(values).reshape(axis.shape)
     return output.item() if output.ndim==0 else output
 
 
-def _derivative_scalar(function, x, order):
+def _derivative_scalar(function, x, order, evaluate=_evaluate):
     if order == 0:
-        return _evaluate(function,(0,),x,1.)[0]
+        return evaluate(function,(0,),x,1.)[0]
     scale = x if abs(x)>0 else 1.
     f = lambda value: function(value*scale)
     center = x/scale
@@ -86,14 +107,14 @@ def _derivative_scalar(function, x, order):
     grid,coefficients,_,_ = _stencil(points,order)
     bound_grid,_,_,_ = _stencil(points+2,points)
     bound_step = _step(points+2,points,10.,np.finfo(float).eps)
-    samples = _evaluate(f,bound_grid,center,bound_step)
+    samples = evaluate(f,bound_grid,center,bound_step)
     bounds = [_estimate(samples,_coefficients(tuple(g+offset for g in bound_grid),points),bound_step,points) for offset in (-1,0,1)]
     magnitude = max(abs(value) if np.isfinite(value) else 0. for value in bounds)
     value_magnitude = max(abs(value) for value in samples)
     default = _step(points,order,10.,np.finfo(float).eps)
     step = default if magnitude==0 or value_magnitude==0 else _step(points,order,magnitude,math.ulp(value_magnitude))
     step = min(step,1000*default)
-    result = _estimate(_evaluate(f,grid,center,step),coefficients,step,order)/scale**order
+    result = _estimate(evaluate(f,grid,center,step),coefficients,step,order)/scale**order
     if not np.isfinite(result):
         raise ValueError('derivative estimate is nonfinite')
     return result

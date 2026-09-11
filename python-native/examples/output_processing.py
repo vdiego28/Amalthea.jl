@@ -28,9 +28,15 @@ with TemporaryDirectory(prefix='amalthea-results-') as directory:
             metadata = json.loads(saved['metadata'].asstr()[()])
             # Select only the final saved position without loading all fields.
             spectrum = saved['Eomega'][..., -1]
+            np.testing.assert_array_equal(spectrum, result.field[..., -1])
             field = (np.fft.irfft(spectrum, n=saved['t'].size, axis=0)
                      if grid['is_real'] else np.fft.ifft(spectrum, axis=0))
-            np.testing.assert_array_equal(field, result.temporal_field()[..., -1])
+            reference = result.temporal_field()[..., -1]
+            assert field.shape == reference.shape and np.all(np.isfinite(field))
+            # Different FFT batch shapes may round differently; file values stay exact.
+            fft_error = np.linalg.norm(field-reference)/max(np.linalg.norm(reference), 1e-300)
+            assert fft_error < 1e-13
+            print(f'{name}: sliced/full FFT relative error={fft_error:.6g}')
         columns = field[:, None] if field.ndim == 1 else field
         energies = [energy_t(result.grid, column) for column in columns.T]
         assert all(np.isfinite(energy) and energy >= 0 for energy in energies)

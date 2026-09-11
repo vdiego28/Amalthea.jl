@@ -114,6 +114,9 @@ class _Capillary(_EnvelopeModel):
             mode=MarcatiliMode(radius,self.gases[0],profile.constant,**specification,
                                model=kw['model'],loss=kw['loss'],temperature=kw['temperature'])
         self.mode=mode
+        profiles=profile.profiles if self.is_mixture else (profile,)
+        mode._batch_dispersion=(self.variable and not callable(radius)
+                                and all(item.callback is None for item in profiles))
         self.responses=tuple(_ScalarGasResponse(grid,name,options|{'temperature':kw['temperature']},self.thg)
                              for name,options in zip(self.gases,options_by_species))
         self._refresh_responses(0.)

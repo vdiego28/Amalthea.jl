@@ -118,21 +118,20 @@ or "verified" inside a superseded narrative do not outrank this list.
 > runs in an actual pinned glibc 2.28 userspace. The complete maintained producer
 > exports all twenty real Julia reference families with verified provenance.
 >
-> **Active gates:** the first actual-glibc full runs exposed seven tests replaying
-> the exporter's absolute PPT cache directory: 906 passed/seven failed on
-> 3.11/3.12. The host suite passed 913 but added three cache files to the
-> reference inventory, causing a later verifier to reject it. All original
-> reference hashes remain intact; a verified copy with the original manifest
-> is recovered. Consumer-local test caches and post-test reference checks are
-> fixed; all seven affected cases now pass on actual glibc 2.28. All eight
-> corrected checkout/source wheels build and audit; four fresh glibc suites
-> and the maintained host suite are now running against the recovered references.
+> **Corrected installed acceptance complete:** all four CPython 3.11–3.14
+> actual-glibc 2.28 suites pass **913 source / 32 checkout tests**, with no
+> failures/skips and all seventeen examples offline per wheel. The maintained
+> host 3.14.6 suite also passes 913/32. Artifact, interpreter, loaded-libc,
+> reference and post-test inventory checks pass; original reference hashes are
+> unchanged. Consumer-local PPT caches close the earlier path/mutation defect;
+> its failed artifacts remain retained. Consolidated evidence:
+> `.rust_test_logs/python-cache-fix/final-acceptance.json`.
 > Design: [cache correction](native-port/PYTHON_NATIVE_PLAN.md#consumer-local-ppt-fixture-caches--portability-correction).
 > The portable sixteen-cell native platform/interpreter workflow is implemented;
 > all 23 tooling regressions pass on Python 3.11–3.14. Hosted workflow
-> [34650062532](https://github.com/vdiego28/Amalthea.jl/actions/runs/34650062532)
-> is running at delivered `e4d00567362341decf244781195e6f8a3f10d716` on
-> `feat/julia-free-python`; its sixteen wheel cells await the reference producer. The previous hosted run at `34cdafc` tested the repair/foundation
+> [34651952194](https://github.com/vdiego28/Amalthea.jl/actions/runs/34651952194)
+> is running at delivered `fbb8b458595524e0fbdb84e389db5355e380d95e` on
+> `feat/julia-free-python`; its complete reference producer passed and the downloaded twenty-family artifact verifies. Linux x86_64 and Apple wheel suites are running; Windows tooling fixtures and the ARM64 output example require the corrections recorded below. The previous hosted run at `34cdafc` tested the repair/foundation
 > delivery, without the current standalone artifact jobs. No ARM64, Apple or
 > Windows execution is claimed yet.
 >
@@ -141,24 +140,59 @@ or "verified" inside a superseded narrative do not outrank this list.
 > of 15.28–73.41% on the ten accepted point workloads. The separate
 > [post-repair snapshot](native-port/PYTHON_NATIVE_PLAN.md#post-repair-python-performance-snapshot--implementation-design)
 > harness passes eleven actual matched correctness smoke workloads, including
-> complete-array callback overhead coverage. Accepted timings wait for heavy
-> validation to finish. Coarse GNLSE SDO exposes
+> complete-array callback overhead coverage. Controlled measurement now passes
+> all eleven cases with 10–11 samples per admitted path after the five installed
+> gates passed. Coarse GNLSE SDO exposes
 > the existing Julia-to-Rust ADE-versus-FFT discretization difference. Its
 > inadmissible comparisons are retained; paired temporal refinement reaches
 > 3.119e-7 and passes the unchanged 1e-6 gate. Both standalone Python paths match that
 > Julia FFT trajectory near 1e-14. The report generator passes six evidence
-> tests; controlled measurement is requeued against the five corrected full
-> installed gates after preserving the stopped old launcher. This follow-up remains local while
-> hosted CI runs. The frozen CPU audit remains unchanged.
+> tests. The accepted report is
+> `/tmp/amalthea-python-performance-controlled-20260911/report.md`; its source,
+> wheel and library hashes remain verified. Scalar Python-auto workloads range
+> from 1.291× to 7.711× Julia's complete cost; modal workloads remain slower.
+> The cache correction, report and Apple job are delivered
+> in `fbb8b45`; the old run was replaced because its fixture paths were invalid.
+> The frozen CPU audit remains unchanged.
 >
-> **Next:** collect final maintained/minimum-glibc acceptance and the running
-> sixteen-cell hosted platform gate after the cache correction; deliver the
-> prepared native Apple diagnostic job and finish the controlled post-repair snapshot. Public preview
+> **Measured gradient optimization — accepted:** conservative built-in-only
+> frequency batching is implemented. The installed candidate passes 24 new and
+> 274 independent mode/profile/mixture/callback checks. All eleven controlled
+> comparison workloads pass with bit-exact baseline/candidate fields and matching
+> counts; gradient complete cost falls **53.56%**, solve cost **55.27%**. Worst
+> other workload slowdown is 1.737%; uncertainty remains within the existing
+> gates. Design: [gradient batching](native-port/PYTHON_NATIVE_PLAN.md#built-in-scalar-gradient-batching--production-design).
+> Evidence: `.rust_test_logs/python-gradient-accepted.json`. All eight final artifacts build/audit; four actual-glibc suites are running/queued under `/tmp/amalthea-gradient-final-host-20260911/state.json`. The source-only difference from the timed candidate is the output example correction.
+>
+> **Apple diagnostic correction:** hosted job `103436037352` failed because the
+> auxiliary passed its own `scan OUTPUT_JSON` arguments to `Scan`'s parser.
+> The two-line helper correction is locally verified with the real queue scan
+> and exact modal checks at one/two/four threads. Production scan behavior and
+> frozen audit results remain unchanged. The locally verified correction is included in the immediate platform follow-up; actual Apple acceptance requires its new run. Design:
+> [argument isolation](native-port/PYTHON_NATIVE_PLAN.md#apple-scan-diagnostic-argument-isolation--correction).
+>
+> **Documentation:** the installed Python guide is implemented in
+> `docs/src/python_native.md` and linked from the documentation navigation.
+> Its six Python blocks pass against the corrected installed source wheel
+> outside the checkout with networking disabled, including custom Kerr and
+> NPZ/HDF5 checks. The package README correction is applied to the gradient candidate after the baseline source freeze ended. Guide/navigation delivery is included in the platform follow-up.
+>
+> **Artifact collection:** `test/standalone_wheels/collect.py` now verifies the
+> downloaded sixteen-cell matrix and produces JSON/Markdown with hashes, JUnit
+> counts, offline evidence and separate workflow failures. Eight transport
+> regressions pass; it first rejected the incomplete host artifact, then
+> independently verified the completed corrected host cell and its actual bytes.
+> Apply it to completed hosted downloads using the exact delivered checkout.
+> Commands: [TESTING](native-port/TESTING.md#collect-a-downloaded-hosted-wheel-matrix).
+>
+> **Platform corrections:** all four ARM64 wheels build/install and pass the first sixteen offline examples; the last example incorrectly requires bitwise agreement between sliced/full-batch FFTs. Windows fails two synthetic tooling tests before building, due to newline duplication and a Unix-only path hook. Windows fixtures are corrected locally (23 tooling checks pass). The output example now preserves exact spectral round trips and checks sliced/full FFT reconstruction at the established reassociation tier; its local execution passes. Final wheel and actual platform reruns are pending. Design: [hosted corrections](native-port/PYTHON_NATIVE_PLAN.md#hosted-platform-validation-corrections--windows-fixtures-and-sliced-ffts).
+>
+> **Next:** push the verified platform follow-up, collect its complete sixteen-cell gate and corrected Apple diagnostic, and finish installed/platform acceptance of the verified
+> gradient optimization and validation corrections. Public preview
 > and stable platform acceptance remain unfinished; no publication is claimed.
 > Exact commands, hashes, numerical results and failed attempts are in the latest
 > [PORT_LOG entries](native-port/PORT_LOG.md); current live handles are indexed
-> in `.rust_test_logs/roadmap-live-jobs.json`. The intended migration changes
-> are committed/pushed in the isolated delivery worktree; the original checkout
+> in `.rust_test_logs/roadmap-live-jobs.json`. The initial migration changes are committed/pushed in the isolated delivery worktree; the verified gradient, guide and platform corrections are ready for immediate authorized delivery, superseding the known-failed hosted run under the documented scheduling decision; the original checkout
 > stays at `34cdafc` with matching migration source while local provenance checks
 > finish. Independent installer edits remain preserved.
 

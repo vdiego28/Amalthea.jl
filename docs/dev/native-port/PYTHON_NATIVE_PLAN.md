@@ -1961,3 +1961,181 @@ version. Stop known-doomed old runs and leave controlled timing stopped until
 the corrected installed gates pass. Deliver this necessary correction with the
 prepared report/Apple follow-up; it may require restarting the active hosted
 matrix because the old tests cannot satisfy the same portability requirement.
+
+## Installed Python user guide — documentation delivery
+
+Document the implemented public Python calls in `docs/src/python_native.md` and
+add that page to the existing documentation navigation. Explain installation
+from an actual matching wheel while publication is pending; do not imply the
+provisional PyPI name or every target platform is already released. Keep live
+acceptance status in BACKLOG. Include executable GNLSE and carrier capillary
+examples, units and alias conventions, result axes/normalization, backend
+diagnostics, complete-array custom responses, custom-mode requirements, profile
+convergence and optional output. Reference the existing complete examples and
+support matrix for detailed combinations, without inventing new API options.
+
+Reconcile obsolete package README statements that still describe implemented
+modal, carrier and custom-model support as future work. Prepare the README
+revision separately while the exact package source is frozen for installed
+acceptance and controlled timing. Promote that documentation-only change after
+the source-dependent runs finish, preserving the previous artifact hashes. Do
+not change runtime code, physical conventions or numerical tolerances for this
+documentation unit. Execute the guide's Python blocks in order using the actual
+installed source wheel outside the checkout, including custom/built-in
+equivalence and pickle-free/HDF5 round trips. Link-check local documentation
+paths and verify navigation without deploying documentation during validation.
+
+## Apple scan diagnostic argument isolation — correction
+
+The first actual Apple run at `fbb8b45` reaches the scan auxiliary and fails
+because `Scan(name, QueueExec(...))` intentionally honors nonempty global
+`ARGS`. The auxiliary's own `scan OUTPUT_JSON` arguments are therefore parsed
+as scan-execution options. Preserve that failed hosted artifact. After copying
+the auxiliary's two arguments to local variables, empty `ARGS` before invoking
+the scan API. Keep production `Scans.jl` command-line precedence unchanged.
+
+This corrects the prepared post-audit Apple helper introduced by `30d2eec`;
+it does not alter the frozen audit workloads, upstream comparison, artifacts,
+results or timing formulas. Retain the helper's original hash and verify all
+other tracked audit-file hashes remain unchanged. Reproduce the failure with
+the real local Julia process, then run the corrected scan and modal auxiliary
+through their actual command-line interfaces. Local results prove the process
+helper works, not Apple hardware performance. No shared library rebuild is
+needed. Deliver the correction with the next required platform follow-up rather
+than cancelling active wheel jobs for an isolated diagnostic fix.
+
+## Downloaded wheel-matrix evidence — collection contract
+
+Add a read-only collector under `test/standalone_wheels/` for artifacts downloaded
+from one hosted run. Require the exact commit and all four CPython versions for
+each requested platform (all four platforms by default). Reuse reference-manifest
+and JUnit validation. Check the actual downloaded source archives and both
+wheel variants against the build/test digests; verify package inventories,
+native platform/interpreter tags, installed-package paths, seventeen completed
+offline examples, isolation records, forbidden libraries and no-skip test counts.
+Compare recorded build-source hashes to the matching checkout, accounting only
+for Git's LF/CRLF text conversion on Windows. Do not follow producer absolute
+paths on the consumer host; resolve the known artifact layout locally.
+
+Record per-cell failures or missing evidence and continue inspecting the other
+cells. Only a complete passing matrix produces a wheel-matrix pass. Keep the
+parent workflow conclusion and any separate failures visible; a wheel report
+does not establish Apple hardware diagnostics, controlled performance, release
+publication or completion of the full roadmap. Export JSON and Markdown with
+exact hashes and counts. Synthetic regression fixtures exercise changed hashes,
+wrong commits/platforms, missing files, skipped tests and incomplete offline
+runs; they never count as installed platform evidence. Exercise the collector
+on real downloaded cells as soon as the producer/jobs finish.
+
+Run the collector transport regressions alongside the existing validation-tool
+checks in the reference producer and each standalone interpreter/platform job.
+This wiring does not change scientific tolerances or installed test selection.
+
+## Measured gradient workload — profiling and optimization gate
+
+The completed controlled post-repair snapshot identifies `capillary-gradient`
+as the largest Python-auto workload: 288.452 ms for setup plus solve, including
+277.271 ms in the solve. The scalar and vector modal cases follow at 132.949
+and 211.597 ms. Preserve that accepted snapshot, its installed source wheel and
+the frozen historical audit. Profile the exact gradient workload with cProfile
+using the installed baseline and the existing worker's setup/solver routines.
+Retain call counts, self/cumulative cost, source hashes and field/count agreement.
+Profiler timings are diagnostic only; they cannot establish an optimization.
+
+Choose a targeted implementation only after the profile identifies its cost.
+Preserve requested-position profile evaluation, serial callback ordering,
+fresh density-dependent coefficients and the original numerical operations.
+Do not infer constancy, sample replacement profiles, or cache arbitrary callback
+results across evaluations. Document the selected change and its eligible
+scope before changing package source. Compare independently installed baseline
+and candidate complete workloads with the existing 10–30 sample stability and
+numerical gates. Retain only a >=5% complete-solve/workload gain or removal of a
+demonstrated regression; run affected setup/step/trajectory/profile/callback
+checks and rebuild final artifacts for delivery. Record rejected prototypes.
+
+The baseline profile attributes about 69% of cumulative workload time to
+finite-difference group-velocity evaluation: every scalar frequency sample
+repeats mode/material/density validation and interpolation. First prototype
+batching the existing frequency samples for the known built-in, data-defined
+gradient mode. Construct sample positions with the same scalar arithmetic,
+retain the adaptive bound/step choice and left-fold coefficient reduction, and
+require same-input linear and complete-field agreement. This prototype must not
+enable array calls for arbitrary callbacks or change their invocation order.
+Production eligibility and wiring require a separate recorded decision after
+the prototype establishes numerical and complete-workload feasibility.
+
+### Built-in scalar gradient batching — production design
+
+The temporary experiment preserves the full trajectory and five linear
+operators bit-for-bit, with diagnostic workload cost reduced from about 282 to
+135 ms. Integrate a private batched evaluator into the existing derivative
+algorithm, passing an evaluator explicitly so public `derivative` keeps its
+serial scalar callback behavior. Generate stencil coordinates with the original
+scalar operations, validate the complete returned shape/finiteness, convert
+samples back to Python scalar values and retain the same adaptive bounds,
+step choice and ordered reduction. Restrict the optimized mode dispatch to
+first-order dispersion; other derivative orders retain their existing path.
+
+Every public `MarcatiliMode` starts with batching disabled. Only `_Capillary`,
+which constructs and owns a standard mode itself, may enable its private flag
+when propagation is variable, the radius is numeric, and all gas pressure
+profiles are data-defined (constant or explicit gradients, with no pressure
+callbacks). Mixtures qualify only if every constituent satisfies that rule.
+Constructed/custom modes, callable radius or pressure and the modal evaluator
+retain scalar derivative calls. Keep `mode.dispersion` as the linear operator's
+dispatch point, preserving explicit test/model overrides. No callback result
+is cached and no density refresh or requested position is removed. Nonlinear
+response callbacks retain their complete-field calls and order.
+
+Test scalar/batched same-input derivatives/operators, public-mode scalar call
+order, exclusion of callable profiles/radii and mixed callback profiles,
+unchanged nonlinear callback traces, and full fields/counters on both grids.
+Run the existing independent mode/profile/mixture/callback oracles without
+changing tolerances. Build separate candidate wheels and compare them with the
+immutable accepted baseline in independent processes; use two warmups and
+10–30 randomized pairs, full-field/count checks and the established uncertainty
+limits before accepting a >=5% complete-workload/solve gain. Preserve a clean
+checkout of hosted `fbb8b45` for its pending artifact collection. Include the
+prepared README correction with the new package build, preserving installer edits.
+
+## Hosted platform validation corrections — Windows fixtures and sliced FFTs
+
+The first complete reference producer succeeds at `fbb8b45`, then the actual
+Windows tooling tests fail before building wheels. Their synthetic source is
+written with native newlines, and the test blindly replaces LF with CRLF again,
+creating CRCRLF on Windows. Its failing-export hook also assumes a `/gnlse`
+suffix rather than a native path component. Correct the fixture to exercise
+explicit LF and CRLF byte sequences on every host and use `Path(...).name`
+for the exporter hook. Keep production source normalization and rejection of
+changed data unchanged. Reproduce both defects without requiring a Windows
+host; real Windows acceptance still requires rerunning its job.
+
+All four actual Linux ARM64 artifacts build and install, then their seventeenth
+example fails on bitwise comparison of the inverse FFT of a saved-position slice
+against a slice of the full batched inverse FFT. The first sixteen examples
+complete. The retained 3.11 log shows maximum absolute difference 7.731e-12 in
+carrier modal fields; the spectral arrays are not the compared quantities.
+Exact serialization checks must compare the saved spectrum to the same original
+spectrum before either transform. Keep that bitwise check and compare the two
+FFT reconstructions at the established 1e-13 reassociation norm tier, including
+finite values and matching shapes. Do not use pointwise relative error in pulse
+tails near zero. Record the achieved norm error, not only process success; rerun
+all seventeen examples and independent output tests. No FFT implementation,
+physical result, solver tolerance or independent Julia acceptance tier changes.
+Retain the original failed artifacts and require actual ARM64 acceptance.
+
+Prepare these package/example corrections after the gradient candidate's
+source-dependent focused gate and controlled comparison finish, then rebuild
+final artifacts. Include the already verified Apple auxiliary fix in the same
+follow-up; collect useful current Linux/Apple job evidence before replacing CI.
+
+### Delivery scheduling after confirmed platform failures
+
+Once the current run has terminal Windows and ARM64 failures with reproduced
+causes, deliver the verified corrections without waiting for its other eight
+wheel cells. The user's instruction to continue implementation without waiting
+for CI applies here: the new source needs another complete matrix regardless.
+Branch concurrency will supersede the known-failed run. Preserve its completed
+reference export, failed platform artifacts, job-state snapshot and exact-commit
+checkout; do not treat cancelled cells as passes. Local source-dependent suites
+remain on the original checkout and continue independently of delivery commits.

@@ -6,6 +6,8 @@ import Distributed
 
 length(ARGS) == 2 || error("usage: apple_quick_aux.jl modal|scan OUTPUT_JSON")
 kind, output_path = ARGS
+# Scan interprets any remaining process arguments as its own execution options.
+empty!(ARGS)
 Amalthea.set_fftw_mode(:estimate)
 Amalthea.set_fftw_threads(1)
 

@@ -5,15 +5,22 @@ and `solve_precon` for spectral equations with a diagonal linear
 operator and custom Python nonlinear RHS. Rust owns adaptive stepping and dense
 output. `prop_gnlse` runs resident Rust evaluation with portable FFTs or Python
 evaluation. It supports analytic/data/array pulse collections, custom input
-propagators, Taylor dispersion, loss, Kerr, shock, and SDO/SiO₂ Raman. This is **not** the
-public Linux preview; that preview requires complete GNLSE and capillary support.
+propagators, Taylor dispersion, loss, Kerr, shock, and SDO/SiO₂ Raman. `prop_capillary` adds scalar/modal carrier and envelope
+propagation, polarization, gas mixtures, ADK/PPT, molecular Raman, profiles and
+custom Python modes/responses. The implemented capability matrix is in
+`docs/dev/native-port/PYTHON_SUPPORT_MATRIX.md`; current artifact acceptance and
+release status live in `docs/dev/BACKLOG.md`. This development package is not yet
+the public preview.
 
 Build an internal CPU wheel from this directory with
 `RUSTFLAGS="" maturin build --release`. Install the resulting wheel into an
 isolated environment and run `python -m pytest tests`. Runtime imports require
 NumPy, SciPy, CoolProp 7.2.0, and the included Rust extension, with no Julia or system FFTW
 dependency.
-These local wheels are not yet validated manylinux release artifacts.
+A local maturin build is a development artifact. Release wheels require the
+maintained build, binary audit, installed numerical and offline gates; their
+platform status is recorded in the backlog. For an installed-wheel walkthrough,
+see `docs/src/python_native.md`.
 
 ```python
 from amalthea_native import EnvGrid, RealGrid
@@ -91,8 +98,8 @@ during pulse setup. `shotnoise` defaults false; true raises.
 `ramanmodel="sdo"` (default) and `ramanmodel="SiO2"` are supported. SiO₂ uses
 the thirteen-component silica response; `tau1`/`tau2` apply only to SDO.
 Pulse collections, supplied-frequency spectra, and custom input propagators
-are supported as described below. An internal capillary envelope slice is
-available; full capillary coverage remains in development.
+are supported as described below. Capillary propagation and custom Python
+models are documented in the following sections.
 
 An optional `pulse` is an owned complex array already on the constructed grid,
 with `pulse_domain="time"` or `"frequency"`. Its amplitude is retained unless
@@ -168,7 +175,6 @@ n = refractive_index("Ar", [400e-9, 800e-9], pressure=2.0)
 
 These functions retain the implemented Julia material conventions, including
 the QuanfuHe expression for CH4/N2O/SF6. Air has no default gamma3 source.
-Full capillary propagation is still being implemented.
 The development `tools/export_material_oracle.jl` supplies the fifth fixture
 variable, `AMALTHEA_MATERIAL_ORACLE`, for complete installed setup acceptance.
 
@@ -271,8 +277,10 @@ result = prop_capillary(125e-6, .02, "Ar", 2., envelope=True,
 ```
 
 The positional arguments are radius [m], length [m], gas identifier, and
-pressure [bar]. This slice supports a single HE1m mode (`modes="HE11"` by
-default), `model="full"|"reduced"`, loss, Kerr and the existing pulse inputs.
+pressure [bar]. A single HE1m signifier (`modes="HE11"` by default) uses
+mode-averaged propagation with `model="full"|"reduced"`, loss, Kerr and the
+existing pulse inputs. Mode collections and polarization pairs use modal
+propagation as described above.
 Eligible constant configurations use resident Rust evaluation with portable
 FFTs under `backend="auto"|"native"`. `backend="python"` uses NumPy evaluation
 and Rust stepping; auto reports the path selected for each configuration. Results and solver
@@ -293,10 +301,10 @@ Raman off. Envelope THG uses Python evaluation when Kerr is enabled; carrier
 THG-off Raman also uses Python. Auto reports these choices and forced native
 rejects them. See `examples/raman_capillary.py` for simulations and controls.
 
-Envelope plasma is unsupported by the Julia oracle. Multimode/polarized/custom
-runtime models remain in development and raise explicitly. Callable profiles
-are evaluated at the requested positions. Complete capillary coverage is
-required before the public preview.
+Envelope plasma is unsupported by the Julia oracle. Multimode, polarized and
+custom runtime models use the modal/callback interfaces above. Callable profiles
+are evaluated at the requested positions. See the capability matrix for
+combination restrictions and the backlog for pending platform acceptance.
 
 `tools/export_capillary_oracle.jl` provides the seventh fixture directory,
 `AMALTHEA_CAPILLARY_ORACLE`. It compares independently prepared setup and
@@ -305,7 +313,8 @@ trajectories for both backends, with separate Kerr/loss sensitivity checks.
 `tools/export_real_capillary_oracle.jl` provides the ninth fixture directory,
 `AMALTHEA_REAL_CAPILLARY_ORACLE`, for independent carrier setup/trajectory and
 THG sensitivity checks. `AMALTHEA_REAL_PULSE_ORACLE` supplies the eighth input
-fixture directory. Full capillary coverage is still required before preview.
+fixture directory. These independent fixtures cover implemented propagation;
+public preview acceptance is tracked in the backlog.
 
 ### Pressure and radius profiles
 
@@ -424,7 +433,8 @@ returns zero; invalid/nonfinite fields fail explicitly.
 
 Run `examples/ppt.py` for default-size local construction and cache reuse.
 `tools/export_ppt_oracle.jl` supplies the eleventh fixture directory,
-`AMALTHEA_PPT_ORACLE`. Plasma trajectories remain a separate implementation gate.
+`AMALTHEA_PPT_ORACLE`. Plasma trajectories have separate end-to-end acceptance
+fixtures described below.
 
 ### Carrier plasma propagation
 

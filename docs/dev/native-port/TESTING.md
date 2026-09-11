@@ -949,3 +949,27 @@ Record actual fallback and adaptive counts. Keep excluded old-Rust method
 comparisons and temporal refinement evidence; excluded paths contribute no
 accepted speedup. Do not alter the frozen CPU audit. Evidence tooling checks:
 `INSTALLED_PYTHON -I test/test_python_performance.py -v`.
+
+### Collect a downloaded hosted wheel matrix
+
+Download the artifacts from one workflow run and inspect them against a checkout
+at that run's exact commit. `MATCHING_CHECKOUT` must contain the tested source;
+the collector may live in the working checkout. Retain the full run metadata:
+
+```sh
+gh run view RUN_ID --repo vdiego28/Amalthea.jl \
+  --json databaseId,url,headSha,status,conclusion,jobs > run.json
+gh run download RUN_ID --repo vdiego28/Amalthea.jl --dir downloaded-artifacts
+python3 test/standalone_wheels/collect.py \
+  --artifacts downloaded-artifacts --repository MATCHING_CHECKOUT \
+  --run-json run.json --output wheel-evidence.json
+```
+
+The default requires sixteen platform/interpreter cells. For the Linux-only
+subset, explicitly add `--platforms linux-x86_64 linux-arm64`; the report records
+that smaller scope. JSON/Markdown retain missing/failed cells, workflow failures,
+reference/source/wheel digests, actual JUnit counts and completed offline runs.
+Exit zero means that requested wheel matrix passed. It does not close other
+workflow failures, Apple diagnostics, controlled performance or publication.
+Never substitute synthetic collector fixtures for actual platform results.
+Collector regressions: `python3 test/test_wheel_collection.py -v`.

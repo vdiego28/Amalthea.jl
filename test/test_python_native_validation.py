@@ -51,10 +51,12 @@ class ReferenceValidationTests(unittest.TestCase):
     def test_complete_artifact_and_windows_line_endings(self):
         expected = validation.fixture_environment(self.artifact)
         self.assertEqual(self.verify(), expected)
-        for path in self.repository.rglob('*'):
-            if path.is_file():
-                path.write_bytes(path.read_bytes().replace(b'\n', b'\r\n'))
-        self.assertEqual(self.verify(), expected)
+        for newline in (b'\n', b'\r\n'):
+            for path in self.repository.rglob('*'):
+                if path.is_file():
+                    source = path.read_bytes().replace(b'\r\n', b'\n')
+                    path.write_bytes(source.replace(b'\n', newline))
+            self.assertEqual(self.verify(), expected)
 
     def test_rejects_incomplete_stale_or_wrong_version_manifest(self):
         for key, wrong in [('status', 'running'), ('format_version', 2),
@@ -163,7 +165,7 @@ class ReferenceValidationTests(unittest.TestCase):
     def test_failed_export_has_no_completion_manifest_and_retains_state(self):
         output = self.root/'failed-export'
         def fail(command, **kwargs):
-            if str(command[-1]).endswith('/gnlse'):
+            if Path(command[-1]).name == 'gnlse':
                 raise RuntimeError('export failed')
             self.fake_export(command, **kwargs)
         with patch.object(export_oracles.subprocess, 'check_output', return_value='test-revision'), \
