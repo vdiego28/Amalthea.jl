@@ -749,7 +749,9 @@ function make_linop(grid::Grid.RealGrid,
     # locally via `setprecision(BigFloat, 1024) do ... end` so it doesn't
     # leak into the caller's ambient BigFloat precision.
     γ_of_ω(ω) = γ(wlfreq(ω)*1e6)
-    γ0 = γ_of_ω(ω0)
+    # QuanfuHe gases return Complex with zero imaginary part. Require the
+    # same checked real conversion as the vector and derivative metadata.
+    γ0 = Float64(γ_of_ω(ω0))
     nwg0 = neff_wg(mode, ω0; z=0.0)
     nwg_re_of_ω(ω) = real(neff_wg(mode, ω; z=0.0))
     nwg_im_of_ω(ω) = imag(neff_wg(mode, ω; z=0.0))

@@ -23,6 +23,19 @@ for fifth in (false, true), stop in (.35, .4)
 end
 println("Exported independent Julia solver trajectories to ", outdir)
 
+for fifth in (false, true), dt in (.001, .2)
+    nonlinear!(out, y, z) = (out .= y.^2)
+    accepted = Float64[]
+    record!(y, z, dz, interp) = push!(accepted, z)
+    z, y, _ = Amalthea.RK45.solve_precon(nonlinear!, ComplexF64[.13+.2im],
+        ComplexF64[1], 0., dt, .25; min_dt=.01, max_dt=.01,
+        rtol=1e-9, atol=1e-12, locextrap=fifth, output=true, outputN=21,
+        stepfun=record!)
+    name = "initial-bound-$(fifth ? "fifth" : "fourth")-$dt"
+    writedlm(joinpath(outdir, "$name.txt"), hcat(z, real.(vec(y)), imag.(vec(y))))
+    writedlm(joinpath(outdir, "$name-accepted.txt"), accepted)
+end
+
 for fifth in (false, true)
     nonlinear!(out, y, z) = (out .= y.^2)
     window!(y, z, dt, interp) = (y .*= [.95, .7])

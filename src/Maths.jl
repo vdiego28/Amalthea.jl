@@ -981,6 +981,7 @@ function (f::FastFinder)(x0::Number)
     if f.ilast == 0 # first call -- f.xlast is not set properly so comparisons won't work
         # return using brute-force method instead
         f.ilast = findfirst(x -> x>x0, f.x)
+        f.xlast = x0
         return f.ilast
     end
     if x0 == f.xlast # same value as before - no work to be done
@@ -988,8 +989,8 @@ function (f::FastFinder)(x0::Number)
     elseif x0 < f.xlast # smaller than previous value - go through array backwards
         f.xlast = x0
         for i = f.ilast:-1:1
-            if f.x[i] < x0
-                f.ilast = i+1 # found last idx where x < x0 -> at i+1, x > x0
+            if f.x[i] <= x0
+                f.ilast = i+1 # last knot <= x0; next knot is strictly greater
                 return i+1
             end
         end

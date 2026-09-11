@@ -10,13 +10,17 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
-dependencies = ["numpy>=2.0"]
+dependencies = ["numpy>=2.0", "scipy>=1.15", "CoolProp==7.2.0", "mpmath>=1.3,<2"]
 classifiers = ["Development Status :: 2 - Pre-Alpha"]
+
+[project.optional-dependencies]
+hdf5 = ["h5py>=3.11"]
 
 [tool.maturin]
 python-source = "python"
 module-name = "amalthea_native._native"
 include = [{ path = ".cargo/config.toml", format = "sdist" }]
+exclude = ["**/__pycache__/**", "**/*.pyc", "**/*.pyo"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

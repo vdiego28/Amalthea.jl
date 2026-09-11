@@ -98,9 +98,10 @@
 use crate::cubature::CubatureApi;
 use crate::diffraction::jn;
 use crate::ffi::QdhtFfiHandle;
-use crate::fftw::{ComplexFft1d, ComplexFft3d, FftwApi, RealFft1d, RealFft3d};
+use crate::fftw::{ComplexFft3d, FftwApi, RealFft3d};
 use crate::raman::{RamanOscillator, TimeDomainRamanSolver};
 use crate::spline::HermiteSpline;
+use crate::transforms::{ComplexFft1d, FftScratch, RealFft1d};
 use libc::{c_char, c_double, c_int, c_uint, c_void, size_t};
 use num_complex::Complex;
 use rayon::iter::{
@@ -159,6 +160,12 @@ pub struct CpuNativeSim {
 
     // ── Phase 0b: FFTW ────────────────────────────────────────────────────────
     pub fftw_api: Option<FftwApi>,
+    portable_fft: bool,
+    fft_scratch: FftScratch,
+    raman_fft_scratch: FftScratch,
+    hilbert_fft_scratch: FftScratch,
+    radial_fft_scratch: Vec<FftScratch>,
+    radial_hilbert_scratch: Vec<FftScratch>,
     pub fft_c2c: Option<ComplexFft1d>,
     pub fft_r2c: Option<RealFft1d>,
     pub fft_c2c_over: Option<ComplexFft1d>,
@@ -314,7 +321,7 @@ pub struct CpuNativeSim {
     pub raman_hilbert_b: Vec<Complex<f64>>,
 
     // ── Phase I item 2: intermediate-broadening (`:SiO2`) Raman, resident
-    // FFT convolution — `rhs_mode_avg_env` only (`RamanPolarEnv`, EnvGrid).
+    // FFT convolution — envelope mode averages and standalone carrier samples.
     // `RamanRespIntermediateBroadening`'s Gaussian-damped impulse response
     // (`Raman.jl:97-105`) has no finite-SDO decomposition, so it cannot
     // reuse `raman_solver`'s ADE path (see docs/dev/BACKLOG.md Phase I item 2) — this
@@ -345,7 +352,7 @@ pub struct CpuNativeSim {
     /// Resident r2c/c2r plan pair, real length `2·n_time_over` / spectral
     /// length `n_time_over+1` (zero-padded convolution).
     pub raman_fft_plan: Option<RealFft1d>,
-    /// Zero-padded `E²` scratch (second half stays zero forever), length
+    /// Drive/convolution scratch (padded half is reset before each FFT), length
     /// `2·n_time_over`. Real (not `Complex`) since `sqr!`'s `1/2·|E|²` is
     /// real by construction.
     pub raman_fft_e2: Vec<f64>,
@@ -658,6 +665,7 @@ fn raman_accumulate_env(pto: &mut [Complex<f64>], eto: &[Complex<f64>], p: &[f64
 /// plan is built out-of-place, see `fftw.rs`).
 fn hilbert_intensity(
     fft: &ComplexFft1d,
+    scratch: &mut FftScratch,
     buf_a: &mut [Complex<f64>],
     buf_b: &mut [Complex<f64>],
     field: &[f64],
@@ -668,7 +676,7 @@ fn hilbert_intensity(
     for i in 0..n {
         buf_a[i] = Complex::new(field[i], 0.0);
     }
-    fft.forward(buf_a, buf_b);
+    fft.forward(buf_a, buf_b, scratch);
     let n1 = n / 2;
     for k in 1..n1 {
         buf_b[k] *= 2.0;
@@ -676,7 +684,7 @@ fn hilbert_intensity(
     for k in n1..n {
         buf_b[k] = Complex::new(0.0, 0.0);
     }
-    fft.inverse(buf_b, buf_a);
+    fft.inverse(buf_b, buf_a, scratch);
     for i in 0..n {
         let a = buf_a[i] * norm;
         out[i] = 0.5 * a.norm_sqr();
@@ -712,6 +720,81 @@ fn zdep_pressure_at(z: f64, zs: &[f64], ps: &[f64]) -> f64 {
 }
 
 impl CpuNativeSim {
+    /// Construct a CPU-only handle without loading FFTW. Geometry configuration
+    /// follows separately; the safe standalone facade validates its full arrays.
+    pub fn new_portable(
+        linop: &[Complex<f64>],
+        n_time: usize,
+        n_time_over: usize,
+        is_real: bool,
+    ) -> Result<Self, &'static str> {
+        if linop.is_empty()
+            || linop.iter().any(|v| !v.re.is_finite() || !v.im.is_finite())
+            || n_time < 2
+            || n_time_over < n_time
+            || n_time_over > (1 << 24)
+        {
+            return Err("invalid portable simulation dimensions or linear operator");
+        }
+        let mut sim = Self::new(linop.len(), linop);
+        sim.portable_fft = true;
+        sim.is_real = is_real;
+        sim.fft_norm = 1.0 / n_time as f64;
+        sim.fft_norm_over = 1.0 / n_time_over as f64;
+        if is_real {
+            let plan = RealFft1d::portable(n_time_over);
+            plan.prepare(&mut sim.fft_scratch);
+            sim.fft_r2c_over = Some(plan);
+            sim.fft_r2c = Some(RealFft1d::portable(n_time));
+        } else {
+            let plan = ComplexFft1d::portable(n_time_over);
+            plan.prepare(&mut sim.fft_scratch);
+            sim.fft_c2c_over = Some(plan);
+            sim.fft_c2c = Some(ComplexFft1d::portable(n_time));
+        }
+        Ok(sim)
+    }
+
+    pub(crate) fn configure_raman_samples(&mut self, mut h: Vec<f64>, dt: f64, density: f64) {
+        let n_over = h.len();
+        let plan = if self.portable_fft {
+            RealFft1d::portable(n_over)
+        } else {
+            RealFft1d::new(self.fftw_api.as_ref().unwrap(), n_over, 1 << 6)
+        };
+        plan.prepare(&mut self.raman_fft_scratch);
+        let mut hw = vec![Complex::new(0.0, 0.0); plan.nspec()];
+        plan.forward(&mut h, &mut hw, &mut self.raman_fft_scratch);
+        // Fold in Nonlinear.jl:415's `dt` and the ifft's `1/n_over` normalisation
+        // once here, so the per-step convolution needs no further scaling.
+        let post = dt / n_over as f64;
+        for v in &mut hw {
+            *v *= post;
+        }
+
+        self.raman_fft_plan = Some(plan);
+        self.raman_fft_hw = hw;
+        self.raman_fft_e2 = vec![0.0f64; n_over];
+        self.raman_fft_ew = vec![Complex::new(0.0, 0.0); n_over / 2 + 1];
+        self.raman_fft_density = density;
+        self.has_raman_fft = true;
+    }
+
+    fn prepare_radial_fft_scratch(&mut self) {
+        if self.n_threads > 1 {
+            self.radial_fft_scratch
+                .resize_with(self.n_r, FftScratch::default);
+            for scratch in &mut self.radial_fft_scratch {
+                if let Some(plan) = &self.fft_r2c_over {
+                    plan.prepare(scratch);
+                }
+                if let Some(plan) = &self.fft_c2c_over {
+                    plan.prepare(scratch);
+                }
+            }
+        }
+    }
+
     fn new(n: usize, linop: &[Complex<f64>]) -> Self {
         let z = || vec![Complex::new(0.0, 0.0); n];
         CpuNativeSim {
@@ -725,6 +808,12 @@ impl CpuNativeSim {
             yerr: z(),
             ystage: z(),
             fftw_api: None,
+            portable_fft: false,
+            fft_scratch: FftScratch::default(),
+            raman_fft_scratch: FftScratch::default(),
+            hilbert_fft_scratch: FftScratch::default(),
+            radial_fft_scratch: Vec::new(),
+            radial_hilbert_scratch: Vec::new(),
             fft_c2c: None,
             fft_r2c: None,
             fft_c2c_over: None,
@@ -903,7 +992,7 @@ impl CpuNativeSim {
             self.eoo[i] = eomega[i] * scale_fwd;
         }
         if let Some(ref fft) = self.fft_r2c_over {
-            fft.inverse(&mut self.eoo, &mut self.eto);
+            fft.inverse(&mut self.eoo, &mut self.eto, &mut self.fft_scratch);
             let inv_nto = self.fft_norm_over;
             for v in &mut self.eto {
                 *v *= inv_nto;
@@ -943,6 +1032,15 @@ impl CpuNativeSim {
         if self.has_raman {
             self.apply_raman_real();
         }
+        if self.has_raman_fft {
+            for i in 0..self.n_time_over {
+                self.raman_fft_e2[i] = self.eto[i] * self.eto[i];
+            }
+            self.convolve_raman_fft();
+            for i in 0..self.n_time_over {
+                self.pto[i] += self.raman_fft_density * self.eto[i] * self.raman_fft_e2[i];
+            }
+        }
 
         // ── Step 4: time-window apodization Pto *= towin ────────────────────────
         for i in 0..self.n_time_over {
@@ -952,7 +1050,7 @@ impl CpuNativeSim {
         // ── Step 5: to_freq! (RealGrid) rfft(Pto) → Pωo, crop+scale → self.ks[idx] ──────
         let scale_inv = (self.n_spec - 1) as f64 / (self.n_spec_over - 1) as f64;
         if let Some(ref fft) = self.fft_r2c_over {
-            fft.forward(&mut self.pto, &mut self.poo);
+            fft.forward(&mut self.pto, &mut self.poo, &mut self.fft_scratch);
             for i in 0..self.n_spec {
                 self.ks[idx][i] = self.poo[i] * scale_inv;
             }
@@ -988,6 +1086,28 @@ impl CpuNativeSim {
             let ion = unsafe { &*self.plasma_ion_ptr };
             ion.rate(e_abs)
                 .unwrap_or_else(|_| ion.rate(ion.e_max).unwrap_or(0.0))
+        }
+    }
+
+    /// Execute the double-length causal convolution for an already filled drive.
+    /// `configure_raman_samples` has folded dt and inverse normalization into h.
+    fn convolve_raman_fft(&mut self) {
+        // Inverse transforms overwrite the padded tail; reset it on every RHS.
+        self.raman_fft_e2[self.n_time_over..].fill(0.0);
+        if let Some(ref plan) = self.raman_fft_plan {
+            plan.forward(
+                &mut self.raman_fft_e2,
+                &mut self.raman_fft_ew,
+                &mut self.raman_fft_scratch,
+            );
+            for k in 0..self.raman_fft_ew.len() {
+                self.raman_fft_ew[k] *= self.raman_fft_hw[k];
+            }
+            plan.inverse(
+                &mut self.raman_fft_ew,
+                &mut self.raman_fft_e2,
+                &mut self.raman_fft_scratch,
+            );
         }
     }
 
@@ -1207,6 +1327,7 @@ impl CpuNativeSim {
                 let norm = self.fft_norm_over;
                 hilbert_intensity(
                     fft,
+                    &mut self.hilbert_fft_scratch,
                     &mut self.raman_hilbert_a,
                     &mut self.raman_hilbert_b,
                     &self.eto[..n],
@@ -1264,6 +1385,8 @@ impl CpuNativeSim {
             let chunk = group_len * n_time_over;
             let n_chunks = n_r.div_ceil(group_len);
 
+            self.radial_hilbert_scratch
+                .resize_with(n_chunks, FftScratch::default);
             let base_solver = self.raman_solver.clone();
             let scratch_len = if thg { 0 } else { n_time_over };
             let scratch: Vec<(
@@ -1301,10 +1424,14 @@ impl CpuNativeSim {
                     .zip(inten.par_chunks_mut(chunk))
                     .zip(pol.par_chunks_mut(chunk))
                     .zip(scratch.into_par_iter())
+                    .zip(self.radial_hilbert_scratch.par_iter_mut())
                     .for_each(
                         |(
-                            (((eto_c, pto_c), inten_c), pol_c),
-                            (mut solver_opt, mut buf_a, mut buf_b),
+                            (
+                                (((eto_c, pto_c), inten_c), pol_c),
+                                (mut solver_opt, mut buf_a, mut buf_b),
+                            ),
+                            fft_scratch,
                         )| {
                             let ncol = eto_c.len() / n_time_over;
                             for col in 0..ncol {
@@ -1318,6 +1445,7 @@ impl CpuNativeSim {
                                 } else if let Some(fft) = fft_ref {
                                     hilbert_intensity(
                                         fft,
+                                        fft_scratch,
                                         &mut buf_a,
                                         &mut buf_b,
                                         &eto_c[s..e],
@@ -1350,6 +1478,7 @@ impl CpuNativeSim {
                     let norm = self.fft_norm_over;
                     hilbert_intensity(
                         fft,
+                        &mut self.hilbert_fft_scratch,
                         &mut self.raman_hilbert_a,
                         &mut self.raman_hilbert_b,
                         &self.radial_eto[start..end],
@@ -1542,6 +1671,7 @@ impl CpuNativeSim {
                 let norm = self.fft_norm_over;
                 hilbert_intensity(
                     fft,
+                    &mut self.hilbert_fft_scratch,
                     &mut self.raman_hilbert_a,
                     &mut self.raman_hilbert_b,
                     &self.free_eto[start..end],
@@ -1582,7 +1712,11 @@ impl CpuNativeSim {
         }
 
         if let Some(ref fft) = self.fft_c2c_over {
-            fft.inverse(&mut self.eoo_cplx, &mut self.eto_cplx);
+            fft.inverse(
+                &mut self.eoo_cplx,
+                &mut self.eto_cplx,
+                &mut self.fft_scratch,
+            );
             let inv_nto = self.fft_norm_over;
             for v in &mut self.eto_cplx {
                 *v *= inv_nto;
@@ -1646,30 +1780,7 @@ impl CpuNativeSim {
         // `raman_fft_ew`'s spectrum is the shorter `n_over/2+1` Hermitian half.
         if self.has_raman_fft {
             raman_intensity_half_env(&self.eto_cplx[..no], &mut self.raman_fft_e2[..no]);
-            // The upper half must be genuinely zero-padded every step:
-            // `plan.inverse` below writes the full 2N-length P back into
-            // this same buffer, so from the second RHS call onward
-            // `[no..2no)` would otherwise hold the previous step's
-            // convolution tail. Julia never hits this (`R.E2`'s upper half
-            // is a separate, never-written buffer), and the double-length
-            // grid exists precisely to prevent truncation/wrap-around
-            // artefacts (Nonlinear.jl:406-411) — don't rely on h's tail
-            // happening to be zero at the wrap distance.
-            for i in no..self.raman_fft_e2.len() {
-                self.raman_fft_e2[i] = 0.0;
-            }
-            if let Some(ref plan) = self.raman_fft_plan {
-                plan.forward(&mut self.raman_fft_e2, &mut self.raman_fft_ew);
-                for k in 0..self.raman_fft_ew.len() {
-                    self.raman_fft_ew[k] *= self.raman_fft_hw[k];
-                }
-                // ifft is unnormalized; `raman_fft_hw` already folds in the
-                // `1/n_over` factor (see `set_raman_fft_params`), so the
-                // result of `inverse` here is already the true `P`, and is
-                // exactly real (c2r admits no imaginary component, unlike
-                // the earlier c2c path's ~1e-16 imaginary rounding noise).
-                plan.inverse(&mut self.raman_fft_ew, &mut self.raman_fft_e2);
-            }
+            self.convolve_raman_fft();
             raman_accumulate_env(
                 &mut self.pto_cplx[..no],
                 &self.eto_cplx[..no],
@@ -1687,7 +1798,11 @@ impl CpuNativeSim {
         // scale = N/No  (NonlinearRHS.jl:146)
         let scale_inv = n as f64 / no as f64;
         if let Some(ref fft) = self.fft_c2c_over {
-            fft.forward(&mut self.pto_cplx, &mut self.poo_cplx);
+            fft.forward(
+                &mut self.pto_cplx,
+                &mut self.poo_cplx,
+                &mut self.fft_scratch,
+            );
             // zero out ks[idx] first (positions outside first/last half stay 0)
             self.ks[idx].fill(Complex::new(0.0, 0.0));
             for i in 0..half {
@@ -1717,6 +1832,7 @@ impl CpuNativeSim {
     /// `n_time` contiguous elements — required by `QdhtFfiHandle::apply_real`
     /// and what makes each column contiguous for the looped rank-1 FFT.
     fn rhs_radial(&mut self, idx: usize, eomega: &[Complex<f64>]) {
+        self.prepare_radial_fft_scratch();
         let n_r = self.n_r;
         let n_spec = self.n_spec;
         let n_spec_over = self.n_spec_over;
@@ -1750,7 +1866,10 @@ impl CpuNativeSim {
                 pool.install(|| {
                     eoo.par_chunks_mut(n_spec_over)
                         .zip(eto.par_chunks_mut(n_time_over))
-                        .for_each(|(spec_col, time_col)| fft.inverse(spec_col, time_col));
+                        .zip(self.radial_fft_scratch.par_iter_mut())
+                        .for_each(|((spec_col, time_col), scratch)| {
+                            fft.inverse(spec_col, time_col, scratch)
+                        });
                 });
             } else {
                 for r in 0..n_r {
@@ -1758,7 +1877,7 @@ impl CpuNativeSim {
                     let time_start = r * n_time_over;
                     let spec_col = &mut self.radial_eoo[spec_start..spec_start + n_spec_over];
                     let time_col = &mut self.radial_eto[time_start..time_start + n_time_over];
-                    fft.inverse(spec_col, time_col);
+                    fft.inverse(spec_col, time_col, &mut self.fft_scratch);
                 }
             }
             let inv_nto = self.fft_norm_over;
@@ -1828,7 +1947,10 @@ impl CpuNativeSim {
                 pool.install(|| {
                     pto.par_chunks_mut(n_time_over)
                         .zip(poo.par_chunks_mut(n_spec_over))
-                        .for_each(|(time_col, spec_col)| fft.forward(time_col, spec_col));
+                        .zip(self.radial_fft_scratch.par_iter_mut())
+                        .for_each(|((time_col, spec_col), scratch)| {
+                            fft.forward(time_col, spec_col, scratch)
+                        });
                 });
             } else {
                 for r in 0..n_r {
@@ -1836,7 +1958,7 @@ impl CpuNativeSim {
                     let spec_start = r * n_spec_over;
                     let time_col = &mut self.radial_pto[time_start..time_start + n_time_over];
                     let spec_col = &mut self.radial_poo[spec_start..spec_start + n_spec_over];
-                    fft.forward(time_col, spec_col);
+                    fft.forward(time_col, spec_col, &mut self.fft_scratch);
                 }
             }
         }
@@ -1868,6 +1990,7 @@ impl CpuNativeSim {
     /// rather than `f64` — `radial_eoo`/`radial_poo` (frequency-domain) are
     /// already `Complex<f64>` and are shared with the RealGrid path as-is.
     fn rhs_radial_env(&mut self, idx: usize, eomega: &[Complex<f64>]) {
+        self.prepare_radial_fft_scratch();
         let n_r = self.n_r;
         let n = self.n_spec; // = n_time for EnvGrid (c2c: Nω = Nt)
         let no = self.n_time_over;
@@ -1901,7 +2024,10 @@ impl CpuNativeSim {
                 pool.install(|| {
                     eoo.par_chunks_mut(no)
                         .zip(eto_c.par_chunks_mut(no))
-                        .for_each(|(spec_col, time_col)| fft.inverse(spec_col, time_col));
+                        .zip(self.radial_fft_scratch.par_iter_mut())
+                        .for_each(|((spec_col, time_col), scratch)| {
+                            fft.inverse(spec_col, time_col, scratch)
+                        });
                 });
             } else {
                 for r in 0..n_r {
@@ -1909,7 +2035,7 @@ impl CpuNativeSim {
                     let time_start = r * no;
                     let spec_col = &mut self.radial_eoo[spec_start..spec_start + no];
                     let time_col = &mut self.radial_eto_c[time_start..time_start + no];
-                    fft.inverse(spec_col, time_col);
+                    fft.inverse(spec_col, time_col, &mut self.fft_scratch);
                 }
             }
             let inv_nto = self.fft_norm_over;
@@ -1988,7 +2114,10 @@ impl CpuNativeSim {
                     pto_c
                         .par_chunks_mut(no)
                         .zip(poo.par_chunks_mut(no))
-                        .for_each(|(time_col, spec_col)| fft.forward(time_col, spec_col));
+                        .zip(self.radial_fft_scratch.par_iter_mut())
+                        .for_each(|((time_col, spec_col), scratch)| {
+                            fft.forward(time_col, spec_col, scratch)
+                        });
                 });
             } else {
                 for r in 0..n_r {
@@ -1996,7 +2125,7 @@ impl CpuNativeSim {
                     let spec_start = r * no;
                     let time_col = &mut self.radial_pto_c[time_start..time_start + no];
                     let spec_col = &mut self.radial_poo[spec_start..spec_start + no];
-                    fft.forward(time_col, spec_col);
+                    fft.forward(time_col, spec_col, &mut self.fft_scratch);
                 }
             }
         }
@@ -2102,8 +2231,6 @@ impl CpuNativeSim {
         let n_modes = ro.n_modes;
         let npol = ro.npol;
         let n_spec = ro.n_spec;
-        let n_spec_over = ro.n_spec_over;
-        let n_time_over = ro.n_time_over;
 
         if r <= 0.0 || r >= ro.modal_a {
             out.fill(0.0);
@@ -2140,6 +2267,35 @@ impl CpuNativeSim {
             }
         }
 
+        Self::modal_temporal(&ro.temporal(), sc);
+
+        // ── back-projection: Prmω[iω,m] = Σ_p Prω[iω,p]·Ems[m,p] ─────────────────
+        // `full=false`: Jacobian is `2πr` (θ-integral done analytically).
+        // `full=true`: Jacobian is just `r` (θ genuinely integrated).
+        let pre = if ro.modal_full {
+            r
+        } else {
+            2.0 * std::f64::consts::PI * r
+        };
+        for m in 0..n_modes {
+            for i in 0..n_spec {
+                let mut acc = Complex::new(0.0, 0.0);
+                for p in 0..npol {
+                    acc += sc.prw[p * n_spec + i] * sc.ems[m * npol + p];
+                }
+                acc *= pre;
+                let idx = i + n_spec * m;
+                out[2 * idx] = acc.re;
+                out[2 * idx + 1] = acc.im;
+            }
+        }
+    }
+
+    fn modal_temporal(ro: &ModalTemporalRO, sc: &mut ModalScratch) {
+        let npol = ro.npol;
+        let n_spec = ro.n_spec;
+        let n_spec_over = ro.n_spec_over;
+        let n_time_over = ro.n_time_over;
         sc.erwo.fill(Complex::new(0.0, 0.0));
         if ro.is_real {
             // ── to_time! per polarisation column (RealGrid r2c, looped rank-1 plan) ──
@@ -2157,7 +2313,7 @@ impl CpuNativeSim {
                     let time_start = p * n_time_over;
                     let spec_col = &mut sc.erwo[spec_start..spec_start + n_spec_over];
                     let time_col = &mut sc.er[time_start..time_start + n_time_over];
-                    fft.inverse(spec_col, time_col);
+                    fft.inverse(spec_col, time_col, &mut sc.fft_scratch);
                 }
                 let inv_nto = ro.fft_norm_over;
                 for v in &mut sc.er {
@@ -2205,6 +2361,7 @@ impl CpuNativeSim {
                     let norm = ro.fft_norm_over;
                     hilbert_intensity(
                         fft,
+                        &mut sc.hilbert_fft_scratch,
                         &mut sc.raman_hilbert_a,
                         &mut sc.raman_hilbert_b,
                         &sc.er[..n_time_over],
@@ -2239,7 +2396,7 @@ impl CpuNativeSim {
                     let spec_start = p * n_spec_over;
                     let time_col = &mut sc.pr[time_start..time_start + n_time_over];
                     let spec_col = &mut sc.prwo[spec_start..spec_start + n_spec_over];
-                    fft.forward(time_col, spec_col);
+                    fft.forward(time_col, spec_col, &mut sc.fft_scratch);
                 }
             }
             for p in 0..npol {
@@ -2274,7 +2431,7 @@ impl CpuNativeSim {
                     let time_start = p * n_time_over;
                     let spec_col = &mut sc.erwo[spec_start..spec_start + n_spec_over];
                     let time_col = &mut sc.er_c[time_start..time_start + n_time_over];
-                    fft.inverse(spec_col, time_col);
+                    fft.inverse(spec_col, time_col, &mut sc.fft_scratch);
                 }
                 let inv_nto = ro.fft_norm_over;
                 for v in &mut sc.er_c {
@@ -2320,7 +2477,7 @@ impl CpuNativeSim {
                     let spec_start = p * n_spec_over;
                     let time_col = &mut sc.pr_c[time_start..time_start + n_time_over];
                     let spec_col = &mut sc.prwo[spec_start..spec_start + n_spec_over];
-                    fft.forward(time_col, spec_col);
+                    fft.forward(time_col, spec_col, &mut sc.fft_scratch);
                 }
             }
             for p in 0..npol {
@@ -2344,26 +2501,6 @@ impl CpuNativeSim {
             }
         }
 
-        // ── back-projection: Prmω[iω,m] = Σ_p Prω[iω,p]·Ems[m,p] ─────────────────
-        // `full=false`: Jacobian is `2πr` (θ-integral done analytically).
-        // `full=true`: Jacobian is just `r` (θ genuinely integrated).
-        let pre = if ro.modal_full {
-            r
-        } else {
-            2.0 * std::f64::consts::PI * r
-        };
-        for m in 0..n_modes {
-            for i in 0..n_spec {
-                let mut acc = Complex::new(0.0, 0.0);
-                for p in 0..npol {
-                    acc += sc.prw[p * n_spec + i] * sc.ems[m * npol + p];
-                }
-                acc *= pre;
-                let idx = i + n_spec * m;
-                out[2 * idx] = acc.re;
-                out[2 * idx + 1] = acc.im;
-            }
-        }
     }
 
     /// Grow `modal_scratch_pool` to at least `n_workers` entries (entry 0 is
@@ -2391,6 +2528,17 @@ impl CpuNativeSim {
                 self.n_time_over,
             );
             self.modal_scratch_pool.push(sc);
+        }
+        for sc in &mut self.modal_scratch_pool[..n_workers] {
+            if let Some(plan) = &self.fft_r2c_over {
+                plan.prepare(&mut sc.fft_scratch);
+            }
+            if let Some(plan) = &self.fft_c2c_over {
+                plan.prepare(&mut sc.fft_scratch);
+            }
+            if let Some(plan) = &self.raman_hilbert_fft {
+                plan.prepare(&mut sc.hilbert_fft_scratch);
+            }
         }
         if self.has_raman {
             let nto = self.n_time_over;
@@ -3141,6 +3289,8 @@ pub struct ModalScratch {
     raman_hilbert_a: Vec<Complex<f64>>,
     raman_hilbert_b: Vec<Complex<f64>>,
     raman_solver: Option<TimeDomainRamanSolver>,
+    fft_scratch: FftScratch,
+    hilbert_fft_scratch: FftScratch,
 }
 
 impl ModalScratch {
@@ -3166,6 +3316,8 @@ impl ModalScratch {
             raman_hilbert_a: Vec::new(),
             raman_hilbert_b: Vec::new(),
             raman_solver: None,
+            fft_scratch: FftScratch::default(),
+            hilbert_fft_scratch: FftScratch::default(),
         }
     }
 }
@@ -3174,6 +3326,89 @@ impl ModalScratch {
 /// `modal_pointcalc` reads. Every field is `Copy`, `&[..]`, or `Option<&Plan>`
 /// where the FFT-plan wrappers are `Sync` (fftw.rs) — so `ModalRO: Sync` and a
 /// single `&ModalRO` can be shared across rayon workers.
+/// Portable vector point evaluation using the same temporal kernel as Julia modal solves.
+/// Construction is validated by the public resident facade before allocating.
+pub(crate) struct PortableModalPoint {
+    n_spec: usize,
+    n_spec_over: usize,
+    no: usize,
+    is_real: bool,
+    kerr: f64,
+    towin: Vec<f64>,
+    prefactor: Vec<Complex<f64>>,
+    real_fft: Option<RealFft1d>,
+    complex_fft: Option<ComplexFft1d>,
+    scratch: ModalScratch,
+}
+
+impl PortableModalPoint {
+    pub(crate) fn new(is_real: bool, towin: Vec<f64>, prefactor: Vec<Complex<f64>>, kerr: f64) -> Self {
+        let no = towin.len();
+        let n_spec = prefactor.len();
+        let n_spec_over = if is_real { no / 2 + 1 } else { no };
+        let real_fft = is_real.then(|| RealFft1d::portable(no));
+        let complex_fft = (!is_real).then(|| ComplexFft1d::portable(no));
+        let mut scratch = ModalScratch::new(0, 2, n_spec, n_spec_over, no);
+        if let Some(fft) = &real_fft { fft.prepare(&mut scratch.fft_scratch); }
+        if let Some(fft) = &complex_fft { fft.prepare(&mut scratch.fft_scratch); }
+        Self { n_spec, n_spec_over, no, is_real, kerr, towin, prefactor, real_fft, complex_fft, scratch }
+    }
+
+    pub(crate) fn evaluate(&mut self, field: &[Complex<f64>]) -> &[Complex<f64>] {
+        self.scratch.erw.copy_from_slice(field);
+        let ro = ModalTemporalRO {
+            npol: 2, n_spec: self.n_spec, n_spec_over: self.n_spec_over, n_time_over: self.no,
+            is_real: self.is_real, modal_kerr_fac: self.kerr,
+            fft_r2c_over: self.real_fft.as_ref(), fft_c2c_over: self.complex_fft.as_ref(),
+            fft_norm_over: 1.0 / self.no as f64, towin: &self.towin,
+            has_raman: false, raman_density: 0.0, raman_thg: true,
+            raman_hilbert_fft: None, modal_nlfac: &self.prefactor,
+        };
+        CpuNativeSim::modal_temporal(&ro, &mut self.scratch);
+        &self.scratch.prw
+    }
+}
+
+struct ModalTemporalRO<'a> {
+    npol: usize,
+    n_spec: usize,
+    n_spec_over: usize,
+    n_time_over: usize,
+    is_real: bool,
+    modal_nlfac: &'a [Complex<f64>],
+    modal_kerr_fac: f64,
+    fft_r2c_over: Option<&'a RealFft1d>,
+    fft_c2c_over: Option<&'a ComplexFft1d>,
+    fft_norm_over: f64,
+    towin: &'a [f64],
+    has_raman: bool,
+    raman_density: f64,
+    raman_thg: bool,
+    raman_hilbert_fft: Option<&'a ComplexFft1d>,
+}
+
+impl ModalRO<'_> {
+    fn temporal(&self) -> ModalTemporalRO<'_> {
+        ModalTemporalRO {
+            npol: self.npol,
+            n_spec: self.n_spec,
+            n_spec_over: self.n_spec_over,
+            n_time_over: self.n_time_over,
+            is_real: self.is_real,
+            modal_kerr_fac: self.modal_kerr_fac,
+            fft_r2c_over: self.fft_r2c_over,
+            fft_c2c_over: self.fft_c2c_over,
+            fft_norm_over: self.fft_norm_over,
+            towin: self.towin,
+            has_raman: self.has_raman,
+            raman_density: self.raman_density,
+            raman_thg: self.raman_thg,
+            raman_hilbert_fft: self.raman_hilbert_fft,
+            modal_nlfac: self.modal_nlfac,
+        }
+    }
+}
+
 struct ModalRO<'a> {
     n_modes: usize,
     npol: usize,
@@ -3878,6 +4113,9 @@ impl NativeBackend for CpuNativeSim {
     ) -> i32 {
         let sim = self;
 
+        if sim.portable_fft {
+            return -2;
+        }
         if lib_path.is_null() {
             return -1;
         }
@@ -4020,7 +4258,7 @@ impl NativeBackend for CpuNativeSim {
         #[cfg(test)]
         let plans_match = s.mock_mode_avg_plan_dims == Some((n_time, n_time_over))
             || if s.is_real {
-                s.fftw_api.is_some()
+                (s.portable_fft || s.fftw_api.is_some())
                     && s.fft_r2c
                         .as_ref()
                         .is_some_and(|plan| plan.nspec() == n_time / 2 + 1)
@@ -4030,7 +4268,7 @@ impl NativeBackend for CpuNativeSim {
                     && s.fft_norm == 1.0 / n_time as f64
                     && s.fft_norm_over == 1.0 / n_time_over as f64
             } else {
-                s.fftw_api.is_some()
+                (s.portable_fft || s.fftw_api.is_some())
                     && s.fft_c2c.is_some()
                     && s.fft_c2c_over.is_some()
                     && s.fft_norm == 1.0 / n_time as f64
@@ -4038,7 +4276,7 @@ impl NativeBackend for CpuNativeSim {
             };
         #[cfg(not(test))]
         let plans_match = if s.is_real {
-            s.fftw_api.is_some()
+            (s.portable_fft || s.fftw_api.is_some())
                 && s.fft_r2c
                     .as_ref()
                     .is_some_and(|plan| plan.nspec() == n_time / 2 + 1)
@@ -4048,7 +4286,7 @@ impl NativeBackend for CpuNativeSim {
                 && s.fft_norm == 1.0 / n_time as f64
                 && s.fft_norm_over == 1.0 / n_time_over as f64
         } else {
-            s.fftw_api.is_some()
+            (s.portable_fft || s.fftw_api.is_some())
                 && s.fft_c2c.is_some()
                 && s.fft_c2c_over.is_some()
                 && s.fft_norm == 1.0 / n_time as f64
@@ -4495,11 +4733,15 @@ impl NativeBackend for CpuNativeSim {
         // the time Raman is wired (always after `native_set_fftw_plans`).
         s.raman_thg = thg != 0;
         if !s.raman_thg {
-            let api = match s.fftw_api.as_ref() {
-                Some(api) => api,
-                None => return -2,
+            let plan = if s.portable_fft {
+                ComplexFft1d::portable(s.n_time_over)
+            } else if let Some(api) = s.fftw_api.as_ref() {
+                ComplexFft1d::new(api, s.n_time_over, 1 << 6)
+            } else {
+                return -2;
             };
-            s.raman_hilbert_fft = Some(ComplexFft1d::new(api, s.n_time_over, 1 << 6));
+            plan.prepare(&mut s.hilbert_fft_scratch);
+            s.raman_hilbert_fft = Some(plan);
             s.raman_hilbert_a = vec![Complex::new(0.0, 0.0); s.n_time_over];
             s.raman_hilbert_b = vec![Complex::new(0.0, 0.0); s.n_time_over];
         }
@@ -4531,10 +4773,9 @@ impl NativeBackend for CpuNativeSim {
         {
             return -1;
         }
-        let api = match s.fftw_api.as_ref() {
-            Some(api) => api,
-            None => return -2,
-        };
+        if !s.portable_fft && s.fftw_api.is_none() {
+            return -2;
+        }
 
         let omega_sl = unsafe { std::slice::from_raw_parts(omega, n_osc) };
         let amp_sl = unsafe { std::slice::from_raw_parts(amp, n_osc) };
@@ -4562,22 +4803,7 @@ impl NativeBackend for CpuNativeSim {
             h[idx] = scale * hv;
         }
 
-        let plan = RealFft1d::new(api, n_over, 1 << 6);
-        let mut hw = vec![Complex::new(0.0, 0.0); plan.nspec()];
-        plan.forward(&mut h, &mut hw);
-        // Fold in Nonlinear.jl:415's `dt` and the ifft's `1/n_over` normalisation
-        // once here, so the per-step convolution needs no further scaling.
-        let post = dt / n_over as f64;
-        for v in &mut hw {
-            *v *= post;
-        }
-
-        s.raman_fft_plan = Some(plan);
-        s.raman_fft_hw = hw;
-        s.raman_fft_e2 = vec![0.0f64; n_over];
-        s.raman_fft_ew = vec![Complex::new(0.0, 0.0); n_over / 2 + 1];
-        s.raman_fft_density = density;
-        s.has_raman_fft = true;
+        s.configure_raman_samples(h, dt, density);
 
         0
     }
@@ -8247,3 +8473,7 @@ mod tests {
         unsafe { free_native_sim(sim) };
     }
 }
+
+#[cfg(test)]
+#[path = "native_portable_tests.rs"]
+mod portable_tests;

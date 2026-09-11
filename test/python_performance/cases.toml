@@ -1,0 +1,145 @@
+# New post-repair workloads; independent of test/performance_audit's frozen data.
+[common]
+lambda0 = 8e-7
+lambda_lims = [2e-7, 1.7e-6]
+trange = 3e-13
+tau_fwhm = 2e-14
+shotnoise = false
+saveN = 7
+
+[cases.gnlse-kerr]
+api = "gnlse"
+args = [0.01, 0.03, [0.0, 0.0, -2e-26, 5e-41]]
+step = 0.001
+control = "kerr"
+[cases.gnlse-kerr.options]
+power = 2000.0
+raman = false
+loss = 1.5
+lambda_lims = [5.5e-7, 1.7e-6]
+trange = 4e-13
+
+[cases.gnlse-raman]
+allow_rust_method_exclusion = true
+api = "gnlse"
+args = [0.01, 0.03, [0.0, 0.0, -2e-26, 5e-41]]
+step = 0.001
+control = "raman"
+[cases.gnlse-raman.options]
+power = 2000.0
+raman = true
+loss = 1.5
+lambda_lims = [5.5e-7, 1.7e-6]
+trange = 4e-13
+
+[cases.gnlse-raman-refinement]
+allow_rust_method_exclusion = true
+api = "gnlse"
+args = [0.01, 0.03, [0.0, 0.0, -2e-26, 5e-41]]
+step = 0.001
+control = "raman"
+[cases.gnlse-raman-refinement.options]
+delta_t = 2.5e-16
+power = 2000.0
+raman = true
+loss = 1.5
+lambda_lims = [5.5e-7, 1.7e-6]
+trange = 4e-13
+
+[cases.gnlse-raman-refined]
+api = "gnlse"
+args = [0.01, 0.03, [0.0, 0.0, -2e-26, 5e-41]]
+step = 0.001
+control = "raman"
+[cases.gnlse-raman-refined.options]
+delta_t = 1.25e-16
+power = 2000.0
+raman = true
+loss = 1.5
+lambda_lims = [5.5e-7, 1.7e-6]
+trange = 4e-13
+
+[cases.capillary-envelope]
+api = "capillary"
+args = [0.000125, 0.02, "Ar", 2.0]
+step = 0.001
+control = "kerr"
+[cases.capillary-envelope.options]
+energy = 1e-5
+envelope = true
+raman = false
+plasma = false
+
+[cases.capillary-carrier]
+api = "capillary"
+args = [0.000125, 0.0002, "Ar", 2.0]
+step = 0.00001
+control = "kerr"
+[cases.capillary-carrier.options]
+energy = 0.0005
+envelope = false
+raman = false
+plasma = false
+
+[cases.capillary-adk]
+api = "capillary"
+args = [0.000125, 0.0002, "Ar", 2.0]
+step = 0.00001
+control = "plasma"
+[cases.capillary-adk.options]
+energy = 0.0005
+envelope = false
+raman = false
+plasma = "ADK"
+
+[cases.capillary-raman]
+api = "capillary"
+args = [0.000125, 0.0002, "N2", 2.0]
+step = 0.00001
+control = "raman"
+[cases.capillary-raman.options]
+energy = 0.0005
+envelope = true
+raman = true
+plasma = false
+
+[cases.capillary-gradient]
+julia_native = false
+api = "capillary"
+args = [0.000125, 0.02, "Ar", [2.0, 4.0]]
+step = 0.001
+control = "gradient"
+[cases.capillary-gradient.options]
+energy = 1e-5
+envelope = true
+raman = false
+plasma = false
+
+[cases.modal-envelope]
+api = "capillary"
+args = [0.000125, 0.00001, "Ar", 2.0]
+step = 0.0000025
+control = "kerr"
+[cases.modal-envelope.options]
+energy = 0.0005
+trange = 1e-13
+envelope = true
+modes = 2
+raman = false
+plasma = false
+radial_integral_rtol = 1e-5
+
+[cases.modal-vector]
+api = "capillary"
+args = [0.000125, 0.00001, "Ar", 2.0]
+step = 0.0000025
+control = "kerr"
+[cases.modal-vector.options]
+energy = 0.0005
+trange = 1e-13
+envelope = true
+modes = 2
+polarisation = "circular"
+raman = false
+plasma = false
+radial_integral_rtol = 1e-5

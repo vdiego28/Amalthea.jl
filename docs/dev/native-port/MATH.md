@@ -57,9 +57,14 @@ diagonal phase multiply (`src/RK45.jl:281-306`):
 prop!(y, t1, t2):       y .*= exp.(L .* (t2 - t1))     # const-linop case
 ```
 
-For a z-dependent `L`, `prop!` integrates `L` to the later time and caches it
-(`src/RK45.jl:294-306`). Native code must reproduce the same "evaluate L at the
-later time, reuse if unchanged" memoization to stay bit-comparable.
+For a z-dependent `L`, `prop!` evaluates `L(t2)` and applies
+`exp(L(t2) * (t2-t1))`, caching the immediately preceding evaluation position
+(`RK45.make_prop!`). It does not integrate `L` over the interval. Backward
+propagation uses the same `t2` evaluation with the opposite interval sign.
+Native code must preserve this endpoint exponential and immediate-position
+cache. The variable-operator Python gate independently demonstrates its
+first-order variable-coefficient error under refinement; the nonlinear DOPRI
+order alone is not a full variable-L accuracy claim.
 
 ### 2.1 Tableau, FSAL, error estimate
 Standard Dormand-Prince 5(4) (7 stages, the coefficients live in
@@ -832,3 +837,11 @@ speedup was only about 0.99-1.05×, below the >1.4× gate. Truncation accuracy
 was already sufficient (1.7e-16-3.4e-14), so this is a performance rejection,
 not a correctness blocker. The benchmark/prototype was reverted; see
 `BACKLOG.md` queue item 5 and `PLANS.md` §6.3.
+
+The standalone physical point facade reuses the same CPU temporal formulas.
+Scalar points use unit amplitude scale with the modal prefactor
+`-i*omega*omega_window/4`; sampled Raman impulses already include density.
+Vector points call the extracted `modal_temporal` subsection of `modal_pointcalc`
+between unchanged synthesis and projection. Both directions retain the existing
+unnormalized FFT conventions and oversampling crop/scale factors. The NumPy
+boundary changes storage order and ownership only, with no physical rescaling.

@@ -3275,3 +3275,81 @@ and subsequent performance sequence are in
 decision for this Python scope; it does not change the existing Julia ABI or
 authorize separate CLI/free-space/step-index interfaces. Current progress and
 the exact repaired-baseline gate belong in the BACKLOG resume queue.
+
+## 21. Spline finder initialization repair discovered by the Python mode oracle
+
+The standalone mode comparison exposed a pre-existing `Maths.FastFinder`
+state defect. On its first interior query it initializes `ilast` but leaves
+`xlast=-Inf`. A second, smaller interior query therefore searches forward
+from the previous interval and evaluates the wrong spline polynomial.
+`MarcatiliMode` probes its callbacks at 2.5e15 rad/s during construction, so
+its first subsequent shorter-wavelength request can trigger this defect.
+At 300 nm the default cladding returned 1.4764335922421132 instead of the
+fresh FITPACK value 1.4877888688279677. Do not reproduce this history-dependent
+bug in Python or relax the equivalence gate to absorb it.
+
+Initialize `xlast` together with `ilast` on the first interior query. Preserve
+the documented first-strictly-greater convention on backward exact-knot queries
+by stopping at the last knot less than or equal to the query. Retain existing
+boundary clamping and sequential scratch ownership. Test arbitrary/repeated/
+backward histories against an independent binary search, BSpline evaluation
+against Dierckx directly, and default capillary cladding after constructor
+probing against a fresh PhysData lookup. Include a demonstrated pre-repair
+error larger than 1e-13. Run the full recorded CPU gate because this lookup is
+shared by material, pulse and response setup, then regenerate independent
+Python fixtures and record any trajectory changes. This changes Julia setup
+only; no Rust/C ABI or CUDA kernel change is involved.
+
+## 22. Real-valued complex gas coefficient in gradient metadata
+
+The exact-profile Python exporter exposes a Julia setup failure for carrier
+N2O/CH4/SF6 pressure gradients: `gamma_QuanfuHe` returns ComplexF64 with zero
+imaginary part, and `Capillary.make_linop` passes its scalar gamma0 directly
+to the `ZDepLinopMarcatili` constructor's Float64 slot. Its vector gamma data
+and derivatives already perform explicit Float64 conversion. The resulting
+MethodError occurs even with the resident Rust backend disabled, blocking the
+ordinary Julia oracle before propagation.
+
+Convert scalar gamma0 with Float64 at the same setup boundary. Julia's checked
+conversion requires an exactly zero imaginary part; do not silently drop an
+imaginary coefficient or broaden native complex-core eligibility. Existing
+Float64-valued gases are unchanged. No kernel, C ABI or CUDA implementation
+changes are required. Test all three affected gases, both full/reduced models,
+against generic Julia linear-operator construction from the same graded core
+wrapped as a plain function. Require 1e-13 setup/operator agreement and native
+single-step checks, full trajectories at 1e-6, and a non-vacuous gradient effect.
+Run the recorded full CPU/FFI gate, then complete the interrupted profile oracle
+and installed Python gates. Preserve the original failed export as evidence.
+Profile wiring remains designed in [PYTHON_NATIVE_PLAN](PYTHON_NATIVE_PLAN.md#exact-scalar-capillary-profiles-and-gradients-2026-09-11).
+
+## 23. Strict CUDA validation with a compatible temporary compiler
+
+The lead reauthorized CUDA execution after repairing the driver. The installed
+R595 driver responds to host probes, but the system CUDA 13.4 compiler emits PTX
+that fails module loading with error 222. NVIDIA's
+[release table](https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/) pairs
+CUDA 13.2 with R595, CUDA 13.3 with R610 and CUDA 13.4 with R615. Its
+[minor compatibility guidance](https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html)
+specifically limits newer PTX on older drivers. The absence of the formerly
+configured `/usr/local/cuda-13.3` is a toolchain issue, not a physics discrepancy.
+
+Prepare an isolated CUDA 13.2.1 development compiler under `/tmp`, downloading
+only required NVIDIA redistributable components and checking their published
+SHA-256 values from the official release manifest. Preserve component licenses.
+Do not install/replace a driver, change system symlinks or edit the user's PATH.
+Select the compiler with the existing `NVCC` override and command-local PATH;
+keep the prescribed `/usr/local/cuda-13.3/bin` prefix even though it is absent.
+CUDA probes/builds/tests still run outside the sandbox.
+
+First verify compiler/driver versions and a strict CUDA Rust smoke test, then
+run `python3 test/validate.py --cuda --groups rust --max-workers 1` with
+`AMALTHEA_REQUIRE_CUDA_TESTS=1` and `RUST_TEST_THREADS=1`. This changes the
+compiler input, so it is a justified retry of the previous module-load failure.
+Retain the failed CUDA 13.4 evidence. Do not modify kernels, ABI, tolerances or
+enable fallback to make the gate pass. Record the exact compiler, linked CUDA
+runtime libraries, GPU, library hash and numerical evidence. Existing Python
+wheels and their full suites remain CPU-only and use separate frozen libraries.
+If CUDA library PTX also requires a newer driver, any matching temporary runtime
+components must use the same manifest/hash discipline and command-local loader
+path; they must not replace host libraries. A remaining failure is recorded
+explicitly and does not invalidate completed CPU-only wheel evidence.

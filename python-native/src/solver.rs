@@ -1,5 +1,7 @@
 //! Owning, serial adapter around the existing repaired Rust callback kernel.
 use amalthea::ffi::{self, PreconStepFfiHandle, PreconStepResult};
+use amalthea::ionization::AdkIonizationRate;
+use amalthea::resident::{IonizationConfig, ModeAverageConfig, PlasmaConfig, ResidentModeAverage};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use rustfft::num_complex::Complex64 as C;
@@ -18,8 +20,10 @@ impl Drop for Handle {
 }
 
 struct Context {
-    rhs: Py<PyAny>,
+    rhs: Option<Py<PyAny>>,
     linop: Vec<C>,
+    linop_callback: Option<Py<PyAny>>,
+    last_linear_position: Option<f64>,
     error: Option<PyErr>,
 }
 
@@ -37,20 +41,37 @@ fn check(values: &[C], n: usize) -> PyResult<()> {
 }
 
 impl Context {
-    fn prop(&self, values: &mut [C], dt: f64) {
+    fn prop(&mut self, values: &mut [C], position: f64, dt: f64) -> PyResult<()> {
+        // Julia caches only the immediately preceding t2. Backward RHS
+        // propagation selects that same t2 with the opposite interval sign.
+        if let Some(callback) = &self.linop_callback {
+            if self.last_linear_position != Some(position) {
+                let next =
+                    Python::attach(|py| callback.call1(py, (position,))?.extract::<Vec<C>>(py))?;
+                check(&next, self.linop.len())?;
+                self.linop = next;
+                self.last_linear_position = Some(position);
+            }
+        }
         for (v, l) in values.iter_mut().zip(&self.linop) {
             *v *= (*l * dt).exp();
         }
+        Ok(())
     }
 
-    fn evaluate(&self, t0: f64, t1: f64, values: &[C]) -> PyResult<Vec<C>> {
+    fn evaluate(&mut self, t0: f64, t1: f64, values: &[C]) -> PyResult<Vec<C>> {
         let mut physical = values.to_vec();
-        self.prop(&mut physical, t1 - t0);
+        self.prop(&mut physical, t1, t1 - t0)?;
         check(&physical, self.linop.len())?;
-        let mut output =
-            Python::attach(|py| self.rhs.call1(py, (t1, physical))?.extract::<Vec<C>>(py))?;
+        let mut output = Python::attach(|py| {
+            self.rhs
+                .as_ref()
+                .expect("callback context")
+                .call1(py, (t1, physical))?
+                .extract::<Vec<C>>(py)
+        })?;
         check(&output, values.len())?;
-        self.prop(&mut output, t0 - t1);
+        self.prop(&mut output, t1, t0 - t1)?;
         check(&output, values.len())?;
         Ok(output)
     }
@@ -95,7 +116,7 @@ unsafe extern "C" fn prop_callback(t0: f64, t1: f64, values: *mut C, n: usize, d
     }
     let result = catch_unwind(AssertUnwindSafe(|| {
         let values = unsafe { std::slice::from_raw_parts_mut(values, n) };
-        ctx.prop(values, t1 - t0);
+        ctx.prop(values, t1, t1 - t0)?;
         check(values, n)
     }));
     match result {
@@ -109,7 +130,7 @@ unsafe extern "C" fn prop_callback(t0: f64, t1: f64, values: *mut C, n: usize, d
     }
 }
 
-fn extra(ctx: &Context, y: &[C], stages: &mut [Vec<C>], t: f64, dt: f64) -> PyResult<()> {
+fn extra(ctx: &mut Context, y: &[C], stages: &mut [Vec<C>], t: f64, dt: f64) -> PyResult<()> {
     for (idx, coefficients) in [(7, &dense::A7[..]), (8, &dense::A8[..])] {
         let mut trial = y.to_vec();
         for (j, a) in coefficients.iter().enumerate() {
@@ -123,7 +144,7 @@ fn extra(ctx: &Context, y: &[C], stages: &mut [Vec<C>], t: f64, dt: f64) -> PyRe
 }
 
 fn interpolate(
-    ctx: &Context,
+    ctx: &mut Context,
     y: &[C],
     stages: &[Vec<C>],
     t: f64,
@@ -146,13 +167,14 @@ fn interpolate(
             *v += *k * (dt * weight);
         }
     }
-    ctx.prop(&mut output, sample - t);
+    ctx.prop(&mut output, sample, sample - t)?;
     check(&output, y.len())?;
     Ok(output)
 }
 
 // Private bindings still validate inputs: callers can import _native directly.
 #[pyfunction]
+#[pyo3(signature=(rhs,linop,initial,positions,dt,rtol,atol,safety,min_dt,max_dt,fifth,max_attempts,repeat_limit,filter=None,linop_callback=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn solve(
     rhs: Py<PyAny>,
@@ -169,6 +191,221 @@ pub fn solve(
     max_attempts: usize,
     repeat_limit: usize,
     filter: Option<Py<PyAny>>,
+    linop_callback: Option<Py<PyAny>>,
+) -> PyResult<(Vec<Vec<C>>, usize, usize, Vec<f64>)> {
+    run(
+        Some(rhs),
+        linop,
+        initial,
+        positions,
+        dt,
+        rtol,
+        atol,
+        safety,
+        min_dt,
+        max_dt,
+        fifth,
+        max_attempts,
+        repeat_limit,
+        filter,
+        None,
+        linop_callback,
+    )
+}
+
+// Complete arrays prepared in Python, copied and validated by the safe facade.
+type ModeAverageArrays = (
+    Vec<C>,
+    Vec<f64>,
+    Vec<f64>,
+    Vec<f64>,
+    f64,
+    f64,
+    Option<Vec<f64>>,
+    f64,
+);
+type PlasmaArrays = (String, Vec<f64>, Vec<f64>, Vec<f64>, f64, f64, f64, f64);
+fn plasma_config(arrays: PlasmaArrays, dt: f64) -> PyResult<PlasmaConfig> {
+    let (kind, data, log_rate, derivative, ionpot, e_ratio, preionfrac, density) = arrays;
+    let rate = match kind.as_str() {
+        "ADK" if data.len() == 7 && log_rate.is_empty() && derivative.is_empty() => {
+            IonizationConfig::Adk(AdkIonizationRate {
+                occupancy: data[0],
+                omega_p: data[1],
+                cn_sq: data[2],
+                nstar: data[3],
+                omega_t_prefac: data[4],
+                thr: data[5],
+                avfac: data[6],
+            })
+        }
+        "PPT" => IonizationConfig::Ppt {
+            field: data,
+            log_rate,
+            derivative,
+        },
+        _ => {
+            return Err(PyValueError::new_err(
+                "invalid resident plasma rate tag or ADK arrays",
+            ));
+        }
+    };
+    Ok(PlasmaConfig {
+        rate,
+        ionpot,
+        e_ratio,
+        preionfrac,
+        dt,
+        density,
+    })
+}
+fn mode_average(
+    linop: Vec<C>,
+    config: ModeAverageArrays,
+    is_real: bool,
+    plasma: Option<PlasmaArrays>,
+) -> PyResult<ResidentModeAverage> {
+    let (prefactor, time_window, filter_time, filter_frequency, kerr, amplitude_scale, h, dt) =
+        config;
+    ResidentModeAverage::new(ModeAverageConfig {
+        linop,
+        is_real,
+        prefactor,
+        time_window,
+        filter_time,
+        filter_frequency,
+        kerr,
+        amplitude_scale,
+        raman: h.map(|h| (h, dt, 1.0)),
+        plasma: plasma.map(|p| plasma_config(p, dt)).transpose()?,
+    })
+    .map_err(PyValueError::new_err)
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn solve_envelope(
+    linop: Vec<C>,
+    initial: Vec<C>,
+    config: ModeAverageArrays,
+    positions: Vec<f64>,
+    dt: f64,
+    rtol: f64,
+    atol: f64,
+    safety: f64,
+    min_dt: f64,
+    max_dt: f64,
+    fifth: bool,
+    max_attempts: usize,
+    repeat_limit: usize,
+) -> PyResult<(Vec<Vec<C>>, usize, usize, Vec<f64>)> {
+    let resident = mode_average(linop.clone(), config, false, None)?;
+    run(
+        None,
+        linop,
+        initial,
+        positions,
+        dt,
+        rtol,
+        atol,
+        safety,
+        min_dt,
+        max_dt,
+        fifth,
+        max_attempts,
+        repeat_limit,
+        None,
+        Some(resident),
+        None,
+    )
+}
+
+#[pyfunction]
+pub fn envelope_rhs(linop: Vec<C>, initial: Vec<C>, config: ModeAverageArrays) -> PyResult<Vec<C>> {
+    let mut resident = mode_average(linop, config, false, None)?;
+    resident
+        .initialize(&initial)
+        .map_err(PyValueError::new_err)?;
+    let result = resident.stages()[0].clone();
+    check(&result, initial.len())?;
+    Ok(result)
+}
+
+#[pyfunction]
+#[pyo3(signature=(linop,initial,config,positions,dt,rtol,atol,safety,min_dt,max_dt,fifth,max_attempts,repeat_limit,plasma=None))]
+#[allow(clippy::too_many_arguments)]
+pub fn solve_real(
+    linop: Vec<C>,
+    initial: Vec<C>,
+    config: ModeAverageArrays,
+    positions: Vec<f64>,
+    dt: f64,
+    rtol: f64,
+    atol: f64,
+    safety: f64,
+    min_dt: f64,
+    max_dt: f64,
+    fifth: bool,
+    max_attempts: usize,
+    repeat_limit: usize,
+    plasma: Option<PlasmaArrays>,
+) -> PyResult<(Vec<Vec<C>>, usize, usize, Vec<f64>)> {
+    let resident = mode_average(linop.clone(), config, true, plasma)?;
+    run(
+        None,
+        linop,
+        initial,
+        positions,
+        dt,
+        rtol,
+        atol,
+        safety,
+        min_dt,
+        max_dt,
+        fifth,
+        max_attempts,
+        repeat_limit,
+        None,
+        Some(resident),
+        None,
+    )
+}
+
+#[pyfunction]
+#[pyo3(signature=(linop,initial,config,plasma=None))]
+pub fn real_rhs(
+    linop: Vec<C>,
+    initial: Vec<C>,
+    config: ModeAverageArrays,
+    plasma: Option<PlasmaArrays>,
+) -> PyResult<Vec<C>> {
+    let mut resident = mode_average(linop, config, true, plasma)?;
+    resident
+        .initialize(&initial)
+        .map_err(PyValueError::new_err)?;
+    let result = resident.stages()[0].clone();
+    check(&result, initial.len())?;
+    Ok(result)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run(
+    rhs: Option<Py<PyAny>>,
+    linop: Vec<C>,
+    initial: Vec<C>,
+    positions: Vec<f64>,
+    dt: f64,
+    rtol: f64,
+    atol: f64,
+    safety: f64,
+    min_dt: f64,
+    max_dt: f64,
+    fifth: bool,
+    max_attempts: usize,
+    repeat_limit: usize,
+    filter: Option<Py<PyAny>>,
+    mut resident: Option<ResidentModeAverage>,
+    linop_callback: Option<Py<PyAny>>,
 ) -> PyResult<(Vec<Vec<C>>, usize, usize, Vec<f64>)> {
     let n = initial.len();
     if n == 0 {
@@ -188,20 +425,25 @@ pub fn solve(
         .iter()
         .all(|x| x.is_finite() && *x > 0.0)
         || min_dt > max_dt
-        || dt < min_dt
-        || dt > max_dt
         || safety > 1.0
         || max_attempts == 0
     {
         return Err(PyValueError::new_err("invalid solver controls"));
     }
-    let handle = Handle(unsafe { ffi::init_precon_step_ffi(n) });
-    if handle.0.is_null() {
-        return Err(PyRuntimeError::new_err("stepper allocation failed"));
-    }
+    let handle = if resident.is_none() {
+        let handle = Handle(unsafe { ffi::init_precon_step_ffi(n) });
+        if handle.0.is_null() {
+            return Err(PyRuntimeError::new_err("stepper allocation failed"));
+        }
+        Some(handle)
+    } else {
+        None
+    };
     let mut ctx = Context {
         rhs,
         linop,
+        linop_callback,
+        last_linear_position: None,
         error: None,
     };
     let mut yn = initial;
@@ -211,7 +453,12 @@ pub fn solve(
     let mut tn = t;
     let mut next_dt = dt;
     let mut errlast = 0.0;
-    stages[0] = ctx.evaluate(t, t, &yn)?;
+    if let Some(sim) = &mut resident {
+        sim.initialize(&yn).map_err(PyValueError::new_err)?;
+        stages[0].copy_from_slice(&sim.stages()[0]);
+    } else {
+        stages[0] = ctx.evaluate(t, t, &yn)?;
+    }
     let mut saved = vec![yn.clone()];
     let mut accepted = Vec::new();
     let mut rejected = 0;
@@ -235,28 +482,50 @@ pub fn solve(
             err: 0.0,
             errlast: 0.0,
         };
-        let status = unsafe {
-            ffi::precon_step_ffi(
-                handle.0,
-                y.as_mut_ptr(),
-                yn.as_mut_ptr(),
-                ptrs.as_ptr(),
-                n,
-                t,
-                tn,
-                next_dt,
-                rtol,
-                atol,
-                safety,
-                max_dt,
-                min_dt,
-                errlast,
-                i32::from(fifth),
-                rhs_callback,
-                prop_callback,
-                (&mut ctx as *mut Context).cast(),
-                &mut result,
-            )
+        let status = if let Some(sim) = &mut resident {
+            y.copy_from_slice(sim.field());
+            let value = sim
+                .attempt(
+                    &mut yn, t, tn, next_dt, rtol, atol, safety, max_dt, min_dt, errlast, fifth,
+                )
+                .map_err(PyRuntimeError::new_err)?;
+            result = PreconStepResult {
+                ok: value.ok,
+                dt: value.dt,
+                t: value.t,
+                tn: value.tn,
+                dtn: value.dtn,
+                err: value.err,
+                errlast: value.errlast,
+            };
+            for (dst, src) in stages.iter_mut().zip(sim.stages()) {
+                dst.copy_from_slice(src);
+            }
+            0
+        } else {
+            unsafe {
+                ffi::precon_step_ffi(
+                    handle.as_ref().unwrap().0,
+                    y.as_mut_ptr(),
+                    yn.as_mut_ptr(),
+                    ptrs.as_ptr(),
+                    n,
+                    t,
+                    tn,
+                    next_dt,
+                    rtol,
+                    atol,
+                    safety,
+                    max_dt,
+                    min_dt,
+                    errlast,
+                    i32::from(fifth),
+                    rhs_callback,
+                    prop_callback,
+                    (&mut ctx as *mut Context).cast(),
+                    &mut result,
+                )
+            }
         };
         if let Some(error) = ctx.error.take() {
             return Err(error);
@@ -276,12 +545,26 @@ pub fn solve(
             consecutive = 0;
             let mut extra_ready = false;
             while saved.len() < positions.len() && positions[saved.len()] < tn {
-                if fifth && !extra_ready {
-                    extra(&ctx, &y, &mut stages, t, result.dt)?;
+                if positions[saved.len()] == t {
+                    saved.push(y.clone());
+                    continue;
+                }
+                // Julia recomputes its extra stages for every interior query.
+                // Retain that callback sequence for arbitrary variable models.
+                if fifth && (!extra_ready || ctx.linop_callback.is_some()) {
+                    if let Some(sim) = &mut resident {
+                        sim.extra_stages(&y, t, result.dt)
+                            .map_err(PyRuntimeError::new_err)?;
+                        for (dst, src) in stages.iter_mut().zip(sim.stages()).skip(7) {
+                            dst.copy_from_slice(src);
+                        }
+                    } else {
+                        extra(&mut ctx, &y, &mut stages, t, result.dt)?;
+                    }
                     extra_ready = true;
                 }
                 saved.push(interpolate(
-                    &ctx,
+                    &mut ctx,
                     &y,
                     &stages,
                     t,
@@ -289,6 +572,10 @@ pub fn solve(
                     positions[saved.len()],
                     fifth,
                 )?);
+            }
+            if let Some(sim) = &mut resident {
+                sim.filter().map_err(PyRuntimeError::new_err)?;
+                yn.copy_from_slice(sim.field());
             }
             if let Some(ref callback) = filter {
                 yn = Python::attach(|py| {

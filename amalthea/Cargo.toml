@@ -11,6 +11,8 @@ crate-type = ["cdylib", "rlib"]
 libc = "0.2"
 num-complex = "0.4"
 rayon = "1"
+rustfft = "6.4"
+realfft = "3.5"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_LibraryLoader", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
@@ -41,4 +43,3 @@ harness = false
 [[bench]]
 name = "raman_fft_r2c_bench"
 harness = false
-

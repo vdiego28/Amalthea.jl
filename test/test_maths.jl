@@ -7,6 +7,25 @@ import Amalthea.Modes: hquadrature
 import Random: seed!
 import FFTW
 
+@testset "Spline query history" begin
+    knots = [0., .1, .4, .9, 1.7, 2.2, 3.]
+    histories = ([1.5, .2, .2, .1, .9, .4, 2.9, -.1, 3.1],
+                 [1.5, .9, .9, .4, .1, 0., 3.])
+    for history in histories
+        finder = Maths.FastFinder(knots)
+        expected = [clamp(searchsortedlast(knots, q)+1, 2, length(knots)) for q in history]
+        @test finder.(history) == expected
+        spline = Maths.BSpline(knots, sin.(knots))
+        # The independent Dierckx evaluator has no FastFinder history.
+        @test isapprox(spline.(history), spline.rspl.(history), rtol=1e-13)
+    end
+    # Capillary construction probes the cladding at 2.5e15 before the first query.
+    import Amalthea: Capillary, PhysData
+    mode = Capillary.MarcatiliMode(80e-6, :He, 2.1)
+    ω = PhysData.wlfreq(300e-9)
+    @test isapprox(mode.cladn(ω; z=0), PhysData.ref_index(:SiO2, 300e-9), rtol=1e-13)
+end
+
 @testset "Derivatives" begin
     f(x) = @. 4x^3 + 3x^2 + 2x + 1
 

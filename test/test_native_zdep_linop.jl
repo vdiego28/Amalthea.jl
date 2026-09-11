@@ -1,5 +1,63 @@
 using TestItems
 
+@testitem "Real-valued complex gas gradient metadata" tags=[:rust] begin
+    using Amalthea
+    import Test: @test, @test_skip
+    using LinearAlgebra: norm
+    using Amalthea.RK45: PreconStepper, RustNativeStepper, step!, solve
+    using Logging: with_logger, NullLogger
+
+    if !isfile(RK45._LIBAMALTHEA_RK45)
+        @test_skip "Rust library not found"
+    else
+        with_logger(NullLogger()) do
+            for gas in (:N2O, :CH4, :SF6), model in (:full, :reduced)
+                args = (125e-6, .0002, gas, (2., 4.))
+                kw = (λ0=800e-9, λlims=(200e-9, 1700e-9), trange=300e-15,
+                      τfwhm=20e-15, energy=500e-6, shotnoise=false,
+                      plasma=false, raman=false, model=model)
+                E, grid, linop, rhs!, FT, _ = Interface.prop_capillary_args(args...; kw...)
+                @test linop isa Capillary.ZDepLinopMarcatili
+                core, _ = Capillary.gradient(gas, args[2], args[4]...)
+                @test core.γ(kw.λ0*1e6) isa Complex
+                @test imag(core.γ(kw.λ0*1e6)) == 0
+                generic = Capillary.MarcatiliMode(args[1], (ω; z)->core(ω; z=z); model=model)
+                generic_L, _ = LinearOps.make_linop(grid, generic, kw.λ0)
+                expected = similar(E); actual = similar(E)
+                for z in (0., .000037, .000137, .00024)
+                    generic_L(expected, z); linop(actual, z)
+                    error = norm(actual-expected)/norm(expected)
+                    println("Complex gradient metadata $gas $model z=$z: $error")
+                    @test error < 1e-13
+                end
+                for (dz, complete) in ((1e-7, false), (1e-5, true))
+                    julia = PreconStepper(rhs!, linop, copy(E), 0., dz;
+                                          min_dt=dz, max_dt=dz)
+                    native = RustNativeStepper(rhs!, linop, copy(E), 0., dz;
+                                               min_dt=dz, max_dt=dz, flength=args[2])
+                    @test RK45._native_backend(native) === :cpu
+                    if complete
+                        solve(julia, args[2]); solve(native, args[2])
+                    else
+                        step!(julia); step!(native)
+                    end
+                    error = norm(native.yn-julia.yn)/norm(julia.yn)
+                    println("Complex gradient native $gas $model complete=$complete: $error")
+                    @test error < (complete ? 1e-6 : 1e-13)
+                    if complete
+                        Ec, _, Lc, fc!, _, _ = Interface.prop_capillary_args(args[1:3]..., 2.; kw...)
+                        control = PreconStepper(fc!, Lc, Ec, 0., dz; min_dt=dz, max_dt=dz)
+                        solve(control, args[2])
+                        effect = norm(julia.yn-control.yn)/norm(julia.yn)
+                        println("Complex gradient effect $gas $model: $effect")
+                        @test effect > 1e-5
+                    end
+                end
+            end
+        end
+    end
+end
+
 @testitem "Native-Rust Phase 7 (z-dependent linop, pressure-gradient capillary)" tags=[:rust] begin
     import Test: @test, @test_skip, @testset
     using Amalthea

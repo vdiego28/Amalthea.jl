@@ -113,7 +113,7 @@ not per op. The high-level `prop_capillary` / `prop_gnlse` interface is unchange
 
 ## 4. Key decisions and rationale
 
-### 4.1 FFT: bind FFTW, not `rustfft`
+### 4.1 FFT: retained Julia FFTW and standalone portable plans
 Julia uses FFTW via `FFTW.jl`. Binding the **same FFTW C library** from Rust
 makes the transforms bit-identical, so every ported phase can be validated to
 ~1e-13 against the Julia oracle instead of needing a method-difference tolerance.
@@ -124,6 +124,57 @@ This collapses the hardest validation risk in the whole port.
 - *Recorded alternative:* `rustfft` (pure Rust, no C dep) remains a future
   option; it would move FFT equivalence into the ~1e-13 (summation-order) tier
   and is acceptable if the FFTW dependency ever becomes a portability problem.
+
+For the standalone Python frontend, `transforms.rs` now selects RustFFT/RealFFT
+per CPU handle. Read-only plans receive exclusive reusable scratch, including
+per-worker modal and per-column radial buffers. `fftw.rs` and the Julia C ABI
+retain the FFTW path. `resident.rs::ResidentModeAverage` validates owned setup
+arrays for real/envelope mode averages and drives the existing CPU attempt kernel; the Python extension shares
+one outer sampling/dense-output loop between native and callback evaluation.
+Native GNLSE applies its accepted windows in Rust without Python stage callbacks.
+The standalone carrier facade owns boxed ADK/PPT rate data for the CPU engine's
+borrowed plasma pointers. Python's normalized-knot PPT derivatives transfer as
+validated spline segments, including supplied nonuniform knots; direct/custom
+rates and threshold-free ADK retain Python evaluation.
+Sampled molecular responses also use the portable causal FFT convolution on
+scalar carrier/envelope mode averages. Carrier THG-off Raman and envelope THG
+Kerr retain Python evaluation. The standalone serial callback driver accepts
+position-dependent diagonal operators with Julia's endpoint exponential and
+callback ordering; native resident configurations remain constant-operator.
+Scalar capillary profiles use this driver, refreshing density, area, dispersion,
+Kerr/plasma scaling and molecular broadening at requested positions. Arbitrary
+pressure functions use direct thermodynamics; explicit pressure gradients keep
+Julia's normalized thermodynamic spline and endpoint convention.
+Gas mixtures sum susceptibilities for the common mode and accumulate each
+species' polarization on the same physical time field. Constant Kerr mixtures
+collapse only the Kerr coefficient for resident handoff; Raman/plasma mixtures
+retain separate Python responses and partial-density updates.
+The standalone spatial layer normalizes raw mode fields with physical power
+`N`, synthesizes complete fields and projects with a real modal matrix. A
+position-specific geometry object owns fresh domain and normalization data.
+SciPy integration runs serially and explicitly enforces the joint real/imaginary
+L2 criterion, using a pilot scale and bounded component budgets. The public
+`Mode` base supplies numerical normalization and dispersion for custom spatial
+models. The modal frontend composes this geometry with per-species scalar/vector
+temporal responses and the Rust callback driver. Mode counts, collections and
+polarization pairs retain frequency/mode/save ordering. Constructed custom modes
+always use the variable linear callback; built-in constant modes retain Julia's
+distinct outside-window operator. General nonlinear response callbacks append
+physical polarization on owned complete time/component arrays. Context snapshots
+carry actual positions, coordinates and refreshed densities; custom callbacks
+select serial Python evaluation while Rust owns stepping. The safe `PointBatch`
+facade reuses resident scalar kernels and the extracted CPU modal temporal
+kernel for eligible constant built-in point spectra. It owns portable plans
+and scratch; the Python boundary transfers complete owned NumPy arrays without
+per-element Python objects. SciPy integration and Python mode projection remain
+outside that point kernel, and forced native still rejects the complete modal
+path. Numerical acceptance covers
+geometry, complete point arrays, fixed-node dense intervals and trajectories.
+Completed Python results serialize identical numeric arrays to NPZ or optional
+h5py HDF5, with JSON grid/parameter/execution descriptions and preserved modal
+axis order. The optional HDF5 dependency is loaded only when saving that format.
+The portable construction cannot be reconfigured into an FFTW handle. See
+[the standalone design](PYTHON_NATIVE_PLAN.md#resident-portable-fft-integration-2026-09-09).
 
 ### 4.2 Resident field, not per-op FFI
 The per-stage Julia round-trip was *the* reason the legacy loop was Julia-bound.

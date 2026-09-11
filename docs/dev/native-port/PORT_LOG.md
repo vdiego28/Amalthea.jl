@@ -5514,3 +5514,2219 @@ no numerical source changed during delivery. Re-ran
 Delivery checks: diff whitespace validation, explicit staged-file review,
 commit inspection, and remote branch-tip verification after push.
 **Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-09 — Python foundation hosted CI inspection — Codex
+**Status at this checkpoint:** complete.
+**Did:** Checked [run 34227717400](https://github.com/vdiego28/Amalthea.jl/actions/runs/34227717400)
+for exact delivered commit `34cdafc963251f23bb183d9b257d16bc087b04f8`.
+Updated BACKLOG with the hosted result and its Python coverage boundary.
+**Design:** [Python roadmap validation](PYTHON_NATIVE_PLAN.md).
+**Tests:** `gh run list --repo vdiego28/Amalthea.jl --commit
+34cdafc963251f23bb183d9b257d16bc087b04f8` and
+`gh run view 34227717400 --repo vdiego28/Amalthea.jl --json headSha,status,conclusion,url,jobs`:
+completed/success, **17 successful jobs**, **1 expected skipped benchmark-publication
+job**, no failed jobs. Includes Linux/macOS/Windows Rust and physics, Linux ARM64
+installation/FFI, simulation groups, I/O, fields, examples, existing Python API,
+and the native benchmark guard. Workflow inspection confirms the Python job runs
+`python/tests/`, scheduler tests, and validation-tool tests; it does **not** build
+or test `python-native/`. The standalone package's 47-test installed-artifact
+acceptance remains the local evidence in the 2026-09-08 entry. No new numerical
+or source changes; no additional commit/push performed for this inspection.
+**Gotchas:** gh defaults to the upstream Luna repository in this checkout;
+explicit `--repo vdiego28/Amalthea.jl` is required to select the fork's runs.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-09 — First standalone GNLSE evaluator and artifact CI — Codex
+**Status at this checkpoint:** first GNLSE Python unit complete; roadmap in progress.
+**Did:** Added `python-native/python/amalthea_native/gnlse.py` with `prop_gnlse`,
+`_Gnlse::{rhs,window}`, energy normalization, and `PropagationResult` owned
+arrays/temporal reconstruction/NPZ output. Preserved Julia units, keyword aliases,
+phase and dispersion orders, attenuation clamp, physical response normalization,
+SDO convolution, oversampling, and accepted windows. Supports Gaussian/sech and
+grid-matched time/spectral pulse arrays; auto/python uses Python/NumPy evaluation
+and the existing Rust driver. Explicit native, noise, and unsupported features
+reject. Added `test_gnlse.py`, independent `export_gnlse_oracle.jl`, and complete
+`examples/gnlse.py`; exported the API and documented its internal coverage.
+Added a standalone installed-wheel/source-rebuild/oracle/offline-example job to
+`.github/workflows/run_tests.yml`; this job has not yet run on GitHub. Shared
+Rust, Julia numerical sources, and C ABI unchanged. Existing installer edits
+preserved. No commit/push in this implementation unit.
+**Design:** [First optical Python evaluator and hosted artifact gate](PYTHON_NATIVE_PLAN.md#first-optical-python-evaluator-and-hosted-artifact-gate-2026-09-09).
+**Gotchas:** Source inspection confirmed the source's Simpson endpoint weights,
+Raman's factor 1/2, and unnormalized out-of-sidx polarization; the Python evaluator
+retains each convention rather than simplifying the usual textbook GNLSE.
+Nonzero beta0/beta1 magnify polynomial evaluation rounding through moving-frame
+subtraction: the frame case is the largest fixed-solve difference, still below
+1e-13. No tolerances were loosened. The source archive nests tests/examples below
+`python-native/` and bundles engine sources; tested those exact extracted paths.
+SiO2 Raman, arbitrary-axis interpolation, pulse collections/custom propagators,
+HDF5, resident portable evaluation, and capillary coverage remain pending.
+**Tests:**
+- Host `julia --startup-file=no --project python-native/tools/export_gnlse_oracle.jl
+  .rust_test_logs/python-gnlse/oracle` exported nine independently prepared pure
+  Julia cases: base, oversampled, sech, energy-normalized, zero nonlinearity,
+  Raman off, shock off, loss off, and nonzero beta0/beta1. Includes setup/RHS,
+  full fixed/adaptive trajectories, single-interval dense outputs, SDO response,
+  and a real high-level `Amalthea.prop_gnlse` run.
+- Installed-wheel tests with all three `AMALTHEA_{GRID,SOLVER,GNLSE}_ORACLE`
+  paths supplied: **73 passed**, no skips. Optical setup max relative errors:
+  initial field `4.890e-16`, linear operator `2.385e-15`, nonlinear RHS
+  `9.955e-16`. Single-interval max `3.762e-15`; fixed-solve max `9.360e-14`
+  (all under 1e-13). Adaptive max `2.395e-13`, under 1e-6. Actual Julia/Python
+  high-level entrypoints agree to `9.250e-14` with default step controls.
+  Independent oracle feature differences: nonlinearity `1.556e-1`, Raman
+  `2.428e-2`, shock `4.249e-3`, loss `3.157e-3`, all above the asserted tolerance.
+  Pulse-array ownership, aliases/conflicts, unsupported/nonfinite inputs,
+  analytic linear loss, energy normalization, temporal reconstruction, and
+  loading NPZ without pickle also pass.
+- `RUSTFLAGS='' maturin build --release` and `maturin sdist`; extracted final
+  archive to `/tmp/amalthea-gnlse-artifact-b36xrllt/amalthea_native-0.0.1.dev0`.
+  Rebuilt there with `RUSTFLAGS='' CARGO_NET_OFFLINE=true maturin build --release`
+  using cached build dependencies. Installed wheel in external
+  `/tmp/amalthea-gnlse-test-env` and ran extracted `python-native/tests`:
+  **73 passed**. Archive contains the new API, tests, exporter, examples, and
+  engine dependency, and excludes the development virtual environment.
+  Actual local wheel tag: `cp314-cp314-manylinux_2_35_x86_64`; NumPy 2.5.3,
+  CPython 3.14.6. This does not establish the manylinux_2_28 release target.
+- Host `unshare -Urn env PATH=/nonexistent <external-python> -I` ran both
+  extracted examples in a network namespace containing only loopback. Checked
+  installed module resides in the external environment; no Julia/Cargo on PATH,
+  juliacall/juliapkg imports, or loaded libjulia/libfftw/libcubature. Analytic
+  example error `3.302e-12` (26 accepted/2 rejected); optical example nonlinear
+  difference `1.516e-1`, spectral output shape `(256,11)`.
+- Host `python3 test/validate.py --groups rust sim-propagation --max-workers 4`:
+  **passed**, Cargo 83 unit + 5 build-policy tests; Rust Julia 42990 passed /
+  11 expected CUDA skips, propagation 18/18. Scheduler 269.7 s; evidence
+  `.rust_test_logs/validation/20260909T225535Z-vlit6uu_/`.
+- `python3 -m unittest discover -s test -p 'test_*py'`: **24/24 passed**.
+  Workflow YAML parses and all new job shell snippets pass `bash -n`;
+  `git diff --check` passes. These syntax/local checks do not claim hosted CI.
+**Evidence:** `.rust_test_logs/python-gnlse/{oracle/,oracle.log,all-tests.log,
+sdist-build.log,sdist-tests.log,artifact.json,offline-smoke.json,regression.log}`.
+Earlier low-level grid and solver fixtures remain in their original evidence
+directories. No frozen performance baseline was modified.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-09 — SiO2 Raman in standalone GNLSE — Codex
+**Status at this checkpoint:** implementation and installed-artifact unit complete.
+**Did:** Added `python-native/python/amalthea_native/raman.py` with the thirteen
+silica components from PhysData, causal response evaluation, and cached scalar
+closed-form normalization using SciPy erfcx. Enabled `ramanmodel="SiO2"` in
+`gnlse.py` with the existing physical scaling and doubled-grid convolution.
+SDO widths are ignored for SiO2, and its response has no SDO tail taper. Added
+SciPy >=1.14 to package/standalone-CI dependencies; expanded the optical example
+to run both Raman models. Added `tests/test_raman.py`, three independent Julia
+optical fixtures, normalization/refinement evidence, and updated docs/backlog.
+No shared Rust/Julia numerical source, C ABI, CUDA, or stepping changes. Earlier
+GNLSE/CI and separate installer edits preserved; no commit or push.
+**Design:** [SiO2 Raman in the Python GNLSE evaluator](PYTHON_NATIVE_PLAN.md#sio2-raman-in-the-python-gnlse-evaluator-2026-09-09).
+**Gotchas:** Julia's default 1e-8 relative quadrature returns normalization
+`3.752586750599693e-12`; refinements at 1e-11 and 1e-13 both return
+`3.752586750631897e-12`. Python's closed form is `3.7525867506319002e-12`.
+The original normalization differs by `8.583e-12` relative. The development
+exporter retains the original response/high-level run, then independently
+refines only the normalization for the tight same-input checks. Python does
+not import an oracle constant or receive the refined answer. Production Julia
+is unchanged. No tolerance was loosened: 1e-13 response/RHS/fixed checks use the
+refined oracle, and the unchanged high-level entrypoint retains the 1e-6 tier.
+Initial coarse Python quadrature (reltol=1e-10) was not converged at 1e-13;
+added the intermediate 2e-12 refinement before the final 2e-13 run and kept the
+tight convergence assertion between the final two levels.
+**Tests and numerical results:**
+- Host normalization probe and
+  `julia --startup-file=no --project python-native/tools/export_gnlse_oracle.jl
+  .rust_test_logs/python-sio2/oracle`: twelve optical configurations, including
+  SiO2 ordinary/fine/long windows and actual default Julia high-level runs.
+  Exported coefficient tables agree; refined SiO2 response max relative error
+  `7.709e-16`, RHS `8.987e-16`, single interval `5.190e-16`, fixed trajectory
+  `2.000e-15`, adaptive trajectory `2.522e-14`. Unchanged Julia/Python entrypoints
+  differ by at most `1.961e-13`. All SDO and prior control cases remain green.
+- Independent time-domain quad in fs coordinates, explicit early-time
+  breakpoints, epsabs=0: reltol 1e-10 gives `3.7525867506279250e-12`;
+  2e-12 gives `3.7525867506318961e-12`; 2e-13 with refined breakpoints gives
+  `3.7525867506318953e-12`, estimated relative error `1.654e-13` (below the
+  requested 2e-13). The final value agrees with the closed form to `1.332e-15`;
+  the last two quadratures agree within 1e-13. The analytic bound on the omitted
+  >1 ns tail has exponent below -1e6 for every component.
+- Julia SiO2 effect versus Raman-off: `2.011e-2`; versus SDO: `4.345e-3`, both
+  comfortably larger than 1e-6. Untapered last samples remain nonzero, from
+  `7.515e-3` to `2.947e-6` of the response peak across the three windows.
+  Direct convolution/causality, zero fraction/gamma, independent response
+  ownership, repeated construction, ignored SDO widths, invalid model errors,
+  and NPZ model metadata checks pass.
+- Installed suite with all three oracle variables: **82 passed**, no skips.
+  `maturin sdist`, extraction to
+  `/tmp/amalthea-sio2-artifact-zpjwsb30/amalthea_native-0.0.1.dev0`, offline
+  source rebuild with cached Cargo dependencies, installation into fresh
+  `/tmp/amalthea-sio2-test-env`, and extracted tests: **82 passed**. Source
+  archive includes response code/tests and excludes the development venv.
+  Actual wheel: `cp314-cp314-manylinux_2_35_x86_64`; CPython 3.14.6,
+  NumPy 2.5.3, SciPy 1.18.1. This remains internal Linux evidence.
+- Host `unshare -Urn env PATH=/nonexistent <external-python> -I`: installed
+  analytic and both GNLSE Raman examples pass in a namespace containing only
+  loopback, with no Julia/Cargo on PATH and no loaded libjulia/libfftw/libcubature
+  or juliacall/juliapkg imports. SiO2 optical example nonlinear effect
+  `1.476e-1`, SDO `1.516e-1`; analytic error `3.302e-12`.
+- Host `python3 test/validate.py --groups rust sim-propagation --max-workers 4`:
+  **passed**, Cargo 83 unit + 5 build-policy tests; Rust Julia 42990 passed /
+  11 expected CUDA skips, propagation 18/18. Exact commands, durations, library
+  hash and worker logs: `.rust_test_logs/validation/20260909T231214Z-g5hmmq6i/`.
+- Workflow YAML and new-job shell syntax checks, Python 3.11 syntax parsing,
+  and `git diff --check` pass. The standalone CI job is prepared locally;
+  no hosted execution of these new changes is claimed.
+**Evidence:** `.rust_test_logs/python-sio2/{normalization-probe.log,oracle/,
+oracle.log,tests.log,sdist-build.log,sdist-tests.log,response-metrics.json,
+artifact.json,offline-smoke.json,regression.log}`. Original GNLSE, grid, and
+solver evidence remains in its prior directories.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-09 — Rich standalone pulse inputs and propagators — Codex
+**Status at this checkpoint:** pulse unit complete; resident integration and capillary work remain active.
+**Did:** Added `python-native/python/amalthea_native/pulses.py`: GaussPulse,
+SechPulse, DataPulse, PropagatedPulse, coherent pulse collections, per-pulse
+carrier/phase/normalization, nonuniform spectral interpolation, and owned custom
+input-propagator calls. Exported classes through `__init__.py`; GNLSE shares
+preparation and serializable pulse metadata. Added `test_pulses.py`, independent
+`tools/export_pulse_oracle.jl`, complete `examples/pulses.py`, and installed CI
+oracle/example wiring. Shared Rust/Julia numerical sources and C ABI unchanged.
+No commit/push; installer and prior Python edits preserved.
+**Design:** [Rich pulse inputs and custom input propagators](PYTHON_NATIVE_PLAN.md#rich-pulse-inputs-and-custom-input-propagators-2026-09-09).
+**Gotchas:** Match Julia's complex-data phase unwrap in supplied order before
+sorting complete spectral rows. SciPy FITPACK reproduces Dierckx interpolation.
+Python normalizes literal keyword `ϕ` to `φ`; both spellings are accepted, with
+canonical duplicate detection. Propagators act after pulse normalization, so
+gain changes energy; coherent sums are not renormalized.
+**Tests and numerical results:**
+- Seven independent Julia preparations (Gaussian, sech, multicolor, propagated,
+  intensity/phase data, complex data, mixed data/analytic). Maximum relative
+  errors: initial field `5.628e-15`, RHS `8.242e-15`, single interval `5.634e-15`,
+  high-level full trajectory `5.811e-15`. Tight checks remain 1e-13 and full
+  checks 1e-6. Omitted-pulse and omitted-propagator oracle effects are `8.947e-1`
+  and `3.043e-1`. Data interpolation refinement at 41/81/161 samples gives
+  `2.811e-4`, `1.415e-5`, `8.360e-7` relative error.
+- Installed development wheel and source-rebuilt wheel suites: **88 passed**
+  each with all four oracle variables supplied, no skips. Includes coherent
+  energy, reordered data, callback exception identity, mutation ownership,
+  invalid/nonfinite outputs, repeated construction, and NPZ metadata.
+- `maturin sdist`; extracted to
+  `/tmp/amalthea-pulses-artifact-8_nf7kp7/amalthea_native-0.0.1.dev0`; rebuilt with
+  portable flags and cached dependencies offline. Installed in external
+  `/tmp/amalthea-sio2-test-env` and tested extracted sources. Actual wheel tag
+  `cp314-cp314-manylinux_2_35_x86_64` remains internal platform evidence.
+- Host `unshare -Urn env PATH=/nonexistent <external-python> -I`: all three
+  extracted examples pass in a namespace containing only loopback, no loaded
+  libjulia/libfftw/libcubature or juliacall/juliapkg. Analytic error `3.302e-12`;
+  SDO/SiO2 optical effects `1.516e-1`/`1.476e-1`; mixed-pulse effect `4.636e-2`.
+- Recorded CPU gate `python3 test/validate.py --groups rust sim-propagation
+  --max-workers 4`: **passed**; Cargo 83 unit + 5 build-policy tests, Rust Julia
+  42990 passed / 11 expected CUDA skips, propagation 18/18. Evidence:
+  `.rust_test_logs/validation/20260909T232731Z-s1yca55r/` (267.4 s scheduler).
+- Python 3.11 syntax parsing, workflow YAML/shell syntax, and diff whitespace
+  checks pass. Hosted execution of the new standalone job remains pending.
+**Evidence:** `.rust_test_logs/python-pulses/{oracle/,oracle.log,tests.log,
+sdist-build.log,sdist-tests.log,artifact.json,offline-smoke.json,regression.log}`.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-09 — Resident portable FFTs and native Python GNLSE — Codex
+**Status at this checkpoint:** resident envelope integration and artifact gate complete;
+capillary setup/responses and the full release roadmap remain in progress.
+**Did:** Added `amalthea/src/transforms.rs`: retained FFTW/portable 1-D plan
+selection, immutable RustFFT/RealFFT plans, and exclusive reusable FftScratch.
+`native.rs::CpuNativeSim::new_portable` configures a handle without loading FFTW;
+mode-average, radial, modal, Raman-convolution and Hilbert seams pass their own
+scratch. ModalScratch owns per-worker buffers; radial columns own persistent
+buffers. The Julia FFTW/default path, 3-D FFTW, CUDA code, and C ABI remain.
+Factored `configure_raman_samples` for existing Julia coefficient setup and
+owned Python causal samples. Added safe `resident.rs::{EnvelopeConfig,
+ResidentEnvelope}` for validated construction, native attempts, extra stages,
+and accepted windows. Python private transform classes share this implementation.
+`python-native/src/solver.rs` shares one outer solve/dense/filter lifecycle for
+callback or resident stepping; private `_native.solve_envelope` and
+`_native.envelope_rhs` are new Python bindings, with no new C FFI exports.
+`gnlse.py` now selects resident CPU for auto/native and retains explicit Python
+fallback; reports actual backend/FFT/stepper. Added native lifecycle tests,
+parameterized optical/pulse oracle checks, and updated examples/docs.
+No commit/push; separate installer edits preserved.
+**Design:** [Resident portable FFT integration](PYTHON_NATIVE_PLAN.md#resident-portable-fft-integration-2026-09-09).
+**Gotchas:** RealFFT rejects imaginary DC/Nyquist unless removed from its private
+copy; FFTW ignores them. Preserve this behavior and caller inputs. The existing
+mode-average plan guard required an FFTW API handle; it now accepts the explicit
+portable policy with the same dimensional checks. An offline example caught a
+stale assertion expecting Python auto-selection; fixed and rebuilt the final
+archive before claiming example acceptance. Build the extracted sdist from its
+root pyproject; the nested Cargo directory alone creates an extension-only wheel.
+**Tests and numerical results:**
+- Installed native/Python suite: **110 passed**, no oracle skips. Twelve optical
+  configurations plus seven pulse preparations run each explicit backend.
+  Native optical max relative errors: RHS `1.267e-15`, single interval
+  `3.758e-15`, fixed trajectory `9.362e-14` (nonzero beta0/beta1 case), adaptive
+  trajectory `2.368e-13`. Tight 1e-13 and full 1e-6 gates unchanged. Native rich
+  pulse full-run max `5.976e-15`. Existing independent feature sensitivity
+  assertions remain active (Kerr/Raman/shock/loss and pulse controls).
+- Resident fixed lifecycle parity max `4.590e-16` with nonuniform windows;
+  adaptive parity max `3.928e-16`, both orders reject the initial attempt.
+  Restart, stopping/repetition limits and ownership/invalid configuration pass.
+  Analytic dense errors at h=.4/.2/.1: fourth `7.816e-6/3.477e-7/1.206e-8`
+  (ratios 22.48/28.83); fifth `4.531e-6/3.334e-8/2.831e-10`
+  (ratios 135.88/117.78). Monkeypatched Python RHS/window methods raise if called;
+  repeated native and auto solves still succeed.
+- Five portable Cargo checks pass: direct DFT at odd/even lengths, input
+  preservation and stable scratch storage, shared-plan concurrency, resolved
+  RealGrid third-harmonic Kerr, analytic Hilbert intensity, and fixed-node modal
+  serial/four-worker bit identity for both grids/polarizations (real includes
+  Hilbert Raman). These node tests load no libcubature.
+- Final sdist rebuilt offline from cached dependencies at
+  `/tmp/amalthea-resident-final-ov10ewxi/amalthea_native-0.0.1.dev0`; installed in
+  external `/tmp/amalthea-sio2-test-env`; extracted suite **110 passed**. Actual
+  wheel tag `cp314-cp314-manylinux_2_35_x86_64`, still internal acceptance.
+- Host network namespace with PATH=/nonexistent: all three extracted examples
+  pass, optical examples assert native/rust-resident. No libjulia/libfftw/
+  libcubature or juliacall/juliapkg loaded. Optical effects remain SDO `1.516e-1`,
+  SiO2 `1.476e-1`, mixed pulses `4.636e-2`; analytic error `3.302e-12`.
+  Diagnostic import 0.456 s and process peak RSS 149396 KiB; this is not a
+  matched benchmark snapshot or a performance-improvement claim.
+- Host `python3 test/validate.py --all --max-workers 4`: **passed**, all eight
+  groups, **48062 assertions passed / 12 expected skips**, 849.1 s scheduler.
+  Physics 2014, Rust 42990 (+11 expected CUDA skips), multimode 41 (+1 expected
+  thread skip), interface 314, propagation 18, I/O 2326, fields 339, examples 20.
+  Cargo **88 unit + 5 build-policy tests**. Includes `test/test_rust_ffi.jl`
+  and maintained `amalthea/tests` FFI items. Recorded evidence:
+  `.rust_test_logs/validation/20260909T234714Z-ak70r1lv/`.
+- Validation-tool Python suite 24/24, Python 3.11 syntax, actual standalone job's
+  seven shell blocks/YAML, and whitespace checks pass. Hosted Python CI remains
+  pending delivery. The frozen performance audit was not changed.
+**Evidence:** `.rust_test_logs/python-resident/{build.log,tests.log,metrics.json,
+sdist.log,sdist-build.log,sdist-tests.log,artifact.json,offline-smoke.json,
+regression.log,tooling-tests.log}`.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-09 — Standalone gas material setup — Codex
+**Status at this checkpoint:** gas setup unit complete; capillary modes and propagation pending.
+**Did:** Added `python-native/python/amalthea_native/materials.py` with owned,
+broadcasting density/inverse pressure, polarizability, refractive index and
+default gamma3 for all sixteen PhysData gas identifiers. Pins CoolProp 7.2.0 in
+pyproject, imports it lazily for nonzero thermodynamic states, and retains
+CODATA2014 Avogadro normalization. Scalar reference caches are parameter-keyed;
+arbitrary pressure/temperature values are evaluated directly. Added independent
+`tools/export_material_oracle.jl`, `tests/test_materials.py`, material docs, and
+a fifth hosted oracle/dependency/offline gas check. No shared Rust/Julia/C ABI
+changes beyond the preceding validated resident unit; no commit or push.
+**Design:** [Gas material setup for capillaries](PYTHON_NATIVE_PLAN.md#gas-material-setup-for-capillaries-2026-09-09).
+**Gotchas:** Julia's QuanfuHe expression for CH4/N2O/SF6 returns its index-like
+expression divided by reference density, rather than converting to n²−1. This
+port preserves that implemented convention explicitly; no unreviewed physics
+correction. Air has no default gamma3 source and raises. He/HeJ/HeB and Ar/ArB
+share thermodynamic fluid names but retain their optical-model distinctions.
+A CPython 3.14 CoolProp 7.2.0 manylinux_2_17 wheel was available and installed;
+no source compilation or Julia provisioning was needed for the dependency.
+**Tests and numerical results:**
+- Host `julia --startup-file=no --project
+  python-native/tools/export_material_oracle.jl .rust_test_logs/python-materials/oracle`:
+  all sixteen gases at 0/.1/1/10/50 bar and 273.15/293.15/330 K, optical samples
+  at 200/300/400/800/1030/1600/3000 nm, and default nonlinear sources. Fixture
+  metadata confirms CoolProp 7.2.0, N_A=`6.022140857e23`, and matching epsilon0.
+- Python/Julia relative differences: density **0**, inverse pressure **0**,
+  polarizability max `1.370e-16`, index `9.025e-17`, gamma3 `1.110e-16`.
+  Max thermodynamic pressure round-trip error `3.229e-14`. Setup tolerance
+  remains 1e-13. Pressure/temperature sensitivity, alias distinctions, exact
+  vacuum index, scalar/array ownership and invalid-input tests pass.
+- Installed suite with all five oracle variables: **128 passed**, no skips.
+  Rebuilt sdist offline using cached dependencies from
+  `/tmp/amalthea-material-artifact-q69xbx2f/amalthea_native-0.0.1.dev0`, installed
+  outside the checkout in `/tmp/amalthea-sio2-test-env`; extracted suite:
+  **128 passed**. `pip check` reports no broken requirements. Actual package
+  wheel tag remains `cp314-cp314-manylinux_2_35_x86_64` (internal evidence).
+- Host `unshare -Urn env PATH=/nonexistent <external-python> -I`: all three
+  extracted examples and density/index evaluation for all sixteen gases pass.
+  Network namespace has loopback only; no libjulia/libfftw/libcubature or
+  juliacall/juliapkg loaded. CoolProp runtime version is 7.2.0. The inherited
+  optical nonlinear effects remain above their asserted tolerances.
+- Shared CPU sources retain the preceding full recorded eight-group gate:
+  `.rust_test_logs/validation/20260909T234714Z-ak70r1lv/` (**passed**). No shared
+  CPU source changed in this material unit, so that gate was not repeated.
+  Actual standalone job shell/YAML, Python 3.11 syntax and diff checks pass.
+  Hosted execution and complete capillary trajectories are not claimed.
+**Evidence:** `.rust_test_logs/python-materials/{oracle/,oracle.log,tests.log,
+metrics.json,build.log,sdist.log,sdist-build.log,sdist-tests.log,artifact.json,
+offline-smoke.json}`; dependency probe in
+`.rust_test_logs/python-resident/coolprop-wheel-probe.log`.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-09 — Marcatili setup and spline-oracle repair checkpoint — Codex
+**Status at this checkpoint:** in progress. Installed mode setup gates pass;
+independent higher derivatives and shared repair regression gates remain open.
+**Did:** Added `python-native/python/amalthea_native/modes.py::MarcatiliMode`
+with HE/TE/TM full/reduced modes, silica lookup, gas/vacuum/custom cores,
+loss/cutoff, raw/normalized spatial fields, N/Aeff, exact callable profiles,
+and owned callback arrays. Added `differentiation.py` with scaled adaptive
+FiniteDifferences-compatible stencils and its MIT license. Bundled literal
+silica data, independent `tools/export_mode_oracle.jl`, and `tests/test_modes.py`.
+The installed API exports MarcatiliMode. Added sixth CI fixture/offline mode
+checks and documentation. Callback shape validation uses the original axis
+shape even if a callback resizes its private input. No new C FFI exports.
+**Design:** [Marcatili construction](PYTHON_NATIVE_PLAN.md#marcatili-mode-construction-2026-09-09)
+and [spline repair](PLANS.md#21-spline-finder-initialization-repair-discovered-by-the-python-mode-oracle).
+**Oracle defect and repair:** `Maths.FastFinder` did not set xlast on its first
+interior query. Reproduced before repair: queries [1.5,.2] on irregular knots
+returned [5,5] instead of [5,3]. Default capillary construction probes the
+cladding at 2.5e15 rad/s; the subsequent 300 nm call returned real silica index
+1.4764335922421132 instead of 1.4877888688279677. New independent constructor
+coverage failed by 6.35e-12 in neff, above the unchanged 1e-13 gate. Fixed
+initial xlast assignment and backward exact-knot selection in `src/Maths.jl`;
+added independent binary-search, Dierckx and capillary regression checks to
+`test/test_maths.jl`. All six Python fixture sets were regenerated into
+`.rust_test_logs/python-modes/repaired-oracles/`; earlier fixtures are retained.
+**Tests and numerical results:**
+- Installed suite outside checkout against repaired oracles: **183 passed**;
+  source-rebuilt installed/extracted suite: **183 passed**, no oracle skips.
+  Forty HE/TE/TM, full/reduced, loss/profile configurations, plus He/N2/vacuum
+  and metallic cutoff, preserve the 1e-13 setup gate. Max relative errors:
+  root 2.220e-16, N 1.332e-15, refined Aeff 1.776e-15, neff 7.347e-17,
+  beta 9.342e-17, alpha 6.549e-16, field 1.295e-15. Silica literal table and
+  nine initial off-knot interpolation samples were bit-identical; final
+  coverage also includes absorbing 100 nm data. Independent field integrals
+  verify N/Aeff below 1e-13, including high radial/azimuthal orders.
+- Group velocity relative error max 3.753e-14. All seven derivative orders
+  match exact Julia stencil samples at 1e-13, including exact coefficients
+  and adaptive bound/step evidence. Independent higher-derivative accuracy
+  is NOT closed. The retained pre-repair diagnostic finds order 2–7 relative
+  differences up to 1.66e-6, 1.70e-6, 4.64e-5, 2.04e-4, 2.63e-3, 1.42e-2.
+  Fixed-node beta samples differ by at most 3.725e-9 on an approximately 8e6
+  baseline; every resulting fixed-step derivative change is bounded by sample
+  perturbation plus summation roundoff. This diagnoses cancellation but is
+  not a relaxed acceptance gate or an independent refinement result.
+- Source archive rebuilt offline from cached dependencies at
+  `/tmp/amalthea-mode-artifact-bxodet0y/amalthea_native-0.0.1.dev0`, installed
+  in external `/tmp/amalthea-sio2-test-env`. Wheel includes both silica data
+  and the FiniteDifferences license. Actual tag remains internal
+  `cp314-cp314-manylinux_2_35_x86_64`; `pip check` passes.
+- Host `unshare -Urn env PATH=/nonexistent <external-python> -I`: all three
+  extracted examples and a mode with callable N2 pressure/radius pass.
+  No libjulia/libfftw/libcubature or juliacall/juliapkg loaded; loopback-only
+  network namespace. Example mode group velocity 299696743.694 m/s and Aeff
+  1.55389709472e-8 m². This is setup coverage, not capillary propagation.
+- Pre-repair recorded physics gate passed at
+  `.rust_test_logs/validation/20260910T002150Z-bg8alxqj/`; it does NOT establish
+  the subsequent Julia repair. New `python3 test/validate.py --all --max-workers 4`
+  is live in `.rust_test_logs/validation/20260910T002550Z-g0a0p_95/`
+  (exec session 34820). Physics workers passed; remaining full gate pending.
+  Do not start a CUDA build while this run uses the CPU library. Required
+  strict CUDA/shared-setup validation follows this gate; no CUDA result claimed.
+- Python 3.11 syntax, seven actual standalone workflow shell blocks and diff
+  checks passed. Hosted execution is pending delivery. Changes remain
+  uncommitted; separate installer changes are preserved.
+**Evidence:** `.rust_test_logs/python-modes/{repaired-oracles/,tests-repaired.log,
+sdist-tests.log,metrics.json,dispersion-diagnostic.json,artifact.json,sdist.log,
+sdist-build.log,offline-smoke.json,finder-before.log,core-probe.log,
+finder-regression.log}`. The earlier `tests.log` retains the constructor
+failure that triggered the repair; `tests-repaired.log` is the passing result.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-10 — Spline CPU regression and derivative refinement — Codex
+**Status at this checkpoint:** CPU repair gate and analytic derivative refinement
+complete; CUDA explicitly deferred by the lead; capillary propagation in progress.
+**Did:** Added seven independent exp(2x) derivative-refinement tests to
+`python-native/tests/test_modes.py`. They use exact rational coefficients and
+100-digit Decimal evaluation, ten spacing halvings, and a measured sample/
+coefficient/denominator perturbation plus gamma_n arithmetic bound. This
+replaces no runtime method and relaxes no same-input tolerance. Documented the
+inherited float64 higher-derivative limitation. Began the documented constant
+capillary envelope slice, extracting shared evaluation into `envelope.py` and
+adding `capillary.py::prop_capillary` plus its independent Julia exporter.
+That propagation slice still requires its dedicated test/artifact gate.
+**Design:** [Mode setup and refinement](PYTHON_NATIVE_PLAN.md#marcatili-mode-construction-2026-09-09),
+[spline repair](PLANS.md#21-spline-finder-initialization-repair-discovered-by-the-python-mode-oracle),
+and [constant capillary envelope](PYTHON_NATIVE_PLAN.md#constant-mode-averaged-capillary-envelope-2026-09-09).
+**Tests:** Full CPU `python3 test/validate.py --all --max-workers 4` **passed**,
+all eight groups, 48067 passing assertions and 12 expected skips, 869.2 s
+scheduler. Cargo 88 unit + 5 policy tests pass. Includes retained FFI tests.
+Evidence `.rust_test_logs/validation/20260910T002550Z-g0a0p_95/summary.json`.
+Installed and source-rebuilt mode/refinement suites each **190 passed** before
+the subsequent shared Python envelope extraction. Source-rebuilt artifact:
+`/tmp/amalthea-mode-refinement-vp9j7dda/amalthea_native-0.0.1.dev0`.
+Refined derivative relative errors, orders 1–7: 2.289e-33, 2.340e-31,
+5.606e-30, 8.760e-29, 1.049e-27, 1.347e-27, 1.820e-18. Float64 analytic
+errors: 3.751e-15, 1.795e-12, 1.682e-11, 1.679e-10, 5.110e-9,
+5.753e-8, 1.684e-6. All are below the independently computed error bounds;
+each bound is below one thousandth of its derivative signal. Same-sample
+1e-13 and mode beta1 gates remain unchanged. Repaired-oracle mode diagnostics
+retain the earlier high-order cancellation differences; no independently
+sampled high-order 1e-13 accuracy is claimed. Evidence in
+`.rust_test_logs/python-modes/{refinement.log,refinement-tests.log,
+refinement-sdist-tests.log,refinement-artifact.json,dispersion-refreshed.json}`.
+**Lead CUDA instruction:** After the CPU gate, strict CUDA validation was
+launched in `.rust_test_logs/validation/20260910T115054Z-uv77xhx2/`.
+The lead then said not to run any CUDA process because of driver trouble.
+Interrupted exec session 6042: exit 130, summary status failed, build finished
+but Julia preflight interrupted. Host process inspection confirmed no remaining
+Julia/Cargo/nvcc/ptxas/cicc children. This is not CUDA validation evidence.
+No further CUDA execution until explicit reauthorization. A CPU-only library
+restore was started with AMALTHEA_CUDA_BUILD=off and empty RUSTFLAGS; see
+`.rust_test_logs/python-modes/restore-cpu-build.log` before further Julia work.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-10 — Constant capillary envelope propagation — Codex
+**Status at this checkpoint:** internal constant-envelope slice complete;
+carrier/plasma, Raman, profiles and modal/custom propagation remain unfinished.
+**Did:** Added `python-native/python/amalthea_native/capillary.py::prop_capillary`
+and `_CapillaryEnvelope`: constant HE1m capillary envelopes with Kerr/loss,
+full/reduced Marcatili dispersion, gas density, area normalization, rich pulses,
+native/Python selection and owned results. Extracted the unchanged shared
+constant-envelope transforms/filter/solver adapter from `gnlse.py` into
+`envelope.py::_EnvelopeModel`, with the physical amplitude scale configured
+per model. Added seven-case independent `tools/export_capillary_oracle.jl`,
+30 capillary tests, `examples/capillary.py`, and the seventh hosted fixture and
+fourth offline example. No new Rust/C ABI or CUDA implementation changes.
+Requests outside this internal slice fail explicitly; no callable radius or
+pressure profile is sampled to infer constancy. Default molecular Raman and
+carrier-resolved propagation remain future work, not claimed support.
+**Design:** [Constant capillary envelope](PYTHON_NATIVE_PLAN.md#constant-mode-averaged-capillary-envelope-2026-09-09).
+**Gotchas:** The initial interval fixture omitted accepted-step windows while
+the resident API applied them. Boundary range rounding can sample the filtered
+left state of the next interval, exposing a 1.50e-13–2.45e-13 difference even
+with Kerr disabled. Corrected both Julia fixture and Python interval control
+to use the same windows; unchanged 1e-13 gate then passes below 2e-16. This was
+a comparison-configuration defect, not a solver change or relaxed tolerance.
+The previous /tmp external environment was gone after interruption; created
+fresh `/tmp/amalthea-capillary-test-env` and installed actual wheel dependencies.
+An unrelated extra pip index failed DNS; installed from PyPI directly instead.
+**Tests and numerical results:**
+- Installed Python suite with all seven oracle variables: **220 passed**,
+  no skips. Rebuilt sdist offline from cached build dependencies at
+  `/tmp/amalthea-capillary-artifact-nooj69sb/amalthea_native-0.0.1.dev0`;
+  extracted suite against the fresh external installed wheel: **220 passed**.
+  `pip check` passes. Actual wheel remains internal
+  `cp314-cp314-manylinux_2_35_x86_64`, not release-platform acceptance.
+- Seven independently prepared Julia cases on both explicit backends:
+  full/reduced, no-loss/no-Kerr, HE12, finer temporal sampling and N2 Kerr-only.
+  Max relative setup errors: initial field 2.434e-16, beta 6.333e-17, density 0,
+  Aeff 1.332e-15, energy 2.220e-16, RHS native 1.871e-15 / Python 1.540e-15.
+  Identical-input interval: native 1.936e-16 / Python 1.895e-16. Independently
+  prepared fixed/adaptive full trajectories: native 1.81922e-11 / Python
+  1.81920e-11; high-level entrypoints 1.82189e-11. Gates remain 1e-13 for setup,
+  RHS/identical-input interval and 1e-6 for independently prepared trajectories.
+- Independent oracle effects: Kerr 2.4109e-2, loss 8.5409e-4, HE12 7.2118e-3,
+  molecular Kerr 2.3893e-3. These exceed the asserted full-solve tolerance.
+  Native/auto callback-avoidance, aliases, arrays/rich pulses, ownership, NPZ,
+  unsupported configurations and unsampled-profile rejection tests pass.
+- Host network namespace, PATH=/nonexistent, external Python -I: all four
+  extracted examples, sixteen gas densities and callable mode setup pass.
+  Capillary example shape (512,21), Kerr effect 2.345396e-2, five accepted steps.
+  No libjulia/libfftw/libcubature/libcuda or juliacall/juliapkg loaded;
+  loopback-only network. GNLSE and analytic examples retain their prior effects
+  and accuracy. This verifies installed CPU execution without runtime downloads.
+- The interrupted CUDA gate remains failed/deferred per the lead's explicit
+  no-CUDA instruction. CPU-only restore completed in 6.00 s; restored shared
+  library SHA-256 exactly matches the passing all-eight-group CPU gate
+  `.rust_test_logs/validation/20260910T002550Z-g0a0p_95/`. Shared Rust/Julia
+  code did not change during the Python capillary unit. The 220-test Python
+  gate covers the shared Python envelope extraction. No further CUDA process ran.
+- Python 3.11 syntax, actual standalone workflow shell/YAML and whitespace
+  checks pass. Hosted Python CI is prepared but unexecuted. No commit/push;
+  separate installer edits remain preserved.
+**Evidence:** `.rust_test_logs/python-capillary/{oracle/,oracle.log,tests.log,
+all-tests.log,metrics.json,sdist.log,sdist-build.log,sdist-tests.log,artifact.json,
+install.log,offline-smoke.json,cpu-library.json}`. CPU restoration log:
+`.rust_test_logs/python-modes/restore-cpu-build.log`.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-10 — Carrier-resolved Python pulse preparation — Codex
+**Status at this checkpoint:** input-preparation unit complete; RealGrid
+propagation and ADK/PPT setup remain next in the full capillary roadmap.
+**Did:** Extended `python-native/python/amalthea_native/pulses.py` to select
+rFFT/irFFT for RealGrid, construct cosine-carrier analytic pulses, normalize
+after spectral phase using analytic intensity, and use Julia's real spectral
+energy convention for DataPulse. Added owned Hilbert construction and strict
+real-time versus spectral-array shape/type validation. Added eight-case
+`tools/export_real_pulse_oracle.jl`, fourteen tests in `tests/test_real_pulses.py`,
+`examples/real_pulse.py`, the eighth hosted fixture, and installed offline
+setup coverage. No Rust/C ABI or shared Julia implementation changes.
+**Design:** [Carrier-resolved pulse preparation](PYTHON_NATIVE_PLAN.md#carrier-resolved-pulse-preparation-2026-09-10).
+**Tests:** Independent Julia export (CPU-only), followed by installed
+`python -m pytest python-native/tests -q` with all eight oracle variables:
+**234 passed**, no skips. Extracted sdist rebuilt with `CARGO_NET_OFFLINE=true`,
+`AMALTHEA_CUDA_BUILD=off`, empty RUSTFLAGS; external installed suite also
+**234 passed** and `pip check` passes. Actual wheel is internal
+`cp314-cp314-manylinux_2_35_x86_64`, not release-platform acceptance.
+Eight few-cycle cases include Gaussian/sech, CEP/GDD, power, data/complex data,
+custom input propagation and pulse mixtures. Maximum relative errors:
+axes 0, spectrum 7.133e-16, real field 7.683e-16, analytic intensity 7.311e-16,
+time energy 5.552e-16, spectral energy 4.441e-16, peak power 2.110e-15.
+All remain below 1e-13. Instantaneous-square intensity differs by more than
+0.1 in every fixture; peak-power control differs by more than 1e-3, proving
+the normalization convention matters. Analytic odd/even Hilbert tests cover
+DC/Nyquist and ownership; real/spectral arrays, repeated custom construction,
+isolated grid mutation, original exceptions and invalid outputs pass.
+External Python -I with PATH=/nonexistent in a network-disabled namespace ran
+four complete propagation examples, the new carrier input example and all
+sixteen gas setups. New example: 1024 time / 513 spectral samples, 3e-8 J.
+No Julia/FFTW/libcubature/libcuda or Julia Python bridges loaded; only loopback
+present. The first supplementary smoke script accidentally listed unsupported
+CO2; corrected to the sixteen actual identifiers and reran successfully.
+Python 3.11 syntax checks pass. Shared Rust/Julia sources remain those of the
+passing all-eight-group CPU gate `20260910T002550Z-g0a0p_95`; the new Python
+suite covers affected envelope/capillary pulse regressions. No CUDA process
+ran. Hosted execution and broader platform coverage remain unfinished.
+**Evidence:** `.rust_test_logs/python-real-pulses/{oracle/,tests.log,
+all-tests.log,sdist.log,sdist-build.log,sdist-tests.log,install.log,artifact.json,
+offline-smoke.json}` and `.rust_test_logs/real-pulse-oracle.log`.
+Source-rebuild root recorded in artifact.json:
+`/tmp/amalthea-real-pulses-artifact-x8386o8i/amalthea_native-0.0.1.dev0`.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-10 — Resident RealGrid and constant carrier capillaries — Codex
+**Status at this checkpoint:** implemented; Python and installed-artifact gates
+pass. Full shared CPU gate remains running; unit acceptance is pending it.
+**Did:** Generalized `amalthea/src/resident.rs` to `ResidentModeAverage` and
+`ModeAverageConfig`, with real/envelope shape validation and reusable real
+filter scratch. Added private Python `solve_real`/`real_rhs` bindings sharing
+the existing outer solver. No C ABI changes. Extended `capillary.py::_Capillary`
+with constant carrier Kerr/loss, native THG and Python analytic-intensity
+THG-off evaluation, retaining Julia's plasma default as an explicit rejection
+until plasma setup is implemented. Results reconstruct RealGrid with irFFT.
+Added eight-case `export_real_capillary_oracle.jl`, 27 carrier/lifecycle tests,
+`examples/carrier_capillary.py`, ninth fixture and sixth installed example.
+**Design:** [Resident RealGrid and constant carrier capillaries](PYTHON_NATIVE_PLAN.md#resident-realgrid-and-constant-carrier-capillaries-2026-09-10).
+**Gotchas:** Initial safe-facade wiring passed the spectral count into
+set_mode_avg_params' time-count argument. The existing Rust validation rejected
+this cleanly; corrected it to Nt. No engine guard or tolerance was weakened.
+**Tests and numerical results:** With all nine independent Julia fixture sets,
+installed Python suite **261 passed**, no skips; extracted sdist rebuilt
+CPU-only/offline, external installed suite also **261 passed**, pip check passes.
+Eight carrier cases cover full/reduced, Kerr/loss, HE12, finer grid, THG-off
+and fourth-order controls, using both explicit paths where eligible.
+Maximum relative setup errors: input 3.932e-16, beta 1.953e-17, RHS 1.360e-15,
+density 0, area 1.333e-15, energy 5.552e-16. Identical-input dense interval
+max 2.118e-16, independently prepared fixed/adaptive trajectories 7.358e-10,
+high-level entrypoint 7.355e-10. Gates remain 1e-13 and 1e-6 respectively.
+Oracle effects: Kerr .0242149, loss .000854092, HE12 1.50090, THG .00280883;
+all exceed ten times the full-solve tolerance. Real resident fixed lifecycle
+max 5.603e-16, adaptive max 6.580e-16 with actual rejection; restart/stopping,
+window effects, invalid configs and repeated ownership pass. Independent cubic
+analytic dense error ratios: fourth order 39.93/35.07; fifth 116.32/130.38.
+Native callback avoidance, aliases, real/spectral/rich inputs, real temporal
+output/NPZ and explicit unsupported plasma/native-THG-off checks pass.
+Source-rebuilt external wheel ran five complete propagation examples, one
+carrier-input example and all sixteen gases with networking disabled,
+PATH=/nonexistent, Python -I. Carrier example (1025,21), THG effect .00292921,
+17 accepted steps. No Julia/FFTW/libcubature/libcuda or Julia bridges loaded.
+Wheel remains internal cp314-cp314-manylinux_2_35_x86_64; no release-platform
+acceptance claimed. Source root:
+`/tmp/amalthea-real-capillary-artifact-leqzfi_p/amalthea_native-0.0.1.dev0`.
+Python 3.11 syntax and whitespace checks pass. No CUDA process ran.
+**Pending gate:** CPU-only `python3 test/validate.py --all`, live exec session
+89219, evidence `.rust_test_logs/validation/20260910T121817Z-f4ly0tf4/`.
+Build, Cargo and physics have passed at this checkpoint; remaining Julia groups
+are running. Do not interpret this entry as a passing full-gate result.
+**Evidence:** `.rust_test_logs/python-real-capillary/{oracle/,oracle.log,
+build.log,tests.log,complete-tests.log,lifecycle.log,metrics.json,all-tests.log,
+sdist.log,sdist-build.log,sdist-tests.log,sdist-install.log,artifact.json,
+offline-smoke.json,cpu-validation.log}`.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-11 — Standalone ADK setup — Codex
+**Status at this checkpoint:** ADK setup complete; PPT and plasma trajectories
+remain unfinished. Shared carrier CPU validation is being completed separately.
+**Did:** Added `python-native/python/amalthea_native/ionisation.py::IonRateADK`
+and the public export, with PhysData ionisation potentials in `materials.py`.
+Preserved CODATA2014 constants, scalar/array input ownership, sequential
+threshold discovery, signed-field symmetry, occupancy and cycle averaging.
+Added independent `tools/export_adk_oracle.jl`, 29 tests covering 128 setup
+combinations, tenth hosted fixture, documentation and offline installed checks.
+No Rust or Julia source/ABI changes in this unit.
+**Design:** [Standalone ADK setup](PYTHON_NATIVE_PLAN.md#standalone-adk-setup-2026-09-10).
+**Tests:** Independent Julia export succeeded. With AMALTHEA_ADK_ORACLE,
+`python -m pytest python-native/tests/test_adk.py -q -s`: **29 passed**.
+With all ten fixture variables, full installed suite **290 passed**, no skips.
+CPU-only/offline rebuilt sdist and newly created external environment:
+**290 passed**, pip check passes. Previous /tmp environments were removed
+across interruption; new artifact and environment are recorded in artifact.json.
+Maximum relative coefficients 4.441e-16, resolved rates 7.772e-16 against Julia;
+thresholds and potential units match. Covered 1856 underflow samples using
+the exponential's spacing amplified by its prefactor as an absolute bound.
+Independent 100-digit n*=1 formula max relative error 1.055e-14. All resolved
+1e-13 gates retained. Occupancy/cycle-average sensitivity, real signed fields,
+zero, invalid inputs, repeated construction and result ownership pass.
+**Edge convention:** Julia's direct threshold=False formula gives NaN at
+exactly zero (Inf*0); tests explicitly retain that oracle observation and
+verify Python returns the continuous physical zero limit. No NaN equivalence
+or threshold-free underflow relative precision is claimed.
+External Python -I with PATH=/nonexistent in a network-disabled namespace ran
+five propagation examples, carrier-input setup, sixteen gas densities, mode
+profiles and all sixteen ADK potentials. Ar at 4e10 V/m gives
+8.2431271587123e13 /s. No Julia/FFTW/libcubature/libcuda or Julia bridge loaded.
+Internal wheel remains cp314-cp314-manylinux_2_35_x86_64; Python 3.11 syntax
+and whitespace checks pass. Hosted/platform acceptance remains separate.
+**Gate interruption and authorization:** The earlier full CPU process handle
+89219 is now missing; retained worker logs prove physics 2019 and Rust
+42990 + 11 expected skips passed before interruption. Remaining six groups
+are running under session 69296 in
+`.rust_test_logs/validation/20260911T132947Z-m48ny2_c/`; no finished full-gate
+claim yet. The lead explicitly reauthorized CUDA on 2026-09-11 after driver
+repair. Escalated host nvidia-smi succeeds: RTX 5060 Ti, driver 595.84.
+Strict CUDA testing follows completion of the active CPU-library consumers.
+**Evidence:** `.rust_test_logs/python-adk/{oracle/,oracle.log,build.log,
+tests.log,metrics.json,all-tests.log,sdist.log,sdist-build.log,sdist-tests.log,
+sdist-install.log,dependencies.log,artifact.json,offline-smoke.json}`.
+Source root `/tmp/amalthea-adk-artifact-k0erdsbe/amalthea_native-0.0.1.dev0`;
+external Python `/tmp/amalthea-adk-test-env/bin/python`.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-11 — Completed carrier CPU gate and diagnosed CUDA compatibility — Codex
+**Status at this checkpoint:** constant carrier CPU acceptance complete;
+strict CUDA acceptance blocked by the installed toolkit/driver combination.
+**Did:** After confirming the original process handles were missing, ran the
+six unfinished CPU groups through `test/validate.py --groups sim_interface
+sim_multimode sim_propagation io fields examples`. All passed in 579.2 s
+scheduler time: interface 314, multimode 41 + 1 expected skip, propagation 18,
+io 2326, fields 339, examples 20. Build/Cargo 88 + 5 policy tests also pass.
+The original run had physics 2019 and Rust 42990 + 11 expected skips passing.
+Both recorded CPU libraries have SHA-256
+64567d0976f2324d57433d1b3c45f0bfd68672d377acca95f67b21156721a94c.
+Combined eight-group evidence is therefore **48067 passed + 12 expected skips**;
+the interrupted first run's stale running summary is not a completion claim.
+The carrier Python/installed tests in the preceding entries complete that
+unit's numerical/installation gates. This is not full capillary release coverage.
+**Design:** [Resident RealGrid](PYTHON_NATIVE_PLAN.md#resident-realgrid-and-constant-carrier-capillaries-2026-09-10).
+**CUDA result:** Following the lead's explicit reauthorization, escalated
+`PATH=/usr/local/cuda-13.3/bin:$PATH AMALTHEA_REQUIRE_CUDA_TESTS=1 RUSTFLAGS=''
+python3 test/validate.py --cuda --groups rust` built successfully but Cargo
+reported **76 passed / 12 failed**. Every GPU failure traces to module loading:
+`cuModuleLoadData ... 222`; strict mode also correctly rejects Vulkan fallback.
+Stopped the already launched Julia gate via session 98190 (exit 130) because
+this prerequisite failure prevents CUDA acceptance. Host process inspection
+confirmed no Julia/Cargo/nvcc/ptxas workers remained.
+**Diagnosis:** Host nvidia-smi reports RTX 5060 Ti / driver 595.84. The old
+/usr/local/cuda-13.3 directory is absent; actual installed compiler is
+/usr/local/cuda-13.4/bin/nvcc, release 13.4, V13.4.59. Its cuda.h defines 222
+as CUDA_ERROR_UNSUPPORTED_PTX_VERSION, documented as an unsupported toolchain.
+This is an observed incompatible toolkit/driver pair, not passing CUDA evidence
+or a new physics regression. No driver/system installation was changed.
+CPU-only shared-library restore was started with AMALTHEA_CUDA_BUILD=off,
+AMALTHEA_REQUIRE_CUDA_TESTS=0 and empty RUSTFLAGS; its completion/SHA must be
+checked before further local-library use. Continue independent Python/PPT work.
+**Evidence:** `.rust_test_logs/python-real-capillary/{combined-cpu.json,
+cpu-validation-resumed.log,cuda-validation.log,restore-cpu-build.log}`;
+validation directories `20260910T121817Z-f4ly0tf4`,
+`20260911T132947Z-m48ny2_c` (passed), `20260911T134127Z-1g66phmy` (failed).
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+**Restoration follow-up:** CPU-only rebuild completed successfully; restored
+library SHA exactly matches the completed CPU gate above. Evidence:
+`.rust_test_logs/python-real-capillary/restored-cpu.json`.
+
+## 2026-09-11 — Standalone PPT rates and local tables — Codex
+**Status at this checkpoint:** PPT setup complete; plasma trajectory integration
+and the remaining full-capillary release coverage are unfinished.
+**Did:** Added `python-native/python/amalthea_native/ppt.py::IonRatePPT`,
+`IonRatePPTAccel` and `IonRatePPTCached`, public exports and the mpmath dependency.
+Implemented material/numeric setup, Stark/dipole corrections, m sums, occupancy
+callbacks, cycle averaging, integral/series options, isolated high-precision
+refinement and local tables with validated, atomic parameter-keyed NPZ caches.
+Added `tools/export_ppt_oracle.jl`, 41 tests, `examples/ppt.py`, the eleventh
+hosted fixture and installed/offline example checks. No Rust/Julia engine or
+C ABI changes in this unit.
+**Design:** [Standalone PPT rates and local tables](PYTHON_NATIVE_PLAN.md#standalone-ppt-rates-and-local-tables-2026-09-11).
+**Gotchas:** Direct Julia PPT at zero enters an unbounded series; interrupted
+that diagnostic and explicitly marked zero unevaluated in the exporter.
+Python tests the physical zero limit separately. Numeric Julia setup requires
+Float64 zero correction arguments because its constructor rejects integer
+zero defaults. Initial FITPACK interpolation differed by 1.249e-6 near the
+lower endpoint; traced this to Maths.CSpline's normalized-knot derivative
+system and implemented that exact convention, including nonuniform samples.
+The 1e-13 gate was retained; cache convention version is 2.
+**Tests:** Independent Julia export completed. With AMALTHEA_PPT_ORACLE,
+`python -m pytest python-native/tests/test_ppt.py -q -s`: **41 passed**.
+With all eleven fixture variables, installed full suite **331 passed**;
+CPU-only/offline source-rebuilt wheel in an external environment also
+**331 passed**, no skips, and pip check passes. Maximum relative errors:
+direct rates 1.3545e-14, numeric l=2 rates 5.3291e-15, refined phi 1.3323e-15,
+independently generated table nodes 2.2205e-16 and rates 5.4623e-14.
+Identical-sample spline queries, including nonuniform nodes, agree exactly.
+Table refinement at 1024/4096/65536 nodes: 4.3033e-4 / 2.9113e-8 / 2.6046e-13.
+Julia option effects range from .01335 (integral) to 3.9634 (dipole correction),
+well above the asserted comparison tolerance. Independent 100-digit scaled
+quadrature covers phi on both sides of x=26 and at x=100. Cache hits,
+parameter isolation, corrupt bytes/arrays, atomic concurrent construction,
+callback order/exceptions, invalid outputs and nonconvergence guards pass.
+Seven source-rebuilt examples run with Python -I, PATH=/nonexistent and
+networking disabled: five propagation examples plus carrier-input/PPT setup.
+The PPT example generates 65536 nodes locally and reuses the cache; Ar rate
+at 4e10 V/m is 8.882008e13 /s, table/direct relative error 1.231e-15.
+All sixteen gas and ADK setups and the mpmath high-precision branch run offline;
+no Julia/FFTW/libcubature/libcuda or Julia Python bridges load. Python 3.11
+syntax checks pass; this does not establish all supported interpreter/platform
+runtime gates. Internal wheel remains cp314-cp314-manylinux_2_35_x86_64.
+The shared CPU gate recorded above remains applicable; no shared engine source
+changed in this unit. Host probes reconfirmed driver 595.84 and CUDA compiler
+13.4.59, so the previously failed strict CUDA gate was not repeated. CUDA
+acceptance remains pending a compatible pair; no system installation changed.
+**Evidence:** `.rust_test_logs/python-ppt/{oracle/,oracle.log,tests.log,
+metrics.json,all-tests.log,sdist-build.log,sdist-install.log,sdist-tests.log,
+artifact.json,fixtures.json,offline_check.py,offline-smoke.json}`. Diagnostic
+logs: `oracle-zero-interrupted.log`, `oracle-numeric-default-failed.log`.
+Source root `/tmp/amalthea-ppt-artifact-ulgnmjdp/amalthea_native-0.0.1.dev0`;
+external Python `/tmp/amalthea-adk-test-env/bin/python`. Hosted execution and
+release-platform acceptance remain separate. Changes are uncommitted.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-11 — Constant carrier plasma through Python evaluation — Codex
+**Status at this checkpoint:** constant scalar ADK/PPT plasma Python slice
+complete; resident native plasma and full-capillary release coverage remain.
+**Did:** Added `python-native/python/amalthea_native/plasma.py::_PlasmaResponse`
+with owned scalar arrays, complete-array rate evaluation, finite/shape checks
+and Julia's three cumulative integrals. Extended `capillary.py::_Capillary`
+with ADK/PPT/default rate selection, existing rate objects, PPT_options aliases,
+preionfrac and density-scaled polarization. Auto reports Python evaluation;
+forced native rejects this slice. `envelope.py` reports each model's fallback
+reason. Added `export_plasma_capillary_oracle.jl`, 22 tests, a complete plasma
+example, twelfth hosted fixture and documentation. Updated obsolete rejection
+tests. No shared Rust/Julia engine changes or C ABI changes.
+**Design:** [Constant carrier plasma through Python evaluation](PYTHON_NATIVE_PLAN.md#constant-carrier-plasma-through-python-evaluation-2026-09-11).
+**Tests:** CPU-only independent Julia exporter completes all eight cases.
+`AMALTHEA_PLASMA_ORACLE=... python -m pytest python-native/tests/test_plasma.py
+-q -s`: **22 passed**. With all twelve fixtures, full installed Python suite
+**352 passed**, no skips. A CPU-only/offline wheel rebuilt from the extracted
+sdist passes the same **352 tests** outside the checkout; pip check passes.
+Maximum input error 3.7127e-16, full RHS 1.9359e-14, identical-input dense
+interval 2.2313e-16. Independently prepared ordinary fixed/adaptive/high-level
+trajectories max 1.5176e-11. Gates remain 1e-13 and 1e-6 respectively.
+Oracle effects: ADK plasma .0113351, PPT plasma .0457893, Kerr .0170049,
+THG .0119912, preionisation .1322014; ADK/PPT difference .0344613.
+**Conditioning finding:** Independent final time-domain polarization differs
+by up to 3.0819e-12 because symmetric-current cancellation amplifies tiny
+fraction rounding differences. Current from identical Julia fractions and
+polarization from identical Julia currents agree exactly. The explicit
+propagated perturbation/summation bound is at most 2.2573e-9 relative to the
+polarization signal (required below 1e-6); the independent 100-digit Decimal
+last-integral error is 5.7047e-16. The original control is retained; no full
+RHS, dense or trajectory tolerance changed.
+**Rejection/cadence finding:** Comparing a tighter adaptive run with the usual
+small-max-step fixture gave 1.1159e-5 because accepted-step window cadence
+changed. Exported the same tight controls and large initial step in Julia:
+Python 255 accepted/23 rejected, Julia 256 accepted/21 rejected, trajectory
+error **1.6301e-7**, below 1e-6. This is matching-control adaptive evidence,
+not a claim that filtered trajectories are invariant to step cadence.
+Default/material selection, supplied models/tables, option aliases, metadata/
+NPZ (including Path cache arguments), zero/preionisation, invalid rates and
+callback mutation/exception ownership checks pass. Eight source-rebuilt examples
+run with Python -I, PATH=/nonexistent and networking disabled, including both
+plasma models. Installed ADK/PPT effects .01133056/.04570717; fields (1025,7).
+All sixteen gases/ADK setups and high-precision PPT also run offline. No Julia,
+FFTW, libcubature, libcuda or Julia bridges load. Python 3.11 syntax and whitespace
+checks pass; runtime evidence remains internal CPython 3.14/Linux x86_64
+manylinux_2_35. Shared CPU acceptance remains the prior passing engine gate;
+no CUDA process ran for this Python-only unit. Hosted/platform gates remain.
+**Evidence:** `.rust_test_logs/python-plasma/{oracle/,oracle.log,tests.log,
+component-conditioning.log,cadence-diagnostic.log,metrics.json,fixtures.json,
+all-tests.log,sdist-build.log,sdist-install.log,sdist-tests.log,artifact.json,
+offline_check.py,offline-smoke.json}`. Source root:
+`/tmp/amalthea-plasma-artifact-wpvp336o/amalthea_native-0.0.1.dev0`;
+external Python `/tmp/amalthea-adk-test-env/bin/python`. Changes uncommitted;
+separate installer edits preserved.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-11 — Owned resident ADK/PPT plasma handoff — Codex
+**Status at this checkpoint:** implemented; Python/installed numerical gates
+pass. Full shared CPU/FFI acceptance is still running, so this unit is pending it.
+**Did:** Added owned `IonizationConfig`/`PlasmaConfig` to `resident.rs` and stable
+boxed ADK/PPT lifetimes behind the existing CPU plasma setters. PPT transfers
+normalized-knot derivatives as validated spline segments, including literal
+endpoints and nonuniform samples. Added optional private solve_real/real_rhs
+plasma arguments; the eight-element mode-average tuple and Julia C ABI remain
+unchanged. `plasma.py`, `capillary.py` and `envelope.py` select eligible resident
+execution, retaining explicit direct/custom/threshold-free/THG-off fallback.
+No shared ionisation formula or CUDA implementation changes. Extended the
+plasma oracle suite, ownership/configuration tests, docs and installed example.
+**Design:** [Owned resident ADK/PPT plasma handoff](PYTHON_NATIVE_PLAN.md#owned-resident-adkppt-plasma-handoff-2026-09-11).
+**Tests:** CPU-only `cargo test --release --manifest-path amalthea/Cargo.toml
+resident::tests`: **3 passed**, covering moved/reallocated facade ownership,
+nonuniform spline/clamp math and invalid construction. With the existing
+independent plasma fixture, `python -m pytest python-native/tests/test_plasma.py
+python-native/tests/test_native_plasma.py -q -s`: **38 passed**. Full installed
+suite with all twelve fixtures: **368 passed**, no skips. Extracted sdist
+rebuilt CPU-only/offline; external installed suite also **368 passed**, pip
+check passes. Native/Python aggregate max full RHS 1.9359e-14, same-input dense
+interval 2.2313e-16, ordinary complete trajectories 1.5176e-11. Native rejected
+solve: 256 accepted/25 rejected vs Julia 256/21, error 1.5241e-7; Python's
+existing 255/23 gives 1.6301e-7. No 1e-13/1e-6 gate was changed.
+ADK occupancy/cycle-average RHS max 8.2932e-16; nonuniform PPT with threshold,
+clamp and removed zero nodes 6.3913e-17. Native callback avoidance, configuration
+copying, repeated construction, direct/custom/threshold-free fallback and
+polynomial range guards pass. Rust source tests caught missing leading zeros
+in test float literals during formatting; fixed before the successful build.
+Eight source-rebuilt examples run offline with Python -I and PATH=/nonexistent,
+now exercising both native and Python ADK/PPT trajectories. Plasma effects are
+.01133056/.04570717; native/Python field agreement is below 1e-13. Sixteen gas/
+ADK setups and high-precision PPT also run offline, with no Julia/FFTW/
+libcubature/libcuda or Julia bridges loaded. Python 3.11 syntax/whitespace
+checks pass. Wheel remains internal CPython 3.14/manylinux_2_35_x86_64.
+**Pending gate:** `AMALTHEA_CUDA_BUILD=off AMALTHEA_REQUIRE_CUDA_TESTS=0
+RUSTFLAGS='' python3 test/validate.py --all`, session **28246**, evidence
+`.rust_test_logs/validation/20260911T143408Z-3kjrjvye/`. Build, preflight and
+Cargo have passed; Julia groups are running. Do not claim full gate success
+from this checkpoint. No CUDA process ran. Independent Python molecular work
+can proceed without changing the shared library under test.
+**Evidence:** `.rust_test_logs/python-native-plasma/{rust-tests.log,tests.log,
+metrics.json,fixtures.json,all-tests.log,sdist-build.log,sdist-install.log,
+sdist-tests.log,artifact.json,offline_check.py,offline-smoke.json,cpu-validation.log}`.
+Source root `/tmp/amalthea-native-plasma-artifact-r6eir9w5/amalthea_native-0.0.1.dev0`;
+external Python `/tmp/amalthea-adk-test-env/bin/python`. Changes uncommitted.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-11 — Resident plasma full CPU gate completed — Codex
+**Status at this checkpoint:** resident plasma acceptance complete, together
+with the numerical and installed evidence in its preceding entry.
+**Did/tests:** Confirmed session 28246 completed with exit 0 and read the
+recorded full summary for `python3 test/validate.py --all`:
+`.rust_test_logs/validation/20260911T143408Z-3kjrjvye/summary.json` is passed.
+All eight groups pass: physics 2019, Rust 42990 + 11 expected skips,
+multimode 41 + 1 expected skip, interface 314, propagation 18, io 2326,
+fields 339, examples 20. Total **48067 passed + 12 expected skips**;
+Cargo **91 unit + 5 build-policy tests** pass. Julia scheduler time 863.6 s.
+The tested/restored current CPU library SHA-256 is
+`d7880b79425f7016f737479a035fdfceb1bbd66934f60d224d1fb6fd562d9381`.
+Molecular work during the gate added Python setup only; no shared Rust/Julia
+engine source changed under test. CUDA remained explicitly disabled.
+**Design:** [Owned resident ADK/PPT plasma handoff](PYTHON_NATIVE_PLAN.md#owned-resident-adkppt-plasma-handoff-2026-09-11).
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-11 — Molecular Raman setup and density broadening — Codex
+**Status at this checkpoint:** standalone setup complete; molecular capillary
+Raman trajectories and their native/Python response wiring remain next.
+**Did:** Added `python-native/python/amalthea_native/molecular.py::MolecularRaman`
+and public export, preserving the six complete PhysData molecular parameter
+sets, CODATA2014 constants, rotational energy truncation/Boltzmann populations,
+absolute couplings, density-dependent damping and Planck response tails.
+Returned parameter/group/oscillator/response arrays are owned. Added
+`tools/export_molecular_raman_oracle.jl`, 45 tests, thirteenth hosted fixture,
+`examples/molecular_raman.py`, docs and offline installed setup checks.
+No shared Rust/Julia engine or C ABI changes in this unit.
+**Design:** [Molecular Raman setup and density broadening](PYTHON_NATIVE_PLAN.md#molecular-raman-setup-and-density-broadening-2026-09-11).
+**Tests:** Independent CPU-only Julia exporter: **27 configurations**, covering
+six gases, rotation/vibration, temperature/J ranges and the empty O2 response.
+`AMALTHEA_MOLECULAR_ORACLE=... python -m pytest python-native/tests/test_molecular.py
+-q -s`: **45 passed**. All thirteen fixtures: full installed **413 passed**,
+no skips. Source-rebuilt CPU-only/offline wheel installed outside checkout:
+**413 passed**, pip check passes. Maximum relative response error 2.3676e-15,
+coupling error 2.7746e-15, frequency and damping errors 0. Constants and
+per-oscillator 1e-13 gates pass. Independent 100-digit N2O rotor max error
+2.5903e-15 for populations/frequencies/couplings.
+Oracle component/temperature effects .05123–.95063; applicable density effects
+.002282–.016467, all above 1e-5. Repeated density evaluation, causal/tail zeros,
+empty components, copied data and invalid axes/options/materials pass.
+**Oracle limits retained:** O2 selected rotation/vibration has missing lifetime
+fields and fails in Julia; Python raises explicitly. H2's invalid minJ=20
+truncation reproduces the oracle guard. Zero-density H2/D2/CH4 selected
+vibration gives a nonfinite Julia origin and is explicitly rejected; supported
+zero-density/empty responses are tested separately. No parameters were guessed
+and no 1e-13 gate was weakened.
+Nine source-rebuilt examples run offline with Python -I and PATH=/nonexistent:
+six propagation and three setup examples. Molecular oscillator counts are
+N2 50, H2 24, D2 26, N2O 49, CH4 1, SF6 1. All sixteen gas/ADK setups and
+high-precision PPT run; no Julia/FFTW/libcubature/libcuda or Julia bridges load.
+Python 3.11 syntax checks cover 41 files; runtime evidence remains internal
+CPython 3.14/manylinux_2_35_x86_64. The completed shared CPU gate is recorded
+immediately above. No CUDA process ran; hosted/platform acceptance is separate.
+**Evidence:** `.rust_test_logs/python-molecular/{oracle/,oracle.log,tests.log,
+metrics.json,fixtures.json,all-tests.log,sdist-build.log,sdist-install.log,
+sdist-tests.log,artifact.json,offline_check.py,offline-smoke.json}`.
+Source root `/tmp/amalthea-molecular-artifact-teiv_4f1/amalthea_native-0.0.1.dev0`;
+external Python `/tmp/amalthea-adk-test-env/bin/python`. Changes uncommitted;
+separate installer edits preserved.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Constant molecular capillary Raman trajectories — Codex
+**Status at this checkpoint:** implementation, numerical and installed gates
+pass; full shared CPU/FFI gate is running and remains required for acceptance.
+**Did:** Wired `MolecularRaman` into `capillary.py::_Capillary` on both grids,
+with component/temperature controls and carrier ADK/PPT combinations. Added
+an overridable `envelope.py::polarization` method and Julia's envelope THG
+Kerr term through Python evaluation. Carrier THG-off Raman uses Python, even
+with Kerr disabled; native requests reject explicitly. Added the carrier
+FFT-convolution branch to `native.rs::rhs_mode_avg_real` and extracted the
+shared `convolve_raman_fft` helper, resetting padded tails on every RHS.
+`resident.rs` accepts validated real Raman samples through the unchanged
+private configuration tuple. Julia C ABI and CUDA implementation unchanged.
+Added `export_raman_capillary_oracle.jl`, 51 tests, direct-sum Rust coverage,
+`examples/raman_capillary.py`, fourteenth hosted fixture and documentation.
+**Design:** [Constant molecular capillary Raman trajectories](PYTHON_NATIVE_PLAN.md#constant-molecular-capillary-raman-trajectories-2026-09-11).
+**Gotchas:** Independent envelope THG setup exposed a missing EnvGrid `thg`
+flag: Julia used 2048 fine samples while Python used 1024. Forwarded the flag
+regardless of Kerr selection, retaining Julia's independent sampling choice.
+The exporter initially shadowed Base.length with a length variable; renamed
+it flength. Rust test compilation caught unary negation of usize; cast before
+negation. No numerical tolerance was weakened.
+**Tests:** Independent Julia exporter completes 24 cases. Focused portable
+carrier direct-causal-sum test: **1 passed** at 1e-13, including repeated tail
+reuse. All native/Python Raman tests: **51 passed**. Maximum relative errors:
+initial field 3.7127e-16, full RHS 1.4207e-14, impulse samples 2.6451e-16,
+same-input dense interval 2.1969e-16; independently prepared fixed/adaptive/
+high-level trajectories 3.7043e-11. Gates remain 1e-13 and 1e-6.
+Oracle effects: Raman .0016535–.0016540, selected components .0003384–.0014373,
+temperature .0019367, Kerr .0152944, THG .0107965/.258801,
+PPT plasma .0258502 and ADK plasma .0195095; all exceed 1e-5.
+Both installed wheel and CPU-only/offline source-rebuilt wheel pass all
+**463 tests** with fourteen fixtures, no skips. pip check passes.
+Ten source-rebuilt examples run under Python -I with PATH=/nonexistent and
+an isolated network namespace: seven propagation, three setup. New N2
+native/Python Raman effects .001653453 (envelope), .001653897 (carrier),
+.001664872 (carrier + PPT); native/Python field agreement below 1e-13.
+All sixteen gas/ADK setups and high-precision PPT run offline; no Julia,
+FFTW, libcubature, libcuda or Julia Python bridges load. Python 3.11 syntax
+checks pass for 43 files; runtime evidence remains internal CPython 3.14 /
+manylinux_2_35_x86_64, not release-platform acceptance.
+**Pending gate:** CPU-only `python3 test/validate.py --all`, session **79595**,
+`.rust_test_logs/validation/20260911T150519Z-j70dkl_8/`. Build, Cargo and
+physics pass; remaining groups are running. Do not rebuild or change the
+shared engine under this gate. Host probes reconfirm driver 595.84 and
+compiler 13.4.59, identical to the recorded failed PTX combination; the strict
+CUDA gate was not repeated and no CUDA simulation ran.
+**Evidence:** `.rust_test_logs/python-raman-capillary/{oracle/,oracle.log,
+rust-tests.log,tests.log,metrics.json,fixtures.json,all-tests.log,sdist-build.log,
+sdist-install.log,sdist-tests.log,dependencies.log,artifact.json,offline_check.py,
+offline-smoke.json,cpu-validation.log}`. Source root
+`/tmp/amalthea-raman-capillary-artifact-mhuwo6fg/amalthea_native-0.0.1.dev0`;
+external Python `/tmp/amalthea-adk-test-env/bin/python`. Changes uncommitted;
+separate installer edits preserved. Hosted acceptance remains separate.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Molecular Raman full CPU gate completed — Codex
+**Status at this checkpoint:** constant molecular Raman acceptance complete,
+together with the numerical and installed evidence in its preceding entry.
+**Did/tests:** Confirmed session 79595 exited 0 and the recorded
+`python3 test/validate.py --all` summary is passed at
+`.rust_test_logs/validation/20260911T150519Z-j70dkl_8/`.
+All eight groups pass: physics 2019, Rust 42990 + 11 expected skips,
+multimode 41 + 1 expected skip, interface 314, propagation 18, io 2326,
+fields 339, examples 20. Total **48067 passed + 12 expected skips**;
+Cargo **92 unit + 5 build-policy tests** pass. Scheduler time 864.5 s.
+The current/tested CPU library SHA-256 is `52ada7a922192f4b129d928449642a891e1e4d1a3ccdd7e160af9c50c22002a5`.
+The shared engine and Julia sources were unchanged during the gate; independent
+variable-operator work changed only the Python extension and Python files.
+CUDA was explicitly disabled. No release/platform acceptance is implied.
+**Design:** [Constant molecular capillary Raman trajectories](PYTHON_NATIVE_PLAN.md#constant-molecular-capillary-raman-trajectories-2026-09-11).
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-11 — Position-dependent Python linear-operator driver — Codex
+**Status at this checkpoint:** low-level driver complete; capillary profile,
+density/broadening and normalization wiring remains next.
+**Did:** Extended `python-native/src/solver.rs::Context` with an owned linear
+callback and immediate-position cache; propagations validate copied values and
+preserve the original Python exception through the existing C error boundary.
+Forward/backward RHS transforms select the same stage position and opposite
+interval signs. `solver.py::solve_precon` accepts a complete-array `linop(z)`
+with original shape/Fortran ordering and reports linear evaluation in metadata.
+Added an optional trailing private binding parameter, retaining existing calls.
+Variable callbacks reproduce Julia's extra-stage call sequence and direct left
+endpoint return. Constant/resident paths retain extra-stage reuse. No shared
+Rust engine, Julia or C ABI changes. Added the independent exporter, 27 tests,
+`examples/variable_solver.py`, fifteenth hosted fixture and documentation.
+**Design:** [Position-dependent callback linear operator](PYTHON_NATIVE_PLAN.md#position-dependent-callback-linear-operator-2026-09-11).
+**Gotchas:** `RK45.make_prop!` uses exp(L(t2)*(t2-t1)), not quadrature despite
+its `linop_int` variable name. The independent analytic test demonstrates
+first-order variable-L error, separate from fifth-order nonlinear stepping.
+Initial callback traces exposed Julia's per-interior extra-stage recomputation
+and no-call left-endpoint return; those are now matched exactly for variable
+callbacks. A tight fifth-order filtered adaptive example exceeds Julia's
+default repetition limit because FSAL remains pre-filter. Exported that error
+as a matching negative case; kept fourth-order adaptive and both fixed-order
+filtered positive controls. No tolerances or FSAL semantics were altered.
+**Tests:** Julia export completes **13 trajectories + 1 expected failure**.
+Focused Python suite: **27 passed**. Fixed/same-input dense max relative error
+**1.5275e-16**; complete adaptive max **2.0679e-12** (1e-13/1e-6 gates unchanged).
+All fixed-step linear callback positions and accepted endpoints match exactly.
+Adaptive positive cases each have 20 accepted/2 rejected attempts. Oracle
+variable-operator effect .0199407, nonlinearity .197237, filtering
+.0009103–.0009164, all above 1e-5. Constant-callable vs array fields match
+exactly. Owned retained arrays, serial execution, shape/nonfinite rejection,
+initial/stage/dense exception identity and repeated teardown pass.
+Independent endpoint-formula example error at most 2.776e-16; ODE endpoint
+errors .0624898/.0312487/.0156248 halve with step size, as documented.
+Installed and CPU-only/offline source-rebuilt suites each **490 passed** with
+all fifteen fixtures, no skips. pip check and Rust formatting pass; Python 3.11
+syntax checks cover 45 files. All eleven examples run from the source-rebuilt
+wheel with Python -I, PATH=/nonexistent and networking disabled: eight
+propagation, three setup. All sixteen gas/ADK setups and high-precision PPT
+also run; no Julia/FFTW/libcubature/libcuda or Julia bridges load. Runtime
+artifact remains internal CPython 3.14/manylinux_2_35_x86_64. The shared CPU
+regression gate is recorded immediately above; the variable driver changed
+no shared engine source and ran no CUDA process. Hosted/platform gates remain.
+**Evidence:** `.rust_test_logs/python-variable-solver/{oracle/,oracle.log,
+tests.log,metrics.json,fixtures.json,all-tests.log,sdist-build.log,
+sdist-install.log,sdist-tests.log,dependencies.log,artifact.json,
+offline_check.py,offline-smoke.json,syntax.log}`. Initial diagnostics retained
+as `oracle-initial-failed.log` and `tests-initial-failed.log`. Source root:
+`/tmp/amalthea-variable-solver-artifact-7ml8cb_8/amalthea_native-0.0.1.dev0`;
+external Python `/tmp/amalthea-adk-test-env/bin/python`. Changes uncommitted;
+separate installer edits preserved.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-11 — Exact scalar capillary profiles and gradients — Codex
+**Status at this checkpoint:** Python implementation, numerical, installed and
+source-rebuilt gates pass; the full CPU gate for the shared Julia setup repair
+is still running. No complete-capillary or preview release claim.
+**Did:** Added `profiles.py::_GasProfile` with exact callable pressure evaluation
+and Julia's two/multipoint gradient and density-spline conventions. Extracted
+`_spline.py::_NormalizedCubic` from PPT without changing its coefficients or
+cache contract. `capillary.py::_Capillary` now routes variable profiles through
+the existing serial Rust callback driver; `_refresh` recomputes density, area,
+Kerr/plasma scaling, beta prefactors and molecular response/damping at RHS
+positions. `linear_operator` independently evaluates the requested mode/frame.
+Explicit native forcing rejects profiles; output metadata copies gradient data
+and releases callback objects. Added two Julia exporters, 72 Python tests,
+`examples/profile_capillary.py`, the sixteenth hosted fixture, and documentation.
+The CUDA implementation and C ABI are unchanged.
+**Design:** [Exact scalar profiles](PYTHON_NATIVE_PLAN.md#exact-scalar-capillary-profiles-and-gradients-2026-09-11),
+[Julia gradient metadata repair, PLANS §22](PLANS.md#22-real-valued-complex-gas-coefficient-in-gradient-metadata).
+**Gotchas:** The first oracle export failed for carrier N2O/CH4/SF6: the
+QuanfuHe gas coefficient is complex with zero imaginary part, while
+`ZDepLinopMarcatili` requires Float64 metadata. `src/Capillary.jl::make_linop`
+now uses the same checked Float64 conversion as neighboring metadata; it does
+not discard nonzero imaginary parts. Added independent generic-operator and
+native trajectory coverage to `test/test_native_zdep_linop.jl`. Envelope linear
+phase cancellation required preserving Julia's arithmetic grouping: subtract
+beta0 after the first phase difference. Variable and constant paths retain the
+oracle's distinct amplitude loss clamps (3000 vs 1500 per metre). Clarified
+`MATH.md`'s endpoint-exponential description. No tolerance was weakened.
+**Tests:** CPU-only independent Julia exports complete **41 profile cases**,
+three thermodynamic-gradient fixtures and the companion loss/vacuum fixtures.
+`AMALTHEA_PROFILE_CAPILLARY_ORACLE=... python -m pytest
+python-native/tests/test_profiles.py -q -s`: **72 passed**. Maximum relative
+errors: initial field 3.7126e-16, complete RHS 1.4235e-14, density 0,
+area 1.3936e-15, beta1 3.9171e-14, beta0 2.3710e-16, neff 8.8053e-17,
+Raman impulse 2.7070e-16, identical-input linear assembly 0, dense interval
+2.3209e-16. Complete fixed/adaptive/high-level profile trajectories max
+1.3696e-11; loss-clamp trajectories max 1.7007e-11. Gates remain 1e-13/1e-6.
+Gradient pressure/density queries agree exactly with Julia; independent density
+sampling refinement at 256/1024/4096 nodes gives 6.1294e-11/7.5350e-12/1.6359e-12.
+Oracle profile effects .0012806–.0088107; Raman .0024278; PPT/ADK plasma
+.0369536/.0280102; rotation .0004972; temperature .0028402; Kerr .0223869;
+THG .0157848; loss-clamp choice .1458359. All exceed 1e-5.
+Constant-callable controls, actual stage/beyond-length positions, serial calls,
+original exceptions, invalid results, copied NPZ metadata and teardown pass.
+Supported N2 zero-density Raman matches; undefined H2/all-zero gradients reject.
+The focused Julia metadata repair has **72 passed**: identical generic operators,
+native step max 2.8549e-14, complete solve max 6.4337e-11; gradient effects
+.0069622–.0223262. Full CPU gate `20260911T154921Z-btz8607e`, session 79906,
+has passed physics/Rust and simulation groups and is running its final batch.
+
+All sixteen fixtures: installed **562 passed**, then CPU-only/offline
+source-rebuilt wheel **562 passed**, no skips; pip check passes. All twelve
+examples run with Python -I, PATH=/nonexistent and networking disabled: nine
+propagation, three setup. New N2 profile+taper effects .0012776–.0040264.
+All sixteen gas/ADK setups and high-precision PPT run; no Julia/FFTW/libcubature/
+libcuda or Julia bridges load. Python 3.11 syntax passes for 49 files. Runtime
+artifact remains internal CPython 3.14/manylinux_2_35_x86_64.
+Driver/toolkit probes reconfirmed RTX 5060 Ti/595.84 and CUDA 13.4.59, unchanged
+from the failed strict PTX gate; no CUDA simulation was repeated. A compatible
+host toolchain remains required. Prepared the subsequent scalar mixture design;
+mixture implementation is not part of this checkpoint.
+**Evidence:** `.rust_test_logs/python-profiles/{oracle/,oracle.log,
+limits-oracle.log,oracle-gradient-metadata-failed.log,gradient-repair-tests.log,
+tests.log,metrics.json,fixtures.json,all-tests.log,sdist-build.log,
+sdist-install.log,sdist-tests.log,dependencies.log,artifact.json,
+offline_check.py,offline-smoke.json,syntax.log,cpu-validation.log}`.
+Source root `/tmp/amalthea-profiles-artifact-71ip6nic/amalthea_native-0.0.1.dev0`;
+external Python `/tmp/amalthea-adk-test-env/bin/python`; source wheel SHA-256
+`bd63cfb615459746eb18e78464d067d475c135d6387390ca981d8e169dbbfc2c`.
+Changes uncommitted; separate installer edits preserved. Hosted/platform gates
+remain separate and the requested roadmap remains active.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-11 — Exact-profile shared CPU gate completed — Codex
+**Status at this checkpoint:** scalar profile and Julia gradient-metadata
+repair acceptance complete, together with the preceding Python/artifact entry.
+**Did/tests:** Confirmed session 79906 exited 0 and the recorded CPU-only
+`python3 test/validate.py --all` summary is passed at
+`.rust_test_logs/validation/20260911T154921Z-btz8607e/`.
+All eight groups pass: physics 2019, Rust 43064 + 11 expected skips,
+multimode 41 + 1 expected skip, interface 314, propagation 18, io 2326,
+fields 339, examples 20. Total **48141 passed + 12 expected skips**;
+Cargo **92 unit + 5 build-policy tests** pass. Scheduler time 871.0 s.
+The tested/current CPU library SHA-256 remains
+`52ada7a922192f4b129d928449642a891e1e4d1a3ccdd7e160af9c50c22002a5`.
+Production Rust/Julia source stayed unchanged during and after this gate.
+After it completed, added the established missing-library skip guard to the
+new test item in `test/test_native_zdep_linop.jl`; its mathematical body is
+unchanged. Reran that final test item using `julia --startup-file=no --project
+-e 'using TestItemRunner; @run_package_tests filter=ti->ti.name ==
+"Real-valued complex gas gradient metadata"'` with CUDA disabled:
+**72 passed**, 17.9 s, same zero operator discrepancies and the preceding
+step/trajectory bounds. Evidence:
+`.rust_test_logs/python-profiles/gradient-repair-guard-tests.log`.
+The guard follows the neighboring test's missing-library convention; this
+host exercised its library-present path. No CUDA simulation ran. Hosted,
+platform and complete-capillary gates remain outstanding. Source changes
+remain uncommitted and separate installer edits are preserved.
+**Design:** [Exact scalar profiles](PYTHON_NATIVE_PLAN.md#exact-scalar-capillary-profiles-and-gradients-2026-09-11),
+[PLANS §22](PLANS.md#22-real-valued-complex-gas-coefficient-in-gradient-metadata).
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+Final artifact check: all 29 current Python package/example files match the
+source-rebuilt archive, and its wheel checksum matches `artifact.json`;
+`.rust_test_logs/python-profiles/source-match.log`. `git diff --check` passes.
+
+## 2026-09-11 — Scalar gas and response mixtures — Codex
+**Status at this checkpoint:** scalar mixture implementation, numerical,
+installed and source-rebuilt gates complete with the adaptive refinement limit
+below. Multimode/custom coverage and preview/platform acceptance remain open.
+**Did:** Added `profiles.py::_MixtureProfile` for independent partial-pressure
+density profiles and summed susceptibilities before the core-index square root.
+Added `responses.py::species_options` and `_ScalarGasResponse`; refactored
+`capillary.py::_Capillary` to accumulate per-species Kerr, Raman and plasma on
+the same complete physical field, refreshing each density and Raman damping at
+the requested position. The public gas sequence accepts one/duplicate species,
+scalar/gradient/callable partial pressures and common tapers; `species_options`
+provides validated per-species response overrides and copied result metadata.
+Constant Kerr-only mixtures use the resident scalar engine; Raman/plasma or
+variable mixtures use the serial Python evaluation path. Native forcing
+rejects unsupported combinations before invoking custom profiles. Added
+`tools/export_mixture_capillary_oracle.jl`, 90 tests, `examples/mixture_capillary.py`,
+the seventeenth hosted fixture and installed/offline example wiring. No shared
+Rust/Julia production code, FFI export or CUDA implementation changed here.
+**Design:** [Scalar gas and response mixtures](PYTHON_NATIVE_PLAN.md#scalar-gas-and-response-mixtures-2026-09-11),
+including its documented adaptive stress refinement; acceptance commands in
+[TESTING](TESTING.md#scalar-gas-and-response-mixture-gate).
+**Gotchas:** Initial tests caught a local species-options name reused by the
+spectral mask, producing invalid output metadata; the final names are distinct.
+Ragged nested pressure specifications and zero-dimensional gas arrays require
+explicit outer-axis validation. Oracle export needed Julia's unambiguous
+numeric literal spacing and TOML arrays instead of tuples. Test-only PPT caches
+now use each test's temporary directory rather than the sandbox's read-only
+home. Failed diagnostics remain in the evidence directory.
+
+The mixed PPT/ADK + Raman + multipoint-gradient/taper stress case has a coarse
+adaptive discrepancy **2.4969e-6** at max step 1e-5 m and rtol 1e-9; this result
+does **not** meet the 1e-6 field gate. Julia accepted/rejected 102/50 trials and
+Python 100/52. Same-input RHS/dense and original fixed trajectories pass their
+tighter checks. Paired max-step refinement to 2.5e-6 and 1e-6 m reduces backend
+differences to **8.3010e-7** and **1.0668e-7**; the latter is the stress adaptive
+acceptance case. At 1e-6 m Julia has 210/9 accepted/rejected trials and Python
+210/6. Removing filtering alone leaves a 1.0196e-6 difference. Re-exporting the
+original Julia case gives identical fields. The retained variable-L endpoint
+scheme depends on accepted positions; neither local nonlinear rtol nor backend
+agreement establishes full-equation accuracy. Julia's fine-minus-coarse field
+difference is 3.9507e-5. No physics, solver/FSAL behavior or comparison tolerance
+was altered to align the adaptive paths. Default-control stress trajectories
+agree within **9.6328e-12**.
+**Tests:** With CUDA explicitly disabled, `julia --startup-file=no --project
+python-native/tools/export_mixture_capillary_oracle.jl
+.rust_test_logs/python-mixtures/oracle` exports **41 independent cases** on both
+grids plus the stress refinement/default companions. The focused command
+`AMALTHEA_MIXTURE_CAPILLARY_ORACLE=... python-native/.venv/bin/python -m pytest
+python-native/tests/test_mixtures.py -q -s` passes **90 tests** (40.67 s), including
+41 Python and 16 eligible native oracle cases. Maximum relative setup errors:
+initial field 3.7127e-16, full RHS **1.9816e-14**, density 0, area 1.3936e-15,
+beta1 1.9578e-14, beta0 2.3693e-16, neff 4.0607e-17, Raman impulse 2.6606e-16,
+identical-input linear assembly 0. Same-input dense max **2.2039e-16**;
+complete accepted trajectory max **1.0669e-7** with the refinement above.
+All fixed trajectories are within 3.4576e-11. Original 1e-13/1e-6 gates remain.
+Oracle effects: added Ne .0004620–.0004932, Kerr .01254–.02098,
+profiles .001632–.006596, Raman .003926–.003929, components .001694,
+temperature .002800–.003045, plasma .009857–.03485, preionisation .05907,
+plasma profiles .01699 and THG .01250–.25890; all exceed 1e-5.
+Split-gas and single-species equivalence, native callback avoidance, actual
+profile positions/serial calls, fresh species broadening, original exceptions,
+invalid outputs, teardown and owned NPZ metadata pass.
+
+`python3 .rust_test_logs/python-mixtures/artifacts.py` passes the complete
+installed suite **652/652** (114.17 s), creates a CPU-only source distribution,
+builds its wheel from the extracted root with empty RUSTFLAGS and offline
+Cargo, installs outside the checkout, and passes **652/652** again (112.19 s),
+with all seventeen fixtures and no skips. `pip check` passes. Executing
+`offline_check.py` with `unshare --user --map-root-user --net`, Python `-I` and
+`PATH=/nonexistent` passes all **thirteen examples** (ten propagation, three
+setup), sixteen gas/ADK setups and high-precision PPT. Only loopback exists;
+no Julia/FFTW/libcubature/libcuda or Julia bridge loads. Mixture example effects
+are .0004620/.0004932 for Ne and .004512/.01650 for molecular responses.
+All 31 final package/example Python files match the extracted source artifact;
+the wheel hash matches its manifest. Python 3.11 syntax passes for 52 files;
+this is not a CPython 3.11 runtime check.
+
+The unchanged shared engine retains the complete CPU/FFI evidence in
+`validation/20260911T154921Z-btz8607e`: **48141 passes + 12 expected skips**,
+Cargo **92 unit + 5 policy** tests, as recorded immediately above. No CUDA
+process ran in this unit; compatible host toolchain acceptance remains separate.
+The wheel remains internal CPython 3.14/manylinux_2_35_x86_64 evidence; hosted,
+manylinux release baseline and other runtime/platform gates remain outstanding.
+**Evidence:** `.rust_test_logs/python-mixtures/{oracle/,oracle.log,
+tests-final.log,metrics.json,adaptive-diagnostic-metrics.json,
+diagnostic-{original,refined,fine,unfiltered}/,diagnostic.py,
+regression-tests.log,fixtures.json,artifacts.py,artifacts.log,all-tests.log,
+sdist.log,sdist-build.log,sdist-install.log,sdist-tests.log,dependencies.log,
+artifact.json,offline_check.py,offline-smoke.json,offline.log,syntax.log,
+source-match.log}`. Earlier failed tests are retained as
+`protocol-metadata-failed.log`, `tests-cache-location-failed.log` and `tests.log`.
+Source root `/tmp/amalthea-mixtures-artifact-7w156l0u/amalthea_native-0.0.1.dev0`;
+external Python `/tmp/amalthea-adk-test-env/bin/python`; rebuilt wheel SHA-256
+`2f3a31d574017bbd605e3d4acb5180de09ebcb914de859b67a869d8d5c123529`.
+Changes remain uncommitted; separate installer edits are preserved.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-11 — Modal geometry and global SciPy quadrature — Codex
+**Status at this checkpoint:** geometry, custom-mode setup and integration
+dependency complete; temporal response/solver wiring and full modal trajectory
+acceptance remain next. The complete roadmap and preview are unfinished.
+**Did:** Added `quadrature.py::integrate` with serial batched SciPy integration,
+explicit joint real/imaginary L2 acceptance, bounded evaluations and a pilot
+scale for component budgets. Added `spatial.py::_ModeSpace`, `_SpatialSlice`
+and `_normalization` for fresh position-specific domains/power normalization,
+physical-field synthesis, real-matrix projection, polar Jacobians and Julia's
+boundary conventions. Added public `modes.py::Mode` with generic dispersion,
+normalization and `Exy`; Marcatili retains its analytic implementations. Added
+`tools/export_spatial_oracle.jl`, 45 tests, `examples/custom_mode.py`, eighteenth
+hosted fixture and offline example wiring. SciPy dependency floor is now 1.15,
+the release that introduced the public cubature API. No shared Rust/Julia
+production source, C ABI export or CUDA implementation changed in this unit.
+**Design:** [Modal geometry, quadrature and propagation](PYTHON_NATIVE_PLAN.md#modal-geometry-quadrature-and-propagation-2026-09-11),
+including scaled global-budget construction and the later propagation gate.
+**Gotchas:** Julia's reduced Cartesian p-integral failed its strict refinement
+with the original nonzero raw boundary field: `ToSpace` zeros endpoints,
+creating a jump for the endpoint-sampling rule. Retained the failure log and
+used a smooth vanishing-boundary field for the reduced Cartesian comparison;
+the full Cartesian case keeps the original field. An initial norm test required
+unjustified exact equality of subnormal-scaled decimal arithmetic; it now
+checks the floating-point rounding bound.
+
+Final review exposed a real global-budget defect at extreme finite scales:
+an array with components 1e308 could overflow the total norm, producing an
+infinite tolerance that accepted a 1e-2 relative error against rtol=1e-3.
+The retained injected-estimate diagnostic reproduces it. `_norm` now operates
+on separate real/imaginary components and applies rtol before restoring the
+scale; final nonfinite metrics reject explicitly. Three regressions cover
+correct acceptance, rejection and unrepresentable error norms. The original
+694-test artifacts remain in `pre-overflow-fix/`; final acceptance below uses
+the corrected 697-test artifacts.
+**Tests:** CPU-only `julia --startup-file=no --project
+python-native/tools/export_spatial_oracle.jl .rust_test_logs/python-spatial/oracle`
+exports seven cases at two positions: reduced/full HE1m, polarization pairs,
+mixed HE/TE/TM, x-only, full Cartesian and reduced Cartesian. Independent
+Julia h/p integrals refine at 1e-4/1e-10/1e-12 with explicit global-error checks.
+`AMALTHEA_SPATIAL_ORACLE=... python-native/.venv/bin/python -m pytest
+python-native/tests/test_spatial.py -q -s`: **45 passed**, 3.26 s. Maximum relative
+fixed-node projection error **1.2588e-15** and generic-vs-analytic power
+normalization error **1.7764e-15**; field synthesis/normalization satisfy 1e-13.
+Refined SciPy-vs-Julia spatial integrals differ by at most **9.9121e-15**;
+Julia fine/refined difference max **1.4297e-14**. Final Gk21 integrations use
+52–25532 evaluations. Analytic complex-array integrals independently pass
+Gk21/Genz-Malik checks; power orthogonality, full/reduced equivalence, annular
+domains, selected components and polarization-dependent coupling pass.
+The synthetic cubic projection transfers to HE12 with ratio **.4785422894**
+relative to HE11, proving nonzero geometric coupling. This is spatial evidence;
+it does not establish a temporal nonlinear RHS, dense interval or trajectory.
+Joint-norm rejection despite individual component tolerances, evaluation limits,
+fresh positions, serial calls, original exceptions, invalid shapes/nonfinite
+fields/normalization/domains, retained array ownership and teardown pass.
+
+`python3 .rust_test_logs/python-spatial/artifacts.py` passes all eighteen
+fixtures: installed **697/697** (116.00 s) and source-rebuilt **697/697**
+(113.13 s), no skips; `pip check` passes. Build flags are CPU-only, empty
+RUSTFLAGS and offline Cargo. The source distribution is extracted and rebuilt
+outside the checkout before the second installation. All **fourteen examples**
+(ten propagation, four setup), sixteen gas/ADK setups and high-precision PPT run
+with `unshare --user --map-root-user --net`, Python `-I` and PATH=/nonexistent.
+Only loopback exists; no Julia/FFTW/libcubature/libcuda or Julia bridge loads.
+The custom HE21 example's normalization errors are 2.2204e-16/1.1103e-16 at
+z=0/.137, with identical generic/Marcatili beta1 values. All 34 final Python
+package/example files match the extracted source; its wheel checksum matches
+the manifest. Python 3.11 syntax passes for 56 files; runtime evidence remains
+CPython 3.14/manylinux_2_35_x86_64, not release-platform acceptance.
+
+The shared CPU library hash is unchanged:
+`52ada7a922192f4b129d928449642a891e1e4d1a3ccdd7e160af9c50c22002a5`.
+Its applicable CPU/FFI gate remains `validation/20260911T154921Z-btz8607e`:
+**48141 passed + 12 expected skips**, Cargo **92 unit + 5 policy** checks.
+No CUDA process ran. `git diff --check` passes. New source is uncommitted;
+separate installer edits remain preserved.
+**Evidence:** `.rust_test_logs/python-spatial/{oracle/,oracle.log,
+oracle-cartesian-endpoint-failed.log,protocol-tests.log,tests.log,tests-final.log,
+metrics.json,overflow-diagnostic.log,pre-overflow-fix/,fixtures.json,artifacts.py,
+artifacts.log,all-tests.log,sdist.log,sdist-build.log,sdist-install.log,
+sdist-tests.log,dependencies.log,artifact.json,offline_check.py,offline-smoke.json,
+offline.log,example.log,syntax.log,source-match.log,cpu-library-check.log}`.
+Source root `/tmp/amalthea-spatial-artifact-mku2n1du/amalthea_native-0.0.1.dev0`;
+external Python `/tmp/amalthea-adk-test-env/bin/python`; rebuilt wheel SHA-256
+`0dadf9140af5c3bb54ebc9b3c07f03a9a7b4f0252a547f1156fa914eb99de562`.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Modal frontend and solver compatibility, validation checkpoint — Codex
+**Status at this checkpoint:** in-progress
+**Did:** Added `python-native/python/amalthea_native/{modal,modal_inputs}.py`
+for mode counts/HE-TE-TM collections, polarization pairs, pulse assignment,
+complete modal arrays, constructed custom modes, constant/variable dispersion,
+serial spatial response evaluation and Rust stepping. Added vector Kerr/plasma
+in `responses.py`/`plasma.py`; scalar temporal responses and species refresh are
+reused. Extended single-signifier mode averages and pulse metadata validation.
+The Python extension's `solver.rs` now accepts positive initial dt outside the
+subsequent min/max bounds, matching Julia; all other control validation remains.
+No shared engine/Julia production source or C ABI changed in this unit.
+Added the 45-case `export_modal_capillary_oracle.jl`, `test_modal.py`, complete
+modal/custom examples and nineteenth hosted fixture. `quadrature.py` now checks
+global convergence after bounded subdivision passes while counting every
+restarted node; unchanged global and field tolerances remain authoritative.
+**Design:** [Modal geometry and frontend wiring](PYTHON_NATIVE_PLAN.md#modal-geometry-quadrature-and-propagation-2026-09-11),
+including initial-step compatibility, independent conditioning bounds and
+bounded global quadrature passes.
+**Gotchas:** Julia constant and variable modal operators deliberately differ
+outside the physical window; custom/built-in equivalence uses the same variable
+path. Envelope constant loss requires signed silica extrapolation. Modal
+orthogonality needs the documented rounding allowance. The oracle helper first
+used a missing gradient helper, then captured its density variable in a local
+quadrature scratch assignment; both exporter-only failures are fixed and logs
+retained. Envelope THG expands the grid, so its effect control now holds the
+THG-enabled grid/initial field fixed. Direct comparison between the differently
+sized arrays was not a valid physics test.
+
+Vector plasma exhibits the same cumulative-current cancellation as the scalar
+port, plus near-zero `1-exp(-I)` cancellation. The gradient same-field fraction
+can differ relatively by 6.12e-11 from near-epsilon absolute rounding. Tests use
+explicit phase/loss/integration forward bounds, same-fraction/same-current
+1e-13 checks and 100-digit integration refinement. No physical formula changed.
+Julia's refined PPT integral meets global L2 in 32767 nodes; waiting for SciPy's
+stricter component convergence exhausted 100000 nodes. Bounded subdivision
+passes return intermediate estimates for the actual global criterion. The
+superseded long component-convergence test was explicitly terminated; current
+refinement/trajectory validation remains running.
+**Tests at this checkpoint:** installed pre-modal/solver regression suite
+**705 passed** (115.51 s); this precedes the additional bounded-pass regression.
+Original modal protocol suite **39 passed** (6.56 s). Geometry with bounded
+passes **45 passed** (3.70 s), before its new regression was added. Independent
+solver initial-bound fixtures and resident comparisons pass 1e-13; combined
+solver/resident/protocol check **60 passed**. Cargo Python-extension build/test
+passes (no Rust unit tests in that crate; behavioral checks are Python).
+Partial numerical evidence records 47 completed case/backend comparisons in
+`partial-metrics.json`; it is not complete modal acceptance. Radial envelope
+full-solve error is 9.03e-15, carrier radial 3.72e-13. Vector ADK fixed-node dense
+error is 1.77e-16, complete-solve 3.71e-13; same-current Decimal refinement
+9.45e-16. Its cancelled point polarization difference 6.25e-12 is bounded by
+1.68e-10. Gradient vector dense error is 1.73e-16, adaptive 4.52e-13. Envelope
+full-mode and Raman refined/default trajectory comparisons pass 1e-6, with
+observed errors below 3.5e-15. Completed physics controls exceed 1.46e-4;
+full-plasma/mixture controls remain pending the last reference trajectory.
+
+The complete source distribution rebuilds outside the checkout. All **15
+examples** (12 propagation, 3 setup), 16 gas/ADK setups and high-precision PPT
+pass with `unshare --user --map-root-user --net`, Python `-I`, PATH=/nonexistent,
+only loopback, and no Julia/FFTW/libcubature/libcuda loaded. All 37 package and
+example sources match the extracted source (Python files live at its top-level
+`python/`; the first comparison used the wrong nested path). Source root:
+`/tmp/amalthea-modal-artifact-q6168p30/amalthea_native-0.0.1.dev0`; rebuilt wheel
+SHA-256 `c8193a748356dea898d6b9aa20a1f5f2ab9935b502c8822131143f06f769e3d5`.
+Full installed/source-rebuilt modal suites are pending. Runtime evidence is
+CPython 3.14/manylinux_2_35 internal only. Python 3.11 syntax parses 60 files.
+The shared library hash remains
+`52ada7a922192f4b129d928449642a891e1e4d1a3ccdd7e160af9c50c22002a5`;
+CPU/FFI gate `validation/20260911T154921Z-btz8607e` remains applicable:
+48141 passed + 12 expected skips, Cargo 92 unit + 5 policy. No CUDA process ran.
+**Evidence:** `.rust_test_logs/python-modal/`: `oracle.log`, exporter failure
+logs, `solver-oracle/`, `protocol-*-tests.log`, `*-modal-tests.log`,
+`vector-*-tests.log`, `refinement-prefix-tests.log`, `full-plasma-tests.log`,
+`quadrature-pass-tests.log`, `regression-final-tests.log`, `partial-metrics.json`,
+`fixtures.json`, `prepare_artifacts.py`, `artifact.json`, build/install/source
+logs, `offline-smoke.json` and `source-match.log`. Ongoing output is retained in
+these logs; this checkpoint does not assert those live tests passed.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Modal plasma acceptance refinement checkpoint — Codex
+**Status at this checkpoint:** in-progress
+**Did:** Completed the full HE/TE/TM plasma comparison: fixed-node dense error
+**1.8412e-16**, independently assembled RHS **4.5152e-12**, and full default
+spatial-quadrature fixed/adaptive error **1.1158e-10**. The additional tighter
+quadrature comparison is still running. Documented the following custom-response
+callback contract while current numerical validation runs; no callback source
+implementation is claimed.
+**Design:** [Modal frontend/refinement decisions](PYTHON_NATIVE_PLAN.md#modal-geometry-quadrature-and-propagation-2026-09-11)
+and [next custom-response unit](PYTHON_NATIVE_PLAN.md#general-nonlinear-response-callbacks-next-coverage-unit).
+**Gotchas:** The 500-uJ N2/H2 modal mixture stress fixture required rejected
+initial steps below 0.4 um and estimated multiple hours for its 10-um adaptive
+trajectory. Its process was explicitly terminated after retaining point and
+fixed-solve evidence in `stress-mixture-plasma-real/` and
+`oracle-high-energy-mixture.log`. It is not accepted high-energy stress evidence.
+The acceptance fixture now uses 100 uJ with unchanged grid/species/response,
+solver/spatial tolerances and mathematical gates, plus an identical-input
+plasma-disabled control. The 100-uJ fixed reference completed in 116.49 s with
+errors below 0.07 of the requested local tolerance; adaptive/control/dense
+export and the plasma effect assertion are still pending at this checkpoint.
+**Tests/artifacts:** The updated source distribution was rebuilt at
+`/tmp/amalthea-modal-artifact-1ii9q2dy/amalthea_native-0.0.1.dev0`; wheel SHA-256 `5ed300ef330568b318bdcc9572f31a05fd5bbbff820c4d0d82ec547d35fe8ff9`. All 60 package,
+example and test Python sources match the archive and parse with the Python
+3.11 grammar. All fifteen examples pass offline again from the new installed
+artifact, with only loopback and no Julia/FFTW/libcubature/libcuda loaded.
+The full **800-test** gates are queued (expected count, not a pass claim).
+`validate_artifacts.py` checks both installed wheels against the frozen tests
+from that source distribution when all 45 reference exports are complete.
+The strict 1e-8 PPT complete trajectory remains a separate running diagnostic.
+`live-jobs.json` records the current tool sessions; inspect the exact running
+sessions and `artifact-validation-state.json` before restarting any process.
+**Evidence:** `.rust_test_logs/python-modal/{full-plasma-tests.log,
+mixture-oracle.log,oracle-high-energy-mixture.log,stress-mixture-plasma-real/,
+artifact.json,artifact-before-mixture-fixture.json,artifacts.log,
+source-match-final.log,offline-smoke-final.json,offline-final.log,
+validate_artifacts.py,artifact-validation.log,artifact-validation-state.json,
+live-jobs.json}`. Shared CPU library hash is unchanged; the preceding full
+CPU/FFI acceptance remains applicable. Source remains uncommitted.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-11 — Complete-array nonlinear callbacks, implementation checkpoint — Codex
+**Status at this checkpoint:** in-progress
+**Did:** Added public `ResponseContext` and private callback accumulation in
+`python-native/python/amalthea_native/callbacks.py`; both high-level APIs accept
+`responses`, append physical polarization to built-ins, reject forced native
+before invocation, and report serial Python evaluation/call counts. Scalar,
+GNLSE and modal paths pass owned full time/component fields and refreshed
+context snapshots without reevaluating profiles to construct context. Returned
+arrays are copied and validated; nonnumeric dtype, invalid shape, nonfinite
+values and imaginary carrier polarization reject. Added `test_callbacks.py`,
+`export_callback_oracle.jl`, complete `examples/custom_response.py`, API/docs
+and twentieth hosted fixture wiring. No shared Rust/Julia production source,
+C ABI or CUDA implementation changed.
+**Design:** [General nonlinear-response callbacks](PYTHON_NATIVE_PLAN.md#general-nonlinear-response-callbacks-next-coverage-unit).
+**Gotchas:** The first teardown assertion retained the original exception's
+traceback and therefore its callback frame. The test now releases its own
+traceback before asserting collection, preserving original exception identity.
+The Cartesian exporter initially had ambiguous Julia decimal syntax, then used
+integer pulse mode selection unavailable in Julia's high-level pulse struct.
+It now uses the existing low-level `(mode=i, fields=...)` input protocol; both
+exporter failure logs are retained. Generic Python mode normalization remains
+independent of Julia's analytic polynomial normalization.
+**Tests so far:** `PYTHONPATH=python-native/python` with the nineteen completed
+oracle fixtures, `python-native/.venv/bin/python -m pytest
+python-native/tests/test_callbacks.py -q -s`: **48 passed**, 57.07 s, before
+adding the two Cartesian tests. GNLSE custom convolution fixed trajectories
+max **1.3619e-15**, adaptive max **2.2545e-14**; same-input RHS/dense 1e-13 gates
+pass. Twelve custom Kerr modal trajectories max **9.2673e-13**, including THG,
+vector fields, mixtures, Raman and changing profiles. Custom vector plasma
+ADK/preionisation/gradient max **4.5152e-13**, with same-input built-in/custom
+RHS below 1e-13. Serial order, owned arrays/context, exact profile call sequence,
+exceptions, forced-native rejection, nested simulation, repeated teardown and
+retained-return mutation checks pass. The complete example matches built-in
+Kerr at **1.6138e-16** and its additional delayed response changes the field by
+**1.101e-5**. Cartesian reference export and its two tests remain running;
+installed/source-rebuilt callback acceptance is not yet claimed.
+
+The preceding frozen modal artifact suites remain running against their own
+source snapshot; current callback source is deliberately not loaded by those
+jobs. The focused strict full-plasma quadrature test completed **2 passed** in
+1350.02 s: default/refined trajectory errors **1.1158e-10 / 1.5983e-14** against
+Julia. The full 45-case modal oracle export completed, and every physics-effect
+control passes, minimum **1.9628e-5** for the 100-uJ mixture plasma case. The
+strict PPT complete-solve diagnostic remains running.
+
+Host CUDA probes were rechecked under the lead's authorization: RTX 5060 Ti,
+driver **595.84**, explicit CUDA **13.4.59**. Default `nvcc` is unavailable and
+13.3 remains absent. This is the same pair as the earlier error-222 module-load
+failure; no CUDA build/test was repeated. Applicable shared CPU/FFI acceptance
+remains `validation/20260911T154921Z-btz8607e`; this Python-only unit does not
+change that library. Source remains uncommitted and installer edits preserved.
+**Evidence:** `.rust_test_logs/python-callbacks/{initial-tests.log,
+expanded-tests.log,example.log,oracle.log,oracle-syntax-failed.log,
+oracle-pulse-index-failed.log,fixtures.json,cuda-probe.json}`;
+`.rust_test_logs/python-modal/{full-plasma-tests.log,physics-effects-final.log,
+mixture-oracle.log,artifact-validation-state.json}`. Counts above distinguish
+completed checks from the pending Cartesian and installed-artifact gates.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-11 — Modal installed-artifact acceptance — Codex
+**Status at this checkpoint:** complete for the documented modal acceptance
+unit; the full roadmap and preview remain unfinished. The extra strict-PPT
+trajectory remains a running diagnostic, separate from the accepted default
+spatial-quadrature trajectories and refinement cases.
+**Did:** Finished all 45 independent Julia exports and physics controls, and
+validated both frozen installed artifacts. This records the modal source
+snapshot preceding general-response callbacks; subsequent callback source has
+its own pending artifact gate. Implementation/design and intermediate gotchas
+are recorded in the preceding modal checkpoints.
+**Design:** [Modal geometry and propagation](PYTHON_NATIVE_PLAN.md#modal-geometry-quadrature-and-propagation-2026-09-11).
+**Tests:** `python3 .rust_test_logs/python-modal/validate_artifacts.py` completes
+successfully: installed **800/800** (1821.94 s), source-rebuilt **800/800**
+(1784.26 s), all nineteen fixtures and no skips; `pip check` passes. The
+complete 45-case Julia reference export includes the finished 100-uJ mixture
+plasma fixed/adaptive and identical-input plasma-disabled control. All physics
+effects exceed 1e-5; minimum mixture plasma effect **1.9628e-5**. Three complete
+quadrature refinement cases pass. The full HE/TE/TM plasma trajectory improves
+from **1.1158e-10** at the public spatial default to **1.5983e-14** at the refined
+spatial tolerance against Julia. Fixed-node dense, isolated conditioned plasma
+kernels, setup, modal protocols and solver initial-bound comparisons pass the
+unchanged mathematical gates. Per-case numerical results, including all 51
+case/backend comparisons, are retained in `metrics-final.json` and both logs.
+
+The source-rebuilt wheel runs all **fifteen examples** offline (twelve
+propagation, three setup), sixteen gas/ADK setups and high-precision PPT. It
+loads no Julia/FFTW/libcubature/libcuda with only loopback and PATH=/nonexistent.
+All 60 package/test/example Python files matched this frozen source snapshot
+and parsed as Python 3.11 before callback work began. Actual runtime evidence
+is internal CPython 3.14/manylinux_2_35_x86_64; release-platform acceptance is
+still outstanding. The unchanged shared CPU library retains the preceding
+48141-pass CPU/FFI gate and 92 unit + 5 policy Rust checks.
+**Evidence:** `.rust_test_logs/python-modal/{artifact.json,
+artifact-validation-state.json,artifact-validation.log,all-tests.log,
+sdist-tests.log,dependencies.log,metrics-final.json,physics-effects-final.log,
+mixture-oracle.log,offline-smoke-final.json,offline-final.log,
+source-match-final.log}`. Source root
+`/tmp/amalthea-modal-artifact-1ii9q2dy/amalthea_native-0.0.1.dev0`;
+rebuilt wheel SHA-256
+`5ed300ef330568b318bdcc9572f31a05fd5bbbff820c4d0d82ec547d35fe8ff9`.
+Strict-PPT diagnostic output remains in `vector-ppt-global-tests.log`; this
+entry does not claim its completion. Source remains uncommitted.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-11 — Custom-response numerical acceptance and native-point start — Codex
+**Status at this checkpoint:** custom-response numerical unit complete;
+installed/source-rebuilt callback gates running against a frozen artifact.
+The next native-point unit has started and is not yet numerically accepted.
+**Did:** Completed all six Cartesian Julia references, setup refinement and both
+complete custom-mode/profile/response comparisons. Added a design for the next
+safe native point interface, then extracted the existing CPU modal temporal
+subsection into `CpuNativeSim::modal_temporal` with an explicit read-only view.
+The 205-line arithmetic block is unchanged. Added owned scalar/vector batch
+facades in `amalthea/src/points.rs`, a private PyO3 point object and Python modal
+batch adapter. Scalar evaluation reuses `ResidentModeAverage`; vector evaluation
+uses the extracted existing kernel. No C export or CUDA source changed.
+**Design:** [Callbacks](PYTHON_NATIVE_PLAN.md#general-nonlinear-response-callbacks-next-coverage-unit)
+and [safe native point interface](PYTHON_NATIVE_PLAN.md#safe-native-modal-point-interface--implementation-design).
+**Tests:** The complete source callback suite passes **50/50**, 499.80 s; the
+focused Cartesian rerun passes **2/2**, 441.65 s. Both grids' independently
+assembled RHS errors are at most **5.3601e-15**, normalization **2.0114e-15**,
+initial fields **3.5888e-16**, transferred-linear dense **1.9053e-16**, and
+complete trajectories **7.9333e-14**. Independent linear assembly max
+**1.7440e-10** is within the documented finite-difference tier. Julia's initial
+1e-9 spatial estimate differed by 1.30e-13; refining only setup to 1e-11 resolves
+the discrepancy. Coarse/refined arrays and actual error budgets are retained;
+no comparison tolerance or trajectory physics changed. Nonlinearity changes
+the oracle by .0008744/.001235 and profiles by **6.5139e-5/9.1998e-5**.
+
+Both callback wheels install into fresh environments from pinned binary
+requirements, with `pip check` passing. The old temporary CoolProp wheel path
+was absent; the exact 7.2.0 wheel was successfully fetched from PyPI instead.
+All **sixteen examples** (thirteen propagation, three setup), sixteen gas/ADK
+setups and high-precision PPT pass offline in the source-rebuilt environment,
+with only loopback, PATH=/nonexistent, and no Julia/FFTW/libcubature/libcuda.
+All **63** package/test/example files match that frozen source artifact and
+parse as Python 3.11; archive/wheel checksums match and the sdist contains no
+compiled build products. Both complete **850-test** artifact suites are still
+running. These suites use frozen callback source and are unaffected by the
+new native-point edits. New native-point `cargo check` passes; its numerical,
+performance, complete Python and required shared CPU/FFI gates remain pending.
+
+Aggregate completed modal acceptance metrics: all 51 case/backend comparisons
+have initial error <=5.6463e-16, isolated point error <=4.3832e-15, fixed-node
+dense <=2.3779e-16 and full trajectories <=**1.1827e-7**, the public-spatial PPT
+case. Mixture plasma full error is 2.0476e-8. The strict 1e-8 PPT complete-solve
+diagnostic remains running; it is not required to infer these completed tests.
+**Evidence:** `.rust_test_logs/python-callbacks/{tests-final.log,
+cartesian-tests-refined.log,refined-oracle.log,refined-oracle/,refine-merge.log,
+oracle/,artifacts.log,artifact.json,checkout-tests.log,source-tests.log,
+source-match.log,offline-smoke.json,offline.log,test-requirements.txt,
+dependency-download-pinned.log}`; frozen source root
+`/tmp/amalthea-callback-artifact-k7w0cu20/source/amalthea_native-0.0.1.dev0`.
+Native-point work: `.rust_test_logs/python-native-points/{original-temporal.txt,
+check.log,build.log}`. Source remains uncommitted; installer edits preserved.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-11 — Native-point numerical and shared CPU acceptance — Codex
+**Status at this checkpoint:** numerical/shared CPU gates complete; controlled
+performance and installed-artifact acceptance remain pending.
+**Did:** Replaced the private point binding's per-element Python lists with
+rust-numpy 0.27.1 read-only contiguous input and owned `PyArray::from_vec`
+output. The wrapper still copies component-major inputs and owns returned
+arrays. Extended every eligible modal oracle to automatic native points,
+including fourth/fifth-order dense and full trajectories. No C export or CUDA
+implementation changed. Next independent output work has been designed first.
+**Design:** [Safe native modal points](PYTHON_NATIVE_PLAN.md#safe-native-modal-point-interface--implementation-design).
+**Gotchas:** The list boundary regressed scalar-envelope complete solves by
+41% and vectors by 27%; profiling identified list boxing/array conversion.
+Retained those measurements before replacing the boundary. One expanded test
+mistakenly included carrier THG-off, which correctly selects Python; corrected
+the eligibility list without changing dispatch or tolerances.
+**Tests:** `test_native_points.py` **51 passed**, 26.47 s: all 26 eligible
+oracles satisfy 1e-13 point/RHS/fixed-node dense and 1e-6 full-solve gates.
+Existing modal protocol regression: **39 passed**, 55 deselected, 10.17 s.
+`AMALTHEA_CUDA_BUILD=off AMALTHEA_REQUIRE_CUDA_TESTS=0 RUSTFLAGS='' python3
+test/validate.py --all` passes all eight CPU groups: **48141 passed**, twelve
+expected skips; Cargo **92 unit + 5 policy** tests pass. Evidence directory
+`.rust_test_logs/validation/20260911T190057Z-qhm0a8zj/`; library SHA-256
+`7ac4c0fc0b6fa2967d1b263b9122f3c41d27ae32dcfbca5da5e20133231f5c3f`.
+
+Ten preliminary paired complete workloads improve 20.82–71.25% median with
+the NumPy boundary; minimum individual pair improvement 14.58%, field
+discrepancy <=2.04e-16. Other validation was running during these samples;
+controlled installed-wheel timing is queued after those gates and remains
+required before accepting automatic acceleration. Frozen checkout/source
+wheels build, install and pass dependency checks; both 901-test suites are
+queued after the controlled timing. The separate callback 850-test suites
+remain running. No completion is inferred from building those artifacts.
+
+The extra strict modal PPT diagnostic has now completed: **1 passed**,
+3636.82 s, full fixed/adaptive error **4.0048856470412086e-13** at spatial
+rtol=1e-8. This refines the accepted public-spatial result without relaxing
+its tolerance. Evidence: `.rust_test_logs/python-modal/vector-ppt-global-tests.log`.
+Native-point evidence: `.rust_test_logs/python-native-points/{tests-final.log,
+tests-numpy.log,protocol-regression.log,boundary-profile.log,
+boundary-profile-numpy.log,benchmark.json,benchmark-array.json,artifact.json,
+artifacts.py,benchmark_controlled.py,full-cpu-gate.log}`. Source remains
+uncommitted and independent installer edits preserved.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-11 — Custom-response installed-artifact acceptance — Codex
+**Status at this checkpoint:** complete for the general callback unit.
+**Did:** Finished both frozen callback wheel suites after independent Cartesian
+normalization/RHS/dense and trajectory acceptance. All twenty Julia fixture
+sets were supplied; this gate does not load later native-point/output source.
+**Design:** [General callbacks](PYTHON_NATIVE_PLAN.md#general-nonlinear-response-callbacks-next-coverage-unit).
+**Tests:** `.rust_test_logs/python-callbacks/artifacts.py` completes: checkout
+wheel **850 passed** in 2513.91 s, source-rebuilt **850 passed** in 2426.65 s,
+no skips. Both fresh environments pass `pip check`. The already-completed
+sixteen offline examples, frozen-source checks and exact numerical results
+remain recorded in the preceding callback entry. Rebuilt wheel SHA-256
+`45e6cf9b7922d21ad02cc8a12ae238c36c0788230d0dc4f2097db004f191f06a`;
+sdist SHA-256 `52f902a1cdb3bb26bf8afa4cb772dfbc299c5e5d7a60823f1fea6da8b7025b98`.
+Evidence: `.rust_test_logs/python-callbacks/{artifact.json,artifacts.log,
+checkout-tests.log,source-tests.log}`. Source remains uncommitted.
+
+The following frozen native-point wheel additionally passes all sixteen
+examples offline, with only loopback, PATH=/nonexistent and no Julia/FFTW/
+libcubature/libcuda loaded. Its 65 Python files parse as Python 3.11; both
+wheels match its frozen package, hashes match and its sdist contains no compiled
+products. Evidence: `.rust_test_logs/python-native-points/{offline-smoke.json,
+offline.log,source-check.json}`. This is internal CPython 3.14 Linux evidence;
+controlled native-point timing and complete 901-test suites remain unfinished.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-11 — Controlled native-point performance acceptance — Codex
+**Status at this checkpoint:** performance gate complete; both full 901-test
+installed/source-rebuilt suites are now running. Numerical and shared CPU/FFI
+acceptance are recorded above.
+**Did:** Benchmarked the actual installed source-rebuilt wheel with ten accepted
+500-uJ modal oracle workloads, matched public spatial tolerance and solver
+controls. Retained automatic native point selection after exceeding the 5%
+complete-solve criterion in every workload. Frozen CPU audit artifacts remain
+unchanged; this is a separate point-interface measurement.
+**Design:** [Safe native modal points](PYTHON_NATIVE_PLAN.md#safe-native-modal-point-interface--implementation-design).
+**Tests:** `.rust_test_logs/python-native-points/benchmark_controlled.py` passes:
+two warmups, ten measured randomized pairs per workload, affinity pinned to one
+logical CPU and BLAS/OpenMP/Rayon threads set to one. Each backend satisfies
+relative MAD <=3% and bootstrap 95% median half-width <=5%. Native/Python complete
+fields agree within 1e-13; independent Julia trajectory discrepancy max
+**9.2674e-13**. Nonlinear and Raman controls exceed 1e-5; steps, rejections and
+quadrature evaluations agree within each paired case.
+
+| Workload | Python median (s) | Native points median (s) | Paired improvement |
+|---|---:|---:|---:|
+| Radial envelope | .111639 | .094145 | 15.28% |
+| Circular envelope | .303556 | .192825 | 36.26% |
+| Full envelope | 7.528621 | 3.958997 | 47.43% |
+| Raman envelope | .763434 | .268748 | 64.77% |
+| Mixture envelope | .350351 | .107614 | 69.24% |
+| Radial carrier | .152795 | .104196 | 31.80% |
+| Circular carrier | .332212 | .246067 | 25.91% |
+| Full carrier | 6.936830 | 4.318501 | 37.97% |
+| Raman carrier | .268447 | .117331 | 56.31% |
+| Mixture carrier | .460116 | .122419 | 73.41% |
+
+Evidence: `.rust_test_logs/python-native-points/{benchmark-controlled.json,
+benchmark-controlled.log,benchmark_controlled.py,artifact.json}`. Timings
+include setup and complete output sampling; the broader matched Julia/Python
+import/first-solve/memory/output/platform snapshot remains separate work.
+Source remains uncommitted.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-11 — Native-point benchmark count correction — Codex
+**Status at this checkpoint:** correction to the preceding performance entry;
+its numerical and measured complete-solve acceptance are unchanged.
+**Did:** Audited each backend's recorded work counts. The preceding statement
+that all quadrature counts agree was too broad: circular envelopes use **4524
+native / 4628 Python** point evaluations. All ten accepted/rejected step counts
+agree, and the other nine quadrature counts agree. The circular-envelope timing
+therefore includes 2.25% fewer quadrature evaluations; it remains a measured
+36.26% complete-workload improvement under identical controls, not an isolated
+kernel speed claim. No source or benchmark samples changed.
+**Design:** [Safe native modal points](PYTHON_NATIVE_PLAN.md#safe-native-modal-point-interface--implementation-design).
+**Tests:** Direct comparison of every `counts` record in
+`.rust_test_logs/python-native-points/benchmark-controlled.json` exposed the
+difference; the complete-field and Julia-oracle gates in that script pass.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-11 — Optional HDF5 and completed-result processing — Codex
+**Status at this checkpoint:** complete for this I/O unit; wider roadmap and
+native-point full installed suites remain unfinished.
+**Did:** Added lazy `PropagationResult.save_hdf5`, a shared `output.py` payload,
+and optional `hdf5` packaging extra. NPZ/HDF5 preserve every existing numeric
+key/axis and add versioned JSON grid descriptions. Nested NumPy metadata and
+UTF-8 strings serialize without pickle; invalid JSON is rejected before opening
+the destination. Added `test_output.py`, a complete two-API processing example,
+README/API guidance, hosted example/extra wiring and acceptance documentation.
+No Rust/Julia/FFI/CUDA source or physics formula changed.
+**Design:** [Optional HDF5/results](PYTHON_NATIVE_PLAN.md#optional-hdf5-and-result-processing--implementation-design).
+**Gotchas:** The first packaging harness assumed double quotes in a valid
+`Requires-Dist` marker; maturin emits single quotes. Corrected only the harness
+and resumed the already-built artifacts. The failed assertion log is retained.
+**Tests:** Source `test_output.py`: **12 passed**, 1.89 s. Fresh checkout wheel:
+**37 passed**, 876 deselected, 7.75 s; fresh source-rebuilt wheel: **37 passed**,
+876 deselected, 7.32 s. These include all new output tests plus affected NPZ,
+custom metadata, profile/mixture and solver-output regressions. Independent
+NumPy/h5py reads are exactly equal to the numeric arrays/dtypes and reconstruct
+the identical time fields. Missing-extra simulation/NPZ and invalid-metadata
+preservation checks pass. Both environments install through `[hdf5]` and pass
+`pip check`; all 68 Python files match the frozen source and parse as Python
+3.11. Actual runtime is CPython 3.14.6, h5py 3.16.0.
+
+The complete example runs from both installed wheels and from the rebuilt
+wheel in `unshare --user --map-root-user --net`, PATH=/nonexistent. It writes
+and independently reads GNLSE and two-mode carrier output, checks exact inverse
+FFTs, and reports energies/solver diagnostics. Final energies: GNLSE
+**4.2572760396545104e-11 J**; capillary modes **9.999985722226857e-5 J** and
+**9.255498553465497e-13 J**. This is an exact I/O check, not a new physics gate.
+Source-rebuilt wheel SHA-256
+`d66fe9396dee0516953125859acd2a55f38045aa997e2a5853e756228db9c98f`;
+sdist SHA-256 `46d4f577c38e98f795e5cf6c916439b85e5103034bc113104c6d4ef06a42470a`.
+Evidence: `.rust_test_logs/python-output/{tests.log,artifact.json,artifacts.py,
+resume_artifacts.py,artifacts-metadata-assertion-failed.log,artifacts.log,
+checkout-tests.log,source-tests.log,checkout-example.log,source-example.log,
+offline.log,download.log,dev-install.log}`; frozen source
+`/tmp/amalthea-output-artifact-5_phkyqk/source/amalthea_native-0.0.1.dev0`.
+The preceding full shared CPU/FFI gate remains applicable. No full 913-test
+output-suite completion is inferred from the focused I/O regression count.
+Source remains uncommitted and installer edits preserved.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-11 — Linux manylinux builds, offline versions and capability audit — Codex
+**Status at this checkpoint:** builds/installation/offline checks complete;
+four full 913-test source-wheel suites are in progress. The separate native-point
+901-test suites remain running. No full platform or preview completion claimed.
+**Did:** Built checkout and frozen-sdist wheels for CPython **3.11.16, 3.12.12,
+3.13.11, 3.14.6**, with explicit `--zig --target x86_64-unknown-linux-gnu
+--compatibility manylinux_2_28 --auditwheel check --release --locked`, empty
+RUSTFLAGS and CPU-only configuration. Added narrow git ignores for in-place
+extension build products. Audited actual API/dispatch guards and Julia-valid
+restrictions into `PYTHON_SUPPORT_MATRIX.md`, linking all 26 test files.
+**Design:** [Linux wheel/version gate](PYTHON_NATIVE_PLAN.md#linux-wheel-and-python-version-acceptance--implementation-design).
+**Gotchas:** Docker's daemon rejects this user's access and passwordless sudo
+is unavailable. Used maturin's supported Zig route instead; no system access
+or permission changes. Temporary build tools: maturin **1.15.0**, Zig **0.16.0**,
+auditwheel **6.8.2**, uv **0.12.13**. uv installs only a temporary development
+Python 3.11; installed package runs never download/provision Python. A redundant
+collection command mistakenly used the old developer environment without
+PYTHONPATH and reported two missing new modules; retained its log and continued
+with the actual installed artifacts, whose collection includes all 913 tests.
+**Tests:** All **eight** wheels pass maturin and independent auditwheel checks;
+maximum referenced glibc version is **2.28**. Every wheel's package files match
+the frozen source. All eight install with binary-only dependencies and the HDF5
+extra, pass `pip check`, and run **seventeen complete examples** in isolated
+network namespaces with PATH=/nonexistent. Each also checks sixteen gas and
+ADK setups, high-precision PPT, installed module paths and no Julia/FFTW/
+libcubature/libcuda loaded. Four checkout wheel smoke suites pass **32 tests**
+each. NumPy/SciPy: **2.4.6/1.17.1** on Python 3.11 and **2.5.3/1.18.1** on
+3.12–3.14; CoolProp **7.2.0**, h5py **3.16.0** throughout. Full source-wheel
+suite results are pending and must not be inferred from these checks.
+
+Frozen source: `/tmp/amalthea-manylinux-dlmssnli/source/amalthea_native-0.0.1.dev0`,
+rebuilt from output sdist SHA-256
+`46d4f577c38e98f795e5cf6c916439b85e5103034bc113104c6d4ef06a42470a`.
+Per-wheel hashes, commands, interpreter paths, audits and versions are recorded
+in `.rust_test_logs/python-linux-wheels/{artifact.json,environment.json,
+build.py,build.log,validate.py,validation.json,validation.log,offline-summary.json,
+*-audit.log,*-smoke.log,*-offline.json,*-tests.log}`. All 26 support-matrix test
+references exist; the CUDA/toolchain and platform status remain in BACKLOG.
+The older-glibc runtime host, ARM64, Apple Silicon and Windows remain distinct
+gates; a manylinux tag on this glibc-2.39 host does not establish those runs.
+No production Python/Rust/Julia source changed in this unit. Source remains
+uncommitted and installer edits preserved.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-11 — Compatible CUDA compiler restores strict GPU execution — Codex
+**Status at this checkpoint:** compiler/probe/smoke and full Cargo gates pass;
+serialized Julia CUDA/FFI gate remains running.
+**Did:** Prepared NVIDIA CUDA **13.2.1** components under
+`/tmp/amalthea-cuda-13.2-8a3nal_8/toolkit`, selecting **nvcc 13.2.78** through
+the existing NVCC override. All four component archives match NVIDIA's
+published SHA-256 manifest; extracted component licenses are retained. No
+driver, system toolkit, symlink, user PATH, kernel code, ABI or tolerance changed.
+This replaces the incompatible compiler only for the validation commands.
+**Design:** [PLANS §23](PLANS.md#23-strict-cuda-validation-with-a-compatible-temporary-compiler).
+**Gotchas:** R595 corresponds to CUDA 13.2 PTX support, while the installed
+13.4 compiler targets the R615 generation. The prior 13.4 error-222 failure
+remains recorded. The matching compiler loads and executes on RTX 5060 Ti
+driver **595.84**. Existing host CUDA math libraries load successfully:
+`libcufft.so.12.4.0.34`, `libcublas.so.13.7.0.27` under `/usr/local/cuda-13.4`,
+and `/usr/lib/x86_64-linux-gnu/libcuda.so.595.84`. No runtime library override
+was required. Their presence was read from the running Julia process's maps.
+**Tests:** Host `nvcc --version` and `nvidia-smi` probes pass. Strict
+`cargo test --release cuda_native::tests::adk_ionization_kernel_matches_cpu_boundaries_signs_and_cycle_average
+-- --exact --nocapture`: **1 passed**, 91 filtered, 0.80 s after a 10.27 s build.
+The kernel passes its **1e-13** boundary/sign/cycle-average comparison and exact
+invalid/subthreshold-zero checks. Then ran, outside the sandbox:
+`PATH=/usr/local/cuda-13.3/bin:/tmp/amalthea-cuda-13.2-8a3nal_8/toolkit/bin:$PATH
+NVCC=/tmp/amalthea-cuda-13.2-8a3nal_8/toolkit/bin/nvcc
+AMALTHEA_REQUIRE_CUDA_TESTS=1 RUST_TEST_THREADS=1 RUSTFLAGS=''
+python3 test/validate.py --cuda --groups rust --max-workers 1`.
+Cargo **92 unit + 5 policy** tests pass with strict CUDA required. Julia checks
+are still running; no full gate success is inferred. Validation directory
+`.rust_test_logs/validation/20260911T195412Z-827ex53g/`; current CUDA-built library
+SHA-256 `6e2c0cc7bb91890bf44a30166b2f54bc428d8e40504f1232575bed741537ff07`.
+
+Preparation/probe evidence: `.rust_test_logs/cuda-compatible-toolchain/{
+redistrib_13.2.1.json,prepare.py,prepare.log,toolkit.json,probe.json,smoke.log,
+runtime-libraries.json,validation.log}`. The Python wheels retain their own
+frozen CPU-only libraries and are unaffected by the Julia library rebuild.
+The hosted wheel matrix's implementation design is now written; its source
+workflow changes have not started. Source remains uncommitted.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Native-point complete installed-artifact acceptance — Codex
+**Status at this checkpoint:** native-point numerical, performance and complete
+installed/source-rebuilt gates are complete. Python-version/output platform
+suites and strict CUDA Julia validation remain separate running gates.
+**Did:** Collected both frozen 901-test suites after their complete end-to-end
+runs. No source or test tolerance changed while they ran.
+**Design:** [Safe native modal points](PYTHON_NATIVE_PLAN.md#safe-native-modal-point-interface--implementation-design).
+**Tests:** Checkout wheel **901 passed**, no skips, **2494.57 s**;
+source-rebuilt wheel **901 passed**, no skips, **2490.21 s**. All twenty Julia
+fixture families were supplied. The preceding numerical, controlled timing,
+binary-only install and sixteen-example offline checks remain applicable to
+these frozen artifacts. Source-rebuilt SHA-256
+`3544ebb3f320588c1c16f54933990ff41c252d9e8402829772f478682ca347e9`;
+sdist SHA-256 `0e82e0befeee445c0354051b1a136f22bbf25bf0c60f3d51484279746d0ffde2`.
+Evidence: `.rust_test_logs/python-native-points/{artifact.json,checkout-tests.log,
+source-tests.log}`; frozen source
+`/tmp/amalthea-point-artifact-izvk40w9/source/amalthea_native-0.0.1.dev0`.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-11 — Maintained Julia-reference transport and CI acceptance — Codex
+**Status at this checkpoint:** first CI tooling unit implemented and locally
+validated; hosted producer execution and the full platform matrix remain pending.
+**Did:** Added development-only `python-native/tools/{_validation.py,
+export_oracles.py,check_validation.py}` and
+`test/test_python_native_validation.py`. The producer exports all twenty
+reference families with Rust offloads and partial-export selectors disabled.
+It publishes a completion manifest only after successful export, with source,
+data, exporter and fixture hashes plus revision/Julia/CoolProp provenance.
+Consumers verify the complete artifact before writing environment paths.
+JUnit acceptance rejects empty collections, failures, errors and skips.
+The Linux CI draft now has separate reference-export and installed-wheel jobs,
+with reports/distributions/export logs uploaded on failure. Existing Julia
+CPU/FFI jobs and numerical source remain unchanged. Updated TESTING commands.
+**Design:** [Hosted wheel matrix and staged transport implementation](PYTHON_NATIVE_PLAN.md#hosted-wheel-matrix--next-delivery-unit-design).
+**Gotchas:** Direct `python -m unittest test/test_python_native_validation.py`
+resolved the interpreter's standard-library `test` package instead of this
+repository's directory. Used the documented direct script invocation; this was
+an invocation failure, not a failing regression. Maturin's sdist command emitted
+a nonfatal pyenv shim-write warning in the sandbox; it successfully produced
+and verified the archive without changing interpreter configuration.
+**Tests:** `python test/test_python_native_validation.py -v`: **15 passed** on
+each installed CPython **3.11–3.14** environment. Tests cover stale commits,
+changed sources/data, missing/extra/empty fixtures, failed exports, wrong
+CoolProp, source mutation during export, CRLF checkouts, environment-file
+preservation, malformed acceptance state and actual subprocess error capture.
+Synthetic test fixtures establish tooling behavior only.
+
+The real process wrapper separately ran `export_grid_oracle.jl` from the current
+Julia checkout, then the installed source-rebuilt Python 3.14 manylinux wheel's
+foundation suite: **30 passed**, **0.46 s**, no skips. Five independent grid
+cases agree at maximum relative error **1.1102230246251565e-16**; portable FFT,
+Hilbert/convolution and ownership tests retain their 1e-13 assertions. The new
+CLI accepts its actual JUnit report. YAML structure, reference-job dependency,
+absence of Julia installation in the wheel consumer and Python 3.11 syntax
+checks pass. `git diff --check` passes. This bounded real export does not imply
+a newly completed twenty-family hosted export or platform matrix run.
+
+Fresh sdist SHA-256
+`3d6594ac0ff224259b5fbf904b2a27cd07ec5a5089170addae05f1a311011045`
+contains all three helpers byte-for-byte and no compiled products/build trees.
+Evidence: `.rust_test_logs/python-ci-tooling/{tests.log,python-3.*-tests.log,
+grid-export.log,grid-export.log.json,foundation.log,foundation.xml,
+foundation-result.json,checked-junit.json,static.json,source-check.json,
+distributions/}`. The earlier complete CPU gate remains applicable; no shared
+Rust/Julia/FFI/CUDA source changed in this unit. Source remains uncommitted and
+independent installer edits are preserved.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Full strict CUDA and FFI gate completion — Codex
+**Status at this checkpoint:** complete for the shared-source strict CUDA gate.
+**Did:** Collected the completed serialized validation after the compatible
+compiler restored execution. No source, ABI, tolerance, system driver or toolkit
+changed during the run. Python wheels remain CPU-only.
+**Design:** [PLANS §23](PLANS.md#23-strict-cuda-validation-with-a-compatible-temporary-compiler).
+**Tests:** The previously recorded host command
+`python3 test/validate.py --cuda --groups rust --max-workers 1`, with strict CUDA
+required and command-local nvcc 13.2.78, completes successfully. Cargo: **92 unit
++ 5 policy tests**. Julia: **43,687 passed**, no failures/skips, **25m21.3s**.
+The wrapper confirms the local checkout and CUDA-built library SHA-256
+`6e2c0cc7bb91890bf44a30166b2f54bc428d8e40504f1232575bed741537ff07`.
+Mode-averaged Kerr adaptive discrepancy **2.6234e-15**, Kerr/PPT adaptive
+**1.0475e-14**; independent Julia nonlinear controls **4.5130e-4** and
+**2.0052e-2**. Modal envelope point/stage max (including high-half control)
+**1.0906e-15**, adaptive **8.4946e-17**, Kerr control **2.5187e-2**.
+Radial PPT direct stage **1.3476e-15**, fixed solve **4.8107e-16**, plasma control
+**1.7925e-5**. Free-space PPT stage **1.2919e-15**, adaptive **1.0826e-14**,
+Julia plasma control **1.5697e-6**. Fourth-order GPU dense convergence ratios
+**29.7650, 31.4284**, approaching the expected 32. Existing CPU/FFI cases in
+this group also pass; their established individual tiers were not changed.
+Evidence: `.rust_test_logs/validation/20260911T195412Z-827ex53g/{summary.json,
+cargo-tests.log,julia-tests.log,workers/rust_worker0.log}`. The earlier
+13.4/toolchain failure remains retained as a separate failed attempt.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Python 3.11 and 3.12 complete Linux suites — Codex
+**Status at this checkpoint:** these two frozen source-wheel suites pass;
+Python 3.13/3.14 remain running. Final delivery packaging has separate gates.
+**Did:** Collected completed tests against all twenty independent Julia fixture
+families from installed manylinux_2_28 source-rebuilt wheels. No numerical source
+or tolerance changed while the suites ran.
+**Design:** [Linux version acceptance](PYTHON_NATIVE_PLAN.md#linux-wheel-and-python-version-acceptance--implementation-design).
+**Tests:** Python **3.11: 913 passed**, no skips, **2381.28 s**; Python
+**3.12: 913 passed**, no skips, **2584.57 s**. Both retain the public vector-PPT
+trajectory discrepancy **1.1826718901822059e-7** (1e-6 gate), identical-point
+**4.3831043458650315e-15** and dense-interval **1.7740268182394713e-16**.
+Full-plasma refinement improves trajectory discrepancy from **1.11572e-10** to
+**1.5982248233560766e-14**. Physics controls remain nonzero and checked before
+trajectory acceptance. Existing eight-wheel build/install/offline evidence is
+recorded above; the newly discovered checkout bytecode packaging issue is
+handled in the following unit and does not change these scientific tests.
+Evidence: `.rust_test_logs/python-linux-wheels/{validation.json,
+source-3.11-tests.log,source-3.12-tests.log}`; exact frozen hashes and dependency
+versions remain in that directory's artifact/environment records.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-11 — Portable wheel runner and sixteen-platform/interpreter CI cells — Codex
+**Status at this checkpoint:** implementation, native Linux builds, focused
+installed checks and offline examples pass. Complete maintained reference
+export/test-stage and other native platform executions remain unfinished.
+**Did:** Added `python-native/tools/{wheel_validation.py,offline_examples.py,
+installed_smoke.py}`. Separate build/test manifests verify source/archive/wheel
+provenance and native host/interpreter, preserve logs/results, install binary-only
+runtime dependencies into fresh external environments, inspect installed paths
+and loaded libraries, and run complete examples under OS network isolation.
+The test stage requires all twenty verified reference families and accepts no
+JUnit skips/errors/failures. Expanded `test/test_python_native_validation.py`
+and TESTING guidance. Replaced the Linux draft consumer with sixteen native
+Python 3.11–3.14 cells across Linux x86_64/ARM64, Apple Silicon and Windows x86_64.
+Existing Julia/FFI/benchmark/wrapper jobs are structurally unchanged. No shared
+Rust/Julia/FFI/CUDA or production Python physics source changed in this unit.
+**Design:** [Hosted wheel matrix, runner and packaging corrections](PYTHON_NATIVE_PLAN.md#hosted-wheel-matrix--next-delivery-unit-design).
+**Gotchas:** Exact inventory validation exposed **25 local bytecode cache files**
+in the first checkout wheel. Added explicit `__pycache__`, `.pyc`, `.pyo`
+exclusions to `python-native/pyproject.toml`, preserving the failed build/artifact;
+the inventory check was not relaxed. Rebuilt after final tooling fixes, including
+UTF-8 isolated interpreters and retention of failed-example stdout. The initial
+complete oracle export stopped at Julia's read-only sandbox scratch-cache log.
+Its failure state/logs were preserved and the actual exporter restarted with
+normal host cache access, still with all Rust/CUDA offloads disabled. This
+second exporter is running; no synthetic manifest is substituted for its output.
+
+**Tests:** Final tooling regressions: **23 passed on each CPython 3.11–3.14**.
+They cover native host selection, unsupported/free-threaded interpreters,
+archive traversal/links/build products, missing sources, exact wheel inventories,
+unfinished build rejection and refusal of Windows firewall changes outside
+explicit ephemeral hosted CI. Real failed-example execution preserves the
+original exception and preceding stdout. YAML parsing resolves **16 cells** and
+compares every pre-existing job unchanged against HEAD. Python 3.11 syntax and
+`git diff --check` pass. These checks do not establish macOS/Windows execution.
+
+The final maintained `build` command passes both checkout/source builds with
+`--release --locked --target x86_64-unknown-linux-gnu --zig --compatibility
+manylinux_2_28 --auditwheel check`, independent auditwheel checks and exact
+package/archive inventories. Final artifact root:
+`/tmp/amalthea-maintained-validation-final-20260911`.
+Checkout wheel SHA-256
+`aafff1e2c05415f0c99e73026685addd8ac25c1bf6985940ab3d601090b60bb4`;
+source-rebuilt SHA-256
+`0c855a902b9c54dc1939e43031ff0ddfb6883d47dc5d250a8deeb0d003e31035`;
+sdist SHA-256
+`5b2db69e77acdb5f5e508c721d33268eaf0c60375ad9a7ac56661ea1329b3f96`.
+
+Both final wheels install from the existing binary-only wheelhouse with HDF5,
+pass `pip check`, pass **32 solver/output tests** each (5.45/4.85 s; 881
+intentionally deselected), and run **all 17 complete examples offline**. The
+new launcher checks loopback-only interfaces, OS connection denial, empty
+PATH, environment-owned modules, sixteen gas/ADK setups, high-precision PPT and
+absence of Julia/FFTW/libcubature/CUDA libraries. These are focused installed
+checks with the previously accepted fixtures, not a new full-suite claim.
+
+Evidence: `.rust_test_logs/python-ci-tooling/{final-*-unit-tests.log,
+final-unit-tests.log,matrix.json,final-build-summary.json,maintained-build*.log,
+final-installed-smoke.json,final-*-smoke.{log,xml},final-*-offline.{json,log},
+failed-example.{json,log},full-export.log,full-oracle/,full-export-host.log,
+full-oracle-host/,maintained-test-state.json,maintained-test.log}` plus the final
+artifact root's `build.json`, logs, sdist and wheels. The maintained test-stage
+launcher waits for the real producer's completed manifest, then runs fresh
+checkout smoke and the complete source-wheel suite. Live handles are recorded
+in `.rust_test_logs/roadmap-live-jobs.json`. Source remains uncommitted;
+independent installer edits and frozen CPU audit artifacts are preserved.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Complete Linux interpreter suites and maintained reference export — Codex
+**Status at this checkpoint:** complete for the frozen Python-version suites and
+actual twenty-family reference producer; final maintained artifact tests run.
+**Did:** Collected Python 3.13/3.14 completion and the complete maintained Julia
+export. No numerical source or tolerance changed during these runs.
+**Design:** [Linux version acceptance](PYTHON_NATIVE_PLAN.md#linux-wheel-and-python-version-acceptance--implementation-design)
+and [hosted artifact validation](PYTHON_NATIVE_PLAN.md#hosted-wheel-matrix--next-delivery-unit-design).
+**Tests:** Python 3.13: **913 passed**, no skips, **2298.38 s**; Python 3.14:
+**913 passed**, no skips, **2227.29 s**. Together with the preceding 3.11/3.12
+entry, all four full source-wheel suites pass. The unchanged same-input 1e-13,
+full-trajectory 1e-6 and non-vacuity assertions remain enforced. Evidence:
+`.rust_test_logs/python-linux-wheels/{validation.json,source-3.13-tests.log,
+source-3.14-tests.log}`. These frozen output-stage artifacts precede the final
+packaging exclusions and must not be confused with final artifact acceptance.
+
+`python3 python-native/tools/export_oracles.py --output
+.rust_test_logs/python-ci-tooling/full-oracle-host` completed **all twenty real
+Julia families** in 46m16s with Julia 1.12.6 and CoolProp 7.2.0. Manifest records
+HEAD `34cdafc963251f23bb183d9b257d16bc087b04f8`, exact modified source hashes and
+all output hashes. Both maintained consumers verify this complete manifest.
+The initial sandbox cache-write failure remains separately retained; no fixture
+was synthesized or skipped. Evidence: `full-oracle-host/{manifest.json,
+export-state.json,logs/}` and `full-export-host.log` under
+`.rust_test_logs/python-ci-tooling/`. The final host test stage has passed
+checkout 32-test smoke and all seventeen examples for both wheels; its full
+source suite is running. No hosted platform execution is claimed.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-11 — Actual glibc 2.28 wheel installation and offline examples — Codex
+**Status at this checkpoint:** implementation, four native builds/probes and all
+eight installation/offline smoke runs pass; full numerical suites are running.
+**Did:** Added `test/standalone_wheels/glibc228.py` with pinned vendor rootfs
+preparation, safe extraction, rootless isolated execution and separate
+`probe`/`smoke`/`test` evidence. Added five stdlib helper regressions in
+`test/test_glibc228_validation.py`, runtime commands in TESTING and live status
+in BACKLOG. No package, physics, shared Rust/Julia or FFI source changed.
+**Design:** [Minimum-glibc runtime](PYTHON_NATIVE_PLAN.md#linux-glibc-228-runtime--implementation-design).
+**Gotchas:** The first verified download exposed Debian's qualified
+`libc6:amd64` package name; the parser now handles qualified/unqualified names.
+The first probes exposed missing bind destinations in the read-only root;
+preparation now creates only the empty mountpoint directories before mounting.
+Both failed attempts are retained. Bubblewrap needs normal host namespace
+access; its sandbox NETLINK_ROUTE failure was not substituted with a host run.
+No Docker daemon, system installation, driver or host policy was changed.
+
+**Tests:** `python3 test/test_glibc228_validation.py -v`: **5 passed**. Tests
+reject archive traversal, escaping links and device entries; preserve absolute
+link semantics inside the extracted root; require explicit mounts and no host
+fallback. Actual vendor rootfs Git revision
+`686d9f6eaada08a754bc7abf6f6184c65c5b378f`, blob
+`247843072c4d7e1ee10d4efe42b849b57d9f4d76`, archive SHA-256
+`2bc7ec77d5d367039d49548f479aaebab87641f0c51dceb5e8c2e595c5170c32`,
+Debian libc package **2.28-10+deb10u1**. Temporary managed CPython **3.11.16,
+3.12.12, 3.13.11, 3.14.6** each load `/lib/x86_64-linux-gnu/libc-2.28.so` and
+report glibc **2.28** inside the container. The modern host kernel remains
+7.0.0-31-generic; this establishes no older kernel/CPU guarantee.
+
+Fresh maintained checkout/source builds on 3.11–3.13 and the matching final
+3.14 builds share sdist SHA-256
+`5b2db69e77acdb5f5e508c721d33268eaf0c60375ad9a7ac56661ea1329b3f96`.
+All eight final manylinux_2_28 wheels pass build/audit/inventory checks, install
+with HDF5 from binary-only wheelhouses inside glibc 2.28, pass dependency checks
+and run **all seventeen complete examples per wheel** with networking disabled,
+empty toolchain PATH and no Julia/FFTW/libcubature/CUDA loaded. This evidence is
+explicitly **smoke_passed**, not full numerical acceptance. Four new full suites
+now consume the completed twenty-family references in fresh isolated
+environments with two workers; initial 3.11/3.12 checkout smoke each passes
+**32 tests**, with source suites running.
+
+Evidence: `.rust_test_logs/python-glibc228/{vendor-tree.json,prepare.log,
+prepare-verified.log,interpreters.json,probe-summary.json,builds.json,
+smoke-summary.json,tooling-tests.log,full-runs.json,full-runs.log}`. Exact wheel
+hashes and dependency versions are in those build/smoke records. Actual roots:
+`/tmp/amalthea-glibc228-rootfs-verified-20260911`,
+`/tmp/amalthea-glibc228-probes-mounts-20260911`,
+`/tmp/amalthea-glibc228-builds-20260911`,
+`/tmp/amalthea-glibc228-smoke-20260911`, and
+`/tmp/amalthea-glibc228-full-20260911`. Live full-run session **18005** is indexed
+in `.rust_test_logs/roadmap-live-jobs.json`. Source remains uncommitted and the
+independent installer changes and frozen performance audit remain preserved.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Matched post-repair performance harness and real correctness smoke — Codex
+**Status at this checkpoint:** harness and eleven-workload correctness smoke
+complete, with two explicitly excluded old-Rust method comparisons. Controlled
+performance measurements remain pending; no smoke timing is an accepted speedup.
+**Did:** Added `test/python_performance/{cases.toml,run.py,python_worker.py,
+julia_worker.jl,README.md}` and four evidence-gate regressions in
+`test/test_python_performance.py`. Separate installed-Python and Julia processes
+measure import/first public simulation, fresh setup, production stepping with
+accepted windows/dense output, copying, HDF5 and process peak RSS. The runner
+verifies current source/reference/build provenance and installed wheel bytes,
+checks fields/counts/backend, pins CPU/thread settings, preserves raw records,
+and requires 10–30 randomized samples after two warmups for accepted timings.
+The frozen CPU audit and production source are unchanged. BACKLOG's verbose
+Python checkpoint history was condensed into current status plus evidence links.
+**Design:** [Post-repair snapshot](PYTHON_NATIVE_PLAN.md#post-repair-python-performance-snapshot--implementation-design).
+**Gotchas:** The first real matrix stopped on existing Julia-resident SDO ADE
+versus Julia FFT discretization: **9.871957881819524e-5** at the coarse GNLSE
+grid. Both standalone Python paths match the FFT reference there within
+**3.186463227861297e-14** for the matched solve. The original failure remains
+retained. Paired temporal refinement gives **1.247501442306687e-6** then
+**3.118747738713841e-7**, a fourfold reduction on the last halving. The first
+two old-Rust comparisons remain inadmissible for timing; the finest passes the
+unchanged **1e-6** gate. No production formula or tolerance was changed.
+
+**Tests:** Installed final source wheel, exact SHA-256
+`0c855a902b9c54dc1939e43031ff0ddfb6883d47dc5d250a8deeb0d003e31035`,
+ran `test/python_performance/run.py ... --smoke` against current Julia 1.12.6,
+the verified twenty-family reference manifest and local shared library
+`6e2c0cc7bb91890bf44a30166b2f54bc428d8e40504f1232575bed741537ff07`.
+Full command is retained in `.rust_test_logs/python-performance-refined-smoke.log`
+and reproduction arguments in the runner README/evidence below. **Eleven
+workloads complete**, status **smoke_passed_with_exclusions**. GNLSE Kerr/SDO,
+carrier/envelope capillary Kerr, ADK, molecular Raman, pressure gradient, scalar
+modal and vector modal paths are exercised, plus the two SDO refinements.
+The existing Julia-native envelope-gradient fallback is explicitly unavailable;
+all other eligible cases report the resident stepper. Each retained timing
+sample is gated by its independently constructed complete field.
+
+Scalar same-input RHS maximum **1.1604281338270224e-14** (ADK); modal independently
+integrated RHS maximum **1.5225900332375017e-15**. Complete matched/public field
+maxima: GNLSE Kerr **4.797455416926202e-14**; capillary envelope
+**1.787139707085318e-11**, carrier **7.366330358553174e-12**, ADK
+**7.367386475910618e-12**, gradient **4.43092635920511e-10**; scalar/vector modal
+**6.2028954109865604e-15**. The admitted old-Rust molecular-Raman comparison is
+**9.473233898277356e-7**, below the unchanged 1e-6 gate. Standalone paths use
+FFT convolution and retain their tighter recorded errors. All nonlinear/profile
+controls exceed **4.4643272232807536e-4**; the custom complete-array Kerr response
+matches built-in Python at **1.4216285777929688e-15**, with positive callback
+counts and a **0.13100353720120056** linear-versus-nonlinear feature effect.
+
+`INSTALLED_PYTHON -I test/test_python_performance.py -v`: **4 passed**, checking
+minimum samples/stability, invalid timings, shape/finiteness, field hash/axis
+integrity and installed-wheel byte identity. New delivery worktree separately
+passes all **23** maintained validation-tool regressions and **5** glibc-helper
+regressions. `git diff --check` passes. These helper checks are not synthetic
+substitutes for the real physics runs above.
+
+Evidence: `/tmp/amalthea-python-performance-smoke-20260911` (initial GNLSE),
+`/tmp/amalthea-python-performance-matrix-smoke-20260911` (retained coarse-Rust
+failure), `/tmp/amalthea-python-performance-refined-smoke-20260911/{snapshot.json,
+CASE/BACKEND/worker.log,CASE/BACKEND/OPERATION/}` (complete refined smoke), and
+`.rust_test_logs/python-performance-{smoke,matrix-smoke,refined-smoke,tooling-tests}.log`.
+All smoke timings are contaminated development observations while heavy
+installed suites run. The runner refuses an accepted timing run under that load.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Standalone migration delivery preparation — Codex
+**Status at this checkpoint:** staged for the lead-authorized push; hosted
+platform execution remains pending until the branch is pushed.
+**Did:** Created isolated worktree `/tmp/amalthea-python-delivery-20260911` on
+`feat/julia-free-python` from `34cdafc`. Copied the 131 intended migration,
+validation and documentation files, preserving the independent root README,
+installation guide and installer edits in the original checkout. Package and
+Julia reference source hash maps match the tested checkout exactly. This keeps
+its HEAD/source fixed while final artifact provenance checks run.
+**Design:** [Hosted wheel matrix](PYTHON_NATIVE_PLAN.md#hosted-wheel-matrix--next-delivery-unit-design).
+**Tests:** Delivery worktree passes all **23** maintained validation-tool and
+**5** minimum-glibc helper tests; staged whitespace checks pass. Prior complete
+CPU/FFI, strict CUDA, four 913-test Linux suites, final-wheel offline examples
+and the eleven-case benchmark correctness smoke remain the scientific evidence;
+no recompiled artifact is substituted during staging. Final maintained/glibc
+full suites continue in the original checkout. Exact copied hashes and excluded
+installer paths are retained in `.rust_test_logs/python-delivery.json`.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).

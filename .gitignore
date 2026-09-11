@@ -27,6 +27,9 @@ dist/
 .pytest_cache/
 .coverage
 htmlcov/
+/python-native/python/amalthea_native/_native*.so
+/python-native/python/amalthea_native/_native*.pyd
+/python-native/python/amalthea_native/_native*.dylib
 
 # IDE / editor
 .idea/

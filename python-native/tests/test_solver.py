@@ -133,6 +133,25 @@ def test_filter_exception_and_input_ownership():
     solve_precon(rhs, [0j], [1j], .1, saveN=4)
     for field, snapshot in held:
         np.testing.assert_array_equal(field, snapshot)
+
+
+@pytest.mark.parametrize('fifth',[False,True])
+@pytest.mark.parametrize('dt',[.001,.2])
+def test_initial_step_outside_subsequent_bounds(fifth,dt):
+    root=os.environ.get('AMALTHEA_SOLVER_ORACLE')
+    if root is None:pytest.skip('set AMALTHEA_SOLVER_ORACLE')
+    name=f'initial-bound-{"fifth" if fifth else "fourth"}-{dt}'
+    data=np.loadtxt(Path(root)/f'{name}.txt')
+    # Fix subsequent attempts so position equality tests the bound semantics,
+    # independently of rounding in adaptive error estimates.
+    actual=solve_precon(lambda z,y:y**2,[.13+.2j],[1],.25,dt=dt,min_dt=.01,max_dt=.01,
+                         rtol=1e-9,atol=1e-12,locextrap=fifth,saveN=21)
+    expected=data[:,1]+1j*data[:,2]
+    error=np.linalg.norm(actual.field[0]-expected)/np.linalg.norm(expected)
+    print('initial-bound',fifth,dt,error)
+    assert error<1e-13
+    np.testing.assert_allclose(actual.metadata['accepted_positions'],
+                               np.loadtxt(Path(root)/f'{name}-accepted.txt'),rtol=1e-12,atol=1e-14)
     marker = LookupError("filter failure")
     def filt(z, field):
         raise marker

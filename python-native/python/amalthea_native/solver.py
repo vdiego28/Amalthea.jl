@@ -52,12 +52,15 @@ def solve_precon(rhs, linop, field, zmax, *, z0=0.0, dt=1e-3, rtol=1e-6,
                  atol=1e-10, safety=0.9, min_dt=1e-15, max_dt=1.0,
                  locextrap=True, saveN=201, max_attempts=1_000_000,
                  repeat_limit=10, step_filter=None):
-    """Solve ``dE/dz = linop*E + rhs(z, E)`` with a constant diagonal linop.
+    """Solve ``dE/dz = linop*E + rhs(z, E)`` with a diagonal linear operator.
 
     Fields and callbacks use complex NumPy arrays of the original shape.
     Results add saved position as the last axis. An optional step_filter(z, E)
     returns the accepted field for the next step. Sampling/filter order matches
     Julia's solve_precon, including a final accepted step beyond zmax.
+    linop may be an array or a callable linop(z) returning the field shape.
+    Variable operators follow Julia's endpoint exponential convention, which
+    does not integrate the linear coefficient across each propagation interval.
     """
     if not callable(rhs):
         raise TypeError("rhs must be callable")
@@ -66,9 +69,19 @@ def solve_precon(rhs, linop, field, zmax, *, z0=0.0, dt=1e-3, rtol=1e-6,
     field = np.array(field, dtype=np.complex128, copy=True, order="F")
     if field.ndim == 0 or not field.size or not np.all(np.isfinite(field)):
         raise ValueError("field must be a nonempty finite array")
-    linop = np.asarray(linop, dtype=np.complex128)
-    if linop.shape != field.shape or not np.all(np.isfinite(linop)):
-        raise ValueError("linop must be finite and have exactly the field shape")
+    linear_callback = None
+    if callable(linop):
+        callback = linop
+        def linear_callback(z):
+            output = np.asarray(callback(z), dtype=np.complex128)
+            if output.shape != field.shape or not np.all(np.isfinite(output)):
+                raise ValueError("linear callback must return a finite array with the field shape")
+            return output.ravel(order="F").tolist()
+        linop = np.zeros_like(field)
+    else:
+        linop = np.asarray(linop, dtype=np.complex128)
+        if linop.shape != field.shape or not np.all(np.isfinite(linop)):
+            raise ValueError("linop must be finite and have exactly the field shape")
     if not isinstance(locextrap, (bool, np.bool_)):
         raise TypeError("locextrap must be a boolean")
     saveN = operator.index(saveN)
@@ -93,10 +106,12 @@ def solve_precon(rhs, linop, field, zmax, *, z0=0.0, dt=1e-3, rtol=1e-6,
         positions.tolist(), dt, rtol, atol, safety, min_dt, max_dt, bool(locextrap),
         operator.index(max_attempts), operator.index(repeat_limit),
         None if step_filter is None else adapt(step_filter),
+        linear_callback,
     )
     result = np.stack([np.asarray(x).reshape(field.shape, order="F") for x in samples], axis=-1)
     return SolveResult(result, positions, {
         "stepper": "rust-precon", "rhs": "python", "locextrap": bool(locextrap),
         "accepted_steps": accepted, "rejected_steps": rejected,
         "accepted_positions": np.asarray(endpoints),
+        "linear_operator": "python" if linear_callback is not None else "constant",
     })

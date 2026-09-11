@@ -82,25 +82,73 @@ or "verified" inside a superseded narrative do not outrank this list.
 > [PORT_LOG](native-port/PORT_LOG.md). Next: use this command for subsequent
 > work; existing repair delivery and deferred hardware work remain above.
 
-> **Julia-free Python roadmap — callback driver implemented 2026-09-08:**
-> design and source-derived capability assignments are recorded in
-> [PYTHON_NATIVE_PLAN.md](native-port/PYTHON_NATIVE_PLAN.md), linked by
+> **Julia-free Python roadmap — installed Linux acceptance in progress (2026-09-11):**
+> Design: [PYTHON_NATIVE_PLAN.md](native-port/PYTHON_NATIVE_PLAN.md), linked by
 > [PLANS §20](native-port/PLANS.md#20-julia-free-python-distribution).
-> `python-native/` provides real/envelope grids, reusable portable FFT bindings,
-> and a safe Rust-owned `solve_precon` driver with serial Python callbacks,
-> corrected fourth/fifth-order dense output, rejection, and accepted filtering.
-> The installed CPython 3.14 wheel rebuilt from its source archive passes all
-> 47 Python tests, including independently prepared Julia oracle comparisons.
-> Hosted repair CI is green; local CPU coverage passes across the full run and
-> the corrected multimode-group rerun. Exact evidence and the test skip-guard
-> repair are in the 2026-09-08 callback-driver entry in
-> [PORT_LOG](native-port/PORT_LOG.md).
-> Milestone 2 and the public preview remain incomplete: portable plans are not
-> yet integrated into resident NativeSim, and `prop_gnlse`/`prop_capillary` are
-> not implemented. Next: integrate native portable execution and port physical
-> setup/response construction, retaining the roadmap's full release coverage.
-> The local wheel's manylinux_2_35 tag is internal evidence, not the release
-> baseline. Existing installer and validation edits are preserved.
+> Implemented capabilities and execution-path assignments:
+> [PYTHON_SUPPORT_MATRIX.md](native-port/PYTHON_SUPPORT_MATRIX.md).
+> Both entrypoints, portable resident FFTs/stepping, gas/mode/pulse setup,
+> ADK/PPT, scalar/modal/polarized propagation, supported Raman/mixtures,
+> exact profiles, custom modes/complete-array callbacks and NPZ/optional HDF5
+> are implemented. Existing unsupported oracle combinations fail explicitly;
+> envelope plasma, vector Raman and quantum noise remain excluded as designed.
+> Scientific coverage passes independent Julia setup, same-input/fixed-node,
+> dense-output, full-solve, feature-effect and refinement gates. Cancellation
+> and finite-difference limits remain documented; no tolerances were loosened.
+>
+> **Completed shared gates:** all eight CPU groups plus FFI at
+> `20260911T190057Z-qhm0a8zj` (48,141 assertions, twelve expected skips; Rust
+> 92 unit + five policy tests). Shared setup repairs are documented in
+> [PLANS §21](native-port/PLANS.md#21-spline-finder-initialization-repair-discovered-by-the-python-mode-oracle)
+> and [§22](native-port/PLANS.md#22-real-valued-complex-gas-coefficient-in-gradient-metadata).
+> **CUDA execution was reauthorized by the lead after driver repair.** The
+> complete strict CUDA/FFI gate passes at `20260911T195412Z-827ex53g`:
+> 43,687 Julia assertions, no skips, plus 92 Rust unit and five policy tests.
+> The installed CUDA 13.4 compiler's unsupported-PTX attempt remains retained;
+> [PLANS §23](native-port/PLANS.md#23-strict-cuda-validation-with-a-compatible-temporary-compiler)
+> records the isolated compatible 13.2.78 compiler. No system driver, toolkit or
+> PATH was changed. Python wheels are CPU-only.
+>
+> **Completed Linux evidence:** all eight checkout/source-rebuilt
+> manylinux_2_28 wheels for CPython 3.11–3.14 build, audit, install binary-only
+> with HDF5, and run all seventeen complete examples offline. Each frozen
+> source-wheel interpreter suite passes **913 tests without skips**. The
+> maintained runner found and fixed checkout bytecode leakage; final wheels
+> from the corrected packaging additionally pass all eight installation/offline
+> runs in an actual pinned glibc 2.28 userspace. The complete maintained producer
+> exports all twenty real Julia reference families with verified provenance.
+>
+> **Active gates:** the final maintained Linux runner's full source suite and
+> four fresh glibc 2.28 source-wheel suites are running against that reference
+> artifact. Checkout smoke and all seventeen examples have passed for the
+> active environments. Actual runtime boundary design:
+> [glibc gate](native-port/PYTHON_NATIVE_PLAN.md#linux-glibc-228-runtime--implementation-design).
+> The portable sixteen-cell native platform/interpreter workflow is implemented;
+> all 23 tooling regressions pass on Python 3.11–3.14. Hosted execution awaits
+> delivery. The previous hosted run at `34cdafc` tested the repair/foundation
+> delivery, without the current standalone artifact jobs. No ARM64, Apple or
+> Windows execution is claimed yet.
+>
+> **Performance:** native modal points pass both 901-test frozen installed
+> suites and the shared gates, with controlled complete-workload improvements
+> of 15.28–73.41% on the ten accepted point workloads. The separate
+> [post-repair snapshot](native-port/PYTHON_NATIVE_PLAN.md#post-repair-python-performance-snapshot--implementation-design)
+> harness passes eleven actual matched correctness smoke workloads, including
+> complete-array callback overhead coverage. Accepted timings wait for heavy
+> validation to finish. Coarse GNLSE SDO exposes
+> the existing Julia-to-Rust ADE-versus-FFT discretization difference. Its
+> inadmissible comparisons are retained; paired temporal refinement reaches
+> 3.119e-7 and passes the unchanged 1e-6 gate. Both standalone Python paths match that
+> Julia FFT trajectory near 1e-14. The frozen CPU audit remains unchanged.
+>
+> **Next:** collect final maintained/minimum-glibc acceptance, deliver and run
+> the sixteen-cell native platform matrix, collect the prepared Apple hardware
+> diagnostic, and finish the controlled post-repair snapshot. Public preview
+> and stable platform acceptance remain unfinished; no publication is claimed.
+> Exact commands, hashes, numerical results and failed attempts are in the latest
+> [PORT_LOG entries](native-port/PORT_LOG.md); current live handles are indexed
+> in `.rust_test_logs/roadmap-live-jobs.json`. The intended migration changes
+> remain uncommitted. Independent installer edits remain preserved.
 
 ## Historical campaign summaries
 

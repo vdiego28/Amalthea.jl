@@ -2,7 +2,7 @@
 name = "amalthea-python"
 version = "0.0.1"
 edition = "2024"
-description = "Private portable FFT bindings for the Amalthea Python frontend"
+description = "Standalone CPU simulation bindings for the Amalthea Python frontend"
 license = "MIT"
 repository = "https://github.com/vdiego28/Amalthea.jl"
 
@@ -12,6 +12,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.27.2", features = ["extension-module", "num-complex"] }
+numpy = "=0.27.1"
 rustfft = "6.4"
-realfft = "3.5"
 amalthea = { path = "../amalthea" }
