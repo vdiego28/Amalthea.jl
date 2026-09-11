@@ -28,8 +28,10 @@ def oracle():
 @pytest.mark.parametrize('name,backend',[(name,backend) for name in
     ['adk','ppt','no-plasma','no-kerr','no-thg','preion','fine','fourth']
     for backend in (['python'] if name=='no-thg' else ['python','native'])])
-def test_independent_plasma_capillary(oracle,name,backend):
+def test_independent_plasma_capillary(oracle,name,backend,ppt_cache):
     root=oracle/name;kw=tomllib.loads((root/'parameters.toml').read_text())
+    if 'PPT_options' in kw:
+        kw['PPT_options']=kw['PPT_options'] | {'cachedir':ppt_cache}
     radius,length,gas,pressure=[kw.pop(k) for k in ('radius','flength','gas','pressure')]
     kw['backend']=backend
     model=_Capillary(radius,length,gas,pressure,**kw)
@@ -156,8 +158,10 @@ def test_plasma_components_callbacks_and_ownership():
 
 
 @pytest.mark.parametrize('backend',['native','python'])
-def test_plasma_rejected_trials(oracle,backend):
+def test_plasma_rejected_trials(oracle,backend,ppt_cache):
     root=oracle/'ppt';kw=tomllib.loads((root/'parameters.toml').read_text())
+    if 'PPT_options' in kw:
+        kw['PPT_options']=kw['PPT_options'] | {'cachedir':ppt_cache}
     args=[kw.pop(k) for k in ('radius','flength','gas','pressure')]
     result=prop_capillary(*args,**kw,init_dz=args[1],max_dz=args[1],rtol=1e-12,atol=1e-14,backend=backend)
     np.testing.assert_array_equal(result.z,np.loadtxt(root/'rejections-z.txt'))

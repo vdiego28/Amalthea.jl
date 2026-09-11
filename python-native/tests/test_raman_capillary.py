@@ -28,8 +28,10 @@ def oracle():
 
 @pytest.mark.parametrize('name,backend',[(name,backend) for name in NAMES
     for backend in (['python'] if name in ('N2-env-thg','N2-real-no-thg') else ['native','python'])])
-def test_independent_raman_capillary(oracle,name,backend):
+def test_independent_raman_capillary(oracle,name,backend,ppt_cache):
     root=oracle/name;kw=tomllib.loads((root/'parameters.toml').read_text())
+    if 'PPT_options' in kw:
+        kw['PPT_options']=kw['PPT_options'] | {'cachedir':ppt_cache}
     args=[kw.pop(k) for k in ('radius','flength','gas','pressure')];kw['backend']=backend
     model=_Capillary(*args,**kw)
     data=np.loadtxt(root/'setup.txt');initial=data[:,0]+1j*data[:,1];linop=data[:,2]+1j*data[:,3]

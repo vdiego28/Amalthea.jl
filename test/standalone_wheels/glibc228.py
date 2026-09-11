@@ -206,11 +206,12 @@ def test(rootfs, interpreter, manifest, oracles, wheelhouse, output):
             if oracles is None:
                 continue
             report = f'/evidence/{kind}-tests.xml'
-            arguments = [python, '-I', '-X', 'utf8', '-m', 'pytest', '/tests', '-q', '-s', f'--junitxml={report}']
+            arguments = [python, '-I', '-X', 'utf8', '-m', 'pytest', '/tests', '-q', '-s', '-o', 'cache_dir=/work/pytest-cache', f'--junitxml={report}']
             if kind == 'checkout':
                 arguments += ['-k', 'output or test_nonlinear_adaptive_rejection_and_dense_output']
             command(arguments, f'{kind}-tests')
             state['artifacts'][kind]['tests'] = pytest_result(output/f'{kind}-tests.xml')
+            verify_oracles(oracles, REPOSITORY, revision)
             save_json(output/'validation.json', state)
         state['status'] = 'passed' if oracles is not None else 'smoke_passed'
     except BaseException as error:

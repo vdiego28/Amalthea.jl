@@ -118,14 +118,21 @@ or "verified" inside a superseded narrative do not outrank this list.
 > runs in an actual pinned glibc 2.28 userspace. The complete maintained producer
 > exports all twenty real Julia reference families with verified provenance.
 >
-> **Active gates:** the final maintained Linux runner's full source suite and
-> four fresh glibc 2.28 source-wheel suites are running against that reference
-> artifact. Checkout smoke and all seventeen examples have passed for the
-> active environments. Actual runtime boundary design:
-> [glibc gate](native-port/PYTHON_NATIVE_PLAN.md#linux-glibc-228-runtime--implementation-design).
+> **Active gates:** the first actual-glibc full runs exposed seven tests replaying
+> the exporter's absolute PPT cache directory: 906 passed/seven failed on
+> 3.11/3.12. The host suite passed 913 but added three cache files to the
+> reference inventory, causing a later verifier to reject it. All original
+> reference hashes remain intact; a verified copy with the original manifest
+> is recovered. Consumer-local test caches and post-test reference checks are
+> fixed; all seven affected cases now pass on actual glibc 2.28. All eight
+> corrected checkout/source wheels build and audit; four fresh glibc suites
+> and the maintained host suite are now running against the recovered references.
+> Design: [cache correction](native-port/PYTHON_NATIVE_PLAN.md#consumer-local-ppt-fixture-caches--portability-correction).
 > The portable sixteen-cell native platform/interpreter workflow is implemented;
-> all 23 tooling regressions pass on Python 3.11–3.14. Hosted execution awaits
-> delivery. The previous hosted run at `34cdafc` tested the repair/foundation
+> all 23 tooling regressions pass on Python 3.11–3.14. Hosted workflow
+> [34650062532](https://github.com/vdiego28/Amalthea.jl/actions/runs/34650062532)
+> is running at delivered `e4d00567362341decf244781195e6f8a3f10d716` on
+> `feat/julia-free-python`; its sixteen wheel cells await the reference producer. The previous hosted run at `34cdafc` tested the repair/foundation
 > delivery, without the current standalone artifact jobs. No ARM64, Apple or
 > Windows execution is claimed yet.
 >
@@ -139,16 +146,21 @@ or "verified" inside a superseded narrative do not outrank this list.
 > the existing Julia-to-Rust ADE-versus-FFT discretization difference. Its
 > inadmissible comparisons are retained; paired temporal refinement reaches
 > 3.119e-7 and passes the unchanged 1e-6 gate. Both standalone Python paths match that
-> Julia FFT trajectory near 1e-14. The frozen CPU audit remains unchanged.
+> Julia FFT trajectory near 1e-14. The report generator passes six evidence
+> tests; controlled measurement is requeued against the five corrected full
+> installed gates after preserving the stopped old launcher. This follow-up remains local while
+> hosted CI runs. The frozen CPU audit remains unchanged.
 >
-> **Next:** collect final maintained/minimum-glibc acceptance, deliver and run
-> the sixteen-cell native platform matrix, collect the prepared Apple hardware
-> diagnostic, and finish the controlled post-repair snapshot. Public preview
+> **Next:** collect final maintained/minimum-glibc acceptance and the running
+> sixteen-cell hosted platform gate after the cache correction; deliver the
+> prepared native Apple diagnostic job and finish the controlled post-repair snapshot. Public preview
 > and stable platform acceptance remain unfinished; no publication is claimed.
 > Exact commands, hashes, numerical results and failed attempts are in the latest
 > [PORT_LOG entries](native-port/PORT_LOG.md); current live handles are indexed
 > in `.rust_test_logs/roadmap-live-jobs.json`. The intended migration changes
-> remain uncommitted. Independent installer edits remain preserved.
+> are committed/pushed in the isolated delivery worktree; the original checkout
+> stays at `34cdafc` with matching migration source while local provenance checks
+> finish. Independent installer edits remain preserved.
 
 ## Historical campaign summaries
 

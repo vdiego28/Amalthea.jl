@@ -226,6 +226,7 @@ def test(manifest, repository, oracles, *, ephemeral_ci=False):
                 arguments += ['-k', 'output or test_nonlinear_adaptive_rejection_and_dense_output']
             command(arguments, f'{kind}-tests')
             state['artifacts'][kind]['tests'] = pytest_result(xml)
+            verify_oracles(oracles, repository, revision)
             save_json(report, state)
         state['status'] = 'passed'
     except BaseException as error:

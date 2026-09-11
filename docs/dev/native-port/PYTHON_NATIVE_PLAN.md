@@ -1902,3 +1902,62 @@ rankings; continue the Python/pure-Julia comparisons. Add paired finer temporal
 grids, retain the measured convergence and require the same 1e-6 gate before
 admitting the refined four-way comparison. Do not change production formulas,
 relax tolerance, or describe excluded old-Rust timings as an accepted speedup.
+
+Render a standalone Markdown report from the retained snapshot, recomputing
+statistics from raw samples. Admit speedups only for completed, stable,
+correctness-admitted backend pairs; report paired-ratio bootstrap intervals.
+Smoke/failed/unstable snapshots may produce diagnostic tables but no accepted
+speedups or bottleneck ranking. Include excluded comparisons, exact inputs,
+source/artifact provenance, counts, cold metric boundaries and distinct HDF5
+payloads. Keep report-generation tests separate from scientific acceptance.
+
+## Apple diagnostic during platform validation — implementation design
+
+Run the already prepared `test/performance_audit/run_apple_quick_test.py` on a
+native `macos-15` runner in a separate CPU-only job. Preserve that runner and
+the frozen audit unchanged. Supply a new runner-temp output path, retain its
+console/JSON/Markdown on success or failure, and record revision/source/runtime
+provenance in a small external wrapper under `test/standalone_wheels/`.
+The wrapper rejects non-Apple execution and dry-run results. The existing quick
+runner can return process success with false correctness flags, so explicitly
+require all three levers, both 1/2/4-thread series, finite positive timings,
+cross-build/thread errors <=1e-6 and exact modal/scan topology flags before
+labeling the evidence passed. Runtime failures remain failed, without synthetic
+hardware results. A shared hosted VM provides Apple execution evidence, not
+controlled hardware-wide speedup claims or automatic LTO promotion.
+
+Prepare this follow-up locally while the first hosted migration run proceeds;
+batch its delivery with the next required platform correction or after that run
+completes, so a bookkeeping push does not cancel the active matrix. Local tests
+exercise acceptance/failure behavior only and cannot close the Apple gate.
+
+## Consumer-local PPT fixture caches — portability correction
+
+The actual glibc 2.28 full suites exposed seven tests replaying the Julia
+exporter's absolute `PPT_options.cachedir`: 906 tests pass, seven fail because
+that machine path is read-only in the isolated consumer. The host suite can
+write there and passes 913 tests, but adds three Python cache files inside the
+completed reference artifact, correctly causing a later manifest check to fail.
+All originally hashed reference files remain unchanged. This is fixture/cache
+transport behavior, not a plasma formula or tolerance defect.
+
+Add a session-scoped pytest temporary cache directory and override only the
+operational `cachedir` in the four consuming test functions. Preserve every
+physical PPT parameter and all numerical assertions. The runtime package still
+honors user-supplied cache locations. Add a post-test reference-manifest check
+to both installed runners so a future consumer mutation cannot pass acceptance.
+Direct pytest's own cache into the writable run directory for the read-only
+glibc test mount.
+
+Keep the original contaminated artifact and failed logs. Recover a new reference
+directory by copying only files named in its original completion manifest after
+verifying every original digest, plus the unchanged manifest/provenance/logs.
+Do not rewrite fixture values or the manifest and do not treat extra caches as
+reference data. The verified recovery avoids repeating unchanged Julia physics.
+First rerun the seven previously failing cases in the actual glibc environment
+with freshly generated consumer caches and read-only references. Then rebuild
+the changed sdist/test artifacts and rerun complete final gates on each Python
+version. Stop known-doomed old runs and leave controlled timing stopped until
+the corrected installed gates pass. Deliver this necessary correction with the
+prepared report/Apple follow-up; it may require restarting the active hosted
+matrix because the old tests cannot satisfy the same portability requirement.

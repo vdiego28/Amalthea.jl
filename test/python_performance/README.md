@@ -71,3 +71,14 @@ harness or shared-library bytes during a run. Tooling checks:
 ```bash
 INSTALLED_PYTHON -I test/test_python_performance.py -v
 ```
+
+Render a standalone report after the snapshot finishes:
+
+```bash
+INSTALLED_PYTHON -I test/python_performance/report.py SNAPSHOT_DIRECTORY/snapshot.json --output NEW_REPORT.md
+```
+
+The report recomputes medians and confidence intervals from raw samples. It
+admits paired speedups only for stable, completed and numerically accepted
+pairs. Smoke, failed and unstable snapshots remain explicitly diagnostic and
+produce no accepted speedups or bottleneck ranking.

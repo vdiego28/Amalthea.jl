@@ -57,8 +57,10 @@ def oracle():
 
 
 @pytest.mark.parametrize('name',NAMES)
-def test_independent_profile_capillary(oracle,name,monkeypatch):
+def test_independent_profile_capillary(oracle,name,monkeypatch,ppt_cache):
     root=oracle/name;kw=tomllib.loads((root/'parameters.toml').read_text())
+    if 'PPT_options' in kw:
+        kw['PPT_options']=kw['PPT_options'] | {'cachedir':ppt_cache}
     radius,pressure=profiles(kw.pop('radius_profile'),kw.pop('pressure_profile'))
     args=(radius,kw.pop('flength'),kw.pop('gas'),pressure)
     model=_Capillary(*args,**kw,backend='python')

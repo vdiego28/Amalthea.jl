@@ -1,4 +1,5 @@
 """Guard evidence gates in the separate performance runner; no synthetic physics."""
+import copy
 import importlib.util
 import json
 from pathlib import Path
@@ -45,6 +46,46 @@ class EvidenceGates(unittest.TestCase):
             runner.installed_matches(record,wheel)
             (package/'__init__.py').write_text('changed')
             with self.assertRaises(ValueError):runner.installed_matches(record,wheel)
+
+
+class ReportGates(unittest.TestCase):
+    @staticmethod
+    def module():
+        spec=importlib.util.spec_from_file_location('performance_report',HERE/'python_performance/report.py')
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        return module
+
+    @staticmethod
+    def fixture():
+        def entry(seconds):
+            sample=dict(complete_seconds=seconds,setup_seconds=seconds/4,solve_seconds=seconds*.75,
+                        copy_seconds=.001,hdf5_seconds=.01,peak_rss_bytes=1024,
+                        accepted_steps=10,rejected_steps=1)
+            return dict(samples=[dict(sample) for _ in range(10)],cold={})
+        return dict(status='passed',smoke=False,cases={'case':dict(status='passed',
+                    backends={'julia':entry(2.),'auto':entry(1.)},correctness={})})
+
+    def test_diagnostic_snapshot_never_claims_accepted_speedup(self):
+        module=self.module()
+        for status,smoke in [('smoke_passed',True),('failed',False),('unstable',False)]:
+            snapshot=self.fixture();snapshot.update(status=status,smoke=smoke)
+            text=module.render(snapshot)
+            self.assertIn('Diagnostic data only',text)
+            self.assertNotIn('speedup versus',text)
+            self.assertNotIn('## Measured Python auto workload costs',text)
+
+    def test_recompute_raw_stability_and_exclude_inadmissible(self):
+        module=self.module();snapshot=self.fixture()
+        self.assertIn('**2.000×**',module.render(snapshot))
+        altered=copy.deepcopy(snapshot)
+        for sample in altered['cases']['case']['backends']['julia']['samples'][::2]:
+            sample['complete_seconds']=20.
+        altered['cases']['case']['backends']['julia']['statistics']={'complete_seconds':{'stable':True}}
+        self.assertNotIn('speedup versus julia',module.render(altered))
+        excluded=copy.deepcopy(snapshot)
+        excluded['cases']['case']['backends']['julia']['status']='inadmissible: ADE'
+        self.assertNotIn('speedup versus julia',module.render(excluded))
+        self.assertIn('inadmissible: ADE',module.render(excluded))
 
 
 if __name__=='__main__':unittest.main()

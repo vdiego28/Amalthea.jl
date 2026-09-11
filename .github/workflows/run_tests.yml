@@ -126,6 +126,40 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  apple-quick:
+    name: Apple Silicon prepared hardware diagnostic
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      RUSTFLAGS: ""
+      AMALTHEA_REQUIRE_CUDA_TESTS: "0"
+      AMALTHEA_NATIVE_GPU: "off"
+      AMALTHEA_USE_RUST_CUDA_NATIVE: "0"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v3
+      - name: Prepare Julia dependencies
+        run: julia --startup-file=no --project -e 'using Pkg; Pkg.instantiate()'
+      - name: Run and validate the prepared Apple diagnostic
+        run: >-
+          python test/standalone_wheels/apple_diagnostic.py
+          --output "${{ runner.temp }}/apple-diagnostic"
+      - name: Retain Apple evidence, including failures
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: apple-hardware-diagnostic
+          path: ${{ runner.temp }}/apple-diagnostic
+          if-no-files-found: error
+          retention-days: 7
+
   test:
     name: Test (${{ matrix.group }} - ${{ matrix.os }} - Julia ${{ matrix.julia-version }})
     runs-on: ${{ matrix.os }}

@@ -7730,3 +7730,164 @@ no recompiled artifact is substituted during staging. Final maintained/glibc
 full suites continue in the original checkout. Exact copied hashes and excluded
 installer paths are retained in `.rust_test_logs/python-delivery.json`.
 **Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Authorized standalone branch push and hosted run start — Codex
+**Status at this checkpoint:** committed and pushed; hosted validation running.
+**Did:** Committed the prepared 131-file migration as
+`e4d00567362341decf244781195e6f8a3f10d716` (19,180 added/233 removed lines) on
+`feat/julia-free-python`, then pushed that new branch to the existing origin.
+No merge, release publication or installer change was performed. The original
+checkout remains at `34cdafc`, preserving the running checks' revision/source.
+**Design:** [Hosted wheel matrix](PYTHON_NATIVE_PLAN.md#hosted-wheel-matrix--next-delivery-unit-design).
+**Gotchas:** Automatic approval initially rejected the push because origin was
+unverified. Read-only checks established the published repository URL matches
+README/docs, GitHub reports public `vdiego28/Amalthea.jl` with ADMIN permission,
+and its repair branch contains the previously delivered exact foundation
+`34cdafc963251f23bb183d9b257d16bc087b04f8`. With that evidence, automatic review
+approved the same push. No alternate write path or destination was used.
+**Tests:** `git push -u origin feat/julia-free-python` succeeds. Read-only
+`gh run list` confirms [Run tests 34650062532](https://github.com/vdiego28/Amalthea.jl/actions/runs/34650062532)
+is **in_progress** at exact head `e4d0056`. The sixteen standalone wheel cells
+are downstream of the real Julia reference producer; no platform pass is
+claimed from this run yet. Delivery worktree is clean after commit. Source and
+reference hashes match the accepted local artifacts as recorded above.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Snapshot report and deferred controlled measurement — Codex
+**Status at this checkpoint:** report implementation/verification complete;
+controlled measurement queued behind the five final local installed gates.
+**Did:** Added `test/python_performance/report.py` and extended
+`test/test_python_performance.py` to render standalone Markdown from raw
+samples, recompute admission/stability, report paired bootstrap speedup
+intervals and retain numerical exclusions. Smoke/failed/unstable snapshots
+produce diagnostic tables only, without accepted speedups or bottleneck ranking.
+No package, shared Rust/Julia, FFI or physics source changed. This report-only
+follow-up remains local while hosted validation runs at `e4d0056`.
+**Design:** [Snapshot reporting](PYTHON_NATIVE_PLAN.md#post-repair-python-performance-snapshot--implementation-design).
+**Gotchas:** The initial instability test used one outlier among nine identical
+samples; median/MAD/bootstrap correctly remained stable. Replaced that test
+fixture with alternating widely separated samples to exercise actual unstable
+medians. Acceptance criteria were unchanged; the initial test log is retained.
+**Tests:** `INSTALLED_PYTHON -I test/test_python_performance.py -v`:
+**6 passed**, including refusal to trust cached stability over raw samples,
+inadmissible/diagnostic speedup suppression and the existing byte/axis gates.
+The actual eleven-case snapshot renders successfully to
+`/tmp/amalthea-python-performance-refined-smoke-20260911/report-final.md`.
+Inspection requires all eleven input/numerical sections, explicit diagnostic
+status and no accepted speedup/ranking. Evidence:
+`.rust_test_logs/python-performance-report-tests{,-initial}.log` and the report.
+The earlier eleven-case scientific smoke remains applicable: only reporting
+and evidence tests changed after it.
+
+Queued `.rust_test_logs/run_python_performance_after_validation.py`, session
+**88311**, waits for the final host and four actual-glibc manifests to report
+passed with checkout **32** / source **913** tests and zero failures/skips.
+It then starts the controlled eleven-case CPU snapshot and report in new
+`/tmp/amalthea-python-performance-controlled-20260911`. A failed prerequisite
+stops the launcher; the benchmark itself also rejects competing validation.
+Current state: `.rust_test_logs/python-performance-controlled-state.json`;
+output log: `.rust_test_logs/python-performance-controlled.log`. No controlled
+measurement has started at this checkpoint. Hosted run **34650062532** is
+independently progressing and is not restarted for this report-only follow-up.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Prepared native Apple diagnostic CI follow-up — Codex
+**Status at this checkpoint:** wrapper/job implemented and locally checked;
+Apple hardware execution remains pending delivery of the follow-up.
+**Did:** Added `test/standalone_wheels/apple_diagnostic.py`, five acceptance
+regressions in `test/test_apple_diagnostic.py`, and an independent `macos-15`
+job in `.github/workflows/run_tests.yml`. The wrapper invokes the unchanged
+prepared quick runner, records provenance/logs and requires actual Apple output,
+all three correctness levers, 1/2/4-thread series and exact modal topology.
+The frozen audit runner/results are unchanged; host-native/LTO remains diagnostic.
+**Design:** [Apple platform diagnostic](PYTHON_NATIVE_PLAN.md#apple-diagnostic-during-platform-validation--implementation-design).
+**Tests:** `python3 test/test_apple_diagnostic.py -v`: **5 passed**. The real
+non-Apple subprocess fails before launching the diagnostic and records failure;
+synthetic JSON tests reject dry-run, missing/false/nonfinite/failed fields and
+incomplete thread/topology series. YAML parses and all jobs from delivered
+`e4d0056` are structurally unchanged except the added Apple job. Evidence:
+`.rust_test_logs/python-apple-diagnostic-{tests.log,workflow.json}`. These are
+acceptance-tooling checks, not Apple hardware evidence. No CUDA process ran.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-11 — Consumer-local PPT fixture cache correction — Codex
+**Status at this checkpoint:** identified/corrected; all seven affected cases
+pass in actual glibc 2.28. Refreshed wheel builds/full acceptance are underway.
+**Did:** Added session-local `ppt_cache` in `python-native/tests/conftest.py`;
+changed four consuming test functions in `test_plasma.py`, `test_profiles.py`
+and `test_raman_capillary.py` to replace only the exporter's operational cache
+path. Added post-test reference verification in `tools/wheel_validation.py`
+and `test/standalone_wheels/glibc228.py`, plus a writable pytest-cache location
+for the latter. Runtime package, physical options and all tolerances are unchanged.
+**Design:** [Cache portability correction](PYTHON_NATIVE_PLAN.md#consumer-local-ppt-fixture-caches--portability-correction).
+**Gotchas:** Original glibc Python 3.11/3.12 runs each finished **906 passed,
+7 failed** (2160.70/2114.60 s). The seven failures attempted to create the
+exporter's `/home/diego/...` cache under the read-only root. The old final host
+suite passed **913 tests** (2220.57 s), but wrote three extra Python `.npz`
+caches inside the reference artifact. The subsequent 3.14 run correctly
+rejected that changed inventory before tests; the known-doomed 3.13 run was
+stopped at verified PID 163830. All failed/interrupted artifacts remain retained.
+The controlled timing launcher stopped without measuring when a prerequisite
+failed; it will use the refreshed gates, not those failed manifests.
+
+Every one of the **7,130 originally hashed reference files** remains unchanged.
+Recovered `full-oracle-recovered` by copying those verified files and the
+byte-identical original completion/provenance/logs. The manifest SHA-256 remains
+`0bc977d51eef2818077e02eef703c6dece6fd7463c5f2a10e64b477d5e5a3ba0`.
+The contaminated original and all three extra caches are preserved; no reference
+values or manifest were rewritten. Recovery evidence:
+`.rust_test_logs/python-oracle-cache-{mutation,recovery}.json`.
+
+**Tests:** The seven exact failed node IDs run against the unchanged installed
+3.11 source wheel, corrected frozen test copy, read-only recovered references
+and fresh consumer caches in actual glibc 2.28: **7 passed in 8.05 s**, no skips.
+Post-test verification proves the reference inventory/digests remain unchanged.
+The N2 Raman/PPT setup RHS discrepancy is **8.160723753324843e-15**, interval
+**2.1012825122127979e-16**, fixed **3.8573930593816455e-15**, adaptive
+**4.125531075256049e-15** and public entrypoint **2.983327494089195e-15**.
+The established per-component plasma cancellation bounds remain enforced.
+All **23** validation-tool and **5** glibc-helper regressions pass; whitespace
+checks pass. Evidence: `.rust_test_logs/python-cache-fix/{focused.log,
+focused.log.json,focused.xml,focused.json,validation-tooling.log,glibc-tooling.log}`.
+
+Fresh CPU-only checkout/source wheels are building for all four interpreters
+under `/tmp/amalthea-cache-fixed-builds-20260911`, state/logs in
+`.rust_test_logs/python-cache-fix/`. Python 3.11/3.12 builds are already complete;
+3.13/3.14 continue. No shared library or CUDA source changed/rebuilt. This
+required portability correction will be delivered with the prepared report and
+Apple job, replacing the hosted run that contains the old consumer tests.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-11 — Cache-corrected wheel rebuild and full gate restart — Codex
+**Status at this checkpoint:** all eight corrected artifacts built; five full
+installed gates running, controlled timings waiting on their actual success.
+**Did:** Rebuilt checkout/source wheels for CPython 3.11.16, 3.12.12, 3.13.11
+and 3.14.6 with the corrected test cache locations/post-test verification.
+All builds share sdist SHA-256
+`c6534f836df57d9ecef99a4df2c3181197301b5c431fe73b8b441831ba7f750f`.
+**Design:** [Cache portability correction](PYTHON_NATIVE_PLAN.md#consumer-local-ppt-fixture-caches--portability-correction).
+**Tests:** All eight builds pass exact source/wheel inventory, portable
+manylinux_2_28 linking and independent auditwheel checks. Source-rebuilt wheel
+SHA-256 values, in interpreter order: `5d27c71cf7b59d0a556829df4a1119c5235234077905171bc52e11248c28b47e`,
+`af92234529174488d8fe73cc4a7f6e1bdde3cf4625036fd3de2db9efb01a5734`,
+`06ca7505c625ed10647a1b0fe9040f6084562cfe7d6977ce4642a138addda4b0`,
+`a7498f02d5e8faaa8c017d053da3009edd73f89021e665d8f84ee93311a0142b`.
+Complete hashes/commands/logs: `.rust_test_logs/python-cache-fix/{builds.json,
+build-hashes.json,build-*.log}` and `/tmp/amalthea-cache-fixed-builds-20260911`.
+
+Session **25983** runs the four actual-glibc suites plus the maintained host
+3.14 suite in fresh environments against the recovered reference artifact.
+Five independent processes use one computational thread each; the six-core
+host had over 42 GiB available memory before starting. Output roots are
+`/tmp/amalthea-cache-fixed-full-20260911/VERSION` and the 3.14 build directory;
+combined state/logs are `.rust_test_logs/python-cache-fix/full-*`.
+Session **34589** requeues the controlled CPU snapshot against exactly these
+five corrected manifests and their 32/913 no-skip counts. State/log:
+`.rust_test_logs/python-performance-cache-fixed-{state.json,log}`. The old
+failed prerequisite/timing state remains preserved separately. No full-suite
+pass or controlled performance result is claimed at this restart checkpoint.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
