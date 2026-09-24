@@ -27,7 +27,7 @@ with a link; preserve unique evidence in its authoritative home. New work logs
 use file paths and symbols; line numbers are optional. New decisions go into
 the design before code and are linked from the log.
 
-## Start here — current resume queue (2026-09-06)
+## Start here — current resume queue (2026-09-24)
 
 This is the authoritative short queue. The long sections below retain design
 history and measured evidence, but older words such as "next", "not started",
@@ -185,16 +185,26 @@ or "verified" inside a superseded narrative do not outrank this list.
 > Apply it to completed hosted downloads using the exact delivered checkout.
 > Commands: [TESTING](native-port/TESTING.md#collect-a-downloaded-hosted-wheel-matrix).
 >
-> **Platform corrections:** all four ARM64 wheels build/install and pass the first sixteen offline examples; the last example incorrectly requires bitwise agreement between sliced/full-batch FFTs. Windows fails two synthetic tooling tests before building, due to newline duplication and a Unix-only path hook. Windows fixtures are corrected locally (23 tooling checks pass). The output example now preserves exact spectral round trips and checks sliced/full FFT reconstruction at the established reassociation tier; its local execution passes. Final wheel and actual platform reruns are pending. Design: [hosted corrections](native-port/PYTHON_NATIVE_PLAN.md#hosted-platform-validation-corrections--windows-fixtures-and-sliced-ffts).
+> **Platform corrections:** delivered `d529235` passes 12/16 complete hosted
+> wheel cells: CPython 3.11–3.14 on Linux x86_64, macOS ARM64 and Windows
+> x86_64. Each passing cell verifies 17 offline examples, 34 checkout tests
+> and 937 source tests without skips. All four Linux ARM64 wheels also build,
+> install and pass the examples; each stops at one modal output-test bitwise
+> FFT comparison (33 other checkout tests pass). The corrected test retains
+> exact saved-array checks and uses a <1e-13 global FFT reassociation norm.
+> The exact-source local suite passes 937/937; native ARM64 confirmation is
+> pending on this branch. The Apple M1 diagnostic passes, including NEON,
+> configured BLAS/QDHT and modal topology at 1/2/4 threads. Design:
+> [hosted corrections](native-port/PYTHON_NATIVE_PLAN.md#hosted-platform-validation-corrections--windows-fixtures-and-sliced-ffts).
 >
-> **Next:** push the verified platform follow-up, collect its complete sixteen-cell gate and corrected Apple diagnostic, and finish installed/platform acceptance of the verified
-> gradient optimization and validation corrections. Public preview
-> and stable platform acceptance remain unfinished; no publication is claimed.
-> Exact commands, hashes, numerical results and failed attempts are in the latest
-> [PORT_LOG entries](native-port/PORT_LOG.md); current live handles are indexed
-> in `.rust_test_logs/roadmap-live-jobs.json`. The initial migration changes are committed/pushed in the isolated delivery worktree; the verified gradient, guide and platform corrections are ready for immediate authorized delivery, superseding the known-failed hosted run under the documented scheduling decision; the original checkout
-> stays at `34cdafc` with matching migration source while local provenance checks
-> finish. Independent installer edits remain preserved.
+> **Next:** run and collect the corrected sixteen-cell hosted matrix on
+> `fix/python-arm64-output-fft-20260924`; require the actual ARM64 output
+> checkout tests and complete source tests to pass before claiming platform
+> acceptance. Public preview, release and the separately required actual-glibc
+> final-artifact gate remain unfinished. Exact commands, hashes and failed
+> attempts are in the latest [PORT_LOG entries](native-port/PORT_LOG.md) and
+> retained local evidence. The original checkout remains untouched at
+> `34cdafc`, including independent in-progress edits.
 
 ## Historical campaign summaries
 

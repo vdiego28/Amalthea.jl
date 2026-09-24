@@ -60,7 +60,12 @@ def test_exact_roundtrip_and_independent_reconstruction(result, tmp_path, monkey
             reconstructed = np.fft.irfft(field, n=hdf['t'].size, axis=0)
         else:
             reconstructed = np.fft.ifft(field, axis=0)
-        np.testing.assert_array_equal(reconstructed, result.temporal_field())
+        reference = result.temporal_field()
+        assert reconstructed.shape == reference.shape
+        assert np.all(np.isfinite(reconstructed)) and np.all(np.isfinite(reference))
+        fft_error = np.linalg.norm(reconstructed-reference)/max(np.linalg.norm(reference), 1e-300)
+        print(f'full-array FFT reconstruction relative error={fft_error:.6g}')
+        assert fft_error < 1e-13
         field[...] = 0
         assert np.any(result.field)
         assert np.any(hdf['Eomega'][()])

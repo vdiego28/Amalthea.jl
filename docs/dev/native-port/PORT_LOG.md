@@ -8317,3 +8317,36 @@ are queued. No full final-suite or corrected hosted platform pass is claimed.
 **Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06);
 failed-run snapshot `/tmp/amalthea-hosted-fbb8b45-run-latest.json` and retained
 artifacts remain available for subsequent collection.
+
+## 2026-09-24 — ARM64 output-test FFT correction delivery — Codex
+**Status at this checkpoint:** test-only correction locally validated; corrected
+native ARM64 hosted validation pending.
+**Did:** Branched exact delivered Python head `d529235` to
+`fix/python-arm64-output-fft-20260924`. In
+`python-native/tests/test_output.py::test_exact_roundtrip_and_independent_reconstruction`,
+kept all exact NPZ/HDF5 saved-array assertions and changed only the independent
+temporal FFT comparison to shape, finite-value and global relative L2 error
+`<1e-13`, printing that error. No production source or FFI exports changed.
+Updated the design and live BACKLOG status. The original dirty checkout was
+not used for this commit.
+**Design:** [hosted FFT reassociation correction](PYTHON_NATIVE_PLAN.md#hosted-platform-validation-corrections--windows-fixtures-and-sliced-ffts).
+**Gotchas:** The complete prior matrix at `d529235` passed 12/16 cells. Every
+Linux ARM64 wheel built, installed and passed 17/17 offline examples, then its
+modal output checkout test alone failed at a bitwise inverse-FFT comparison:
+84/384 entries differed, maximum absolute error 7.27595761e-12, including
+near-zero tails. Saved spectra and grids were already bit-exact. The earlier
+Windows 3.12 failure did not recur in the full rerun; its expired artifact
+cannot establish a historical cause. A failed-only rerun reused an expired
+oracle artifact, so the corrected source requires a fresh full workflow run.
+**Tests:** Exact-source local isolated suite `python-native/.venv/bin/python -I
+-m pytest python-native/tests -q` with all twenty verified Julia oracle
+families passed **937/937**, no skips, in 2380.87 s. Retained JUnit:
+`.rust_test_logs/python-hosted-20260924/local-exact-candidate.xml`. The
+focused output suite passed **12/12** with HDF5; the oracle-backed checkout
+selection passed **34/34**, no skips. The original twenty-family artifact
+verifies 7,130 hashed files. Collector report
+`.rust_test_logs/python-hosted-20260924/wheel-evidence.{json,md}` records all
+sixteen old cells and four incomplete ARM64 cells without missing artifacts
+or provenance errors. Local x86_64 results do not measure the corrected ARM64
+norm; the hosted rerun is required.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-24).
