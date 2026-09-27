@@ -81,9 +81,13 @@ or "verified" inside a superseded narrative do not outrank this list.
 > coherent bundles and the nine-file formatting follow-up are assembled in an
 > isolated delivery checkout. The affected CPU `rust`, `physics`, `fields` and
 > host `io` gates pass across recorded runs; both Rust crates pass formatting
-> checks. **Next:** deliver the branch and collect exact-source hosted Python
-> wheel results before considering integration of these later changes into
-> `main`. The original dirty checkout remains preserved. Design:
+> checks. The eight delivery commits are pushed in
+> [draft PR #68](https://github.com/vdiego28/Amalthea.jl/pull/68).
+> **Next:** collect exact-source hosted Python wheel and affected CI results
+> before considering integration of these later changes into `main`. The
+> original checkout is now clean on the delivery branch; its earlier file
+> versions are backed up under `.rust_test_logs/delivery-20260927/`.
+> Design:
 > [PLANS §28](native-port/PLANS.md#28-delivery-boundaries-after-python-wheel-acceptance-2026-09-27)
 > and [§29](native-port/PLANS.md#29-isolated-rust-formatting-follow-up-2026-09-27).
 > Evidence, exact scope and limits are in the

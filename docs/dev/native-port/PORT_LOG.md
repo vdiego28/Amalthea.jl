@@ -9107,3 +9107,35 @@ path assertion. `git diff --check` passes. The prior Julia numerical results
 were taken before this formatting-only patch; new wheel provenance and
 installed-platform results remain required for the final branch source.
 **Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-27 — Delivery branch, draft PR and original-checkout alignment — Codex
+**Status at this checkpoint:** eight reviewed delivery commits pushed as draft
+PR #68; original checkout clean on its tracking delivery branch. Hosted
+exact-source CI and integration of the later changes into `main` remain open.
+**Did:** Committed the six disjoint pending-work bundles, reconciled docs,
+and isolated nine-file rustfmt change as eight commits on
+`delivery/pending-units-20260927`, ending at `40b69beb6d0b975eaf79c2bf81dbf62bf58ff0fb`.
+Pushed that branch and opened [draft PR #68](https://github.com/vdiego28/Amalthea.jl/pull/68).
+Verified all 588 tracked files in the original dirty checkout existed in the
+pushed tree; 11 differed only by the planned formatting and updated live/log
+documents. Backed up those 11 originals and their hashes under
+`.rust_test_logs/delivery-20260927/original-pre-align/`, copied the pushed
+versions, then created a new local delivery branch and aligned its HEAD/index
+with `git reset --mixed` without changing working files. Preserved the prior
+`fix/dopri-fourth-order` branch at `34cdafc`; set the clean local delivery
+branch to track GitHub. No source or FFI export was changed by this alignment.
+**Design:** [PLANS §28](PLANS.md#28-delivery-boundaries-after-python-wheel-acceptance-2026-09-27)
+and [§29](PLANS.md#29-isolated-rust-formatting-follow-up-2026-09-27).
+**Gotchas:** The original `.git` was read-only inside the sandbox, so the local
+fetch, branch switch, index alignment and remote-tracking setup required host
+execution. The branch push itself was explicitly authorized by the lead.
+**Tests:** `git diff --check fa71728..40b69be` and both crates' `cargo fmt
+--check` passed. `git status --porcelain=v1` was empty at `40b69be` in both
+the isolated delivery checkout and the original checkout after alignment.
+GitHub's branch API returned `40b69beb6d0b975eaf79c2bf81dbf62bf58ff0fb`;
+the first branch [test run](https://github.com/vdiego28/Amalthea.jl/actions/runs/36349096290)
+started with no failed jobs at this checkpoint. The preceding entries contain
+the affected local numerical and formatting results. This documentation-only
+status follow-up leaves the tested source bytes unchanged and supersedes that
+first hosted run's commit SHA for final provenance.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
