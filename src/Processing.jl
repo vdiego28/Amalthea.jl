@@ -244,16 +244,18 @@ function arrivaltime(t::AbstractVector, It::AbstractArray; method)
 end
 
 """
-    time_bandwidth(grid, Eω; bandpass=nothing, oversampling=1)
+    time_bandwidth(grid, Eω; bandpass=nothing, oversampling=1, sumdims=nothing)
 
 Extract the time-bandwidth product, after bandpassing if required. The TBP
 is defined here as ΔfΔt where Δx is the FWHM of x. (In this definition, the TBP of 
 a perfect Gaussian pulse is ≈0.44). If `oversampling` > 1, the time-domain field is
 oversampled before extracting the FWHM.
+If `sumdims` is given, sum power/spectral energy density over those dimensions
+before measuring either width (e.g. `sumdims=2` combines modes).
 """
 function time_bandwidth(grid, Eω; bandpass=nothing, oversampling=1, sumdims=nothing)
-    fwt = fwhm_t(grid, Eω; bandpass=bandpass, oversampling=oversampling, sumdims=nothing)
-    fwf = fwhm_f(grid, Eω; bandpass=bandpass)
+    fwt = fwhm_t(grid, Eω; bandpass=bandpass, oversampling=oversampling, sumdims=sumdims)
+    fwf = fwhm_f(grid, Eω; bandpass=bandpass, sumdims=sumdims)
     fwt.*fwf
 end
 
@@ -596,7 +598,7 @@ end
     getEω(output[, zslice])
 
 Get frequency-domain modal field from `output` with correct normalisation (i.e. 
-`abs2.(Eω)`` gives angular-frequency spectral energy density in J/(rad/s)).
+`abs2.(Eω)` gives angular-frequency spectral energy density in J/(rad/s)).
 """
 getEω(output::AbstractOutput, args...) = getEω(makegrid(output), output, args...)
 getEω(grid, output) = getEω(grid, output["Eω"])
@@ -626,38 +628,42 @@ fftnorm(grid::EnvGrid) = Maths.fftnorm(grid.t[2] - grid.t[1])
 
 
 """
-    getφ(grid, Eω)
-    getφ(ω, Eω, τ)
+    spectral_phase(grid, Eω)
+    spectral_phase(ω, Eω, τ)
 
-Extract the unwrapped spectral phase from the field `Eω`, subtracting the linear phase ramp corresponding
-to a pulse in the middle of the time window defined by the `grid`. 
+Extract the unwrapped spectral phase from the field `Eω`, removing the FFT
+centering ramp before unwrapping along the frequency axis. For explicit
+frequencies, `τ` is the array-time offset of the chosen time origin: the forward FFT
+contributes `exp(-im*ω*τ)`, which this function cancels. Phase at zero amplitude
+is undefined; each spectrum's unwrapped phase is defined modulo a constant 2π.
 """
-function getφ(grid::AbstractGrid, Eω)
+function spectral_phase(grid::AbstractGrid, Eω)
     ω = grid.ω
     t = grid.t
     τ = length(t) * (t[2] - t[1])/2 # middle of time window
-    getφ(ω, Eω, τ)
+    spectral_phase(ω, Eω, τ)
 end
 
-function getφ(ω::AbstractVector, Eω, τ)
-    φ = unwrap(angle.(Eω); dims=1)
-    φ .- ω*τ
+function spectral_phase(ω::AbstractVector, Eω, τ)
+    unwrap(angle.(Eω .* exp.(1im .* ω .* τ)); dims=1)
 end
 
 """
-    getφ(output, args...)
+    spectral_phase(output, args...)
 
 Extract the frequency-domain `Eω` from the `output` (additional `args...` are passed to `getEω`) and
-extract the spectral phase, subtracting the linear phase ramp corresponding
+extract the spectral phase, removing the FFT centering ramp corresponding
 to a pulse in the middle of the time window defined by the frequency grid.
 """
-function getφ(output, args...)
+function spectral_phase(output, args...)
     ω, Eω = getEω(output, args...)
     grid = makegrid(output)
     t = grid.t
     τ = length(t) * (t[2] - t[1])/2 # middle of time window
-    getφ(ω, Eω, τ)
+    spectral_phase(ω, Eω, τ)
 end
+
+Base.@deprecate getφ(args...) spectral_phase(args...) false
 
 """
     getEt(output[, zslice]; kwargs...)
