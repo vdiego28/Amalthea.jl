@@ -6,6 +6,8 @@ deps/deps.jl
 *.h5
 .vscode/settings.json
 Manifest.toml
+# Frozen upstream performance environment is intentionally versioned.
+!/test/performance_audit/upstream/Manifest.toml
 _git2_*
 docs/build
 *.info
@@ -25,11 +27,21 @@ target/
 build/
 dist/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .coverage
+.coverage.*
 htmlcov/
 /python-native/python/amalthea_native/_native*.so
 /python-native/python/amalthea_native/_native*.pyd
 /python-native/python/amalthea_native/_native*.dylib
+
+# Local environment files; keep safe example templates eligible for versioning.
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
 
 # IDE / editor
 .idea/
