@@ -27,11 +27,69 @@ with a link; preserve unique evidence in its authoritative home. New work logs
 use file paths and symbols; line numbers are optional. New decisions go into
 the design before code and are linked from the log.
 
-## Start here — current resume queue (2026-09-24)
+## Start here — current resume queue (2026-09-06)
 
 This is the authoritative short queue. The long sections below retain design
 history and measured evidence, but older words such as "next", "not started",
 or "verified" inside a superseded narrative do not outrank this list.
+
+> **Low-load maintenance (2026-09-20; validated 2026-09-24):** scan argument ownership/notebook
+> construction, upstream `spectral_phase` compatibility and the reviewed-upstream
+> checkpoint are implemented under [PLANS §24](native-port/PLANS.md#24-low-load-scan-and-upstream-maintenance-2026-09-20).
+> The affected `rust`, `physics`, `io` and `fields` CPU groups now pass across
+> recorded runs, as does the strict CUDA `rust` group. The first combined run
+> exposed a diagnostic test-fixture ambiguity and sandbox-only I/O restrictions;
+> both were resolved and the affected groups rerun. Preserve the uncommitted
+> Python/frontend work below. Upstream issue
+> [#67](https://github.com/vdiego28/Amalthea.jl/issues/67) is reviewed locally;
+> no GitHub comment or issue closure is part of this maintenance unit.
+> The original source-selected and workflow checks also pass. Counts,
+> numerical results, and run limitations are in the
+> [validation log](native-port/PORT_LOG.md#2026-09-24--deferred-cpu-and-strict-cuda-validation--codex).
+
+> **Deeper analytic audit (2026-09-20):** [PLANS §25](native-port/PLANS.md#25-analytic-audit-of-propagation-frames-and-spectral-diagnostics-2026-09-20)
+> identifies an accepted-state frame error in the standalone Rust DOPRI helper,
+> incorrect spectral phase centering, and ignored mode summation in the
+> time-bandwidth product. These repairs and a further standalone PI/rejection
+> controller repair are implemented. Five isolated Rust tests and the focused
+> Julia checks (9 API, 9 phase, 7 width assertions across recorded runs) pass.
+> Full crate/package/native gates for the affected groups now pass in the
+> recorded runs linked above. The standalone helper
+> is separate from the production resident/legacy/CUDA engines. Derivations and
+> measured errors are linked from the
+> [analytic audit log](native-port/PORT_LOG.md#2026-09-20--analytic-propagation-and-spectral-diagnostic-repairs--codex).
+
+> **Raman coefficient audit (2026-09-20):** small-step cancellation is repaired
+> in `PrecomputedStepCoeffs::compute` under
+> [PLANS §26](native-port/PLANS.md#26-raman-exponential-integrator-cancellation-audit-2026-09-20).
+> Six focused Rust tests pass, including independent coefficient integrals,
+> analytic forced-oscillator trajectories and CPU SIMD checks. The shared
+> constructor also supplies CUDA coefficients; the affected full native/Julia
+> CPU and strict CUDA gates pass in the recorded runs linked above. Existing Python
+> wheel work remains separate. Evidence and limits:
+> [Raman audit log](native-port/PORT_LOG.md#2026-09-20--stable-raman-forcing-coefficients--codex).
+
+> **Repository hygiene review (2026-09-20):** bounded static checks and
+> targeted ignore/configuration/documentation cleanup completed under
+> [PLANS §27](native-port/PLANS.md#27-repository-hygiene-review-2026-09-20).
+> Environment/cache ignores, Python/binding dependency-update coverage and
+> stale Cargo portability comments are repaired. Syntax/local-target checks
+> and all eight test-group timing manifests pass. The 2026-09-27 delivery
+> review compared the pending tree with accepted `fa71728`: 134 of 161 dirty
+> paths already match that commit; the other 27 are grouped in the retained
+> manifest under `.rust_test_logs/delivery-review-20260927/`. Their six
+> coherent bundles and the nine-file formatting follow-up are assembled in an
+> isolated delivery checkout. The affected CPU `rust`, `physics`, `fields` and
+> host `io` gates pass across recorded runs; both Rust crates pass formatting
+> checks. **Next:** deliver the branch and collect exact-source hosted Python
+> wheel results before considering integration of these later changes into
+> `main`. The original dirty checkout remains preserved. Design:
+> [PLANS §28](native-port/PLANS.md#28-delivery-boundaries-after-python-wheel-acceptance-2026-09-27)
+> and [§29](native-port/PLANS.md#29-isolated-rust-formatting-follow-up-2026-09-27).
+> Evidence, exact scope and limits are in the
+> [hygiene log](native-port/PORT_LOG.md#2026-09-20--repository-hygiene-audit--codex).
+> The affected numerical builds and tests now pass as linked above; benchmarks
+> were not part of this validation unit.
 
 > **Current performance unit — implemented and locally validated 2026-08-24:**
 > native step ownership/synchronization, automatic configured-BLAS resident
@@ -63,7 +121,9 @@ or "verified" inside a superseded narrative do not outrank this list.
 > Delivery branch: `fix/dopri-fourth-order`; the lead authorized commit/push.
 > Hosted validation passed at `7f707842259cd9ff7cfa4f8c55418b75c3ca140c`
 > ([run 34169347939](https://github.com/vdiego28/Amalthea.jl/actions/runs/34169347939));
-> integration and any new release remain separate actions.
+> GitHub `main` was fast-forwarded to `fa71728` on 2026-09-27, including that
+> exact repair commit. The new main-branch workflows are running; no new
+> release is claimed.
 > See the [repair delivery entry](native-port/PORT_LOG.md#2026-09-06--authorized-repair-delivery--codex)
 > and its preceding validation entry for commands and delivery scope.
 
@@ -82,7 +142,7 @@ or "verified" inside a superseded narrative do not outrank this list.
 > [PORT_LOG](native-port/PORT_LOG.md). Next: use this command for subsequent
 > work; existing repair delivery and deferred hardware work remain above.
 
-> **Julia-free Python roadmap — installed Linux acceptance in progress (2026-09-11):**
+> **Julia-free Python roadmap — wheel and minimum-glibc acceptance complete (2026-09-27):**
 > Design: [PYTHON_NATIVE_PLAN.md](native-port/PYTHON_NATIVE_PLAN.md), linked by
 > [PLANS §20](native-port/PLANS.md#20-julia-free-python-distribution).
 > Implemented capabilities and execution-path assignments:
@@ -127,13 +187,37 @@ or "verified" inside a superseded narrative do not outrank this list.
 > its failed artifacts remain retained. Consolidated evidence:
 > `.rust_test_logs/python-cache-fix/final-acceptance.json`.
 > Design: [cache correction](native-port/PYTHON_NATIVE_PLAN.md#consumer-local-ppt-fixture-caches--portability-correction).
-> The portable sixteen-cell native platform/interpreter workflow is implemented;
-> all 23 tooling regressions pass on Python 3.11–3.14. Hosted workflow
-> [34651952194](https://github.com/vdiego28/Amalthea.jl/actions/runs/34651952194)
-> is running at delivered `fbb8b458595524e0fbdb84e389db5355e380d95e` on
-> `feat/julia-free-python`; its complete reference producer passed and the downloaded twenty-family artifact verifies. Linux x86_64 and Apple wheel suites are running; Windows tooling fixtures and the ARM64 output example require the corrections recorded below. The previous hosted run at `34cdafc` tested the repair/foundation
-> delivery, without the current standalone artifact jobs. No ARM64, Apple or
-> Windows execution is claimed yet.
+> The portable sixteen-cell workflow and its validation tooling are implemented.
+> Hosted follow-up [34657886953](https://github.com/vdiego28/Amalthea.jl/actions/runs/34657886953)
+> completed (attempt 3) at delivered `d5292352680a31717fb149828b9c0a5fc2f53ef2` on
+> `feat/julia-free-python`, with gradient, guide, collector, Windows/ARM64 and
+> Apple corrections. Attempt 1 finished with 11/16 wheel cells passing;
+> Linux ARM64 3.11–3.14 and Windows 3.12 failed inside their installed test
+> suites. Their seven-day artifacts expired before collection. A failed-only
+> attempt 2 could not start the matrix because it reused the expired oracle
+> artifact. Attempt 3 regenerated and independently verified all twenty oracle
+> families/7,130 files. The complete sixteen-cell collector verifies **12/16**:
+> Linux x86_64, macOS ARM64 and Windows x86_64 each pass all four CPython
+> versions with **34 checkout / 937 source tests**, no skips, and all seventeen
+> offline examples per wheel. Its four Linux ARM64 cells repeat one diagnosed
+> test-only FFT assertion failure. Complete downloaded evidence is retained at
+> `.rust_test_logs/python-hosted-20260924/wheel-evidence.json`. The corrected
+> test and documentation are pushed as `fa71728` on
+> `fix/python-arm64-output-fft-20260924`. Fresh hosted
+> [run 36013227521](https://github.com/vdiego28/Amalthea.jl/actions/runs/36013227521)
+> completed successfully and its independent exact-commit collector accepts
+> **16/16 platform/interpreter cells**, including all **4/4 corrected Linux
+> ARM64** cells. All sixteen have **34 checkout / 937 source tests**, zero
+> failures/skips and **17/17 offline examples on both wheel paths**. The full
+> artifact and JSON/Markdown evidence is retained at
+> `.rust_test_logs/python-arm64-corrected-20260924/wheel-evidence.json`. The
+> prior `fbb8b45`
+> run is **cancelled** after delivery:
+> its reference producer passed and the downloaded twenty-family artifact
+> verifies; eight Windows/ARM64 cells failed as recorded below. Its remaining
+> cells do not establish acceptance. The corrected standalone wheel matrix is
+> complete. The separate final-gradient actual-glibc runtime gate passed on
+> 2026-09-27 at the same accepted source revision, as recorded below.
 >
 > **Performance:** native modal points pass both 901-test frozen installed
 > suites and the shared gates, with controlled complete-workload improvements
@@ -148,9 +232,11 @@ or "verified" inside a superseded narrative do not outrank this list.
 > 3.119e-7 and passes the unchanged 1e-6 gate. Both standalone Python paths match that
 > Julia FFT trajectory near 1e-14. The report generator passes six evidence
 > tests. The accepted report is
-> `/tmp/amalthea-python-performance-controlled-20260911/report.md`; its source,
-> wheel and library hashes remain verified. Scalar Python-auto workloads range
-> from 1.291× to 7.711× Julia's complete cost; modal workloads remain slower.
+> `/tmp/amalthea-python-performance-controlled-20260911/report.md` at its
+> recorded checkpoint; that temporary workspace is no longer present, while
+> structured evidence remains in `.rust_test_logs/python-performance-accepted.json`.
+> Its source, wheel and library hashes were verified. Scalar Julia/Python-auto complete-cost ratios range
+> from 1.291× to 7.711×; the Python modal workloads remain slower.
 > The cache correction, report and Apple job are delivered
 > in `fbb8b45`; the old run was replaced because its fixture paths were invalid.
 > The frozen CPU audit remains unchanged.
@@ -162,13 +248,27 @@ or "verified" inside a superseded narrative do not outrank this list.
 > counts; gradient complete cost falls **53.56%**, solve cost **55.27%**. Worst
 > other workload slowdown is 1.737%; uncertainty remains within the existing
 > gates. Design: [gradient batching](native-port/PYTHON_NATIVE_PLAN.md#built-in-scalar-gradient-batching--production-design).
-> Evidence: `.rust_test_logs/python-gradient-accepted.json`. All eight final artifacts build/audit; four actual-glibc suites are running/queued under `/tmp/amalthea-gradient-final-host-20260911/state.json`. The source-only difference from the timed candidate is the output example correction.
+> Evidence: `.rust_test_logs/python-gradient-accepted.json`. All eight final
+> artifacts built/audited at the recorded 2026-09-11 checkpoint; its temporary
+> runtime workspace disappeared without a retained final report. The accepted
+> `fa71728` hosted source and twenty-family oracle were then verified in a fresh
+> actual-glibc 2.28 run on 2026-09-27. CPython 3.11–3.14 each passed **937
+> source / 34 checkout tests**, zero failures/skips, and **17/17 offline examples
+> on each of the checkout and source wheels**. The report and per-version logs
+> are retained at `.rust_test_logs/python-gradient-final-glibc-20260927/summary.json`.
+> The source-only difference from the timed candidate at the earlier final
+> build checkpoint was the output example correction.
 >
 > **Apple diagnostic correction:** hosted job `103436037352` failed because the
 > auxiliary passed its own `scan OUTPUT_JSON` arguments to `Scan`'s parser.
 > The two-line helper correction is locally verified with the real queue scan
 > and exact modal checks at one/two/four threads. Production scan behavior and
-> frozen audit results remain unchanged. The locally verified correction is included in the immediate platform follow-up; actual Apple acceptance requires its new run. Design:
+> frozen audit results remain unchanged. The corrected actual Apple M1 diagnostic
+> passed in attempt 3 of [34657886953](https://github.com/vdiego28/Amalthea.jl/actions/runs/34657886953):
+> NEON Raman and BLAS/QDHT cross-build/thread relative errors were zero at
+> 1/2/4 threads, and modal topology comparisons were exact. The downloaded
+> hashes and report are retained under `.rust_test_logs/python-hosted-20260924/apple/`.
+> This is diagnostic evidence only; no LTO promotion is implied. Design:
 > [argument isolation](native-port/PYTHON_NATIVE_PLAN.md#apple-scan-diagnostic-argument-isolation--correction).
 >
 > **Documentation:** the installed Python guide is implemented in
@@ -182,29 +282,49 @@ or "verified" inside a superseded narrative do not outrank this list.
 > counts, offline evidence and separate workflow failures. Eight transport
 > regressions pass; it first rejected the incomplete host artifact, then
 > independently verified the completed corrected host cell and its actual bytes.
-> Apply it to completed hosted downloads using the exact delivered checkout.
+> Attempt 3's complete downloaded matrix was collected against the exact
+> delivered checkout and reports twelve passes/four diagnosed ARM64 failures;
+> artifacts and JSON/Markdown report are retained under
+> `.rust_test_logs/python-hosted-20260924/`. The corrected four-cell ARM64-only
+> collector and complete sixteen-cell collector both pass at `fa71728`; their
+> artifacts and reports are retained under
+> `.rust_test_logs/python-arm64-corrected-20260924/`.
 > Commands: [TESTING](native-port/TESTING.md#collect-a-downloaded-hosted-wheel-matrix).
 >
-> **Platform corrections:** delivered `d529235` passes 12/16 complete hosted
-> wheel cells: CPython 3.11–3.14 on Linux x86_64, macOS ARM64 and Windows
-> x86_64. Each passing cell verifies 17 offline examples, 34 checkout tests
-> and 937 source tests without skips. All four Linux ARM64 wheels also build,
-> install and pass the examples; each stops at one modal output-test bitwise
-> FFT comparison (33 other checkout tests pass). The corrected test retains
-> exact saved-array checks and uses a <1e-13 global FFT reassociation norm.
-> The exact-source local suite passes 937/937; native ARM64 confirmation is
-> pending on this branch. The Apple M1 diagnostic passes, including NEON,
-> configured BLAS/QDHT and modal topology at 1/2/4 threads. Design:
+> **Platform corrections:** the earlier ARM64 output example's sliced/full FFT
+> comparison and Windows synthetic fixtures were corrected in `d529235`.
+> Attempt 3 then isolated one more test-only ARM64 bitwise modal inverse-FFT
+> assumption in `test_output.py`, despite exact saved spectra. The focused
+> `fa71728` correction retains exact serialization checks and compares the
+> independent temporal reconstruction at the existing 1e-13 global-norm tier.
+> Actual Linux ARM64 3.11–3.14 now pass **34 checkout / 937 source tests**
+> without failures/skips and **17/17 offline examples per wheel** on both
+> wheel paths. The achieved modal FFT error is **5.27948e-17** on all four
+> versions. The independent collector verifies exact source, reference and
+> wheel hashes for all four. Windows 3.12 also passed at `d529235`; its
+> expired attempt-1 failure cause remains unknown. Design:
 > [hosted corrections](native-port/PYTHON_NATIVE_PLAN.md#hosted-platform-validation-corrections--windows-fixtures-and-sliced-ffts).
 >
-> **Next:** run and collect the corrected sixteen-cell hosted matrix on
-> `fix/python-arm64-output-fft-20260924`; require the actual ARM64 output
-> checkout tests and complete source tests to pass before claiming platform
-> acceptance. Public preview, release and the separately required actual-glibc
-> final-artifact gate remain unfinished. Exact commands, hashes and failed
-> attempts are in the latest [PORT_LOG entries](native-port/PORT_LOG.md) and
-> retained local evidence. The original checkout remains untouched at
-> `34cdafc`, including independent in-progress edits.
+> **Release review prepared 2026-09-27:** GitHub `main` now points at accepted
+> `fa71728`, including the Julia repair. The direct
+> PyPI JSON lookup for provisional `amalthea-native` returned HTTP 404; recheck
+> immediately before publication because this does not reserve the name. The
+> sixteen-cell native-platform matrix and final-gradient glibc 2.28 runtime
+> gate are complete for that exact source. The tested artifacts still identify
+> as internal `0.0.1.dev0` / Pre-Alpha. **Next:** choose public-preview package
+> metadata and a Python publication route, rebuild and rerun the exact-candidate
+> installed/offline gates, then decide on publication. The later checkout work
+> has local CPU validation but needs its own exact-source hosted wheel gate.
+> The existing GitHub release workflow publishes Julia libraries only. No
+> publication or stable release is claimed. Review decisions:
+> [PLANS §28](native-port/PLANS.md#28-delivery-boundaries-after-python-wheel-acceptance-2026-09-27).
+> Exact commands, hashes, numerical results and failed attempts are in the latest
+> [PORT_LOG entries](native-port/PORT_LOG.md); current live handles are indexed
+> in `.rust_test_logs/roadmap-live-jobs.json`. The initial migration changes are
+> committed/pushed in the isolated delivery worktree; the verified gradient,
+> guide and platform corrections were delivered in `d529235`, followed by the
+> test-only `fa71728` repair. The original checkout remains at `34cdafc` with
+> its existing uncommitted work; independent installer edits remain preserved.
 
 ## Historical campaign summaries
 
@@ -2047,7 +2167,7 @@ findings below.
     along the way (this section's text above is left as historical record of the pre-hardware
     state).
 
-### 🟡 Distribution & example-code maintenance — smoke coverage landed; repairs remain
+### 🟢 Distribution & example-code maintenance — recorded repairs complete
 
 Salvaged 2026-07-22 from a retrospective architecture review
 (`ADR-001`, drafted 2026-07-20, not kept — see note at the end of this
@@ -2056,33 +2176,19 @@ tree are recorded here.
 
 1. 🟢 **Install failure is documented and release machinery exists.**
    `README.md` and `deps/build.jl` explain the Cargo fallback and give an
-   actionable error. `.github/workflows/release.yml` builds three portable
+   actionable error. `.github/workflows/release.yml` builds portable
    assets and `deps/build.jl` verifies checksums before installing them.
    🟢 The `v1.0.0` release's legacy `libluna_rust-*` asset names are now
    handled by a bounded fallback (resume-queue item 4), and source checkouts
    (clones, `Pkg.develop`, CI) always compile from source rather than install
    a binary older than their own FFI surface.
-2. 🟡 **Representative smoke CI landed; seven broken examples remain.**
-   `test/test_examples_smoke.jl` runs eight representative files at a shrunk
-   5 mm propagation length in the `examples` CI group (16/16 assertions,
-   ~45 s package time). It deliberately stops before plotting. The audit
-   found 44 Julia files across 11 low-level-example subdirectories and seven
-   distinct broken files outside the smoke subset:
-
-   - `full_modal/basic_modal_full_bothpolarisations.jl`
-   - `full_modal/basic_modal_full.jl`
-   - `polarisation/modal_vector_plasma.jl`
-   - `polarisation/modal_nonvector_plasma.jl`
-   - `polarisation/modal_vector_plasma_CP.jl`
-   - `polarisation/modal_vector_plasma_45deg.jl`
-   - `polarisation/elliptical_env.jl`
-
-   The first six reference `linop` before assignment; the two `full_modal`
-   files plus `elliptical_env.jl` pass `grid.ω` to `norm_modal` instead of
-   the required grid object. Fix them, then add at least one regression case
-   for each failure class to the smoke subset. Full measurements and the
-   plotting/AST-harness rationale are preserved in
-   `native-port/portlog-inbox/hygiene.md`.
+2. 🟢 **The seven example repairs and smoke regressions are complete.**
+   The July audit findings, subsequent fixes and end-to-end evidence are
+   recorded in item 3 of the [historical campaign summaries](#historical-campaign-summaries)
+   and `native-port/portlog-inbox/examples-repair.md`. The maintained
+   `test/test_examples_smoke.jl` subset includes the regression cases. The
+   former paragraph here repeated the pre-repair findings as open work;
+   it was reconciled on 2026-09-20. No new example execution is claimed.
 
 *Three further items from the same review were dropped after checking them
 against the tree, recorded here so they aren't re-raised: (i) "confirm CI
