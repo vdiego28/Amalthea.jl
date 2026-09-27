@@ -146,6 +146,13 @@ pkg> add https://github.com/vdiego28/Amalthea.jl#v1.0.4
 Check the [Releases page](https://github.com/vdiego28/Amalthea.jl/releases)
 and substitute a newer stable tag when available.
 
+On Linux or macOS, the equivalent one-command installer provisions Julia via
+Juliaup when needed and can be rerun to update Amalthea:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vdiego28/Amalthea.jl/main/install.sh | bash
+```
+
 The normal installation is CPU-only and requires neither CUDA nor an NVIDIA
 GPU. The installer downloads a checksum-verified native library when the
 release contains one, otherwise it compiles from source with Rust 1.85 or
