@@ -142,26 +142,40 @@ end
 
 """
     Scan(name; kwargs...)
+    Scan(name, cmdlineargs::Vector{String}; kwargs...)
     Scan(name, ex::AbstractExec; kwargs...)
 
 Create a new `Scan` with name `name` and variables given as keyword arguments. The execution
 mode `ex` can be given directly or via command-line arguments to the script. **If given,
-command-line arguments overwrite any explicitly passed execution mode.**
+command-line arguments overwrite any explicitly passed execution mode.** An
+explicit argument vector is used as given, independently of global `ARGS`.
+Implicit command-line arguments are ignored in an initialized IJulia notebook.
+Neither global `ARGS` nor an explicitly supplied argument vector is modified.
 
 If neither an explicit execution mode nor command-line arguments are given,
 `ex` defaults to `LocalExec`, i.e. running the whole scan locally in the current Julia process.
 """
-function Scan(name, cmdlineargs::Vector{String}=ARGS; kwargs...)
-    Scan(name, makeexec(cmdlineargs); kwargs...)
+function Scan(name, cmdlineargs::Vector{String}=_scan_default_args(); kwargs...)
+    _scan_with_exec(name, makeexec(copy(cmdlineargs)); kwargs...)
 end
 
 function Scan(name, ex::AbstractExec; kwargs...)
-    if !isempty(ARGS)
-        cmdlineargs = copy(ARGS)
-        # remove command-line arguments to avoid infinite recursion:
-        [pop!(ARGS) for _ in eachindex(ARGS)]
-        return Scan(name, cmdlineargs; kwargs...)
+    cmdlineargs = _scan_default_args()
+    _scan_with_exec(name, isempty(cmdlineargs) ? ex : makeexec(cmdlineargs); kwargs...)
+end
+
+function _scan_default_args(context::Module=Main)
+    if isdefined(context, :IJulia)
+        ijulia = getfield(context, :IJulia)
+        if ijulia isa Module && isdefined(ijulia, :inited) &&
+                getfield(ijulia, :inited) === true
+            return String[]
+        end
     end
+    copy(ARGS)
+end
+
+function _scan_with_exec(name, ex::AbstractExec; kwargs...)
     variables = Symbol[]
     arrays = Vector[]
     for (var, arr) in kwargs
@@ -540,7 +554,7 @@ function runscan(f, scan::Scan{CondorExec})
 end
 
 function changexec(scan, newexec)
-    newscan = Scan(scan.name, newexec)
+    newscan = _scan_with_exec(scan.name, newexec)
     for (var, arr) in zip(scan.variables, scan.arrays)
         addvariable!(newscan, var, arr)
     end

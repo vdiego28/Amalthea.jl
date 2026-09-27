@@ -91,6 +91,15 @@ queue path as before.
 ### Command-line arguments
 Most of the above execution modes can also be triggered by running the script (the `.jl` file) from the command line with additional arguments. To show the options, run `julia [script] --help` where `script` is your `.jl` file. As one example, running our `scan.jl` example in queue-file mode could be accomplished by `julia scan.jl --queue`, and starting 4 subprocesses to share the queue could be done by `julia scan.jl --queue -p 4`. Importantly, **command-line arguments passed to the script overwrite any explicitly created execution mode within the script.**
 
+### Notebooks and explicit arguments
+In an initialized IJulia notebook, `Scan` ignores the kernel's implicit
+command-line arguments. You can use `Scan("scan"; energy=energies)` or pass an
+execution mode directly without clearing `ARGS`. To supply scan arguments
+explicitly in any environment, use `Scan("scan", ["--range", "1:4"]; energy=energies)`;
+an explicit `String[]` selects local execution. Explicit argument vectors take
+precedence over global `ARGS`. Construction leaves both vectors unchanged, so
+multiple scans in a command-line script receive the same command-line override.
+
 ### Manual file naming
 The method we used above of passing the `scan` and `scanidx` to `prop_capillary` is the simplest and most reliable way of creating output files in the correct order and with all the necessary information. If you need something else, for example to run a scan including two sequential propagation simulations, you can pass an additional argument `filename` to `prop_capillary`. This will then be used instead of the scan name to automatically name the files. In the low-level interface, this is possible via [`Output.ScanHDF5Output`](@ref) (which is used internally by `prop_capillary`), which takes a keyword argument `fname`. Both ways store metadata about the scan in each file (the scan arrays and their order, and the resulting shape of the scan grid).
 
