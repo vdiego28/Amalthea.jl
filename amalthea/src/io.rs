@@ -684,8 +684,12 @@ pub fn scan_write_point(
     // Fresh file: remove any stale file so we never append into a half-written
     // or differently-shaped previous result.
     if std::path::Path::new(fpath).exists() {
-        std::fs::remove_file(fpath)
-            .map_err(|e| format!("scan_write_point: failed to remove existing {}: {}", fpath, e))?;
+        std::fs::remove_file(fpath).map_err(|e| {
+            format!(
+                "scan_write_point: failed to remove existing {}: {}",
+                fpath, e
+            )
+        })?;
     }
     let writer = Hdf5Writer::open_or_create(fpath)?;
 

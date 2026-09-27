@@ -16,13 +16,13 @@ pub mod integrator;
 pub mod io;
 pub mod ionization;
 pub mod native;
-pub mod transforms;
-pub mod resident;
 pub mod points;
 pub mod raman;
+pub mod resident;
 pub mod scans;
 pub mod spline;
 pub mod stepper;
+pub mod transforms;
 
 #[cfg(test)]
 mod tests {

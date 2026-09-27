@@ -1,5 +1,5 @@
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use amalthea::raman::{RamanOscillator, TimeDomainRamanSolver};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 
 fn bench_raman(c: &mut Criterion) {
     let mut group = c.benchmark_group("Raman ADE Solver");

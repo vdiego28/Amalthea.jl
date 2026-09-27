@@ -67,17 +67,21 @@ fn bench_raman_fft_conv(c: &mut Criterion) {
         }
         let mut ew_c2c = vec![Complex::new(0.0, 0.0); n_over];
 
-        group.bench_with_input(BenchmarkId::new("c2c", n_time_over), &n_time_over, |b, _| {
-            b.iter(|| {
-                let e2 = black_box(&mut e2_c2c);
-                c2c_plan.forward(e2, &mut ew_c2c);
-                for k in 0..ew_c2c.len() {
-                    ew_c2c[k] *= hw_c2c[k];
-                }
-                c2c_plan.inverse(&mut ew_c2c, e2);
-                black_box(&e2_c2c);
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::new("c2c", n_time_over),
+            &n_time_over,
+            |b, _| {
+                b.iter(|| {
+                    let e2 = black_box(&mut e2_c2c);
+                    c2c_plan.forward(e2, &mut ew_c2c);
+                    for k in 0..ew_c2c.len() {
+                        ew_c2c[k] *= hw_c2c[k];
+                    }
+                    c2c_plan.inverse(&mut ew_c2c, e2);
+                    black_box(&e2_c2c);
+                });
+            },
+        );
 
         // ── r2c setup ────────────────────────────────────────────────────
         let r2c_plan = RealFft1d::new(&api, n_over, FFTW_ESTIMATE);
@@ -99,17 +103,21 @@ fn bench_raman_fft_conv(c: &mut Criterion) {
         }
         let mut ew_r2c = vec![Complex::new(0.0, 0.0); nspec];
 
-        group.bench_with_input(BenchmarkId::new("r2c", n_time_over), &n_time_over, |b, _| {
-            b.iter(|| {
-                let e2 = black_box(&mut e2_r2c);
-                r2c_plan.forward(e2, &mut ew_r2c);
-                for k in 0..ew_r2c.len() {
-                    ew_r2c[k] *= hw_r2c[k];
-                }
-                r2c_plan.inverse(&mut ew_r2c, e2);
-                black_box(&e2_r2c);
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::new("r2c", n_time_over),
+            &n_time_over,
+            |b, _| {
+                b.iter(|| {
+                    let e2 = black_box(&mut e2_r2c);
+                    r2c_plan.forward(e2, &mut ew_r2c);
+                    for k in 0..ew_r2c.len() {
+                        ew_r2c[k] *= hw_r2c[k];
+                    }
+                    r2c_plan.inverse(&mut ew_r2c, e2);
+                    black_box(&e2_r2c);
+                });
+            },
+        );
     }
     group.finish();
 }
