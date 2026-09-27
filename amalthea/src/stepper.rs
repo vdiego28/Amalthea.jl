@@ -88,10 +88,10 @@ impl Dopri5Stepper {
     /// Takes a single step of size h in the interaction picture.
     /// Returns Ok((h_next, accepted)) if successful, or Err if step size underflows.
     ///
-    /// * `y` - State vector in the interaction picture (modified in-place if accepted)
+    /// * `y` - Physical state at `z` (replaced by the physical state at `z+h` if accepted)
     /// * `z` - Current propagation coordinate
     /// * `h` - Suggested step size
-    /// * `lin_op` - A function of type (z1: f64, z2: f64, y_in: &[Complex<f64>], y_out: &mut [Complex<f64>]) that applies the linear Integrating Factor.
+    /// * `lin_op` - Linear evolution from z1 to z2; the supplied operators must compose consistently across stage intervals.
     /// * `rhs` - A function of type (z: f64, y_in: &[Complex<f64>], dy_out: &mut [Complex<f64>]) that evaluates the nonlinear RHS.
     pub fn step<L, R>(
         &mut self,
@@ -237,10 +237,18 @@ impl Dopri5Stepper {
         let accepted = error <= 1.0;
 
         // Calculate next step size using the Lund PI step size controller
-        let factor = if error > 0.0 {
+        let factor = if !accepted {
+            // Rejected attempts need a contraction, independently of the last
+            // accepted error. The PI factor may grow a rejected step.
+            if error.is_finite() {
+                (self.safety * error.powf(-0.2)).clamp(0.1, 0.9)
+            } else {
+                0.5
+            }
+        } else if error > 0.0 {
             let mut fac = self.safety
                 * (1.0 / error).powf(self.beta1)
-                * (self.last_error / error).powf(self.beta2);
+                * (1.0 / self.last_error).powf(self.beta2);
             if fac < 0.2 {
                 fac = 0.2;
             }
@@ -254,16 +262,10 @@ impl Dopri5Stepper {
         let h_next = h * factor;
 
         if accepted {
-            // Apply Integrating Factor linear step to input field vector
-            lin_op(z, z + h, y, &mut self.y_prop);
-            for i in 0..size {
-                y[i] = self.y_prop[i]
-                    + h * (A71 * self.k1[i]
-                        + A73 * self.k3[i]
-                        + A74 * self.k4[i]
-                        + A75 * self.k5[i]
-                        + A76 * self.k6[i]);
-            }
+            // Stage 7 is already the fifth-order solution, with every
+            // derivative transported into the endpoint frame. Recombining
+            // raw k_j here mixes derivatives from different coordinates.
+            y.copy_from_slice(&self.y_stage);
 
             // FSAL transition: k7 becomes the next step's k1
             self.k1.copy_from_slice(&self.k7);
@@ -276,5 +278,192 @@ impl Dopri5Stepper {
             }
             Ok((h_next, false))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rotation_rhs(_: f64, y: &[Complex<f64>], out: &mut [Complex<f64>]) {
+        for (out, y) in out.iter_mut().zip(y) {
+            *out = Complex::new(0.0, 0.7 * y.norm_sqr()) * y;
+        }
+    }
+
+    fn rotation_prop(a: f64, b: f64, y: &[Complex<f64>], out: &mut [Complex<f64>]) {
+        let phase = Complex::new(0.0, 0.9 * (b - a)).exp();
+        for (out, y) in out.iter_mut().zip(y) {
+            *out = phase * y;
+        }
+    }
+
+    fn exact_rotation(y: Complex<f64>, z: f64) -> Complex<f64> {
+        y * Complex::new(0.0, (0.9 + 0.7 * y.norm_sqr()) * z).exp()
+    }
+
+    #[test]
+    fn accepted_state_matches_transported_dopri_polynomial() {
+        // For N(y)=mu*y and a composing U, the interaction-picture equation
+        // is v'=mu*v. Its DOPRI5 stability polynomial is known independently
+        // of the implementation's stage buffers.
+        let mu = Complex::new(-0.5, 0.2);
+        let linear = Complex::new(-0.2, 0.7);
+        let h = 0.2;
+        let z = 0.7;
+        let x = mu * h;
+        let polynomial = Complex::new(1.0, 0.0)
+            + x
+            + x.powu(2) / 2.0
+            + x.powu(3) / 6.0
+            + x.powu(4) / 24.0
+            + x.powu(5) / 120.0
+            + x.powu(6) / 600.0;
+        for kind in 0..3 {
+            // Identity control, constant linear operator, and an exactly
+            // integrated z-dependent operator L(z)=linear*z.
+            let primitive = |t: f64| match kind {
+                0 => 0.0,
+                1 => t,
+                _ => t * t / 2.0,
+            };
+            let prop = |a: f64, b: f64, y: &[Complex<f64>], out: &mut [Complex<f64>]| {
+                let factor = (linear * (primitive(b) - primitive(a))).exp();
+                for (out, y) in out.iter_mut().zip(y) {
+                    *out = factor * y;
+                }
+            };
+            let rhs = |_: f64, y: &[Complex<f64>], out: &mut [Complex<f64>]| {
+                for (out, y) in out.iter_mut().zip(y) {
+                    *out = mu * y;
+                }
+            };
+            let initial = [Complex::new(0.8, -0.3), Complex::new(1.2, 0.4)];
+            let mut y = initial;
+            let mut stepper = Dopri5Stepper::new(y.len(), 1e-3, 1e-12);
+            let mut fsal = false;
+            assert!(stepper.step(&mut y, z, h, prop, rhs, &mut fsal).unwrap().1);
+            let factor = (linear * (primitive(z + h) - primitive(z))).exp();
+            for i in 0..y.len() {
+                let expected = factor * initial[i] * polynomial;
+                let error = (y[i] - expected).norm() / expected.norm();
+                eprintln!("DOPRI polynomial kind={kind} component={i}: {error:.6e}");
+                assert!(error < 2e-14);
+                assert!((stepper.k1[i] - mu * y[i]).norm() < 2e-14);
+            }
+        }
+    }
+
+    #[test]
+    fn nonlinear_rotation_has_fifth_order_global_accuracy() {
+        let initial = Complex::new(0.8, 0.3);
+        let end = 1.6;
+        let exact = exact_rotation(initial, end);
+        let linear_only = initial * Complex::new(0.0, 0.9 * end).exp();
+        assert!((exact - linear_only).norm() / exact.norm() > 0.5);
+        let mut errors = Vec::new();
+        for steps in [4, 8, 16] {
+            let h = end / steps as f64;
+            let mut y = [initial];
+            let mut stepper = Dopri5Stepper::new(1, 1e-3, 1e-12);
+            let mut fsal = false;
+            for i in 0..steps {
+                assert!(
+                    stepper
+                        .step(
+                            &mut y,
+                            i as f64 * h,
+                            h,
+                            rotation_prop,
+                            rotation_rhs,
+                            &mut fsal
+                        )
+                        .unwrap()
+                        .1
+                );
+                let expected_k1 = Complex::new(0.0, 0.7 * y[0].norm_sqr()) * y[0];
+                assert!((stepper.k1[0] - expected_k1).norm() < 2e-14);
+            }
+            let error = (y[0] - exact).norm() / exact.norm();
+            eprintln!("DOPRI nonlinear rotation steps={steps}: {error:.6e}");
+            errors.push(error);
+        }
+        assert!(errors[2] < 1e-8);
+        assert!(errors[0] / errors[1] > 20.0);
+        assert!(errors[1] / errors[2] > 20.0);
+    }
+
+    #[test]
+    fn rejected_rotation_preserves_field_and_retry_is_accurate() {
+        let initial = Complex::new(0.8, 0.3);
+        let mut y = [initial];
+        let mut stepper = Dopri5Stepper::new(1, 1e-13, 1e-15);
+        let mut fsal = false;
+        let (mut h, accepted) = stepper
+            .step(&mut y, 0.0, 1.0, rotation_prop, rotation_rhs, &mut fsal)
+            .unwrap();
+        assert!(!accepted);
+        assert_eq!(y, [initial]);
+        assert!(!fsal);
+        for _ in 0..20 {
+            let (next, accepted) = stepper
+                .step(&mut y, 0.0, h, rotation_prop, rotation_rhs, &mut fsal)
+                .unwrap();
+            if accepted {
+                let error = (y[0] - exact_rotation(initial, h)).norm() / initial.norm();
+                eprintln!("DOPRI rejected-step retry h={h:.6e}: {error:.6e}");
+                assert!(error < 1e-12);
+                return;
+            }
+            assert_eq!(y, [initial]);
+            assert!(next < h, "a rejected retry must shrink its step");
+            assert_eq!(stepper.last_error, 1e-4);
+            h = next;
+        }
+        panic!("no accepted retry within the bounded test");
+    }
+
+    #[test]
+    fn accepted_pi_factor_has_positive_previous_error_exponent() {
+        let initial = Complex::new(0.8, 0.3);
+        let mut y = [initial];
+        let mut stepper = Dopri5Stepper::new(1, 1e-4, 1e-12);
+        stepper.last_error = 0.2;
+        let mut fsal = false;
+        let h = 0.5;
+        let rhs = |_: f64, y: &[Complex<f64>], out: &mut [Complex<f64>]| {
+            out[0] = -0.5 * y[0];
+        };
+        let (next, accepted) = stepper
+            .step(&mut y, 0.0, h, rotation_prop, rhs, &mut fsal)
+            .unwrap();
+        assert!(accepted);
+        let error = stepper.y_err[0].norm()
+            / (stepper.atol + stepper.rtol * initial.norm().max(y[0].norm()));
+        let expected = 0.9 * error.powf(-0.12) * 0.2_f64.powf(0.04);
+        assert!(
+            expected > 0.2 && expected < 5.0,
+            "avoid a vacuous clamped-factor test"
+        );
+        assert!((next / h - expected).abs() < 2e-14);
+    }
+
+    #[test]
+    fn nonfinite_rhs_rejects_with_finite_smaller_step() {
+        let initial = Complex::new(0.8, 0.3);
+        let mut y = [initial];
+        let mut stepper = Dopri5Stepper::new(1, 1e-4, 1e-12);
+        let mut fsal = false;
+        let rhs = |_: f64, _: &[Complex<f64>], out: &mut [Complex<f64>]| {
+            out[0] = Complex::new(f64::NAN, 0.0);
+        };
+        let (next, accepted) = stepper
+            .step(&mut y, 0.0, 0.1, rotation_prop, rhs, &mut fsal)
+            .unwrap();
+        assert!(!accepted);
+        assert_eq!(next, 0.05);
+        assert_eq!(y, [initial]);
+        assert_eq!(stepper.last_error, 1e-4);
+        assert!(!fsal);
     }
 }
