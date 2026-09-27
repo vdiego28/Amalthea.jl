@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788008164770,
+  "lastUpdate": 1790539773529,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -956,6 +956,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.154929,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "vdiego28@yahoo.es",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "distinct": false,
+          "id": "fa71728ff6e461f56bdeab539c7f5fa0e5f1fe47",
+          "message": "Fix ARM64 output FFT test comparison",
+          "timestamp": "2026-09-24T11:29:35-03:00",
+          "tree_id": "fd9b9ebb88dd1af4393c4c298c0b83293082b7f3",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/fa71728ff6e461f56bdeab539c7f5fa0e5f1fe47"
+        },
+        "date": 1790539772388,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.269572,
             "unit": "ms/step"
           }
         ]
