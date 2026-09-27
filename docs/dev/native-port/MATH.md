@@ -671,6 +671,20 @@ resident FFT-convolution kernel in Phase I item 2 (2026-07-08,
 BACKLOG.md. This section's remaining text describes the Phase 4 SDO/ADE
 kernel only.)*
 
+**Small-step coefficient accuracy (2026-09-20).** Exactness here means exact
+integration of a *piecewise-linear* intensity, up to numerical roundoff. For
+`M=[0 1; -(ω²+γ²) -2γ]` and `b=[0,Kω]`, the old/new intensity weights are
+`B0=∫₀^Δt exp(Mu)b (u/Δt)du` and
+`B1=∫₀^Δt exp(Mu)b (1-u/Δt)du`. The inverse-matrix expression involving
+`A-I-MΔt` suffers cancellation for small increments. For
+`(|ω|+|γ|)|Δt|≤0.5`, the constructor instead sums 24 terms of
+`v_n=(MΔt)^n bΔt/n!`, using weights `1/(n+2)` for B0 and
+`1/((n+1)(n+2))` for B1. Larger increments retain the closed form.
+The homogeneous map uses the finite sinc limit at zero frequency. The
+oscillator recurrence, physical response `K exp(-γt) sin(ωt)`, coefficient
+layout and CPU/GPU consumers are unchanged. Derivation and independent
+integral/trajectory gates: [PLANS §26](PLANS.md#26-raman-exponential-integrator-cancellation-audit-2026-09-20).
+
 **Reuse, don't reinvent — same pattern as Phase 3's QDHT.** `raman.rs`'s
 `TimeDomainRamanSolver` is already a self-contained, public Rust struct
 (`new`, `reset_state`, `solve`) — the existing `AMALTHEA_USE_RUST_RAMAN` FFI
@@ -845,3 +859,31 @@ Vector points call the extracted `modal_temporal` subsection of `modal_pointcalc
 between unchanged synthesis and projection. Both directions retain the existing
 unnormalized FFT conventions and oversampling crop/scale factors. The NumPy
 boundary changes storage order and ownership only, with no physical rescaling.
+
+## 9. Standalone stepper and diagnostic invariants
+
+The exported Rust `stepper::Dopri5Stepper` is separate from the production
+resident/legacy-FFI algorithms above. It stores physical stage derivatives
+`k_j = N(z+c_j h,Y_j)`, so each contribution to the accepted state must be
+transported by `U(z+c_j h,z+h)`. Its final DOPRI stage already forms
+`Y7 = U(z,z+h)y + h Σ b5_j U(z+c_j h,z+h)k_j`; acceptance copies this state
+and carries `N(z+h,Y7)` for FSAL. Omitting those transports works only for
+identity linear propagation. Its accepted-step PI factor uses
+`safety * err^(-0.12) * err_previous^(0.04)` before its existing clamps;
+rejected steps use a contracting proportional rule. Derivation and independent
+analytic gates: [PLANS §25.1](PLANS.md#251-standalone-rust-dopri-accepted-state-frame).
+
+For spectral phase, the forward FFT of a pulse centered at array time `τ`
+contains `exp(-iωτ)`. `Processing.spectral_phase` (and its deprecated `getφ`
+alias) removes that factor **in the complex spectrum**, then unwraps the
+angle along the first axis. Unwrapping the π-per-bin half-window ramp first
+can lose branch information. Phase at empty bins is undefined; envelope
+grids retain their existing absolute-frequency phase reference. See
+[PLANS §25.2](PLANS.md#252-center-the-spectrum-before-phase-unwrapping).
+
+For a mode-summed time-bandwidth product, sum temporal powers and spectral
+energy densities along the same selected trailing axes, measure each FWHM,
+then multiply `Δt * Δf`. Multiplying/summing individual modes' bandwidth
+products is a different observable. The Gaussian-mixture oracle and sampled
+width error budget are in
+[PLANS §25.3](PLANS.md#253-time-bandwidth-product-after-mode-summation).

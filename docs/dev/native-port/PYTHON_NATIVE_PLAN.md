@@ -2124,21 +2124,17 @@ all seventeen examples and independent output tests. No FFT implementation,
 physical result, solver tolerance or independent Julia acceptance tier changes.
 Retain the original failed artifacts and require actual ARM64 acceptance.
 
-The complete `d529235` matrix isolates one remaining ARM64 checkout-test
-failure, not an example or output-format failure: all four ARM64 wheels install
-and run all seventeen examples, but
-`test_exact_roundtrip_and_independent_reconstruction[modal]` compares an
-independently transformed full HDF5 spectrum bitwise with `temporal_field()`.
-The latter transforms a different array layout, so FFT summation order differs
-on ARM64 by up to 7.276e-12 at 84 of 384 entries, including near-zero tails.
-Retain the exact NPZ/HDF5 spectral and grid round-trip assertions. Require
-equal temporal shapes and finite values, then use the global relative L2 norm
-`norm(reconstructed - temporal_field) / max(norm(temporal_field), 1e-300)`
-below 1e-13. Emit the achieved error. This is the same FFT reassociation tier
-as the example above, not a solver or serialization tolerance change. Validate
-the exact delivered source locally against all twenty verified Julia reference
-families, then require all sixteen corrected hosted wheel cells before calling
-the platform matrix accepted.
+The delivered follow-up's actual Linux ARM64 3.11–3.14 checkout suites expose
+the same remaining assumption in `test_output.py`: the modal HDF5 spectrum is
+bit-identical to the source, but inverse transforms of the loaded and original
+arrays differ in 84/384 elements (maximum absolute difference 7.276e-12),
+including near-zero pulse tails. Keep the archive/HDF5 spectral and grid
+round-trip checks bit-exact. For the separately computed full-array temporal
+reconstructions, require matching shapes, finite values and a relative global
+norm error below the existing 1e-13 FFT reassociation tier; record the achieved
+error. Do not weaken serialization, solver, physical-field or Julia-oracle
+criteria. Run focused output tests and the installed checkout/source suites;
+actual ARM64 acceptance still needs a new hosted run of the corrected source.
 
 Prepare these package/example corrections after the gradient candidate's
 source-dependent focused gate and controlled comparison finish, then rebuild

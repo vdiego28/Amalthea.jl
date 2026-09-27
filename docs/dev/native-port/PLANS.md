@@ -24,6 +24,7 @@ the durable rationale.
 | [Portable installation on ARM64 and CPU-only hosts](#13-portable-installation-on-arm64-and-cpu-only-hosts) | S6 item 4 |
 | [Public claims and backend comparison benchmark](#14-public-claims-and-backend-comparison-benchmark) | Public release audit |
 | [Julia-free Python distribution](#20-julia-free-python-distribution) | Python roadmap |
+| [Repository hygiene](#27-repository-hygiene-review-2026-09-20) | Static maintenance audit |
 
 ---
 
@@ -3353,3 +3354,339 @@ If CUDA library PTX also requires a newer driver, any matching temporary runtime
 components must use the same manifest/hash discipline and command-local loader
 path; they must not replace host libraries. A remaining failure is recorded
 explicitly and does not invalidate completed CPU-only wheel evidence.
+
+## 24. Low-load scan and upstream maintenance (2026-09-20)
+
+The lead is using both CPU and GPU for another workload. This unit permits
+source review and short, single-thread checks only (at most one minute total
+execution for focused validation); defer builds, propagation, numerical gates
+and benchmarks until reauthorized. Preserve the existing uncommitted Python
+frontend and installer work. No commit, push or issue comment is part of this
+unit.
+
+### Scan argument ownership
+
+`Scan(name, args)` currently parses `args`, then re-enters the constructor
+which reads global `ARGS`, overwrites the explicit selection and empties the
+global vector to stop recursion. IJulia's kernel connection filename therefore
+also prevents construction (upstream
+[#317](https://github.com/LupoLab/Luna.jl/issues/317)). Separate execution
+selection from assembling the scan's name, variables and arrays:
+
+- Explicit `Vector{String}` arguments are authoritative and never re-read
+  global arguments. `String[]` explicitly selects local execution.
+- Outside initialized IJulia, default construction reads `ARGS`; nonempty
+  `ARGS` still overrides a supplied `AbstractExec`, preserving the documented
+  command-line override. Read a copy; never consume or mutate `ARGS`.
+- In initialized IJulia (`Main.IJulia.inited === true`), implicit arguments
+  are empty. Check the module and binding safely without importing IJulia.
+  Explicit scan argument vectors still work in notebooks.
+- `changexec` uses the assembly helper directly: internal SSH/cluster mode
+  transitions must not reapply the preserved command-line arguments.
+
+Regression cases cover repeated construction, explicit-vector precedence,
+empty arguments, CLI override, input/global-vector preservation, variable order,
+internal execution changes, and initialized/uninitialized notebook detection.
+No workers, queue files or propagation are needed for these checks.
+
+### Reviewed upstream API and checkpoint
+
+GitHub reports upstream `master` at
+`08a53b32cbb4d811b7df0a65fa56ea6f79957256` on 2026-09-20. Port the semantic
+part of its merged [#434](https://github.com/LupoLab/Luna.jl/pull/434): expose
+`Processing.spectral_phase` for all three existing `getφ` call forms and retain
+`getφ` as an unexported deprecated forwarding method. Keep the current phase
+formula unchanged. The `DataField` wavelength forwarding repair is already
+present. The open [#442](https://github.com/LupoLab/Luna.jl/pull/442) changes the
+phase algorithm; review it separately with analytic spectral tests before
+adopting it. Check alias agreement, multidimensional input, and existing
+grid/output dispatch without solving a propagation problem.
+
+Track the reviewed full upstream SHA in `.github/upstream-reviewed.txt` and
+make `upstream_sync.yml` compare against it, validating the SHA, its presence
+and ancestry. Git errors must fail the job instead of masquerading as no drift.
+Pass commit text through an environment variable to `github-script`, avoiding
+JavaScript interpolation of commit subjects. Update this checkpoint only after
+documenting every intervening commit's disposition in `UPSTREAM_TRIAGE.md`;
+reviewed does not mean merged. The frozen performance baseline `0a52ffb` is
+independent and must remain unchanged. Issue #67's existing DOPRI entries are
+covered by §17/§18; the inactive Tsitouras file remains explicitly deferred.
+
+Correct the stale live example-maintenance paragraph by linking its completed
+repair record rather than repeating obsolete failures. Record focused evidence
+and the deferred `io`/`fields` and native gates in the work log and resume queue.
+
+## 25. Analytic audit of propagation frames and spectral diagnostics (2026-09-20)
+
+The lead requested deeper code/math work under the same CPU/GPU reservation.
+Allow a small standalone Rust test compilation using an existing dependency
+artifact, plus source-selected Julia diagnostics, single-threaded/low-priority
+and within one minute total focused execution. Do not rebuild the shared
+library, run propagation workloads, access CUDA or run benchmarks. Preserve
+the uncommitted resident/Python work. Full acceptance remains deferred.
+The cached `num_complex` artifact was built by Rust 1.95 and cannot be loaded
+by installed Rust 1.98.1. If needed, use an isolated offline mini-crate pointing
+at `stepper.rs`, compiling only cached `autocfg`, `num-traits` and `num-complex`
+with one job and a short timeout. Keep its target/lockfile in the ignored
+evidence directory; no project build scripts or existing artifacts are touched.
+
+### 25.1 Standalone Rust DOPRI accepted-state frame
+
+`amalthea/src/stepper.rs::Dopri5Stepper` is a public Rust helper, currently used
+by its unit test and Criterion benchmark, **not** Julia's resident or callback
+solver. Its stages store physical derivatives at different stage coordinates.
+For a consistent linear evolution operator `U(a,b)`, the final stage is
+
+`Y7 = U(z,z+h)y + h Σ b5[j] U(z+c[j]h,z+h) k[j]`.
+
+The implementation already computes this into `y_stage` and evaluates
+`k7 = N(z+h,Y7)`. On acceptance it incorrectly recomputes
+`U(z,z+h)y + h Σ b5[j] k[j]`, omitting the derivative transports. This corrupts
+the accepted state and makes its reused k7 inconsistent with that state.
+The existing test sets `U=I`, making the defect invisible.
+
+Accept by copying the completed `y_stage`; retain rejection field ownership
+and the existing k7-to-k1 carry. Document that input/output `y` and
+stage derivatives are physical fields, and the supplied linear evolution must
+compose consistently. Test: (1) nonzero complex linear propagation with a
+linear residual, against the independent DOPRI stability polynomial and an
+identity-linear control; (2) repeated nonlinear phase rotation with known
+exact solution, fifth-order refinement and direct FSAL consistency; (3) reject
+and retry without changing the field. Use tolerances tied to roundoff for the
+polynomial/FSAL identities and fifth-order truncation for analytic trajectories.
+Do not change the separate resident, legacy-FFI or CUDA solver implementations.
+
+The first independent reject/retry test also exposed a controller error in
+this same standalone helper. Its factor is currently
+`safety * error^(-β1) * (last_error/error)^β2` with `β2=-0.04`.
+This gives the history term the wrong sign and changes the current-error
+exponent. Applied to rejection with initial `last_error=1e-4`, it approaches
+`factor=1` at error about 27, so retries need never reach acceptance. Use
+`safety * error^(-β1) * last_error^(-β2)` on accepted nonzero-error steps,
+retaining the target-one convention and `[0.2,5]` accepted-factor limits.
+Rejected finite-error steps use the fifth-order proportional shrink
+`clamp(safety*error^(-1/5),0.1,0.9)`; nonfinite errors halve the step. Rejection
+must leave accepted-error history unchanged. Add an unclamped PI-history
+check, strict contraction on retries and nonfinite-RHS rejection. Preserve
+the existing zero-error growth and absolute underflow threshold; no controller
+policy change is made in the production resident/legacy/CUDA paths.
+
+### 25.2 Center the spectrum before phase unwrapping
+
+For a forward DFT with `exp(-iωt)`, samples centered at array time `τ` carry
+`Eω = A(ω) exp(iφ(ω)) exp(-iωτ)`. Recover phase by multiplying the complex
+spectrum by `exp(+iωτ)` **before** taking its angle and unwrapping along the
+frequency axis. Unwrapping the raw spectrum first is ambiguous near the
+half-window ramp's π-per-bin increment, and subtracting a ramp afterward
+cannot repair lost branch choices. The previous §24 test used a positive-ramp
+synthetic field to preserve legacy algebra; replace it with the negative-ramp
+Fourier convention as part of this intentional numerical correction.
+
+This agrees with the independently inspected open upstream
+[#442](https://github.com/LupoLab/Luna.jl/pull/442), head `132b3d3`; adopt the
+formula on the strength of analytic tests, not CI status alone. Test a real
+FFT of a centered impulse, a chirped/off-grid-delay spectrum and multimode/
+saved-position arrays. Phase at zero amplitude is undefined, and unwrapped
+phase is defined modulo a constant multiple of 2π per spectrum; comparisons
+in a supported band remove only that constant when necessary. Preserve the
+existing absolute-frequency reference for envelope grids and both API names.
+Record the old algorithm's error to establish that the regression is non-vacuous.
+
+### 25.3 Time-bandwidth product after mode summation
+
+`Processing.time_bandwidth(...; sumdims=...)` currently discards the keyword
+for temporal width and omits it for spectral width. The intended observable is
+`FWHM_t(Σ |Et|²) * FWHM_f(Σ |Eω|²)`, with the same selected axes summed in both
+domains, while frequency/time remain the first axis. Forward the keyword to
+both existing width functions; preserve the default per-mode result.
+
+Validate with independently known Gaussian Fourier pairs of unequal widths.
+For `Et_j = sqrt(w_j) exp(-t²/(2σ_j²))`, temporal and spectral intensities are
+proportional to `Σ w_j exp(-t²/σ_j²)` and
+`Σ w_j σ_j² exp(-σ_j²ω²)`. Independent scalar bisection supplies both half-widths;
+their product in Hz is `2*t_half*ω_half/π`. The mixed-mode result differs
+substantially from each single Gaussian's `2*log(2)/π`. Exercise integer and
+tuple axes and retained save dimensions with real small FFTs and production
+FWHM routines. Bound the sampled linear-interpolation error separately from
+roundoff; do not use a propagation-equivalence tolerance for this observable.
+The initial `N=8192`, window-256 diagnostic measured `2.741e-4` relative
+sampling error, slightly above the planned `2e-4` width bound. Refine both
+axes (`N=32768`, window 512 halves both Δt and Δω) rather than weakening that
+bound. This remains four small FFT columns, not a propagation workload.
+For the dimensionless `DiagnosticGrid` fixture, specialize its `getEt` override
+on both `DiagnosticGrid` and `Eω::AbstractArray`. Keyword dispatch otherwise
+conflicts with the package's `getEt(::AbstractGrid, ::AbstractArray)` method
+when the complete `fields` group loads Amalthea.
+
+## 26. Raman exponential-integrator cancellation audit (2026-09-20)
+
+Continue the lead's mathematical review under the CPU/GPU reservation. Audit
+`raman.rs::PrecomputedStepCoeffs::compute` against the oscillator's impulse
+response, not another implementation of the same matrix-inverse formula.
+Keep focused compilation/execution below one minute, single-core and low
+priority, with an isolated source-selected CPU harness. Do not rebuild project
+libraries, execute CUDA, run benchmarks or run full propagation gates.
+
+### 26.1 Stable piecewise-linear forcing coefficients
+
+For `q'' + 2γ q' + (ω²+γ²)q = Kω I(t)`, the causal impulse response is
+`h(u)=K exp(-γu) sin(ωu)`. The homogeneous transition is `A=exp(MΔt)` with
+`M=[0 1; -(ω²+γ²) -2γ]`. Writing `b=[0,Kω]`, linear interpolation of the
+intensity gives the exact update
+
+`x_next = A x + B0 I_old + B1 I_new`,
+
+`B0 = ∫₀^Δt exp(Mu)b (u/Δt) du`,
+`B1 = ∫₀^Δt exp(Mu)b (1-u/Δt) du`.
+
+The existing inverse-matrix expressions are algebraically correct, but
+subtract `A-I-MΔt`. At small `|ωΔt|` and `|γΔt|`, this destroys significant
+digits in the forcing coefficients. Even the undamped ramp contains
+`1-sin(ωΔt)/(ωΔt)`, whose relative roundoff grows as the inverse square of
+the phase increment. A scalar decimal probe already shows relative errors
+of about `6.7e-6` at phase `1e-5`; measure the actual Rust coefficients before
+repairing them. Smaller sampling intervals must not erode this exact update.
+
+For `(|ω|+|γ|)|Δt| <= 0.5`, evaluate the equivalent convergent series:
+
+`v_n = (MΔt)^n bΔt/n!`,
+`B0 = Σ v_n/(n+2)`,
+`B1 = Σ v_n/((n+1)(n+2))`.
+
+Use 24 terms with a two-component recurrence; no inverse matrix, small
+exponential subtraction or runtime allocation is needed. In scaled coordinates
+`(q,Δt*q')`, the dimensionless matrix has infinity norm at most 1.25 on this
+branch, making the omitted series tail comfortably below Float64 roundoff.
+Retain the existing closed form outside this branch. Compute the homogeneous
+`a12=Δt exp(-γΔt) sinc(ωΔt)` with the unnormalized sinc limit at zero, then
+`a11/a22=exp(-γΔt)cos(ωΔt) ± γ*a12` and `a21=-(ω²+γ²)*a12`.
+This also supplies identity/zero-forcing at `Δt=0` and the well-defined
+zero-frequency homogeneous limit for finite coupling. Do not change the
+eight-field `repr(C)` layout, scalar/SIMD recurrence, GPU kernel or FFI exports.
+CPU and CUDA coefficient consumers share this constructor, so GPU numerical
+acceptance remains pending even though no device code changes.
+
+### 26.2 Independent acceptance and deferred integration
+
+Add Rust unit tests that integrate `h` and `h'` directly using composite
+eight-point Gauss-Legendre quadrature, independently of the matrix series.
+Cover undamped and damped oscillators, phase increments from `1e-8` through
+order one, negative and `1e-50` coupling, physical frequency/time units, and
+both sides of the series/closed-form boundary. Compare all four forcing
+coefficients at `2e-13` relative accuracy for the nonzero fixtures; require
+exact zero for zero-drive limit cases. Assert finiteness before maxima so
+IEEE NaNs cannot be discarded by floating-point maximum reductions.
+Check the homogeneous map against the analytic damped sinusoid and finite
+zero-step/zero-frequency limits.
+
+For the trajectory tier, run the actual scalar and available CPU SIMD
+recurrences on affine intensities, whose interpolation is exact. Compare the
+entire trajectory to direct convolution (constant-drive undamped cases also
+have `q(t)=2K sin²(ωt/2)/ω`). Check small increments and grid refinement without
+widening the existing scientific acceptance thresholds; prove a nonzero Raman
+effect explicitly. Include damped small-step trajectories and a two-interval
+control that exercises the closed-form branch. Preserve all red/green logs
+and source hashes. Bounded
+source-selected tests do not establish shared-library integration, the Julia
+FFT-convolution comparison, Python wheel acceptance or GPU execution. The
+recorded full native/affected-group and strict CUDA gates remain deferred
+until the lead releases those resources.
+
+## 27. Repository hygiene review (2026-09-20)
+
+The lead requested a repository-hygiene check while reserving CPU/GPU time.
+Audit only the Git-tracked and nonignored untracked working files, using
+bounded, low-priority, single-core static checks. Preserve the substantial
+pending Python/frontend, installer and numerical changes, frozen performance
+evidence and append-only logs. Do not commit, stage, delete build artifacts,
+alter dependency versions, run scientific tests or access the GPU.
+
+Check whitespace/conflict markers; Python AST, TOML/lockfile, JSON and YAML
+syntax; inline local Markdown file targets; filename case collisions; file
+sizes; narrowly defined private-key/GitHub/AWS credential patterns (report
+paths/rule names only); workflow permissions; and test-manifest discovery.
+Ignored files and Git history are outside the credential scan. Syntax and
+local-link checks are not full document builds, link-anchor checking,
+dependency-vulnerability scans or proof that CI succeeds. Record formatter
+drift without applying a repository-wide reformat to unrelated work.
+
+Repair three observed gaps:
+
+1. Add ignore rules for `.env` and `.env.*`, with explicit `.env.example`,
+   `.env.sample` and `.env.template` exceptions; ignore Python type/lint caches
+   and parallel coverage fragments. Keep the deliberately tracked frozen
+   `test/performance_audit/upstream/Manifest.toml` explicitly exempt from the
+   generic Manifest ignore. Preserve existing scientific fixtures and compact
+   performance JSON summaries. Do not broaden ignores to source/data suffixes
+   or whole agent configuration directories.
+2. Extend the existing monthly Dependabot schedule to Cargo `/python-native`
+   and pip `/python` plus `/python-native`. Keep the existing GitHub Actions,
+   Julia and main Cargo entries. GitHub's current
+   [supported ecosystems](https://docs.github.com/en/code-security/reference/supply-chain-security/supported-ecosystems-and-repositories)
+   and [options reference](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference)
+   confirm these identifiers, including Julia; no unsupported-ecosystem
+   correction is needed. Do not scan/update the frozen upstream baseline.
+   These are local configuration edits; no remote bot run or dependency update
+   is initiated by this unit.
+3. Correct `amalthea/.cargo/config.toml`'s stale comments claiming that the
+   vestigial runtime dispatcher can make a `target-cpu=native` binary portable.
+   The executable may already contain host-specific instructions before any
+   dispatch. Document the actual portable-build `RUSTFLAGS=""` override used
+   by package/release builds; do not change compiler flags or optimization.
+
+Validate ignore behavior against synthetic paths (without writing credential
+files), parse the amended configuration, verify all update directories have
+the matching manifest, and repeat whitespace checks. Static checks take the
+place of no numerical gate; existing integration deferrals remain in force.
+Keep current status in BACKLOG and dated measurements/limits in PORT_LOG.
+
+## 28. Delivery boundaries after Python wheel acceptance (2026-09-27)
+
+The tested Python source is the exact `fa71728` tree, which descends from the
+hosted fourth-order repair `7f70784` and published `v1.0.4` base. Prepare a
+clean, fast-forwardable integration checkout at each of those two commits.
+Keep the original dirty checkout intact. Do not merge its later uncommitted
+changes into the accepted Python candidate: changes to shared Rust or Julia
+source would require new provenance and affected numerical/wheel validation.
+
+Review the residual working files against `fa71728`, rather than treating all
+dirty paths as new work. Group their current contents into coherent units:
+standalone Rust numerics, Julia spectral diagnostics, scan/upstream maintenance,
+static hygiene, installer with its documentation, timing manifests, and mixed
+planning/evidence documents. The installer and its README/manual links travel
+together; until the script is delivered on `main`, those links would fail.
+Mixed documents need an ordered reconciliation that preserves the append-only
+`PORT_LOG` and BACKLOG's live status. Keep the nine recorded rustfmt drifts as a
+separate follow-up after the accepted wheel source is no longer frozen; a broad
+formatting pass would change validated source hashes. No file deletion, staging,
+commit, push or publication is part of this preparation.
+
+For the Python public-preview review, use the [release contract](PYTHON_NATIVE_PLAN.md#release-contract)
+and the exact-source sixteen-cell wheel and glibc evidence. Check the provisional
+distribution name directly with PyPI at review time and again immediately
+before any publication; a missing project endpoint is not a reservation.
+The tested artifacts carry `0.0.1.dev0`, an internal-development description
+and a Pre-Alpha classifier. Choose explicit public-preview metadata before
+publishing. A metadata change creates a new source distribution and wheels;
+rebuild and rerun the installed and offline artifact gates for that exact
+candidate. The existing GitHub release workflow publishes Julia libraries,
+not Python distributions. Publishing a Python package requires a separate,
+explicit delivery decision and credentials/workflow design. Keep current
+status in BACKLOG and dated review evidence in PORT_LOG.
+
+## 29. Isolated Rust formatting follow-up (2026-09-27)
+
+The lead requested delivery of the remaining checkout cleanup after the
+accepted `fa71728` source reached `main`. The recorded hygiene review and a
+fresh `cargo fmt --check` identify the same nine Rust files: five benchmark
+sources, `amalthea/src/{io,lib,native}.rs`, and `python-native/src/lib.rs`.
+Format only these files in a separate delivery unit after the pending
+numerical/maintenance sources are captured. Check the changed-path set and
+`git diff --check`, then require `cargo fmt --check` for both Rust crates.
+No symbols, algorithms, dependencies, FFI layout or tests are deliberately
+changed by this unit. Since some formatted files belong to the Python wheel
+source map, the old exact-source wheel acceptance cannot be assigned to a
+new formatted revision; the branch's installed wheel and scientific gates
+must be collected at its new exact source before any release claim or main
+integration. Keep current status in BACKLOG and execution evidence in
+PORT_LOG.
