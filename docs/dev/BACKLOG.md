@@ -33,6 +33,21 @@ This is the authoritative short queue. The long sections below retain design
 history and measured evidence, but older words such as "next", "not started",
 or "verified" inside a superseded narrative do not outrank this list.
 
+> **Delivery audit and Windows PPT cache repair (2026-09-29):** all previously
+> prepared local commits are pushed; there are no stashes or local-only branch
+> commits. Older feature branches are already ancestors of GitHub `main`, and
+> local `main` now matches it at `fa71728`. PR #68 is the only pending
+> integration. Its prior push run `36354043639` independently verifies all
+> sixteen wheel cells and passed the Julia/Apple/ARM64 gates. The companion
+> PR run exposed intermittent Windows cache publication failure; bounded
+> retries and nine regression cases are implemented under
+> [PLANS §31](native-port/PLANS.md#31-delivery-audit-and-windows-ppt-cache-publication-2026-09-29).
+> The complete local PPT suite passes with independent Julia references.
+> **Next:** collect the repaired branch's exact-source hosted wheel and CI
+> evidence, then merge PR #68 if all gates pass. Prior source acceptance does
+> not establish Windows acceptance for the new repair. Publication and
+> deliberately deferred GPU CI remain separate work.
+
 > **PPT missing-library repair (2026-09-29):** the undefined warning flag in
 > `Ionisation._make_rust_ionization_handle` is replaced with `cfg.ionisation`
 > under [PLANS §30](native-port/PLANS.md#30-ppt-missing-library-warning-flag-repair-2026-09-29).
@@ -48,8 +63,8 @@ or "verified" inside a superseded narrative do not outrank this list.
 > The affected `rust`, `physics`, `io` and `fields` CPU groups now pass across
 > recorded runs, as does the strict CUDA `rust` group. The first combined run
 > exposed a diagnostic test-fixture ambiguity and sandbox-only I/O restrictions;
-> both were resolved and the affected groups rerun. Preserve the uncommitted
-> Python/frontend work below. Upstream issue
+> both were resolved and the affected groups rerun. The Python/frontend work
+> is delivered as recorded below. Upstream issue
 > [#67](https://github.com/vdiego28/Amalthea.jl/issues/67) is reviewed locally;
 > no GitHub comment or issue closure is part of this maintenance unit.
 > The original source-selected and workflow checks also pass. Counts,
@@ -90,7 +105,7 @@ or "verified" inside a superseded narrative do not outrank this list.
 > coherent bundles and the nine-file formatting follow-up are assembled in an
 > isolated delivery checkout. The affected CPU `rust`, `physics`, `fields` and
 > host `io` gates pass across recorded runs; both Rust crates pass formatting
-> checks. The eight delivery commits are pushed in
+> checks. The delivery commits, including the PPT fallback repair, are pushed in
 > [draft PR #68](https://github.com/vdiego28/Amalthea.jl/pull/68).
 > **Next:** collect exact-source hosted Python wheel and affected CI results
 > before considering integration of these later changes into `main`. The
@@ -111,9 +126,9 @@ or "verified" inside a superseded narrative do not outrank this list.
 > [`native-port/PLANS.md`](native-port/PLANS.md) §15. On the frozen Zen 3
 > focused set, native fixed steps improved 30–48% and adaptive solves 31–50%,
 > with per-step Julia-visible allocation reduced to 96 bytes. The full local
-> Rust, multimode, interface, and scan gates pass. The only unfinished evidence
-> is running the prepared diagnostic on a real Apple Silicon host; no Apple
-> result or LTO promotion is claimed from this x86_64 Linux machine.
+> Rust, multimode, interface, and scan gates pass. The real Apple M1 diagnostic subsequently passed in the hosted run
+> recorded under **Apple diagnostic correction** below. LTO promotion remains
+> deferred.
 
 > **Published release:** [v1.0.4](https://github.com/vdiego28/Amalthea.jl/releases/tag/v1.0.4)
 > was published on 2026-08-29; the local tag resolves to `f7c9d74`. The public
@@ -135,7 +150,7 @@ or "verified" inside a superseded narrative do not outrank this list.
 > Hosted validation passed at `7f707842259cd9ff7cfa4f8c55418b75c3ca140c`
 > ([run 34169347939](https://github.com/vdiego28/Amalthea.jl/actions/runs/34169347939));
 > GitHub `main` was fast-forwarded to `fa71728` on 2026-09-27, including that
-> exact repair commit. The new main-branch workflows are running; no new
+> exact repair commit. The repair is integrated into `main`; no new
 > release is claimed.
 > See the [repair delivery entry](native-port/PORT_LOG.md#2026-09-06--authorized-repair-delivery--codex)
 > and its preceding validation entry for commands and delivery scope.
@@ -336,8 +351,8 @@ or "verified" inside a superseded narrative do not outrank this list.
 > in `.rust_test_logs/roadmap-live-jobs.json`. The initial migration changes are
 > committed/pushed in the isolated delivery worktree; the verified gradient,
 > guide and platform corrections were delivered in `d529235`, followed by the
-> test-only `fa71728` repair. The original checkout remains at `34cdafc` with
-> its existing uncommitted work; independent installer edits remain preserved.
+> test-only `fa71728` repair. The original checkout is on `delivery/pending-units-20260927`; its installer
+> and later maintenance work are committed and pushed in PR #68.
 
 ## Historical campaign summaries
 

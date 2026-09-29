@@ -2151,3 +2151,31 @@ Branch concurrency will supersede the known-failed run. Preserve its completed
 reference export, failed platform artifacts, job-state snapshot and exact-commit
 checkout; do not treat cancelled cells as passes. Local source-dependent suites
 remain on the original checkout and continue independently of delivery commits.
+
+## Windows PPT cache publication contention — delivery repair
+
+The retained Windows 3.12 source-wheel test from PR run `36354046451` reports
+936 passing tests and one failure in `test_ppt_atomic_cache_concurrent_construction`:
+`os.replace(temporary, cache_path)` raises WinError 5. Both writers close their
+own temporary NPZ before publication. Atomic replacement can still encounter
+transient Windows access/sharing contention; the cache must tolerate that
+without exposing a partially written destination.
+
+Keep writing a unique temporary NPZ in the destination directory and retain
+atomic `os.replace`. Add a private publication helper that retries only
+`PermissionError` carrying Win32 code 5 (access denied), 32 (sharing violation)
+or 33 (lock violation). Allow eight attempts with exponential sleeps starting
+at 10 ms (1.27 s total maximum delay). Unrelated errors propagate immediately;
+persistent contention propagates the final original exception. The existing
+`finally` must delete the temporary file on success or failure. Do not hide
+permanent permission problems, delete the previous cache, change cache keys,
+serialize physical evaluations or change `cache_hit` meaning.
+
+Use deterministic injected publication failures through the real table
+constructor to prove recovery, valid subsequent cache reuse, bounded persistent
+failure, preservation of existing destination bytes, cleanup, and immediate
+propagation of unrelated errors. Retain the real concurrent-construction test
+and run the complete PPT suite with independent Julia references. A Linux
+injected-error test does not establish Windows filesystem acceptance: require
+the final hosted Windows cells and full sixteen-cell wheel collector before
+main integration. Existing numerical gates retain their original tolerances.

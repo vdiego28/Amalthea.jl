@@ -3709,3 +3709,27 @@ source fails this diagnostic, then run the repaired case and the recorded
 `python3 test/validate.py --max-workers 4` CPU Rust/native gate. This is a
 control-flow repair; existing numerical equivalence tests supply the unchanged
 kernel/trajectory coverage rather than new numerical tolerances.
+
+## 31. Delivery audit and Windows PPT cache publication (2026-09-29)
+
+The lead requested delivery of remaining work and integration into `main`.
+Audit local branch heads against refreshed `origin` refs, the working tree,
+stashes, open PRs and hosted acceptance. No local-only branch commit or stash
+remains; older feature branches are ancestors of `origin/main` (`fa71728`).
+The remaining implementation is consolidated in PR #68 on
+`delivery/pending-units-20260927`. Preserve historical branches and local
+validation artifacts. Reconcile superseded live BACKLOG statements with this
+inventory. Release metadata/publication and deferred GPU CI are separate work.
+
+Prior PR run `36354046451` failed only Windows x86_64 Python 3.12: concurrent
+PPT table construction raised `PermissionError [WinError 5]` in `os.replace`
+while publishing an already computed table. Retain that run's artifacts and
+collect the matching push run `36354043639` against exact source `8d1225f`.
+PR artifacts record GitHub's synthetic merge SHA, so the existing collector
+correctly rejects them against the branch-head SHA; preserve that refusal.
+Repair publication under the [Windows cache design](PYTHON_NATIVE_PLAN.md#windows-ppt-cache-publication-contention--delivery-repair).
+This is a filesystem change; numerical functions, tables and tolerances remain
+unchanged. After focused tests and the required local gate, deliver the repair
+and updated PR description. Require hosted wheel acceptance and affected CI
+at the resulting source before merging PR #68. Do not merge a known failure
+or treat the old accepted `fa71728` wheel matrix as validation of new source.

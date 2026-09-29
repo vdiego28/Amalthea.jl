@@ -9189,3 +9189,48 @@ refs/heads/delivery/pending-units-20260927` matches local base
 `8d1225f5a0f69f8a043b8aae4f33f762a2f41519`, allowing an ordinary fast-forward
 push. No main-branch merge or release is part of this delivery.
 **Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-29 — Delivery audit and Windows PPT cache publication repair — Codex
+**Status at this checkpoint:** local repair and audit complete; authorized
+commit/push prepared, new hosted acceptance and main integration pending.
+**Did:** Audited all local heads, stashes, working changes, open PRs and origin
+refs. No previously prepared local-only commit or stash remains; the three
+older feature/fix heads are already ancestors of `origin/main`. Updated the
+inactive local `main` to published `fa71728`, preserving all branches.
+Reconciled superseded BACKLOG claims about dirty work and missing Apple evidence.
+PR #68 is the sole pending integration. Added `ppt.py::_publish_cache` to retry
+bounded Windows publication contention while preserving atomic replacement,
+original errors, and cleanup; added nine regression cases in
+`python-native/tests/test_ppt.py`. No Rust, Julia, FFI or numerical formula changed.
+**Design:** [PLANS §31](PLANS.md#31-delivery-audit-and-windows-ppt-cache-publication-2026-09-29)
+and [Windows publication design](PYTHON_NATIVE_PLAN.md#windows-ppt-cache-publication-contention--delivery-repair).
+**Gotchas:** PR run `36354046451` had 936 passing source tests and one real
+Windows 3.12 concurrent-cache `os.replace` failure (WinError 5); its log API
+returned empty output, but the retained source-test artifact contains the
+complete exception. Its synthetic-merge commit differs from branch head
+`8d1225f`; the collector correctly rejected those artifacts against the branch
+checkout. Collected the corresponding push run instead, without altering any
+manifest or relaxing source checks. An inherited extra pip index caused DNS
+retry delays while preparing the temporary environment; installation ultimately
+succeeded without changing user configuration. Linux fault injection does not
+prove Windows filesystem behavior; fresh hosted Windows evidence remains required.
+**Tests:** Evidence root: `.rust_test_logs/delivery-audit-20260929/`, including
+`branch-inventory.json`, both runs' metadata/artifacts and collector reports.
+`python3 test/standalone_wheels/collect.py --artifacts .rust_test_logs/delivery-audit-20260929/prior-push-artifacts --repository /tmp/amalthea-delivery-prior-20260929 --run-json .rust_test_logs/delivery-audit-20260929/prior-push-run.json --output .rust_test_logs/delivery-audit-20260929/prior-push-wheel-evidence.json`
+independently accepts **16/16** cells at `8d1225f` (34 checkout / 937 source
+tests, zero failures/skips, 17/17 offline examples per wheel). That prior push
+run also passed Julia, Apple hardware and ARM64 installation checks; it does
+not establish new-source acceptance.
+`PYTHONPATH="$PWD/python-native/python" AMALTHEA_PPT_ORACLE="$PWD/.rust_test_logs/delivery-audit-20260929/prior-artifacts/python-native-oracles/ppt" /tmp/amalthea-delivery-audit-20260929-env/bin/python -m pytest python-native/tests/test_ppt.py -q -s --junitxml=.rust_test_logs/delivery-audit-20260929/ppt-tests.xml`
+passed **50/50**, no skips, in 9.11 s. This includes injected WinError 5/32/33
+recovery, bounded persistent failures with destination preservation, immediate
+unrelated errors, temporary cleanup, and the actual concurrent construction.
+Independent PPT table node/rate errors were **2.22045e-16 / 5.46230e-14**;
+uniform and nonuniform same-sample spline errors were **0**; final table
+refinement error **2.60458e-13**. Original tolerances remain intact.
+`JULIA_DEPOT_PATH=/tmp/amalthea-validation-julia-depot-20260929:/home/diego/.julia python3 test/validate.py --max-workers 4 --log-dir .rust_test_logs/delivery-audit-20260929/validation`
+passed at `20260929T231741Z-3yiinswv`: release build, checkout/library preflight,
+Cargo **102+5**, Julia `rust` **43074 pass / 11 expected broken / 43085 total**.
+`git diff --check` passes. PR description is prepared with final scope and the
+remaining exact-source hosted merge gate; no main merge or release is claimed.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
