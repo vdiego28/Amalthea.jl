@@ -9139,3 +9139,53 @@ the affected local numerical and formatting results. This documentation-only
 status follow-up leaves the tested source bytes unchanged and supersedes that
 first hosted run's commit SHA for final provenance.
 **Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-29 — PPT missing-library warning repair — Codex
+**Status at this checkpoint:** complete locally; uncommitted and unreleased.
+**Did:** Replaced the stale `use_rust_ionisation` warning guard with
+`cfg.ionisation` in `src/Ionisation.jl::_make_rust_ionization_handle`.
+An absent native library now returns `nothing` for the Julia fallback and
+warns only when ionisation was explicitly enabled. No FFI export or numerical
+formula changed. Updated the BACKLOG resume queue.
+**Design:** [PLANS §30](PLANS.md#30-ppt-missing-library-warning-flag-repair-2026-09-29).
+**Gotchas:** The failure is a leftover flag reference after centralized config,
+not an American/British spelling mismatch. The reported `~/Amalthea.jl`
+installation is absent from this environment; validation used this checkout
+and Julia 1.12.6, not the reported remote Julia 1.11.9 bridge. A writable
+fresh depot was needed for local precompilation. The isolated diagnostic
+emits a Julia 1.12 world-age warning when accessing its freshly defined
+module binding; the tested function is invoked through `invokelatest`.
+**Tests:** All Julia commands used
+`JULIA_DEPOT_PATH=/tmp/amalthea-validation-julia-depot-20260929:/home/diego/.julia`.
+`julia --startup-file=no .rust_test_logs/ionisation-fallback-20260929/check_missing_library.jl`
+loads the actual function and real `Config` into an isolated module with a
+nonexistent library path. Before the fix, four cases reproduced the exact
+`UndefVarError` (7 pass / 4 error); afterward all **11/11 assertions** pass
+across defaults, both toggles off, native-only, and explicit ionisation with
+native on/off, including warning presence/absence and `nothing` results.
+Logs and the diagnostic are retained under
+`.rust_test_logs/ionisation-fallback-20260929/` (`before.log`, `after.log`).
+`python3 test/validate.py --max-workers 4 --log-dir .rust_test_logs/ionisation-fallback-20260929/validation`
+passed at `20260929T230129Z-dy3ee5ks`: rebuilt local release library,
+successful package precompilation and checkout/library preflight, Cargo
+**102 unit + 5 policy tests**, and Julia `rust` **43074 pass / 11 expected
+broken / 43085 total**, no failures/errors. That existing suite supplies
+numerical/FFI coverage; this control-flow fix adds no numerical tolerance.
+`git diff --check` passed.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-29 — Authorized PPT repair delivery review — Codex
+**Status at this checkpoint:** validated repair ready for authorized commit/push.
+**Did:** Reviewed the one-line `src/Ionisation.jl` repair and its three
+planning/status/log documents for delivery on `delivery/pending-units-20260927`
+after the lead explicitly requested commit and push. Updated BACKLOG's live
+status to identify that delivery branch. No additional source or FFI change.
+**Design:** [PLANS §30](PLANS.md#30-ppt-missing-library-warning-flag-repair-2026-09-29).
+**Tests:** Re-read the preceding entry's diagnostic and recorded gate results
+at `.rust_test_logs/ionisation-fallback-20260929/validation/20260929T230129Z-dy3ee5ks/summary.json`:
+all commands passed. Source remains identical to that validated repair, so no
+numerical rerun was needed. `git diff --check` passes. `git ls-remote origin
+refs/heads/delivery/pending-units-20260927` matches local base
+`8d1225f5a0f69f8a043b8aae4f33f762a2f41519`, allowing an ordinary fast-forward
+push. No main-branch merge or release is part of this delivery.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).

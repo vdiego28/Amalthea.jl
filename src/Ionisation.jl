@@ -94,7 +94,7 @@ function _make_rust_ionization_handle(E::AbstractVector, rate::AbstractVector,
         # opportunistic "use it if present" check, not an explicit request,
         # so a fresh clone without a built Rust library (the common case)
         # must not spam a warning on every IonRatePPTAccel construction.
-        use_rust_ionisation && @warn "AMALTHEA_USE_RUST_IONISATION=1 but Rust lib not found " *
+        cfg.ionisation && @warn "AMALTHEA_USE_RUST_IONISATION=1 but Rust lib not found " *
               "at $_LIBAMALTHEA — falling back to Julia.  Build it with " *
               "`cargo build --release` in amalthea/."
         return nothing

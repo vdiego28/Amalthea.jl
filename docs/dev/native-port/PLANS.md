@@ -3690,3 +3690,22 @@ new formatted revision; the branch's installed wheel and scientific gates
 must be collected at its new exact source before any release claim or main
 integration. Keep current status in BACKLOG and execution evidence in
 PORT_LOG.
+
+## 30. PPT missing-library warning flag repair (2026-09-29)
+
+`Ionisation._make_rust_ionization_handle` reads `Config.backend_config()` but
+its missing-library branch still references the removed local variable
+`use_rust_ionisation`. With the default native toggle enabled, an absent
+library therefore raises `UndefVarError`, including during package precompile,
+instead of returning `nothing` for the Julia fallback. Replace only that
+warning guard with `cfg.ionisation`, preserving the existing explicit-opt-in
+warning policy. No numerical formula, library lookup or FFI export changes.
+
+Validate the actual function with a deliberately absent library path in an
+isolated module and the real `Config` implementation: defaults, both toggles
+off, native-only, and explicit ionisation with native on/off must return
+`nothing`; only explicit ionisation emits the warning. Confirm the original
+source fails this diagnostic, then run the repaired case and the recorded
+`python3 test/validate.py --max-workers 4` CPU Rust/native gate. This is a
+control-flow repair; existing numerical equivalence tests supply the unchanged
+kernel/trajectory coverage rather than new numerical tolerances.

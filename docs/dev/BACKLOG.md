@@ -33,6 +33,15 @@ This is the authoritative short queue. The long sections below retain design
 history and measured evidence, but older words such as "next", "not started",
 or "verified" inside a superseded narrative do not outrank this list.
 
+> **PPT missing-library repair (2026-09-29):** the undefined warning flag in
+> `Ionisation._make_rust_ionization_handle` is replaced with `cfg.ionisation`
+> under [PLANS §30](native-port/PLANS.md#30-ppt-missing-library-warning-flag-repair-2026-09-29).
+> The targeted missing-library diagnostic and recorded CPU Rust/native gate
+> pass. Evidence and environment limits are in the
+> [repair log](native-port/PORT_LOG.md#2026-09-29--ppt-missing-library-warning-repair--codex).
+> Delivery branch: `delivery/pending-units-20260927`. Integration into `main`
+> and release remain pending.
+
 > **Low-load maintenance (2026-09-20; validated 2026-09-24):** scan argument ownership/notebook
 > construction, upstream `spectral_phase` compatibility and the reviewed-upstream
 > checkpoint are implemented under [PLANS §24](native-port/PLANS.md#24-low-load-scan-and-upstream-maintenance-2026-09-20).
