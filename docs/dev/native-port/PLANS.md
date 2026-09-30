@@ -3733,3 +3733,74 @@ unchanged. After focused tests and the required local gate, deliver the repair
 and updated PR description. Require hosted wheel acceptance and affected CI
 at the resulting source before merging PR #68. Do not merge a known failure
 or treat the old accepted `fa71728` wheel matrix as validation of new source.
+
+## 32. Launch preparation and exact-source release artifacts (2026-09-29)
+
+The lead requested preparation for the next version while PR #68 completes
+CI, including useful fixes during that wait, and selected the Julia-free Python
+wheel launch on GitHub. Prepare an additive Julia minor
+release, `1.1.0`, and an initial standalone Python beta, `0.1.0`, distributed
+as GitHub assets. These are local candidate versions, not publication claims.
+The existing Julia-backed Python wrapper follows Julia's `1.1.0` version.
+Rust implementation crates retain their independent internal versions. No
+commit, push, merge, tag, external announcement or publication is authorized
+by this preparation request. PyPI remains a separate delivery decision.
+
+Complete CHANGELOG's unreleased section from the actual `v1.0.4..HEAD`
+changes; provide tracked release notes and an operator checklist under
+`docs/dev/releases/`. Public installation instructions continue to identify
+the published v1.0.4; candidate instructions must say they apply after launch.
+Use the established concept DOI for the candidate citation without inventing
+a release DOI or release date. Fix stale standalone acceptance, example and
+support-matrix links and describe the Python candidate and its CPU/physics
+boundary explicitly. Set Documenter's HTML page-source link branch to `main`
+so a checkout without a discoverable remote HEAD cannot generate obsolete
+`master` links. Validate the full local manual build without deploying it.
+
+The current release workflow builds/publishes without checking the tagged
+version or waiting for exact-source CI. Its manual trigger also reaches the
+publishing job. Add a stdlib-only `test/release.py` helper with these seams:
+
+- `metadata`: validate Julia/wrapper and Python metadata, public non-dev
+  candidate versions, canonical `vX.Y.Z` tag equality, and tracked notes.
+- `wait-ci`: select push runs from the named test/documentation workflows
+  at the exact checked-out SHA (never a pull-request synthetic merge), wait
+  with bounded duration and live progress, require successful complete runs
+  and the full required test-job inventory including Apple and ARM64. Retain
+  complete run JSON. The workflow must fail on missing, skipped, failed or
+  cancelled required jobs. Optional benchmark-publication skips are expected.
+- `stage-python`: independently invoke the existing sixteen-cell collector,
+  require full-workflow success, recheck version metadata in every selected
+  wheel, and copy the tested **sdist-rebuilt** wheel from each cell. Select
+  the Linux x86_64/3.11 sdist whose actual digest was verified by that cell;
+  differing archive timestamps across platforms do not imply identical bytes.
+  Retain the collector and artifact provenance in the staged output.
+- `checksums`: require the exact four canonical CPU libraries, sixteen
+  candidate wheels and one source archive with no unexpected or missing
+  files; create sorted SHA256SUMS.txt plus a revision/version manifest.
+
+The workflow retains the existing four portable CPU builds, adds locked Cargo
+tests, and stages Python artifacts downloaded from the successful exact-source
+test run. A manual dispatch creates downloadable candidate artifacts only.
+A correctly matched tag may create a **draft** GitHub release with the tracked
+notes, after the same acceptance and checksum gates; the lead reviews and
+publishes that concrete draft. No PyPI credentials, standing GPU CI, numerical
+feature, speed claim or tolerance change belongs to this work item.
+
+Before delivery, test gate rejection with adversarial run/job/version/artifact
+fixtures, collect real previously accepted artifacts as a tooling diagnostic
+at their own exact revision and prove old development assets cannot become
+candidate assets, validate workflow structure/syntax and documentation
+links, build the candidate wheel/sdist outside the checkout, and run available
+installed numerical/offline coverage against independent retained Julia
+oracles. Metadata changes require fresh exact-candidate hosted sixteen-cell
+acceptance and minimum-glibc runtime evidence before launch; earlier successful
+development wheels do not satisfy that condition. Record completed checks and
+remaining launch gates in BACKLOG/PORT_LOG under their ownership rules.
+
+For the lead-authorized commit/push, use a separate
+`release/v1.1.0-preparation` branch based on the prepared `4763fc4` tree.
+Preserve PR #68's delivery branch while its CI completes; pushing launch
+metadata there would cancel the pending branch run and change its acceptance
+target. The release branch must obtain its own exact-source acceptance before
+integration. This delivery does not authorize a main merge, tag or publication.

@@ -1,7 +1,7 @@
-name: Release prebuilt amalthea binaries
+name: Prepare Amalthea release
 
-# Triggered by a `vX.Y.Z` release tag, so the published binaries always match
-# the Project.toml version that deps/build.jl (try_download_prebuilt) looks up.
+# Tags prepare a checked draft; manual dispatch retains candidate artifacts.
+# Public publication remains a separate review of the assembled draft.
 on:
   push:
     tags:
@@ -10,8 +10,70 @@ on:
 
 permissions:
   contents: read
+  actions: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
+  acceptance:
+    name: Exact-source release acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - name: Check candidate versions and release notes
+        env:
+          RELEASE_EVENT: ${{ github.event_name }}
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$RELEASE_EVENT" = push ]; then
+            test "$RELEASE_REF_TYPE" = tag
+            python test/release.py metadata --tag "$RELEASE_REF_NAME"
+          else
+            python test/release.py metadata
+          fi
+      - name: Test release acceptance tooling
+        run: python test/test_release.py -v
+      - name: Wait for the tested commit and documentation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_REVISION: ${{ github.sha }}
+        run: >-
+          python test/release.py wait-ci --repo "$RELEASE_REPOSITORY"
+          --revision "$RELEASE_REVISION" --output acceptance --timeout 19800
+      - name: Download accepted standalone distributions and references
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          run_id=$(python -c 'import json; print(json.load(open("acceptance/acceptance.json"))["runs"]["run_tests.yml"])')
+          gh run download "$run_id" --repo "$RELEASE_REPOSITORY" --dir accepted-artifacts
+      - name: Independently verify and stage sixteen source-rebuilt wheels
+        run: >-
+          python test/release.py stage-python --artifacts accepted-artifacts
+          --run-json acceptance/run_tests.yml.json --output python-assets
+      - uses: actions/upload-artifact@v7
+        with:
+          name: accepted-python-release-assets
+          path: python-assets/*
+          if-no-files-found: error
+          retention-days: 30
+      - name: Retain exact-source acceptance metadata
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-ci-acceptance
+          path: acceptance/
+          if-no-files-found: warn
+          retention-days: 30
+
   build:
     name: Build (${{ matrix.triple }})
     runs-on: ${{ matrix.os }}
@@ -45,7 +107,9 @@ jobs:
       # in run_tests.yml and .cargo/config.toml) — a downloaded binary must
       # run on any user's CPU, not just this runner's.
       - name: Build release library (portable, no target-cpu=native)
-        run: cargo build --release
+        run: |
+          cargo test --locked --release
+          cargo build --locked --release
         working-directory: amalthea
         env:
           RUSTFLAGS: ""
@@ -83,28 +147,56 @@ jobs:
           name: amalthea-${{ matrix.triple }}
           path: staging/*
           if-no-files-found: error
+          retention-days: 30
 
-  publish:
-    name: Publish GitHub Release
-    needs: build
+  assemble:
+    name: Assemble checked release assets
+    needs: [build, acceptance]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: amalthea-*
+          path: artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: accepted-python-release-assets
+          path: artifacts
+
+      - name: Verify inventory and assemble checksum manifest
+        run: |
+          (cd artifacts && sha256sum -c *.sha256)
+          rm artifacts/*.sha256
+          python test/release.py checksums --directory artifacts
+          (cd artifacts && sha256sum -c SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-candidate
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 30
+
+  draft:
+    name: Create reviewable GitHub release draft
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: assemble
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
+          name: release-candidate
           path: artifacts
-          merge-multiple: true
-
-      - name: Assemble checksum manifest
-        run: |
-          cd artifacts
-          cat *.sha256 > SHA256SUMS.txt
-          rm -f *.sha256
-          cat SHA256SUMS.txt
-
       - uses: softprops/action-gh-release@v3
         with:
           files: artifacts/*
           fail_on_unmatched_files: true
-          generate_release_notes: true
+          draft: true
+          body_path: docs/dev/releases/${{ github.ref_name }}.md

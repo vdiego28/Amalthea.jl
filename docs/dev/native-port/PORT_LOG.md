@@ -9234,3 +9234,135 @@ Cargo **102+5**, Julia `rust` **43074 pass / 11 expected broken / 43085 total**.
 `git diff --check` passes. PR description is prepared with final scope and the
 remaining exact-source hosted merge gate; no main merge or release is claimed.
 **Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-29 — v1.1.0 launch candidate and release artifact gates — Codex
+**Status at this checkpoint:** complete local launch preparation and available Linux CPU validation; candidate is uncommitted and
+unpublished, with exact-candidate hosted/platform gates still required.
+**Did:** Prepared Julia and Julia-backed Python `1.1.0` plus standalone
+`amalthea-native` `0.1.0` beta metadata in `Project.toml`, both Python
+`pyproject.toml` files and `amalthea_native.__version__`; updated `CITATION.cff`,
+`CHANGELOG.md`, both READMEs and `docs/src/python_native.md`, and added the
+release body/operator checklist under `docs/dev/releases/`. Added
+`test/release.py::{metadata,required_jobs,check_run,wait_ci,stage_python,checksums}`
+and ten adversarial regressions in `test/test_release.py`; the release workflow
+now gates exact-source tests/docs, stages independently accepted source-rebuilt
+wheels, verifies the complete inventory and retains manual candidates or creates
+matched-tag drafts, while `run_tests.yml` also tests the helper. Corrected all
+public guide links to the old Python branch and set `docs/make.jl`'s HTML
+`edit_link` to `main`; no numerical formula, FFI export or Rust crate version changed.
+**Design:** [PLANS §32](PLANS.md#32-launch-preparation-and-exact-source-release-artifacts-2026-09-29).
+**Gotchas:** The first Zig build hit a read-only default cache; its failed
+manifest/logs are retained and a fresh output directory with a temporary
+`XDG_CACHE_HOME` succeeded. The first local documentation runner selected its
+own source root; an explicit `docs/` root fixed the runner, then rendered output
+exposed the obsolete default `master` page-source links. Candidate builds and
+fresh references record base HEAD `4763fc4` plus actual dirty-source hashes;
+this is local candidate evidence, not clean-commit or sixteen-platform acceptance.
+The running PR #68 CI tests its committed development source, not this candidate.
+**Tests:** Evidence root: `.rust_test_logs/launch-20260929/`; wheel/sdist bytes,
+build/audit logs, validation/JUnit/offline results and all 7,130 fresh reference
+files are retained locally rather than depending on temporary environments.
+`python3 test/test_release.py -v` passes **10/10** tests, including wrong versions,
+tags/SHA/events, missing/skipped/failed jobs, newest-run failure, timeout,
+source-wheel metadata/corruption and incomplete/extra/symlink inventories.
+`python3 test/test_wheel_collection.py -v` passes **8/8**, and
+`python3 test/test_python_native_validation.py -v` passes **23/23**.
+`python3 test/release.py metadata --tag v1.1.0` and actual wheel METADATA/sdist
+PKG-INFO checks pass. Actionlint 1.7.12, with its downloaded official checksum
+verified, passes
+`/tmp/amalthea-launch-actionlint/actionlint -shellcheck='' .github/workflows/release.yml .github/workflows/run_tests.yml`;
+ShellCheck is unavailable. Local Markdown target checks and `git diff --check` pass.
+`python3 test/standalone_wheels/collect.py --artifacts .rust_test_logs/delivery-audit-20260929/prior-push-artifacts --repository /tmp/amalthea-delivery-prior-20260929 --run-json .rust_test_logs/delivery-audit-20260929/prior-push-run.json --output .rust_test_logs/launch-20260929/prior-collector.json`
+independently reaccepts **16/16** prior development cells at their own `8d1225f`
+source; `check_run` also verifies that real push run against the full job inventory.
+The candidate staging helper refuses those old-version/source assets before
+creating a staging directory (`refused-old-development-assets.log`).
+`JULIA_DEPOT_PATH=/tmp/amalthea-validation-julia-depot-20260929:/home/diego/.julia python3 test/validate.py --max-workers 4 --log-dir .rust_test_logs/launch-20260929/validation`
+passes at `20260929T233243Z-wvkeq3u7`: local portable CPU release build, checkout/
+library preflight, Cargo **102 unit + 5 policy**, Julia `rust` **43074 pass /
+11 expected broken / 43085 total**, no failures/errors. Library SHA-256:
+`c0953670e17fd7134c1fdc5e41bdeed4d332065db1c47fea9c9b5c4fc92701fd`.
+Existing radial-mixture single-step/full-solve discrepancies are
+**1.14219e-17 / 1.11984e-16**; free-space Raman full-solve error is
+**2.20556e-7**, while the oracle Raman on/off effect is **0.00117622**.
+`XDG_CACHE_HOME=/tmp/amalthea-launch-build-cache PATH=/tmp/amalthea-delivery-audit-20260929-env/bin:$PATH /tmp/amalthea-delivery-audit-20260929-env/bin/python python-native/tools/wheel_validation.py build --output /tmp/amalthea-launch-candidate-20260929-retry`
+builds the actual `0.1.0` CPython 3.14.6 Linux x86_64 checkout and
+sdist-rebuilt wheels; both audit as `manylinux_2_28_x86_64` with only allowed
+system libraries, no Julia/FFTW/libcubature/CUDA dependencies. SHA-256:
+sdist `2f0a7a224f473b3cf3ed909d1c8595a2c3026f6f0420d82da1ae101867a03024`,
+checkout `5ae3447198a8ad7fb43ba504f7080731d4298b555aff6411619d6b97123a42b1`,
+source `5bca28430eaa802921ab6aeec33685648f593f8c69ae11810851cddb210aab9d`.
+`JULIA_DEPOT_PATH=/tmp/amalthea-validation-julia-depot-20260929:/home/diego/.julia python3 python-native/tools/export_oracles.py --output /tmp/amalthea-launch-oracles-20260929`
+passes all **20** independent Julia families with verified source/artifact hashes,
+Julia 1.12.6 and CoolProp 7.2.0; the complete export is preserved under `oracles/`.
+`PATH=/tmp/amalthea-delivery-audit-20260929-env/bin:$PATH PIP_CONFIG_FILE=/dev/null PIP_INDEX_URL=https://pypi.org/simple PIP_EXTRA_INDEX_URL='' /tmp/amalthea-delivery-audit-20260929-env/bin/python python-native/tools/wheel_validation.py test --manifest /tmp/amalthea-launch-candidate-20260929-retry/build.json --oracles .rust_test_logs/launch-20260929/oracles`
+passes **34/34 checkout + 946/946 source tests**, zero failures/skips,
+and **17/17 complete offline examples per wheel**, with both installations
+verified outside the checkout and networking disabled for the examples. Cartesian real-profile interval/adaptive errors are
+**1.96018e-16 / 7.93063e-14**, while the constant-profile oracle effect is
+**9.19981e-5**; the existing `1e-13` interval / `1e-6` trajectory gates remain
+intact. The full-spatial plasma coarse trajectory error is **1.11572e-10**
+with RHS error **4.51518e-12**; its oracle plasma on/off effect is
+**0.00386031**. The tighter full-spatial plasma refinement reaches RHS **4.51517e-12**
+and trajectory **1.59830e-14**, against existing `3e-8` / `1e-6` gates.
+The full source suite takes 2297.14 s; XML counts and all oracle hashes were
+independently reverified after preserving the final artifacts. The host is Linux/glibc 2.39; audit tags alone do not prove
+execution on glibc 2.28. Original numerical tolerances are retained.
+`JULIA_DEPOT_PATH=/tmp/amalthea-validation-julia-depot-20260929:/home/diego/.julia AMALTHEA_CUDA_BUILD=off AMALTHEA_RUST_SKIP_DOWNLOAD=1 julia --startup-file=no --project=docs/ .rust_test_logs/launch-20260929/build_docs_retry.jl`
+passes the full manual's doctest/template/cross-reference/document/render stages
+(`docs-build-final.log`), with `1.1.0` inventory metadata. The guide's four
+current source/status/example/support links and candidate versions are verified
+in `docs-render-check.json`; its rendered HTML is retained. The runner executes tracked `makedocs` with an explicit
+root and omits deployment; final HTML/version/current-link checks pass.
+Fresh exact-candidate hosted sixteen-cell, minimum-glibc runtime, Apple/ARM64
+and four-library draft assembly remain launch gates. No new CUDA/performance,
+main merge, tag, commit/push or external publication is part of this unit.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-29 — Authorized v1.1.0 launch preparation delivery — Codex
+**Status at this checkpoint:** validated launch preparation ready for authorized
+commit/push on `release/v1.1.0-preparation`; hosted acceptance and integration
+remain pending.
+**Did:** Reviewed the nineteen prepared launch files after the lead explicitly
+requested commit and push. Selected a separate release branch and updated
+BACKLOG's delivery location/next action, preserving PR #68's `4763fc4` branch
+and running CI. No additional implementation, numerical or FFI change.
+**Design:** [PLANS §32](PLANS.md#32-launch-preparation-and-exact-source-release-artifacts-2026-09-29).
+**Tests:** Rechecked the retained validation at
+`.rust_test_logs/launch-20260929/launch-summary.json`: Cargo **102+5**, Julia
+**43074 pass / 11 expected broken**, installed Python **34 checkout + 946
+source** with zero failures/skips, **17 offline examples per wheel**, all
+**20** independent reference families, release-tool regressions and the full
+manual build pass. SHA-256 comparison with `release-unit-source.json` confirms
+all validated implementation/metadata files remain identical; only live
+planning/status and this append-only log changed for delivery. The check is
+retained as `delivery-preflight.json`. `python3 test/release.py metadata
+--tag v1.1.0` and `git diff --check` pass. `git ls-remote origin
+refs/heads/delivery/pending-units-20260927 refs/heads/release/v1.1.0-preparation`
+confirms the existing remote remains at `4763fc403b8804d2a2eb75d510face3b88ab1a91`
+and the release branch does not yet exist. `gh run view 36644891064 --json
+headSha,status,conclusion --repo vdiego28/Amalthea.jl` confirms the preserved
+run is in progress. Fresh release-branch/platform evidence remains required;
+no main merge, tag or publication is part of this delivery.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-09-30 — Resumed authorized launch delivery — Codex
+**Status at this checkpoint:** delivery review complete; authorized commit/push
+ready on the already created `release/v1.1.0-preparation` branch.
+**Did:** Resumed the interrupted commit/push at base `4763fc4`; branch creation
+had completed, with the index still empty and all nineteen intended files
+present. Rechecked the prepared snapshot and removed the stale running-CI
+word from BACKLOG. No implementation, numerical or FFI change.
+**Design:** [PLANS §32](PLANS.md#32-launch-preparation-and-exact-source-release-artifacts-2026-09-29).
+**Tests:** SHA-256 checks against
+`.rust_test_logs/launch-20260929/release-unit-source.json` confirm every validated
+implementation and metadata file is unchanged; only planning/status/log updates
+differ. The retained native and installed-wheel summaries still pass, including
+all **946** source-wheel tests. `python3 test/release.py metadata --tag v1.1.0`
+and `git diff --check` pass. Remote-head checks confirm the delivery branch
+remains at `4763fc4` and the release branch is absent from origin. PR #68 is
+still open/draft. Its prior push CI `36644891064` has completed successfully
+at `4763fc4`, as retained in `delivery-resume-prior-ci.json`; independent
+collection and integration remain separate, and this does not establish
+acceptance of the new launch metadata. No tag or publication is authorized.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).

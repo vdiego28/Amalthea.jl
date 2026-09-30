@@ -6,13 +6,46 @@ this fork's own, starting from the point the Rust backend was introduced.
 
 ## [Unreleased]
 
+Prepared for Amalthea.jl 1.1.0 and the separate `amalthea-native` 0.1.0 beta.
+Publication and final candidate validation are pending.
+
+### Added
+- Julia-free Python GNLSE and scalar/modal capillary propagation with portable
+  Rust FFTs and stepping, NumPy results, gas mixtures, ADK/PPT plasma,
+  molecular Raman, polarization, pressure/radius profiles and custom Python
+  modes and nonlinear responses. Optional HDF5 complements NPZ output.
+- Portable CPU wheel validation for CPython 3.11–3.14 on Linux x86_64/ARM64,
+  macOS Apple Silicon and Windows x86_64, with independent Julia references,
+  source-rebuilt wheels, binary-only installation and seventeen offline examples.
+- A tagged Julia installer (`install.sh`) and an installed Python user guide.
+- Exact-source release CI checks, complete artifact/version/checksum staging,
+  and reviewable draft releases; manual workflow runs retain candidate artifacts.
+
+### Changed
+- Batch built-in scalar-gradient dispersion setup in the standalone Python
+  frontend while preserving custom-model evaluation and trajectory results.
+- Expose upstream-compatible `Processing.spectral_phase`; retain `getφ` as a
+  deprecated alias. Spectral phase now unwraps along the frequency axis.
+
 ### Fixed
 - Repair `locextrap=false` across Julia, legacy Rust, resident CPU, and CUDA:
   evaluate the starting derivative at the accepted fourth-order state, and
   make fourth-order dense output reach that state continuously. Default
   fifth-order propagation is unchanged.
-- Reconcile release and GPU-support documentation; maintain current work and
-  release status in the backlog's resume queue.
+- Restore propagation-frame transports and accepted-step PI/rejection control
+  in the separate Rust `Dopri5Stepper` helper.
+- Avoid cancellation in Raman forcing coefficients at small time increments,
+  including the finite zero-frequency limit.
+- Center spectra before phase unwrapping and honor mode summation when
+  calculating time-bandwidth products.
+- Initialize spline interval finders before local evaluation and handle
+  real-valued complex gas coefficients in gradient metadata.
+- Preserve scan argument ownership and notebook construction without consuming
+  caller-owned argument arrays.
+- Return the Julia PPT fallback when the native library is missing, and retry
+  bounded Windows contention during atomic standalone PPT cache publication.
+- Correct ARM64 inverse-FFT test assumptions, isolate consumer PPT fixture
+  caches, and fix Apple scan diagnostic argument handling.
 
 ## [1.0.4]
 

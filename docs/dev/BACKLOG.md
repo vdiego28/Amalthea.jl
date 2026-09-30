@@ -33,6 +33,24 @@ This is the authoritative short queue. The long sections below retain design
 history and measured evidence, but older words such as "next", "not started",
 or "verified" inside a superseded narrative do not outrank this list.
 
+> **Launch preparation (2026-09-29):** candidate metadata is prepared for
+> Julia/Julia-backed Python `1.1.0` and standalone `amalthea-native` `0.1.0`
+> beta, with GitHub wheel delivery under
+> [PLANS §32](native-port/PLANS.md#32-launch-preparation-and-exact-source-release-artifacts-2026-09-29).
+> The expanded changelog, [release body](releases/v1.1.0.md),
+> [operator checklist](releases/README.md), exact-source CI gate, source-rebuilt
+> wheel staging and complete checksum/provenance inventory are implemented.
+> Manual release workflow runs retain candidate artifacts; matched tags prepare
+> a draft for review. Release-tool regressions, workflow syntax, local native
+> checks, installed numerical/offline wheel gates and the full manual build
+> pass; results and retained evidence are in the
+> [launch preparation log](native-port/PORT_LOG.md#2026-09-29--v110-launch-candidate-and-release-artifact-gates--codex).
+> Delivery branch: `release/v1.1.0-preparation`. PR #68 remains a separate
+> pending integration at `4763fc4`; its CI does not establish this
+> candidate's acceptance. **Next:** collect fresh exact-source hosted
+> platform/minimum-glibc acceptance before tagging or publication. No release
+> is published; PyPI and standing GPU CI remain separate decisions.
+
 > **Delivery audit and Windows PPT cache repair (2026-09-29):** all previously
 > prepared local commits are pushed; there are no stashes or local-only branch
 > commits. Older feature branches are already ancestors of GitHub `main`, and
@@ -339,9 +357,10 @@ or "verified" inside a superseded narrative do not outrank this list.
 > immediately before publication because this does not reserve the name. The
 > sixteen-cell native-platform matrix and final-gradient glibc 2.28 runtime
 > gate are complete for that exact source. The tested artifacts still identify
-> as internal `0.0.1.dev0` / Pre-Alpha. **Next:** choose public-preview package
-> metadata and a Python publication route, rebuild and rerun the exact-candidate
-> installed/offline gates, then decide on publication. The later checkout work
+> as internal `0.0.1.dev0` / Pre-Alpha. Local public-preview metadata and the
+> GitHub wheel route are now prepared under the launch item above. Fresh
+> exact-candidate installed/offline gates remain required before publication.
+> The later checkout work
 > has local CPU validation but needs its own exact-source hosted wheel gate.
 > The existing GitHub release workflow publishes Julia libraries only. No
 > publication or stable release is claimed. Review decisions:

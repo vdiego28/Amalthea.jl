@@ -39,6 +39,7 @@ jobs:
         run: |
           python test/test_python_native_validation.py -v
           python test/test_wheel_collection.py -v
+          python test/test_release.py -v
       - uses: dtolnay/rust-toolchain@stable
       - uses: julia-actions/setup-julia@v3
         with:

@@ -6,9 +6,10 @@ fields, multimode propagation, polarization, gas mixtures, plasma, molecular
 Raman, changing profiles and custom Python models within the combinations
 supported by the Julia implementation.
 
-The distribution name is provisionally `amalthea-native`. This development
-package is undergoing installed-artifact validation; see the
-[current acceptance status](https://github.com/vdiego28/Amalthea.jl/blob/feat/julia-free-python/docs/dev/BACKLOG.md).
+The distribution name is `amalthea-native`; import it as `amalthea_native`.
+Version `0.1.0` is the beta candidate for the Amalthea.jl `v1.1.0` GitHub
+release. Candidate wheels require fresh installed-artifact validation; see the
+[current acceptance status](https://github.com/vdiego28/Amalthea.jl/blob/main/docs/dev/BACKLOG.md).
 Its publication and platform availability are separate from the existing
 Julia-based Python wrapper.
 
@@ -236,14 +237,14 @@ or a serialized solver restart.
 
 ## Examples and supported combinations
 
-The [complete example scripts](https://github.com/vdiego28/Amalthea.jl/tree/feat/julia-free-python/python-native/examples)
+The [complete example scripts](https://github.com/vdiego28/Amalthea.jl/tree/main/python-native/examples)
 cover both APIs, custom modes/responses, multimode fields, supplied pulses,
 profiles, mixtures, ADK/PPT, Raman, output processing and solver diagnostics.
 Copy an example outside the checkout and run it with the installed interpreter.
 PPT tables are generated locally with parameter-keyed caches; their first
 construction can take longer than subsequent reuse.
 
-The [capability matrix](https://github.com/vdiego28/Amalthea.jl/blob/feat/julia-free-python/docs/dev/native-port/PYTHON_SUPPORT_MATRIX.md)
+The [capability matrix](https://github.com/vdiego28/Amalthea.jl/blob/main/docs/dev/native-port/PYTHON_SUPPORT_MATRIX.md)
 records execution paths and Julia model restrictions. Envelope plasma, vector
 Raman and carrier vector Kerr without THG are excluded. Quantum noise defaults
 off and explicit requests fail. Python GPU execution, ensembles and separate
