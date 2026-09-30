@@ -1,15 +1,14 @@
 # Cargo build configuration for amalthea
 #
 # target-cpu=native tells rustc/LLVM to optimise for the CPU on which the
-# library is compiled, enabling AVX2, AVX-512, etc. automatically.
+# library is compiled, enabling the instruction sets available on that host.
 #
 # NOTE: the resulting .so is NOT portable to older CPUs. This is intentional
-# for the local release build — the dispatcher in dispatch.rs detects available
-# ISA extensions at runtime and routes to CpuPortable when advanced features
-# are absent, so the Julia package remains safe to distribute.
+# for local development only. The detection-only dispatcher in dispatch.rs
+# cannot make code compiled with host-specific instructions portable.
 #
-# CI runners override this via CARGO_BUILD_RUSTFLAGS="" to avoid
-# illegal-instruction errors on older runner hardware.
+# Package and portable CI/release builds override this with RUSTFLAGS="".
+# Explicit user-supplied RUSTFLAGS remain the user's portability choice.
 [build]
 rustflags = ["-C", "target-cpu=native"]
 

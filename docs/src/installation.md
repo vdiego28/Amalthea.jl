@@ -34,6 +34,40 @@ julia> (Sys.KERNEL, Sys.ARCH)
 
 ## Tagged installation on current release platforms
 
+### One-command installer (Linux and macOS)
+
+For a new CPU installation or an update to the latest release, run:
+
+```text
+curl -fsSL https://raw.githubusercontent.com/vdiego28/Amalthea.jl/main/install.sh | bash
+```
+
+The script installs Julia through Juliaup when `julia` is not already
+available, resolves the newest GitHub release tag, and installs that exact tag
+into Julia's default environment. It does not configure CUDA. If Juliaup must
+be installed, its own installer manages the Julia installation and PATH setup.
+Rerun the same command to update Amalthea; it changes only the Amalthea package
+revision, not every package in the environment.
+
+To install a particular release instead, pass its tag after `--`:
+
+```text
+curl -fsSL https://raw.githubusercontent.com/vdiego28/Amalthea.jl/main/install.sh | bash -s -- --version v1.0.4
+```
+
+The installer needs `curl` and an internet connection. On Windows, use the
+Julia package command below (or run the script from WSL); native PowerShell
+support is not provided by this POSIX shell script.
+
+After either installation method, start Julia normally and run:
+
+```julia
+using Amalthea
+Amalthea.backend_report()
+```
+
+### Manual tagged installation
+
 Install Julia from [julialang.org/downloads](https://julialang.org/downloads/),
 start Julia, and enter package mode with `]`. Amalthea is not yet registered in
 Julia's General registry, so install a tagged release directly from GitHub.

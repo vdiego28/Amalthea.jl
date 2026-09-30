@@ -26,10 +26,13 @@ jobs:
       - name: Diff against last-synced base
         id: diff
         run: |
-          # Fork base commit: the point at which Amalthea.jl's history diverged
-          # from upstream/master (kept in sync with BACKLOG.md's Phase A notes).
-          BASE=0a52ffb
-          NEW=$(git log --oneline ${BASE}..upstream/master -- . ':!.github' 2>/dev/null || true)
+          # Review checkpoint, independent of the frozen performance baseline.
+          # Dispositions live in docs/dev/native-port/UPSTREAM_TRIAGE.md.
+          REVIEWED=$(cat .github/upstream-reviewed.txt)
+          [[ "$REVIEWED" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "${REVIEWED}^{commit}"
+          git merge-base --is-ancestor "$REVIEWED" upstream/master
+          NEW=$(git log --oneline "${REVIEWED}..upstream/master" -- . ':!.github')
           if [ -n "$NEW" ]; then
             echo "drift=true" >> "$GITHUB_OUTPUT"
             {
@@ -44,13 +47,16 @@ jobs:
       - name: Open issue on drift
         if: steps.diff.outputs.drift == 'true'
         uses: actions/github-script@v9
+        env:
+          UPSTREAM_COMMITS: ${{ steps.diff.outputs.commits }}
         with:
           script: |
-            const commits = `${{ steps.diff.outputs.commits }}`;
+            const commits = process.env.UPSTREAM_COMMITS;
             const title = 'Upstream Luna.jl has new commits not yet reviewed';
             const body = [
               'The scheduled upstream-sync check found commits on `LupoLab/Luna.jl@master`',
-              'that are not yet reflected in this fork (see BACKLOG.md Phase A):',
+              'since the checkpoint in `.github/upstream-reviewed.txt`.',
+              'Review dispositions belong in `docs/dev/native-port/UPSTREAM_TRIAGE.md`:',
               '',
               '```',
               commits,

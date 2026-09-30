@@ -6,6 +6,7 @@ import operator
 import os
 from pathlib import Path
 import tempfile
+import time
 from zipfile import BadZipFile
 
 import numpy as np
@@ -204,6 +205,20 @@ def _digest(field,rate):
     h=hashlib.sha256();h.update(field.tobytes());h.update(rate.tobytes());return h.hexdigest()
 
 
+def _publish_cache(temporary,destination):
+    # Windows may transiently deny replacement during concurrent publication
+    # or while another process holds the destination open. Keep the rename
+    # atomic, and still report persistent permissions or unrelated I/O errors.
+    for attempt in range(8):
+        try:
+            os.replace(temporary,destination)
+            return
+        except PermissionError as error:
+            if getattr(error,'winerror',None) not in (5,32,33) or attempt==7:
+                raise
+            time.sleep(.01*2**attempt)
+
+
 class IonRatePPTAccel:
     """Locally generated log-spline PPT table with atomic, parameter-keyed caching."""
     def __init__(self,material_or_ionpot,lambda0,Z=None,l=None,*,N=65536,Emax=None,
@@ -243,7 +258,7 @@ class IonRatePPTAccel:
                 with tempfile.NamedTemporaryFile(dir=self.cache_path.parent,suffix='.npz',delete=False) as file:
                     temporary=Path(file.name)
                     np.savez_compressed(file,field=expected,rate=rate,metadata=metadata,digest=_digest(expected,rate))
-                os.replace(temporary,self.cache_path)
+                _publish_cache(temporary,self.cache_path)
             finally:
                 if temporary is not None:temporary.unlink(missing_ok=True)
 

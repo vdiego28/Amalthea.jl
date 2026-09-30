@@ -3,8 +3,8 @@ use amalthea::transforms::{FftScratch, PortableComplex, PortableReal};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rustfft::num_complex::Complex64;
-mod solver;
 mod points;
+mod solver;
 
 fn valid_length(n: usize) -> PyResult<()> {
     if n == 0 || n > (1 << 24) {

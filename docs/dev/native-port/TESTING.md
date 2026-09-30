@@ -331,6 +331,71 @@ still require host execution; the wrapper does not request sandbox escalation.
 Explicit RUSTFLAGS are preserved; unset means empty for portability. Encoded
 Cargo flags and a cross-compilation target override are removed so this gate
 builds a host-loadable library with the recorded RUSTFLAGS.
+In a restricted agent sandbox, Julia's normal precompile depot may be
+read-only. Prefix `JULIA_DEPOT_PATH` with a writable temporary depot while
+retaining the installed depot as a later entry. The `io` group also needs host
+execution: its `Distributed` queue tests bind loopback sockets and its output
+test writes under `~/.luna/output_test`. A sandbox failure at either boundary
+is not a scientific test result; retain that failed evidence and rerun the
+affected group on the host.
+
+**Execution deferrals.** When the lead reserves CPU/GPU resources and defers
+full validation, respect that limit rather than launching this build wrapper.
+Bounded syntax, discovery and source-selected checks may document a partial
+checkpoint, with thread limits, timeout, command, elapsed time and scope saved
+in the evidence directory. Loading selected definitions with their real small
+dependencies can check constructor/API behavior without initializing the
+simulation engine; it does not prove full-module integration, process/queue
+behavior, scientific equivalence or native ABI compatibility. Mark those gates
+pending in BACKLOG. For [PLANS §24](PLANS.md#24-low-load-scan-and-upstream-maintenance-2026-09-20),
+the affected command is `python3 test/validate.py --groups rust io fields --max-workers 1`;
+the new argument/API items are registered in the `io` and `fields` manifests.
+
+The follow-on [analytic audit, PLANS §25](PLANS.md#25-analytic-audit-of-propagation-frames-and-spectral-diagnostics-2026-09-20)
+adds five unit tests directly to `amalthea/src/stepper.rs` and the `fields`
+item `test/test_processing_math.jl`. The public standalone stepper must match
+an independent DOPRI polynomial with nonzero composing linear evolution at
+roundoff, retain accurate nonlinear rotation under refinement, and reject/retry
+without changing the field. Diagnostics use a centered-impulse FFT and an
+analytic chirp for phase, plus Gaussian Fourier pairs and independent half-width
+roots for mode-summed bandwidth. Keep phase roundoff thresholds separate from
+sampled FWHM interpolation error; refine sampling rather than widen a failing
+bound. A one-job isolated mini-crate and source-selected Julia runs provide
+bounded evidence only. Their failure/timeout and final subset results must be
+retained; they do not replace the full recorded `rust io fields` gate.
+
+The [Raman cancellation audit, PLANS §26](PLANS.md#26-raman-exponential-integrator-cancellation-audit-2026-09-20)
+adds `amalthea/src/raman_math_tests.rs`, included by the normal Rust unit-test
+runner. Its independent impulse-response integrals test all four forcing
+weights at `2e-13` relative accuracy, including tiny coupling values; analytic
+homogeneous transitions use `2e-14`, and scalar/available SIMD trajectories
+for exactly interpolated affine drives use `2e-12`. Require finite results
+before maximum-error reductions and a nonzero response. These are oscillator
+subsystem checks, not optical propagation acceptance. Preserve the existing
+Julia FFT-convolution/native single-step and full-solve gates, including their
+Raman-on/off feature-effect assertions. The bounded CPU harness omits the CUDA
+include, dispatcher and device method; it cannot validate GPU dispatch or ABI.
+The combined maintenance gate is
+`python3 test/validate.py --groups rust physics io fields --max-workers 1`.
+Because the shared constructor supplies CUDA too, also run the affected strict
+CUDA gate with `--cuda --groups rust --max-workers 1`, using the host-execution
+and `AMALTHEA_REQUIRE_CUDA_TESTS=1` rules above. A CUDA pass requires its own
+hardware run; CPU results do not establish it. Existing Python wheel validation
+remains a separate work item.
+
+For a static repository-hygiene review ([PLANS §27](PLANS.md#27-repository-hygiene-review-2026-09-20)),
+check `git diff --check`, parse Python/TOML/JSON/YAML without importing the
+scientific package, validate shell syntax with `bash -n`, and inspect test
+discovery/timing coverage without starting workers. Use `git check-ignore
+--no-index --stdin` with synthetic paths to verify ignore rules and template/
+baseline exceptions. A read-only `rustfmt --check --edition 2024 --config
+skip_children=true` pass can identify style debt; preserve its failures rather
+than claiming an all-green hygiene gate or reformatting unrelated pending
+changes. Local Markdown file-target checks do not validate anchors, external
+links or the documentation build. Narrow credential-pattern checks cover
+only the selected working files, not history or ignored files, and do not
+constitute a security audit. None of these checks substitutes for numerical
+acceptance or warrants running deferred scientific tests.
 
 Every run creates a unique directory under `.rust_test_logs/validation/`
 (or under the parent supplied with `--log-dir`). `summary.json` records the

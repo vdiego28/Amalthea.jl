@@ -10,5 +10,9 @@ test_fields.jl 93.4
 test_gradient.jl 32.9
 test_noise.jl 36.9
 test_processing.jl 25.0
+# Scheduling estimate only; API checks, no measured package timing yet.
+test_spectral_phase_api.jl 25.0
+# Scheduling estimate only; small FFT/analytic diagnostics.
+test_processing_math.jl 25.0
 test_tools.jl 16.7
 test_utils.jl 19.2

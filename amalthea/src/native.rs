@@ -2500,7 +2500,6 @@ impl CpuNativeSim {
                 col[i] *= ro.modal_nlfac[i];
             }
         }
-
     }
 
     /// Grow `modal_scratch_pool` to at least `n_workers` entries (entry 0 is
@@ -3342,27 +3341,56 @@ pub(crate) struct PortableModalPoint {
 }
 
 impl PortableModalPoint {
-    pub(crate) fn new(is_real: bool, towin: Vec<f64>, prefactor: Vec<Complex<f64>>, kerr: f64) -> Self {
+    pub(crate) fn new(
+        is_real: bool,
+        towin: Vec<f64>,
+        prefactor: Vec<Complex<f64>>,
+        kerr: f64,
+    ) -> Self {
         let no = towin.len();
         let n_spec = prefactor.len();
         let n_spec_over = if is_real { no / 2 + 1 } else { no };
         let real_fft = is_real.then(|| RealFft1d::portable(no));
         let complex_fft = (!is_real).then(|| ComplexFft1d::portable(no));
         let mut scratch = ModalScratch::new(0, 2, n_spec, n_spec_over, no);
-        if let Some(fft) = &real_fft { fft.prepare(&mut scratch.fft_scratch); }
-        if let Some(fft) = &complex_fft { fft.prepare(&mut scratch.fft_scratch); }
-        Self { n_spec, n_spec_over, no, is_real, kerr, towin, prefactor, real_fft, complex_fft, scratch }
+        if let Some(fft) = &real_fft {
+            fft.prepare(&mut scratch.fft_scratch);
+        }
+        if let Some(fft) = &complex_fft {
+            fft.prepare(&mut scratch.fft_scratch);
+        }
+        Self {
+            n_spec,
+            n_spec_over,
+            no,
+            is_real,
+            kerr,
+            towin,
+            prefactor,
+            real_fft,
+            complex_fft,
+            scratch,
+        }
     }
 
     pub(crate) fn evaluate(&mut self, field: &[Complex<f64>]) -> &[Complex<f64>] {
         self.scratch.erw.copy_from_slice(field);
         let ro = ModalTemporalRO {
-            npol: 2, n_spec: self.n_spec, n_spec_over: self.n_spec_over, n_time_over: self.no,
-            is_real: self.is_real, modal_kerr_fac: self.kerr,
-            fft_r2c_over: self.real_fft.as_ref(), fft_c2c_over: self.complex_fft.as_ref(),
-            fft_norm_over: 1.0 / self.no as f64, towin: &self.towin,
-            has_raman: false, raman_density: 0.0, raman_thg: true,
-            raman_hilbert_fft: None, modal_nlfac: &self.prefactor,
+            npol: 2,
+            n_spec: self.n_spec,
+            n_spec_over: self.n_spec_over,
+            n_time_over: self.no,
+            is_real: self.is_real,
+            modal_kerr_fac: self.kerr,
+            fft_r2c_over: self.real_fft.as_ref(),
+            fft_c2c_over: self.complex_fft.as_ref(),
+            fft_norm_over: 1.0 / self.no as f64,
+            towin: &self.towin,
+            has_raman: false,
+            raman_density: 0.0,
+            raman_thg: true,
+            raman_hilbert_fft: None,
+            modal_nlfac: &self.prefactor,
         };
         CpuNativeSim::modal_temporal(&ro, &mut self.scratch);
         &self.scratch.prw

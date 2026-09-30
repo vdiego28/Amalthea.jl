@@ -202,6 +202,73 @@ def test_ppt_atomic_cache_concurrent_construction(tmp_path,monkeypatch):
     for result in results:np.testing.assert_array_equal(result.rate_nodes,loaded.rate_nodes)
 
 
+@pytest.mark.parametrize('winerror',[5,32,33])
+def test_ppt_cache_recovers_from_windows_publication_contention(tmp_path,monkeypatch,winerror):
+    from amalthea_native import ppt
+    replace=os.replace;attempts=[];delays=[]
+    denied=PermissionError('temporary Windows cache contention');denied.winerror=winerror
+    def contested(source,destination):
+        attempts.append((source,destination))
+        if len(attempts)<=3:raise denied
+        replace(source,destination)
+    with monkeypatch.context() as patch:
+        patch.setattr(ppt.os,'replace',contested)
+        patch.setattr(ppt.time,'sleep',delays.append)
+        table=IonRatePPTAccel('Ar',800e-9,N=64,cachedir=tmp_path)
+    assert not table.cache_hit and len(attempts)==4 and len(delays)==3
+    assert all(delay>0 for delay in delays)
+    assert list(tmp_path.iterdir())==[table.cache_path]
+    def no_recompute(*args):raise AssertionError('valid published cache was not reused')
+    monkeypatch.setattr(IonRatePPT,'__call__',no_recompute)
+    loaded=IonRatePPTAccel('Ar',800e-9,N=64,cachedir=tmp_path)
+    assert loaded.cache_hit
+    np.testing.assert_array_equal(loaded.rate_nodes,table.rate_nodes)
+
+
+@pytest.mark.parametrize('winerror',[5,32,33])
+def test_ppt_cache_persistent_windows_error_preserves_destination(tmp_path,monkeypatch,winerror):
+    from amalthea_native import ppt
+    table=IonRatePPTAccel('Ar',800e-9,N=64,cachedir=tmp_path)
+    previous=b'old cache requiring repair'
+    table.cache_path.write_bytes(previous)
+    denied=PermissionError('persistent cache access error');denied.winerror=winerror
+    attempts=[];delays=[]
+    def denied_replace(source,destination):
+        attempts.append(source)
+        raise denied
+    with monkeypatch.context() as patch:
+        patch.setattr(ppt.os,'replace',denied_replace)
+        patch.setattr(ppt.time,'sleep',delays.append)
+        with pytest.raises(PermissionError) as caught:
+            IonRatePPTAccel('Ar',800e-9,N=64,cachedir=tmp_path)
+    assert caught.value is denied
+    assert 1<len(attempts)<=8 and len(delays)==len(attempts)-1
+    assert 0<sum(delays)<=1.28
+    assert table.cache_path.read_bytes()==previous
+    assert list(tmp_path.iterdir())==[table.cache_path]
+
+
+@pytest.mark.parametrize('kind',['posix-permission','other-windows-error','disk-full'])
+def test_ppt_cache_unrelated_publication_errors_are_not_retried(tmp_path,monkeypatch,kind):
+    import errno
+    from amalthea_native import ppt
+    error=(OSError(errno.ENOSPC,'disk full') if kind=='disk-full'
+           else PermissionError(errno.EACCES,'access denied'))
+    if kind=='other-windows-error':error.winerror=87
+    attempts=[]
+    def fail_replace(source,destination):
+        attempts.append(source)
+        raise error
+    def unexpected_sleep(delay):raise AssertionError('unrelated error was retried')
+    with monkeypatch.context() as patch:
+        patch.setattr(ppt.os,'replace',fail_replace)
+        patch.setattr(ppt.time,'sleep',unexpected_sleep)
+        with pytest.raises(OSError) as caught:
+            IonRatePPTAccel('Ar',800e-9,N=64,cachedir=tmp_path)
+    assert caught.value is error and len(attempts)==1
+    assert list(tmp_path.iterdir())==[]
+
+
 def test_ppt_nonuniform_samples_match_julia(oracle):
     field,rate=np.loadtxt(oracle/'nonuniform-table.txt').T
     queries,expected=np.loadtxt(oracle/'nonuniform-queries.txt').T

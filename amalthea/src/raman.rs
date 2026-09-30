@@ -28,7 +28,8 @@ pub struct PrecomputedStepCoeffs {
 }
 
 impl PrecomputedStepCoeffs {
-    /// Computes the exact exponential integrator coefficients for a given time step
+    /// Computes the exponential update for intensity interpolated linearly over `dt`.
+    /// Small-step forcing integrals use a series to avoid cancellation in `A-I-M*dt`.
     pub fn compute(osc: &RamanOscillator, dt: f64) -> Self {
         let omega = osc.omega;
         let gamma = osc.gamma;
@@ -37,11 +38,50 @@ impl PrecomputedStepCoeffs {
         let omega_d_sq = omega * omega + gamma * gamma; // ω_d^2
         let exp_gamma = (-gamma * dt).exp();
 
-        // exp(M * dt) elements
-        let a11 = exp_gamma * (omega * dt).cos() + (gamma / omega) * exp_gamma * (omega * dt).sin();
-        let a12 = (1.0 / omega) * exp_gamma * (omega * dt).sin();
-        let a21 = -(omega_d_sq / omega) * exp_gamma * (omega * dt).sin();
-        let a22 = exp_gamma * (omega * dt).cos() - (gamma / omega) * exp_gamma * (omega * dt).sin();
+        // exp(M * dt), including the finite limit at omega=0.
+        let phase = omega * dt;
+        let sinc = if phase == 0.0 {
+            1.0
+        } else {
+            phase.sin() / phase
+        };
+        let a12 = dt * exp_gamma * sinc;
+        let a11 = exp_gamma * phase.cos() + gamma * a12;
+        let a21 = -omega_d_sq * a12;
+        let a22 = exp_gamma * phase.cos() - gamma * a12;
+
+        if (omega.abs() + gamma.abs()) * dt.abs() <= 0.5 {
+            // With v_n=(M*dt)^n * b*dt/n!, integrate each power directly:
+            // B0=sum v_n/(n+2), B1=sum v_n/((n+1)*(n+2)).
+            // B0 multiplies the old intensity and B1 the new intensity.
+            // In coordinates (q,dt*q'), ||M*dt||_inf <= 1.25 here;
+            // 24 terms put the truncation tail well below f64 roundoff.
+            let mut term_q = 0.0;
+            let mut term_dq = coupling * omega * dt;
+            let (mut b0_1, mut b0_2, mut b1_1, mut b1_2) = (0.0, 0.0, 0.0, 0.0);
+            for n in 0..24 {
+                let old_weight = 1.0 / (n + 2) as f64;
+                let new_weight = old_weight / (n + 1) as f64;
+                b0_1 += old_weight * term_q;
+                b0_2 += old_weight * term_dq;
+                b1_1 += new_weight * term_q;
+                b1_2 += new_weight * term_dq;
+                let next_q = term_dq * dt / (n + 1) as f64;
+                let next_dq = -(omega_d_sq * term_q + 2.0 * gamma * term_dq) * dt / (n + 1) as f64;
+                term_q = next_q;
+                term_dq = next_dq;
+            }
+            return Self {
+                a11,
+                a12,
+                a21,
+                a22,
+                b0_1,
+                b0_2,
+                b1_1,
+                b1_2,
+            };
+        }
 
         // M inverse matrix elements
         // M = [[0, 1], [-ω_d^2, -2Γ]]
@@ -416,6 +456,10 @@ impl TimeDomainRamanSolver {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "raman_math_tests.rs"]
+mod math_tests;
 
 #[cfg(test)]
 mod tests {

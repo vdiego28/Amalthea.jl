@@ -8,7 +8,54 @@ implement every upstream change. A candidate becomes live work only after its
 design is recorded in [`PLANS.md`](PLANS.md) and promoted in
 [`BACKLOG.md`](../BACKLOG.md).
 
-## 2026-08-24 upstream refresh and v1.0.4 gate
+## 2026-09-20 low-load review
+
+Read-only GitHub inspection confirms `master` is still
+[`08a53b32cbb4d811b7df0a65fa56ea6f79957256`](https://github.com/LupoLab/Luna.jl/commit/08a53b32cbb4d811b7df0a65fa56ea6f79957256).
+There are no additional merged commits after the August review. The local
+implementation and validation scope for this maintenance unit are defined in
+[PLANS §24](PLANS.md#24-low-load-scan-and-upstream-maintenance-2026-09-20);
+current pending gates live in [BACKLOG](../BACKLOG.md).
+
+Disposition of every commit after the fork/performance baseline `0a52ffb`:
+
+| Upstream commit | Local disposition |
+|---|---|
+| `7747c93` | Deferred FSAL carry is already implemented and tested locally; retain the stronger resident/legacy coverage. |
+| `1d7e4c3` | DOPRI propagated weights are repaired in `30d26fd`; the additional fourth-order lifecycle correction is in `7f70784` (PLANS §17–18). |
+| `4f1d1a7`, `8d9ee3d` | Merge commits integrating the preceding solver changes; no separate code port. |
+| `32a6701` | Reviewed and deferred: `src/tsit.jl` is inactive. Correct and validate its tableau before ever enabling it; active `RK45` includes `dopri.jl`. |
+| `08a53b3` | Ported `spectral_phase` naming and deprecated `getφ` forwarding in the working tree. `DataField` wavelength forwarding was already fixed locally. Numerical phase behavior is unchanged. |
+
+The sole open fork issue at inspection,
+[#67](https://github.com/vdiego28/Amalthea.jl/issues/67), lists the already
+reviewed solver commits. The scheduled check now uses
+`.github/upstream-reviewed.txt` so old reviewed commits do not trigger new
+drift. This checkpoint denotes review, including explicit deferrals, rather
+than blanket integration. Its update leaves the frozen performance baseline
+unchanged. No issue comment or closure was submitted.
+
+Notebook scan construction is repaired locally from the independently
+confirmed `ARGS` ownership defect described in
+[#317](https://github.com/LupoLab/Luna.jl/issues/317#issuecomment-1492459791).
+The constructor no longer consumes global arguments; initialized IJulia uses
+empty implicit arguments, while explicit argument vectors remain authoritative.
+
+Open upstream proposals and their September 20 dispositions:
+
+- [#442](https://github.com/LupoLab/Luna.jl/pull/442), head `132b3d3`, removes
+  the spectral centering ramp before unwrapping. Adopted in the later
+  September 20 analytic work under [PLANS §25](PLANS.md#25-analytic-audit-of-propagation-frames-and-spectral-diagnostics-2026-09-20),
+  separately from the merged API rename; current validation status is in BACKLOG.
+- [#441](https://github.com/LupoLab/Luna.jl/pull/441) recovers scan points
+  abandoned by dead queue workers; it needs process-failure/ownership tests.
+- [#440](https://github.com/LupoLab/Luna.jl/pull/440) changes modified shot-noise
+  propagation; it needs a coordinated Julia/native mathematical review.
+- [#439](https://github.com/LupoLab/Luna.jl/pull/439) extends loss to real scaling
+  and frequency-dependent functions; review against existing eligibility and
+  callback contracts before porting.
+
+## 2026-08-24 upstream refresh and v1.0.4 gate (historical)
 
 Upstream `master` was fetched through commit `08a53b3` after the CPU work was
 implemented. The frozen performance-audit comparison remains pinned to
@@ -41,8 +88,11 @@ Julia/native equivalence suite is green.
 
 ### 1. Make `Scan` safe in IJulia — issue [#317](https://github.com/LupoLab/Luna.jl/issues/317)
 
-IJulia puts the kernel connection JSON in `ARGS`. The current
-[`src/Scans.jl`](../../../src/Scans.jl) path treats `ARGS` as Luna execution
+Selected and implemented in the 2026-09-20 working tree; see the review above
+and the backlog for validation status. The following is the original rationale.
+
+IJulia puts the kernel connection JSON in `ARGS`. Before the repair, the
+[`src/Scans.jl`](../../../src/Scans.jl) path treated `ARGS` as Luna execution
 arguments by default, so scans launched from notebooks can fail in argument
 parsing.
 
@@ -133,7 +183,7 @@ required before implementation.
 
 - **Free-space/χ²/birefringent geometries — PR [#416](https://github.com/LupoLab/Luna.jl/pull/416).** Relevant to the existing broader GPU physics/geometries item, but the PR is a large WIP and its review identifies scalar-`nfun`, non-square-grid, array-dimensionality, indexing, thread-safety, and FFT-plan issues. Use it as design input only after it stabilizes.
 - **External companion workbench — issue [#435](https://github.com/LupoLab/Luna.jl/issues/435).** Worth monitoring for file-format and job-runner interoperability; it currently proposes an external application rather than a Luna integration.
-- **Public API cleanup — PR [#434](https://github.com/LupoLab/Luna.jl/pull/434).** Renaming `getφ` to `spectral_phase` is reasonable, but keep a compatibility alias for one release. The related `DataField(...; λ0=...)` forwarding bug is already fixed locally.
+- **Public API cleanup — PR [#434](https://github.com/LupoLab/Luna.jl/pull/434).** The merged rename and compatibility alias are ported in the September 20 working tree; see the review above. The related `DataField(...; λ0=...)` forwarding bug was already fixed locally.
 - **Grating compression — PR [#364](https://github.com/LupoLab/Luna.jl/pull/364).** Potentially useful for large optical systems, but lower priority than scan reliability and physics correctness.
 
 ## Already covered or not immediate
@@ -149,7 +199,7 @@ Do not duplicate these as new backlog items without new evidence:
 
 ## Suggested order
 
-1. IJulia `ARGS` isolation.
+1. Complete validation of the IJulia `ARGS` repair when compute is available.
 2. Step-index discontinuity regression.
 3. BSI PPT correction.
 4. VUV models, then full RDW phase matching.

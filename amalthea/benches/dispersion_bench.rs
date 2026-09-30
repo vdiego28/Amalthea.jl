@@ -1,5 +1,5 @@
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use amalthea::dispersion::ChebyshevDispersion;
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 
 fn bench_dispersion(c: &mut Criterion) {
     let mut group = c.benchmark_group("Chebyshev Dispersion Evaluation");

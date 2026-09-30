@@ -26,3 +26,27 @@ updates:
     labels:
       - "Rust"
       - "dependencies"
+
+  # The standalone Python binding has its own Cargo manifest and lockfile.
+  - package-ecosystem: "cargo"
+    directory: "/python-native"
+    schedule:
+      interval: "monthly"
+    labels:
+      - "Rust"
+      - "dependencies"
+
+  # Python dependency manifests are independent of their Rust/Julia backends.
+  - package-ecosystem: "pip"
+    directory: "/python"
+    schedule:
+      interval: "monthly"
+    labels:
+      - "dependencies"
+
+  - package-ecosystem: "pip"
+    directory: "/python-native"
+    schedule:
+      interval: "monthly"
+    labels:
+      - "dependencies"

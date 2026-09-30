@@ -1,5 +1,5 @@
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use amalthea::stepper::Dopri5Stepper;
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use num_complex::Complex;
 
 fn bench_stepper(c: &mut Criterion) {
