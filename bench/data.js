@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790539773529,
+  "lastUpdate": 1790767513489,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -985,6 +985,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.269572,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "53799316+vdiego28@users.noreply.github.com",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "aa6c7d493675bc3105fd48722e2b65aab5495c48",
+          "message": "Merge pull request #68 from vdiego28/delivery/pending-units-20260927\n\nRepair numerical routines, installation fallback and PPT caching",
+          "timestamp": "2026-09-30T08:03:49-03:00",
+          "tree_id": "952326219d6fb9cb42ec86e9898cea8a33de8c27",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/aa6c7d493675bc3105fd48722e2b65aab5495c48"
+        },
+        "date": 1790767511810,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.887199,
             "unit": "ms/step"
           }
         ]
