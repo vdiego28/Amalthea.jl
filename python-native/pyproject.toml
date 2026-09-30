@@ -23,7 +23,7 @@ classifiers = [
 ]
 
 [project.urls]
-Documentation = "https://vdiego28.github.io/Amalthea.jl/stable/python_native/"
+Documentation = "https://vdiego28.github.io/Amalthea.jl/stable/python_native.html"
 Repository = "https://github.com/vdiego28/Amalthea.jl"
 Issues = "https://github.com/vdiego28/Amalthea.jl/issues"
 

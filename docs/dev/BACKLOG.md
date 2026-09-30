@@ -33,7 +33,10 @@ This is the authoritative short queue. The long sections below retain design
 history and measured evidence, but older words such as "next", "not started",
 or "verified" inside a superseded narrative do not outrank this list.
 
-> **Launch preparation (2026-09-29):** candidate metadata is prepared for
+> **Authorized launch execution (2026-09-30):** the lead requested integration
+> and publication under
+> [PLANS §33](native-port/PLANS.md#33-authorized-v110-integration-and-publication-2026-09-30).
+> Candidate metadata is prepared for
 > Julia/Julia-backed Python `1.1.0` and standalone `amalthea-native` `0.1.0`
 > beta, with GitHub wheel delivery under
 > [PLANS §32](native-port/PLANS.md#32-launch-preparation-and-exact-source-release-artifacts-2026-09-29).
@@ -45,26 +48,36 @@ or "verified" inside a superseded narrative do not outrank this list.
 > checks, installed numerical/offline wheel gates and the full manual build
 > pass; results and retained evidence are in the
 > [launch preparation log](native-port/PORT_LOG.md#2026-09-29--v110-launch-candidate-and-release-artifact-gates--codex).
-> Delivery branch: `release/v1.1.0-preparation`. PR #68 remains a separate
-> pending integration at `4763fc4`; its CI does not establish this
-> candidate's acceptance. **Next:** collect fresh exact-source hosted
-> platform/minimum-glibc acceptance before tagging or publication. No release
+> Delivery branch: `release/v1.1.0-preparation`, launch PR #71. The prepared
+> `e5e7a123` push CI `36704011474` passes all 35 required jobs and independent
+> collection verifies sixteen cells. Publication URL repair is being delivered
+> under [PLANS §33](native-port/PLANS.md#publication-link-routing-repair); its
+> metadata change requires fresh artifact acceptance. PR #68 is merged, and its evidence does
+> not establish this candidate's acceptance. All four matching CPython
+> interpreters load actual glibc 2.28 in the prepared isolated userspace.
+> The four full installed minimum-glibc gates are running; each has passed
+> the checkout tests and complete offline examples for both wheel builds.
+> **Next:** collect the corrected candidate's exact-source hosted and full
+> minimum-glibc acceptance, then integrate the launch and validate/assemble the
+> exact-main candidate before tagging and reviewing the release draft. No release
 > is published; PyPI and standing GPU CI remain separate decisions.
 
 > **Delivery audit and Windows PPT cache repair (2026-09-29):** all previously
 > prepared local commits are pushed; there are no stashes or local-only branch
 > commits. Older feature branches are already ancestors of GitHub `main`, and
 > local `main` now matches it at `fa71728`. PR #68 is the only pending
-> integration. Its prior push run `36354043639` independently verifies all
+> integration at the preparation checkpoint. Its prior push run `36354043639` independently verifies all
 > sixteen wheel cells and passed the Julia/Apple/ARM64 gates. The companion
 > PR run exposed intermittent Windows cache publication failure; bounded
 > retries and nine regression cases are implemented under
 > [PLANS §31](native-port/PLANS.md#31-delivery-audit-and-windows-ppt-cache-publication-2026-09-29).
 > The complete local PPT suite passes with independent Julia references.
-> **Next:** collect the repaired branch's exact-source hosted wheel and CI
-> evidence, then merge PR #68 if all gates pass. Prior source acceptance does
-> not establish Windows acceptance for the new repair. Publication and
-> deliberately deferred GPU CI remain separate work.
+> The repaired `4763fc4` push run `36644891064` passes all 35 required jobs;
+> independent collection verifies all sixteen cells, 34 checkout/946 source
+> tests and 17 offline examples per wheel with no failures or skips. PR #68
+> was merged into `main` at `aa6c7d49` on 2026-09-30. Execution evidence:
+> [integration log](native-port/PORT_LOG.md#2026-09-30--authorized-delivery-integration-and-launch-runtime-preparation--codex).
+> Launch execution continues above; standing GPU CI remains deferred.
 
 > **PPT missing-library repair (2026-09-29):** the undefined warning flag in
 > `Ionisation._make_rust_ionization_handle` is replaced with `cfg.ionisation`
@@ -73,7 +86,7 @@ or "verified" inside a superseded narrative do not outrank this list.
 > pass. Evidence and environment limits are in the
 > [repair log](native-port/PORT_LOG.md#2026-09-29--ppt-missing-library-warning-repair--codex).
 > Delivery branch: `delivery/pending-units-20260927`. Integration into `main`
-> and release remain pending.
+> is complete through PR #68; release execution continues above.
 
 > **Low-load maintenance (2026-09-20; validated 2026-09-24):** scan argument ownership/notebook
 > construction, upstream `spectral_phase` compatibility and the reviewed-upstream

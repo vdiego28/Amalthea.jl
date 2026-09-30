@@ -9366,3 +9366,67 @@ at `4763fc4`, as retained in `delivery-resume-prior-ci.json`; independent
 collection and integration remain separate, and this does not establish
 acceptance of the new launch metadata. No tag or publication is authorized.
 **Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-30 — Authorized delivery integration and launch runtime preparation — Codex
+**Status at this checkpoint:** PR #68 is merged; launch exact-source CI and
+minimum-glibc numerical acceptance are pending. The lead explicitly requested
+execution of the previously reviewed merge/release procedure.
+**Did:** Downloaded the repaired delivery push artifacts, independently checked
+all sixteen cells against an isolated clean checkout at `4763fc4`, verified the
+complete required job inventory and current PR head, marked PR #68 ready and
+merged it with a merge commit. GitHub records main commit
+`aa6c7d493675bc3105fd48722e2b65aab5495c48`, merged at
+`2026-09-30T11:03:49Z`. Existing branches are retained. Prepared a pinned Debian
+glibc 2.28 userspace, matching CPython 3.11.16/3.12.14/3.13.15/3.14.7 and
+compatible binary dependency wheelhouses in temporary directories. Added the
+release-execution design and updated the live queue; no numerical or FFI change.
+**Design:** [PLANS §33](PLANS.md#33-authorized-v110-integration-and-publication-2026-09-30).
+**Tests:** `python3 test/standalone_wheels/collect.py --artifacts .rust_test_logs/release-execution-20260930/delivery-artifacts --repository /tmp/amalthea-release-delivery-20260930 --run-json .rust_test_logs/launch-20260929/delivery-current-ci.json --output .rust_test_logs/release-execution-20260930/delivery-wheel-evidence.json`
+passes at the repaired `4763fc403b8804d2a2eb75d510face3b88ab1a91` source:
+**16/16 cells**, **34 checkout + 946 source tests per cell**, **17 complete
+offline examples per wheel**, zero failures/skips. `test/release.py`'s
+`check_run` verifies all **35** required jobs in successful push run
+`36644891064`. PR checks/head and `git diff --check` pass before integration.
+`python3 test/standalone_wheels/glibc228.py prepare --output /tmp/amalthea-release-glibc-rootfs-20260930`
+verifies the pinned vendor archive/blob and libc6 2.28 package. The maintained
+`probe` command succeeds for all four matching interpreters, proving loaded
+`libc-2.28.so`, network isolation and absent Julia/Cargo. Evidence is retained
+under `.rust_test_logs/release-execution-20260930/`, including the untouched
+hosted artifacts, independent collector report, merge receipt, dependency
+logs and four runtime probes. These probes establish the runtime preparation;
+launch wheel tests have not yet run and no publication is claimed.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-30 — Launch publication URL repair — Codex
+**Status at this checkpoint:** the corrected candidate is ready for authorized
+commit/push; fresh exact-source artifact acceptance remains pending.
+**Did:** Verified that the deployed manual's non-pretty Python guide route
+responds at `dev/python_native.html` (HTTP 200), while the directory-style
+`dev/python_native/` URL returns HTTP 404. Corrected the distribution's
+`project.urls.Documentation` in `python-native/pyproject.toml` and the Python
+guide link in `docs/dev/releases/v1.1.0.md` to `stable/python_native.html`.
+Preserved established manual routing. Included the authorized execution
+planning/status/log from the main workspace in an isolated launch checkout,
+leaving the original `e5e7a123` runtime gates' HEAD/source unchanged. No Rust,
+Julia, Python numerical implementation, tolerance or FFI export changed.
+**Design:** [PLANS §33 publication routing](PLANS.md#publication-link-routing-repair).
+**Tests:** Public route probes are retained in
+`.rust_test_logs/release-execution-20260930/public-docs-routing.json`.
+The original candidate's complete push run `36704011474` passes all **35**
+required jobs and `test/release.py stage-python` independently verifies
+**16/16** source-rebuilt wheel cells, their archive/wheel/source digests,
+**34 checkout + 946 source tests per cell**, and **17 complete offline
+examples per wheel** with zero failures/skips. Original minimum-glibc gates
+for CPython 3.11–3.14 have passed all checkout tests and offline examples;
+the full source suites are still running at their own unchanged revision.
+These results do not establish acceptance of the corrected metadata. The
+runtime and four matching Python/dependency installations are also retained
+under `runtime-rootfs/` and `runtime/`; all four retained interpreter probes
+load actual glibc 2.28. `python3 test/release.py metadata --tag v1.1.0`,
+`python3 test/test_release.py -v` (**10/10**) and `git diff --check` pass
+in the isolated checkout; the build-source map differs only at
+`python-native/pyproject.toml`, as retained in `route-repair-local.json`.
+Subsequent fresh hosted and runtime evidence will be recorded separately. No tag or publication has occurred.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).

@@ -3804,3 +3804,55 @@ Preserve PR #68's delivery branch while its CI completes; pushing launch
 metadata there would cancel the pending branch run and change its acceptance
 target. The release branch must obtain its own exact-source acceptance before
 integration. This delivery does not authorize a main merge, tag or publication.
+
+## 33. Authorized v1.1.0 integration and publication (2026-09-30)
+
+After reviewing the remaining merge and release steps, the lead explicitly
+requested their execution. This authorizes PR #68's integration, the launch
+PR, required commits/pushes, candidate workflow dispatch, the exact tested
+`v1.1.0` tag, draft review/publication, public installation verification and
+the resulting documentation updates. It supersedes the preparation-only
+authorization checkpoints in §32; the acceptance gates remain unchanged.
+
+Independently collect PR #68's repaired sixteen-cell push artifacts at
+`4763fc4`, verify the full required CI inventory and current PR head, then
+merge with a merge commit to preserve the accepted source's ancestry. Keep
+the launch branch at its tested head while its fresh CI runs. Open its PR
+against the integrated `main`, retaining separate source and evidence for
+the launch metadata. Preserve existing branches and tags.
+
+Use the maintained minimum-glibc helper with the pinned Debian glibc 2.28
+root filesystem, matching managed CPython interpreters and a compatible
+binary dependency wheelhouse. Verify hosted archive/wheel digests before
+relocating their paths into the isolated runtime; retain the untouched hosted
+manifests and a relocation receipt. Require the full installed numerical
+suite and complete offline examples for all four Linux x86_64 interpreter
+versions. A host glibc 2.39 run or an auditwheel tag cannot substitute.
+
+After launch integration, require exact-main tests/documentation and review
+the manually assembled candidate before tagging. Review the tag-created
+draft's actual assets and their provenance, including minimum-glibc runtime
+acceptance of the Linux wheels selected for publication. Publish only after
+the checklist's gates pass. Verify public downloads/checksums and Julia's
+prebuilt installation path with Cargo absent, then update the current-release
+documentation in a separate branch. Record the actual publication date; use
+a version DOI only if independently verified, retaining the concept DOI
+otherwise. GitHub distribution remains the authorized scope; PyPI and the
+deferred standing GPU CI are separate decisions.
+
+### Publication link routing repair
+
+The deployed manual uses `Documenter.HTML(prettyurls=false)`: the current
+development Python guide responds at `dev/python_native.html` (HTTP 200),
+while `dev/python_native/` returns HTTP 404. The prepared Python distribution
+URL and versioned release body use the latter route shape. Preserve the
+manual's established URL structure and correct these two publication links
+to `stable/python_native.html`, rather than changing routing for every page.
+The stable guide becomes available through the tagged documentation deployment.
+
+The pyproject URL is distribution metadata, so its repair requires new
+source/archive/wheel provenance and exact-source hosted/minimum-glibc
+acceptance. Keep the original candidate's in-progress runtime gate at its
+own unchanged checkout. Deliver the URL repair plus execution planning/log
+in an isolated checkout of the launch branch so its fresh hosted CI can run
+concurrently. Do not relabel the earlier artifacts as the corrected candidate.
