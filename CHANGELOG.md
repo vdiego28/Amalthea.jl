@@ -28,6 +28,9 @@ Publication and final candidate validation are pending.
   deprecated alias. Spectral phase now unwraps along the frequency axis.
 
 ### Fixed
+- Update the private Python bindings to PyO3 0.29.3 and rust-numpy 0.29.0,
+  including upstream sequence-bound and closure thread-safety fixes; retain
+  the GIL requirement and the existing CPython 3.11–3.14 support boundary.
 - Repair `locextrap=false` across Julia, legacy Rust, resident CPU, and CUDA:
   evaluate the starting derivative at the accepted fourth-order state, and
   make fourth-order dense output reach that state continuously. Default

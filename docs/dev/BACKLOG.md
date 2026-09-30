@@ -52,7 +52,14 @@ or "verified" inside a superseded narrative do not outrank this list.
 > `e5e7a123` push CI `36704011474` passes all 35 required jobs and independent
 > collection verifies sixteen cells. Publication URL repair is being delivered
 > under [PLANS §33](native-port/PLANS.md#publication-link-routing-repair); its
-> metadata change requires fresh artifact acceptance. PR #68 is merged, and its evidence does
+> metadata change requires fresh artifact acceptance. The runtime binding refresh
+> under [PLANS §34](native-port/PLANS.md#34-patched-python-binding-dependencies-before-v110-2026-09-30)
+> upgrades PyO3/rust-numpy and retains the GIL boundary. Its two portable
+> wheel builds, 81 focused tests and 17 offline examples per wheel on actual
+> glibc 2.28, and recorded CPU/native gate pass; results are in the
+> [binding refresh log](native-port/PORT_LOG.md#2026-09-30--patched-python-runtime-binding-refresh--codex).
+> This locally validated refresh is ready for delivery and its own fresh
+> exact-source hosted/full minimum-glibc acceptance. PR #68 is merged, and its evidence does
 > not establish this candidate's acceptance. All four matching CPython
 > interpreters load actual glibc 2.28 in the prepared isolated userspace.
 > The four full installed minimum-glibc gates are running; each has passed

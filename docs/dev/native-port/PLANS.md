@@ -3856,3 +3856,37 @@ acceptance. Keep the original candidate's in-progress runtime gate at its
 own unchanged checkout. Deliver the URL repair plus execution planning/log
 in an isolated checkout of the launch branch so its fresh hosted CI can run
 concurrently. Do not relabel the earlier artifacts as the corrected candidate.
+
+
+## 34. Patched Python binding dependencies before v1.1.0 (2026-09-30)
+
+The authorized release push reports two open runtime PyO3 advisories in
+`python-native/Cargo.lock`: [RUSTSEC-2026-0176](https://rustsec.org/advisories/RUSTSEC-2026-0176.html)
+(sequence iterator bounds) and [RUSTSEC-2026-0177](https://rustsec.org/advisories/RUSTSEC-2026-0177.html)
+(closure Sync contract). The locked 0.27.2 version is in the affected ranges;
+both are patched in released PyO3 0.29.0. The binding source does not directly
+call the named `nth`/`nth_back` or `PyCFunction::new_closure` APIs. Upgrade the
+runtime dependency rather than dismissing the alerts or claiming a demonstrated
+attack through the project's APIs.
+
+Use released PyO3 0.29.3 (the verified latest 0.29 patch) and matching pinned
+rust-numpy 0.29.0, regenerate only
+the Python crate's dependency lock, and preserve the core crate's lock/source.
+Review the upstream 0.27-to-0.29 migration guide before build. New PyO3 modules
+default to free-threaded support; annotate the private module with
+`#[pymodule(gil_used = true)]` to retain this release's GIL-dependent behavior.
+The matrix remains ordinary CPython 3.11–3.14, with no new free-threaded,
+Python 3.15, ABI3, GPU or numerical support claim. Rust-numpy 0.29 targets the
+NumPy 2 ABI, consistent with the existing runtime requirement `numpy>=2.0`.
+
+Validate locked dependency resolution and the patched version inventory,
+portable checkout/sdist wheel builds, existing analytic FFT/stepper/ownership/
+exception tests and complete offline examples. Run the recorded native wrapper
+as the required CPU/FFI safety gate. Do not add tests that duplicate upstream
+security fixes, loosen numerical gates, or relabel parent references/artifacts.
+Deliver only after local gates pass, then require new exact-source all-platform
+hosted references/wheels and the four full minimum-glibc suites before launch
+integration. The earlier metadata-only candidate becomes a superseded
+checkpoint. Record new source/archive/wheel/dependency hashes and results in
+PORT_LOG, update the launch notes/changelog and live queue, and continue the
+authorized release procedure from §33.

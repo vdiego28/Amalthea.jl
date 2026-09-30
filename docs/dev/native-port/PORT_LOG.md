@@ -9430,3 +9430,56 @@ in the isolated checkout; the build-source map differs only at
 `python-native/pyproject.toml`, as retained in `route-repair-local.json`.
 Subsequent fresh hosted and runtime evidence will be recorded separately. No tag or publication has occurred.
 **Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-30 — Patched Python runtime binding refresh — Codex
+**Status at this checkpoint:** locally validated dependency refresh ready for
+authorized commit/push; fresh exact-source hosted/full minimum-glibc acceptance
+remains required before launch integration.
+**Did:** Investigated both open runtime alerts reported by the release push,
+verified the official RustSec/upstream fixes and published crate inventory,
+and upgraded `python-native/Cargo.toml`/`Cargo.lock` to PyO3 **0.29.3** and
+pinned rust-numpy **0.29.0**. The five PyO3 packages all resolve at 0.29.3;
+the core Rust lock/source and Julia source remain byte-identical. Annotated
+`python-native/src/lib.rs::_native` with `#[pymodule(gil_used = true)]` to
+retain the previous GIL requirement after PyO3's changed module default.
+Updated CHANGELOG, versioned release notes and the live queue. No numerical
+algorithm, tolerance, public Python API or core FFI export changed.
+**Design:** [PLANS §34](PLANS.md#34-patched-python-binding-dependencies-before-v110-2026-09-30).
+**Tests:** Evidence directory:
+`.rust_test_logs/release-execution-20260930/`. `CARGO_HOME=/tmp/amalthea-release-cargo-20260930 AMALTHEA_CUDA_BUILD=off RUSTFLAGS='' cargo update -p pyo3 -p numpy`
+resolves the patched inventory retained in `patched-binding-dependencies.json`;
+verified official crate checksums/MSRV are in `binding-crate-versions.json`.
+`PATH=/tmp/amalthea-release-tools-20260930-resume/bin:$PATH XDG_CACHE_HOME=/tmp/amalthea-release-binding-cache-20260930 CARGO_HOME=/tmp/amalthea-release-cargo-20260930 PIP_CONFIG_FILE=/dev/null PIP_INDEX_URL=https://pypi.org/simple PIP_EXTRA_INDEX_URL='' .rust_test_logs/release-execution-20260930/runtime/python/cpython-3.14.7-linux-x86_64-gnu/bin/python3 python-native/tools/wheel_validation.py build --output .rust_test_logs/release-execution-20260930/patched-binding-build`
+(using absolute evidence/interpreter paths from the isolated checkout) passes
+both checkout and sdist-rebuilt portable builds. Both audit as
+`manylinux_2_28_x86_64`, with no Julia/FFTW/libcubature/CUDA dependency.
+Source SHA-256: `168d88dfcdcefa55c60e43c93c30e81a5ea17660707d70eb029c5362aafa741a`;
+checkout wheel: `500d74ee5b38f6fa367c6257115320ec8d8687780eebb71ce22a273551f9e465`;
+source wheel: `e60d53c86c9dc86348ed8e29da7191ddf6ee24f2a687691faf0594da8aa18c16`.
+The build records the dirty implementation at parent `73cf2df3`; it is local
+unit evidence, not a clean hosted candidate or final release artifact.
+`python3 /tmp/amalthea-launch-route-repair-20260930/test/standalone_wheels/glibc228.py smoke --rootfs .rust_test_logs/release-execution-20260930/runtime-rootfs/rootfs --interpreter .rust_test_logs/release-execution-20260930/runtime/python/cpython-3.14.7-linux-x86_64-gnu --manifest .rust_test_logs/release-execution-20260930/patched-binding-build/build.json --wheelhouse .rust_test_logs/release-execution-20260930/runtime/wheelhouse/3.14 --output .rust_test_logs/release-execution-20260930/patched-binding-smoke`
+passes binary-only installation, dependency checks, verified loaded glibc 2.28
+and **17/17 complete offline examples per wheel**, with network disabled and
+Julia/Cargo absent. `python3 .rust_test_logs/release-execution-20260930/run-focused-bindings.py`
+passes **81/81 existing analytic FFT/solver/ownership/exception tests per
+installed wheel**, zero failures/skips; independent-Julia cases are explicitly
+outside this focused selection. Existing FFT/point checks retain their
+`1e-13` tier and analytic solver trajectories their `1e-6` floor. Actual
+fourth-/fifth-order analytic trajectory errors are **6.787e-10 / 3.327e-12**.
+Actual wheel metadata confirms `0.1.0` and the corrected `.html` guide URL
+in `patched-binding-wheel-metadata.json`.
+The first recorded native attempt at `20260930T223004Z-yu7x8k31` stops before
+tests because the isolated checkout lacks instantiated FFTW/dependencies;
+the failure is retained. After `Pkg.instantiate()` into the temporary depot,
+`JULIA_DEPOT_PATH=/tmp/amalthea-release-binding-julia-depot-20260930:/home/diego/.julia CARGO_HOME=/tmp/amalthea-release-cargo-20260930 AMALTHEA_CUDA_BUILD=off python3 test/validate.py --max-workers 4 --log-dir .rust_test_logs/release-execution-20260930/binding-refresh-validation`
+(using the absolute evidence path) passes at **20260930T223300Z-hujkhzpb**:
+Cargo **102 unit + 5 policy**, Julia **43074 pass / 11 expected broken /
+43085 total**, no failures/errors. Rebuilt portable CPU library SHA-256:
+`ff63224c4fcc4e6bd6b3b2a8f474323426ef20f2bed19f2a87ef2f3131a6a905`.
+`cargo fmt --check`, candidate metadata and `git diff --check` pass. Original
+`e5e7a123` minimum-glibc full source runs remain at their own unchanged
+checkout; their completion cannot establish acceptance of these new binding
+artifacts. No tag or publication has occurred.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
