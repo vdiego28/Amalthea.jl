@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790767513489,
+  "lastUpdate": 1790939914847,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -1014,6 +1014,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.887199,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "53799316+vdiego28@users.noreply.github.com",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e714f83434fa8b1d4e18d4ad6fa384e2bbed69b7",
+          "message": "Merge pull request #71 from vdiego28/release/v1.1.0-preparation\n\nIntegrate the accepted v1.1.0 launch candidate.",
+          "timestamp": "2026-10-02T08:07:55-03:00",
+          "tree_id": "ce1b7f40cc50df990771ffa1f7fbe5593b938d3a",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/e714f83434fa8b1d4e18d4ad6fa384e2bbed69b7"
+        },
+        "date": 1790939913768,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.868784,
             "unit": "ms/step"
           }
         ]
