@@ -39,7 +39,7 @@ also request Python evaluation. The test references are files under
 | Gaussian/sech pulses, energy or peak power, spectral Taylor phase, coherent pulse collections | Python setup on both grids | `test_pulses.py`, `test_real_pulses.py`, GNLSE/capillary trajectories |
 | Sampled data pulses, supplied time/frequency arrays, modal arrays and custom input propagators | Python setup with owned arrays and serial callbacks | `test_pulses.py`, `test_real_pulses.py`, `test_modal.py` |
 | GNLSE Taylor dispersion, loss, Kerr, shock, SDO/SiO2 Raman | Resident Rust; Python with custom nonlinear responses | `test_gnlse.py`, `test_raman.py`, `test_resident.py`, `test_callbacks.py` |
-| Gas density/inverse pressure, refractive index, polarizability, Kerr coefficient | Python/CoolProp 7.2.0, project constants and material data | `test_materials.py` |
+| Gas density/inverse pressure, refractive index, polarizability, Kerr coefficient | Python/CoolProp 8.0.0, project constants and material data | `test_materials.py` against Julia/CoolProp 7.2.0 at 1e-13 |
 | Marcatili HE/TE/TM, full/reduced model, attenuation, area and group velocity | Python mode setup | `test_modes.py`, scalar and modal propagation |
 | Constant mode-averaged envelope/carrier Kerr | Resident Rust; Python for carrier THG-off/envelope THG | `test_capillary.py`, `test_real_capillary.py`, `test_modal.py` |
 | Scalar molecular rotational/vibrational Raman and mixtures with Kerr | Resident Rust at supported constant density; Python for profiles/THG exceptions/mixtures | `test_molecular.py`, `test_raman_capillary.py`, `test_profiles.py`, `test_mixtures.py` |
