@@ -109,7 +109,7 @@ impl RealFft {
     }
 }
 
-#[pymodule]
+#[pymodule(gil_used = true)]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<points::ModalPoints>()?;
     m.add_class::<ComplexFft>()?;

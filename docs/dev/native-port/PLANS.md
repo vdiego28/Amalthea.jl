@@ -3733,3 +3733,160 @@ unchanged. After focused tests and the required local gate, deliver the repair
 and updated PR description. Require hosted wheel acceptance and affected CI
 at the resulting source before merging PR #68. Do not merge a known failure
 or treat the old accepted `fa71728` wheel matrix as validation of new source.
+
+## 32. Launch preparation and exact-source release artifacts (2026-09-29)
+
+The lead requested preparation for the next version while PR #68 completes
+CI, including useful fixes during that wait, and selected the Julia-free Python
+wheel launch on GitHub. Prepare an additive Julia minor
+release, `1.1.0`, and an initial standalone Python beta, `0.1.0`, distributed
+as GitHub assets. These are local candidate versions, not publication claims.
+The existing Julia-backed Python wrapper follows Julia's `1.1.0` version.
+Rust implementation crates retain their independent internal versions. No
+commit, push, merge, tag, external announcement or publication is authorized
+by this preparation request. PyPI remains a separate delivery decision.
+
+Complete CHANGELOG's unreleased section from the actual `v1.0.4..HEAD`
+changes; provide tracked release notes and an operator checklist under
+`docs/dev/releases/`. Public installation instructions continue to identify
+the published v1.0.4; candidate instructions must say they apply after launch.
+Use the established concept DOI for the candidate citation without inventing
+a release DOI or release date. Fix stale standalone acceptance, example and
+support-matrix links and describe the Python candidate and its CPU/physics
+boundary explicitly. Set Documenter's HTML page-source link branch to `main`
+so a checkout without a discoverable remote HEAD cannot generate obsolete
+`master` links. Validate the full local manual build without deploying it.
+
+The current release workflow builds/publishes without checking the tagged
+version or waiting for exact-source CI. Its manual trigger also reaches the
+publishing job. Add a stdlib-only `test/release.py` helper with these seams:
+
+- `metadata`: validate Julia/wrapper and Python metadata, public non-dev
+  candidate versions, canonical `vX.Y.Z` tag equality, and tracked notes.
+- `wait-ci`: select push runs from the named test/documentation workflows
+  at the exact checked-out SHA (never a pull-request synthetic merge), wait
+  with bounded duration and live progress, require successful complete runs
+  and the full required test-job inventory including Apple and ARM64. Retain
+  complete run JSON. The workflow must fail on missing, skipped, failed or
+  cancelled required jobs. Optional benchmark-publication skips are expected.
+- `stage-python`: independently invoke the existing sixteen-cell collector,
+  require full-workflow success, recheck version metadata in every selected
+  wheel, and copy the tested **sdist-rebuilt** wheel from each cell. Select
+  the Linux x86_64/3.11 sdist whose actual digest was verified by that cell;
+  differing archive timestamps across platforms do not imply identical bytes.
+  Retain the collector and artifact provenance in the staged output.
+- `checksums`: require the exact four canonical CPU libraries, sixteen
+  candidate wheels and one source archive with no unexpected or missing
+  files; create sorted SHA256SUMS.txt plus a revision/version manifest.
+
+The workflow retains the existing four portable CPU builds, adds locked Cargo
+tests, and stages Python artifacts downloaded from the successful exact-source
+test run. A manual dispatch creates downloadable candidate artifacts only.
+A correctly matched tag may create a **draft** GitHub release with the tracked
+notes, after the same acceptance and checksum gates; the lead reviews and
+publishes that concrete draft. No PyPI credentials, standing GPU CI, numerical
+feature, speed claim or tolerance change belongs to this work item.
+
+Before delivery, test gate rejection with adversarial run/job/version/artifact
+fixtures, collect real previously accepted artifacts as a tooling diagnostic
+at their own exact revision and prove old development assets cannot become
+candidate assets, validate workflow structure/syntax and documentation
+links, build the candidate wheel/sdist outside the checkout, and run available
+installed numerical/offline coverage against independent retained Julia
+oracles. Metadata changes require fresh exact-candidate hosted sixteen-cell
+acceptance and minimum-glibc runtime evidence before launch; earlier successful
+development wheels do not satisfy that condition. Record completed checks and
+remaining launch gates in BACKLOG/PORT_LOG under their ownership rules.
+
+For the lead-authorized commit/push, use a separate
+`release/v1.1.0-preparation` branch based on the prepared `4763fc4` tree.
+Preserve PR #68's delivery branch while its CI completes; pushing launch
+metadata there would cancel the pending branch run and change its acceptance
+target. The release branch must obtain its own exact-source acceptance before
+integration. This delivery does not authorize a main merge, tag or publication.
+
+## 33. Authorized v1.1.0 integration and publication (2026-09-30)
+
+After reviewing the remaining merge and release steps, the lead explicitly
+requested their execution. This authorizes PR #68's integration, the launch
+PR, required commits/pushes, candidate workflow dispatch, the exact tested
+`v1.1.0` tag, draft review/publication, public installation verification and
+the resulting documentation updates. It supersedes the preparation-only
+authorization checkpoints in §32; the acceptance gates remain unchanged.
+
+Independently collect PR #68's repaired sixteen-cell push artifacts at
+`4763fc4`, verify the full required CI inventory and current PR head, then
+merge with a merge commit to preserve the accepted source's ancestry. Keep
+the launch branch at its tested head while its fresh CI runs. Open its PR
+against the integrated `main`, retaining separate source and evidence for
+the launch metadata. Preserve existing branches and tags.
+
+Use the maintained minimum-glibc helper with the pinned Debian glibc 2.28
+root filesystem, matching managed CPython interpreters and a compatible
+binary dependency wheelhouse. Verify hosted archive/wheel digests before
+relocating their paths into the isolated runtime; retain the untouched hosted
+manifests and a relocation receipt. Require the full installed numerical
+suite and complete offline examples for all four Linux x86_64 interpreter
+versions. A host glibc 2.39 run or an auditwheel tag cannot substitute.
+
+After launch integration, require exact-main tests/documentation and review
+the manually assembled candidate before tagging. Review the tag-created
+draft's actual assets and their provenance, including minimum-glibc runtime
+acceptance of the Linux wheels selected for publication. Publish only after
+the checklist's gates pass. Verify public downloads/checksums and Julia's
+prebuilt installation path with Cargo absent, then update the current-release
+documentation in a separate branch. Record the actual publication date; use
+a version DOI only if independently verified, retaining the concept DOI
+otherwise. GitHub distribution remains the authorized scope; PyPI and the
+deferred standing GPU CI are separate decisions.
+
+### Publication link routing repair
+
+The deployed manual uses `Documenter.HTML(prettyurls=false)`: the current
+development Python guide responds at `dev/python_native.html` (HTTP 200),
+while `dev/python_native/` returns HTTP 404. The prepared Python distribution
+URL and versioned release body use the latter route shape. Preserve the
+manual's established URL structure and correct these two publication links
+to `stable/python_native.html`, rather than changing routing for every page.
+The stable guide becomes available through the tagged documentation deployment.
+
+The pyproject URL is distribution metadata, so its repair requires new
+source/archive/wheel provenance and exact-source hosted/minimum-glibc
+acceptance. Keep the original candidate's in-progress runtime gate at its
+own unchanged checkout. Deliver the URL repair plus execution planning/log
+in an isolated checkout of the launch branch so its fresh hosted CI can run
+concurrently. Do not relabel the earlier artifacts as the corrected candidate.
+
+
+## 34. Patched Python binding dependencies before v1.1.0 (2026-09-30)
+
+The authorized release push reports two open runtime PyO3 advisories in
+`python-native/Cargo.lock`: [RUSTSEC-2026-0176](https://rustsec.org/advisories/RUSTSEC-2026-0176.html)
+(sequence iterator bounds) and [RUSTSEC-2026-0177](https://rustsec.org/advisories/RUSTSEC-2026-0177.html)
+(closure Sync contract). The locked 0.27.2 version is in the affected ranges;
+both are patched in released PyO3 0.29.0. The binding source does not directly
+call the named `nth`/`nth_back` or `PyCFunction::new_closure` APIs. Upgrade the
+runtime dependency rather than dismissing the alerts or claiming a demonstrated
+attack through the project's APIs.
+
+Use released PyO3 0.29.3 (the verified latest 0.29 patch) and matching pinned
+rust-numpy 0.29.0, regenerate only
+the Python crate's dependency lock, and preserve the core crate's lock/source.
+Review the upstream 0.27-to-0.29 migration guide before build. New PyO3 modules
+default to free-threaded support; annotate the private module with
+`#[pymodule(gil_used = true)]` to retain this release's GIL-dependent behavior.
+The matrix remains ordinary CPython 3.11–3.14, with no new free-threaded,
+Python 3.15, ABI3, GPU or numerical support claim. Rust-numpy 0.29 targets the
+NumPy 2 ABI, consistent with the existing runtime requirement `numpy>=2.0`.
+
+Validate locked dependency resolution and the patched version inventory,
+portable checkout/sdist wheel builds, existing analytic FFT/stepper/ownership/
+exception tests and complete offline examples. Run the recorded native wrapper
+as the required CPU/FFI safety gate. Do not add tests that duplicate upstream
+security fixes, loosen numerical gates, or relabel parent references/artifacts.
+Deliver only after local gates pass, then require new exact-source all-platform
+hosted references/wheels and the four full minimum-glibc suites before launch
+integration. The earlier metadata-only candidate becomes a superseded
+checkpoint. Record new source/archive/wheel/dependency hashes and results in
+PORT_LOG, update the launch notes/changelog and live queue, and continue the
+authorized release procedure from §33.

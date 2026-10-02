@@ -40,6 +40,14 @@ There are two ways of using Amalthea.jl:
 
 For a short introduction on how to use the simple interface, see the [Quickstart](#quickstart) or [GNLSE](#gnlse) sections below. More information, including on the internals of Amalthea.jl, can be found in the [Documentation](https://vdiego28.github.io/Amalthea.jl/stable/).
 
+The next release candidate, `v1.1.0`, also includes the separate
+`amalthea-native` `0.1.0` Python beta. It provides CPU GNLSE and scalar/modal
+capillary simulations without a Julia runtime, with NumPy results and optional
+HDF5 output. See the [Python guide](docs/src/python_native.md) and
+[candidate release notes](docs/dev/releases/v1.1.0.md). Publication and final
+candidate platform acceptance are tracked in the
+[backlog](docs/dev/BACKLOG.md); the currently published Julia release is v1.0.4.
+
 ## Relationship to Luna.jl
 
 Amalthea.jl is an independent hard fork of [Luna.jl](https://github.com/LupoLab/Luna.jl), not a set of changes intended to land upstream. The Julia-level API, physics models, and much of the original interface layer come directly from that project; what Amalthea.jl adds is a from-scratch Rust numerical backend (`amalthea/`) that the compute-critical kernels are offloaded to, plus a resident native-Rust stepper that removes the per-step Julia↔Rust callback round-trip entirely (see [`docs/dev/native-port/ARCHITECTURE.md`](docs/dev/native-port/ARCHITECTURE.md)).

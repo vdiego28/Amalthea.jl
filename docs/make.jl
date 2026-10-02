@@ -23,6 +23,7 @@ makedocs(
         ],
     ],
     format = Documenter.HTML(
+        edit_link = "main",
         prettyurls = false
     )
 )

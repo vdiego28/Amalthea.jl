@@ -1,4 +1,4 @@
-# Amalthea native Python — internal development package
+# Amalthea native Python
 
 This package provides Julia-compatible time grids, private portable FFT bindings,
 and `solve_precon` for spectral equations with a diagonal linear
@@ -9,10 +9,17 @@ propagators, Taylor dispersion, loss, Kerr, shock, and SDO/SiO₂ Raman. `prop_c
 propagation, polarization, gas mixtures, ADK/PPT, molecular Raman, profiles and
 custom Python modes/responses. The implemented capability matrix is in
 `docs/dev/native-port/PYTHON_SUPPORT_MATRIX.md`; current artifact acceptance and
-release status live in `docs/dev/BACKLOG.md`. This development package is not yet
-the public preview.
+release status live in `docs/dev/BACKLOG.md`. Version `0.1.0` is the first beta
+candidate, prepared for the Amalthea.jl `v1.1.0` GitHub release. Candidate
+metadata does not establish publication or platform acceptance. After launch,
+download a matching wheel from the GitHub Releases page and install it with
+`python -m pip install --only-binary=:all: /path/to/amalthea_native-0.1.0-TAGS.whl`.
+CPython 3.11–3.14 wheel targets are Linux x86_64/ARM64 (glibc 2.28 or later),
+macOS Apple Silicon and Windows x86_64. Quantum noise, envelope plasma and
+vector Raman raise explicit errors; Python GPU, free-space and step-index
+entrypoints are outside this beta. PyPI publication is a separate decision.
 
-Build an internal CPU wheel from this directory with
+Build a development CPU wheel from this directory with
 `RUSTFLAGS="" maturin build --release`. Install the resulting wheel into an
 isolated environment and run `python -m pytest tests`. Runtime imports require
 NumPy, SciPy, CoolProp 7.2.0, and the included Rust extension, with no Julia or system FFTW

@@ -15,9 +15,9 @@ authors:
   - family-names: "Travers"
     given-names: "John C."
     orcid: "https://orcid.org/0000-0003-0350-9104"
-version: "1.0.3"
-date-released: "2026-08-10"
-doi: "10.5281/zenodo.21872422"
+version: "1.1.0"
+# Candidate metadata: add date-released and a version DOI after publication.
+doi: "10.5281/zenodo.20359892"
 repository-code: "https://github.com/vdiego28/Amalthea.jl"
 url: "https://vdiego28.github.io/Amalthea.jl/stable/"
 license: MIT
