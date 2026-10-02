@@ -31,12 +31,56 @@ mod tests {
     use super::dispersion::{ChebyshevDispersion, SellmeierGas, ZeisbergerNeff};
     use super::ffi::process_field_inplace;
     use super::integrator::integrate_integrating_factor;
-    use super::io::{Hdf5Writer, get_hdf5_api};
+    use super::io::{H5P_DEFAULT, H5S_ALL, Hdf5Api, Hdf5Writer, get_hdf5_api};
     use super::ionization::PptIonizationRate;
     use super::raman::{RamanOscillator, TimeDomainRamanSolver};
     use super::scans::ScanQueue;
     use super::stepper::Dopri5Stepper;
     use num_complex::Complex;
+
+    // A discovered HDF5 library need not have been built with thread safety.
+    static HDF5_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn hdf5_api_or_skip(test_name: &str) -> Option<&'static Hdf5Api> {
+        match get_hdf5_api() {
+            Ok(api) => Some(api),
+            Err(err) => {
+                assert!(
+                    !std::env::var("AMALTHEA_REQUIRE_HDF5_TESTS").is_ok_and(|value| value == "1"),
+                    "{test_name}: HDF5 is required but unavailable: {err}"
+                );
+                println!("Skipping {test_name}: HDF5 library unavailable: {err}");
+                None
+            }
+        }
+    }
+
+    struct Hdf5TestDirectory(std::path::PathBuf);
+
+    impl Hdf5TestDirectory {
+        fn new() -> Self {
+            static NEXT_DIRECTORY: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(0);
+            loop {
+                let id = NEXT_DIRECTORY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let path =
+                    std::env::temp_dir().join(format!("amalthea-hdf5-{}-{id}", std::process::id()));
+                match std::fs::create_dir(&path) {
+                    Ok(()) => return Self(path),
+                    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(err) => panic!("Failed to create HDF5 test directory: {err}"),
+                }
+            }
+        }
+    }
+
+    impl Drop for Hdf5TestDirectory {
+        fn drop(&mut self) {
+            if let Err(err) = std::fs::remove_dir_all(&self.0) {
+                eprintln!("Failed to remove HDF5 test directory {:?}: {err}", self.0);
+            }
+        }
+    }
 
     fn cuda_available_or_skip(test_name: &str) -> bool {
         if let Err(err) = crate::cuda::init_gpu_context() {
@@ -569,16 +613,15 @@ mod tests {
 
     #[test]
     fn test_hdf5_io_basic() {
-        let api_res = get_hdf5_api();
-        if let Err(err) = api_res {
-            println!(
-                "Skipping HDF5 IO test because library could not be loaded: {}",
-                err
-            );
+        let _guard = HDF5_TEST_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let Some(api) = hdf5_api_or_skip("HDF5 IO test") else {
             return;
-        }
-        let api = api_res.unwrap();
-        let test_file = "test_io_out.h5";
+        };
+        let directory = Hdf5TestDirectory::new();
+        let path = directory.0.join("test_io_out.h5");
+        let test_file = path.to_str().unwrap();
+        let energy = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let field = [Complex::new(1.1, 2.2), Complex::new(3.3, 4.4)];
 
         let writer = Hdf5Writer::open_or_create(test_file).unwrap();
         let group_id = writer.create_group("stats").unwrap();
@@ -586,36 +629,75 @@ mod tests {
         let dset_id = writer
             .create_dataset_2d(group_id, "energy", api.h5t_native_double, &[5], &[5])
             .unwrap();
-        writer
-            .write_dataset_f64(dset_id, &[1.0, 2.0, 3.0, 4.0, 5.0])
-            .unwrap();
+        writer.write_dataset_f64(dset_id, &energy).unwrap();
         writer.close_dataset(dset_id);
 
         let dset_c_id = writer
             .create_dataset_2d(group_id, "field", api.h5t_complex, &[2], &[2])
             .unwrap();
-        writer
-            .write_dataset_complex(dset_c_id, &[Complex::new(1.1, 2.2), Complex::new(3.3, 4.4)])
-            .unwrap();
+        writer.write_dataset_complex(dset_c_id, &field).unwrap();
         writer.close_dataset(dset_c_id);
 
         writer.close_group(group_id);
         drop(writer);
 
-        let _ = std::fs::remove_file(test_file);
+        // Reopen the file to check persisted real and compound-complex values.
+        let reader = Hdf5Writer::open_existing(test_file).unwrap();
+        let dset_id = reader
+            .open_dataset_2d(reader.file_id, "stats/energy")
+            .unwrap();
+        let mut energy_read = [0.0; 5];
+        let status = unsafe {
+            (api.H5Dread)(
+                dset_id,
+                api.h5t_native_double,
+                H5S_ALL,
+                H5S_ALL,
+                H5P_DEFAULT,
+                energy_read.as_mut_ptr() as *mut libc::c_void,
+            )
+        };
+        reader.close_dataset(dset_id);
+        assert!(status >= 0, "Failed to read persisted double dataset");
+        assert_eq!(energy_read, energy);
+
+        let dset_id = reader
+            .open_dataset_2d(reader.file_id, "stats/field")
+            .unwrap();
+        let mut field_read = [Complex::new(0.0, 0.0); 2];
+        let status = unsafe {
+            (api.H5Dread)(
+                dset_id,
+                api.h5t_complex,
+                H5S_ALL,
+                H5S_ALL,
+                H5P_DEFAULT,
+                field_read.as_mut_ptr() as *mut libc::c_void,
+            )
+        };
+        reader.close_dataset(dset_id);
+        assert!(status >= 0, "Failed to read persisted complex dataset");
+        assert_eq!(field_read, field);
     }
 
     #[test]
-    fn test_scan_queue_flock() {
-        let api_res = get_hdf5_api();
-        if let Err(err) = api_res {
-            println!(
-                "Skipping ScanQueue flock test because HDF5 could not be loaded: {}",
-                err
-            );
+    fn test_hdf5_scan_queue_flock() {
+        let _guard = HDF5_TEST_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let Some(api) = hdf5_api_or_skip("HDF5 ScanQueue flock test") else {
             return;
+        };
+        let directory = Hdf5TestDirectory::new();
+        let path = directory.0.join("test_queue.h5");
+        let qfile = path.to_str().unwrap();
+        // ScanQueue operates on an existing queue; its caller owns creation.
+        {
+            let writer = Hdf5Writer::open_or_create(qfile).unwrap();
+            let dset_id = writer
+                .create_dataset_2d(writer.file_id, "qdata", api.h5t_native_int, &[4], &[4])
+                .unwrap();
+            writer.write_dataset_int(dset_id, &[0; 4]).unwrap();
+            writer.close_dataset(dset_id);
         }
-        let qfile = "test_queue.h5";
         let queue = ScanQueue::new(qfile, 4);
 
         let idx0 = queue.checkout_next_index().unwrap();
@@ -640,7 +722,16 @@ mod tests {
 
         let idx5 = queue.checkout_next_index().unwrap();
         assert_eq!(idx5, None);
-        assert!(!std::path::Path::new(qfile).exists());
+        // Completion persists the state; queue-file removal belongs to the caller.
+        assert!(path.is_file());
+        let reader = Hdf5Writer::open_existing(qfile).unwrap();
+        let mut qdata = [0; 4];
+        reader
+            .with_existing_int_dataset_2d("qdata", &mut qdata, |reader, dset_id, qdata| {
+                reader.read_dataset_int(dset_id, qdata)
+            })
+            .unwrap();
+        assert_eq!(qdata, [2, 3, 2, 2]);
     }
 
     #[test]

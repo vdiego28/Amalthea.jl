@@ -9483,3 +9483,70 @@ Cargo **102 unit + 5 policy**, Julia **43074 pass / 11 expected broken /
 checkout; their completion cannot establish acceptance of these new binding
 artifacts. No tag or publication has occurred.
 **Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-10-02 — Standalone HDF5 repair and release status refresh — Codex
+
+**Did:** Reproduced both standalone HDF5 failures in fresh Rust processes.
+`io.rs::get_hdf5_api` read predefined datatype globals before `H5open`, so the
+first dataset used an invalid type. It now initializes HDF5 first, checks
+the native IDs and compound construction, and closes a failed owned compound
+type without closing Julia's shared HDF5 library. The queue test now creates
+its `qdata` fixture and verifies persisted completion states, matching the
+existing queue ownership contract. Both tests use isolated temporary files,
+serialize access to potentially non-thread-safe HDF5, and verify readback.
+
+Added `test/run_rust_hdf5.jl`: Julia resolves HDF5 and its dependency paths,
+then launches fresh Rust tests with `AMALTHEA_REQUIRE_HDF5_TESTS=1`. Missing
+HDF5, failed tests, zero matching tests or ignored tests fail the gate. The
+recorded local wrapper and Linux/macOS/Windows Rust CI jobs include it.
+The broader native run exposed another defect: the Julia native writer could
+not discover HDF5 in the cloud's custom depot. `Output.__init__` now supplies
+Julia's actual library path unless the user already supplied an override.
+
+Refreshed the live release queue and reusable operator checklist from GitHub
+evidence. PRs #68/#71/#70/#72 are merged; prior successful tests, documentation
+and release preparation remain evidence for `e714f83` only. Current-main and
+#69 acceptance, exact-final-candidate glibc 2.28 evidence and publication are
+distinct outstanding gates. Historical log entries were preserved.
+
+**Design:** [PLANS §35](PLANS.md#35-standalone-rust-hdf5-initialization-and-required-checks-2026-10-02).
+
+**Validation:** Commands used the cloud's `activate.sh` toolchain environment
+(Julia 1.12.7, Rust 1.99.0, CPU-only, portable Rust flags). Evidence is retained
+under `/workspace/.amalthea-cloud/`:
+
+- `logs/hdf5-before-fix.log`: both original tests fail in separate fresh
+  processes with the actual Julia HDF5 library selected explicitly.
+- `julia --startup-file=no --project test/run_rust_hdf5.jl`: **2/2 pass**
+  without skips; `logs/hdf5-after-fix.log` records the final launcher.
+- Deliberately unloadable library: both required tests fail, rather than
+  skip (`logs/hdf5-required-failure.log`). Successful fake Cargo commands
+  reporting zero tests or one ignored test are also rejected
+  (`logs/hdf5-empty-gate-rejection.log`).
+- `python3 test/validate.py --groups rust --max-workers 2 --log-dir
+  /workspace/.amalthea-cloud/hdf5-validation`: retained run
+  `20261002T141706Z-oe7eo6dr` reports **102 Cargo unit + 5 policy tests passing**
+  and the required HDF5 gate passing. The 85-item Julia native suite reports
+  **43,059 pass / 11 expected broken / 4 errors**, all four errors in the
+  native writer's custom-depot discovery. This failed run is preserved.
+- After the Julia path repair, fresh processes with `AMALTHEA_HDF5_LIB`
+  unset run `test/run_group_bucket.jl` with `LUNA_BUCKET_TAG=rust` and
+  `LUNA_BUCKET_FILES=test_scan_native_write.jl` (**17/17 pass**), then
+  `LUNA_BUCKET_FILES=amalthea/tests/test_scans_io.jl` (**12/12 pass**).
+  Logs: `logs/hdf5-native-writer-recheck.log` and
+  `logs/hdf5-julia-ffi-recheck.log`. A separate fresh import confirms an
+  explicit override remains unchanged (`logs/hdf5-explicit-override.log`).
+- The existing `test_queueexec_concurrency.jl` item passes **13/13**, including
+  intentional failure recovery and cleanup, with one thread per process
+  (`logs/hdf5-queue-concurrency.log`).
+- `python3 test/test_validate.py -v`: **11/11 pass**, including required-gate
+  failure propagation. Cargo formatting, workflow YAML parsing and
+  `git diff --check` pass. Final source hashes and GitHub evidence are in
+  `review/hdf5-repair-source.json` and `review/release-readiness-20261002.json`.
+
+**Limits:** The entire native suite was not repeated after the final Julia
+path fix; its affected HDF5 items were rechecked as above. New macOS/Windows
+execution and full hosted acceptance remain pending. No CUDA hardware,
+minimum-glibc release acceptance, tag or publication is claimed by these
+local checks.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).

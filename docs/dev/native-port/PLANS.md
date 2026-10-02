@@ -3890,3 +3890,42 @@ integration. The earlier metadata-only candidate becomes a superseded
 checkpoint. Record new source/archive/wheel/dependency hashes and results in
 PORT_LOG, update the launch notes/changelog and live queue, and continue the
 authorized release procedure from §33.
+
+## 35. Standalone Rust HDF5 initialization and required checks (2026-10-02)
+
+Cloud setup exposed two failures hidden by optional HDF5 discovery in Cargo
+tests. A fresh Rust process reads the predefined datatype globals before
+`H5open` initializes them. The standalone queue test also assumes that
+`ScanQueue::new` creates its file and that completion removes it, although
+the queue operates on an existing `qdata` dataset and leaves cleanup to its
+caller. Julia normally initializes HDF5 before entering Rust, masking the
+first defect.
+
+Call and check `H5open` before caching datatype IDs or constructing the
+complex type. Reject invalid predefined IDs and failed compound construction,
+closing the owned compound type on insertion failure. Do not call global
+`H5close`: the library can be shared with Julia. Preserve the loader's
+optional-runtime policy and the existing file/queue ownership contract.
+
+The full native gate also exposes a library-discovery failure when Julia uses
+a custom depot. Initialize `AMALTHEA_HDF5_LIB` from `HDF5.API.libhdf5` in
+`Output.__init__` only when the user has not set an override. This selects the
+same resolved library already loaded by Julia, including package preferences,
+instead of guessing another version from a directory of cached artifacts.
+Verify the existing native writer tests in a fresh custom-depot Julia process
+without an override, and separately verify that an explicit override survives
+module initialization.
+
+Repair the standalone tests with isolated temporary files, explicit queue
+data initialization, real/complex readback and persisted queue-state checks.
+Add an explicit required-HDF5 test mode and a Julia launcher that passes the
+resolved HDF5 library and its dependency search paths to a fresh Cargo test
+process. Run the two tests serially there without preinitializing HDF5 in the
+child. Include this gate after Julia dependency setup in the Rust CI jobs and
+in the recorded local validation wrapper; ordinary Cargo-only use may still
+skip an unavailable optional library.
+
+Validate both reproduced failures, required-mode rejection of an unloadable
+library, the full Cargo suite, and the affected Julia Rust/native and I/O
+coverage. Record actual results and platform limitations in PORT_LOG, and
+refresh only live release status/checklists from current GitHub evidence.

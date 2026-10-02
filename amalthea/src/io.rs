@@ -331,16 +331,29 @@ pub fn get_hdf5_api() -> Result<&'static Hdf5Api, String> {
                 let h5t_native_double_ptr = load_sym!("H5T_NATIVE_DOUBLE_g", *const i64);
                 let h5t_native_int_ptr = load_sym!("H5T_NATIVE_INT_g", *const i64);
 
+                // These globals are initialized by H5open. Julia may already
+                // have opened HDF5, but a standalone Rust process has not.
+                if H5open() < 0 {
+                    return Err("Failed to initialize HDF5".to_string());
+                }
                 let h5t_native_double = *h5t_native_double_ptr;
                 let h5t_native_int = *h5t_native_int_ptr;
+                if h5t_native_double < 0 || h5t_native_int < 0 {
+                    return Err("HDF5 native datatypes are not initialized".to_string());
+                }
 
                 let h5t_complex = H5Tcreate(H5T_COMPOUND, 16);
+                if h5t_complex < 0 {
+                    return Err("Failed to create HDF5 complex datatype".to_string());
+                }
                 let r_name = CString::new("r").unwrap();
                 let i_name = CString::new("i").unwrap();
-                H5Tinsert(h5t_complex, r_name.as_ptr(), 0, h5t_native_double);
-                H5Tinsert(h5t_complex, i_name.as_ptr(), 8, h5t_native_double);
-
-                H5open();
+                if H5Tinsert(h5t_complex, r_name.as_ptr(), 0, h5t_native_double) < 0
+                    || H5Tinsert(h5t_complex, i_name.as_ptr(), 8, h5t_native_double) < 0
+                {
+                    H5Tclose(h5t_complex);
+                    return Err("Failed to define HDF5 complex datatype members".to_string());
+                }
 
                 std::mem::forget(lib);
 
