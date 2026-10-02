@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790939914847,
+  "lastUpdate": 1790950351387,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -1043,6 +1043,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.868784,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "53799316+vdiego28@users.noreply.github.com",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "07afbf8d99cfe9a3b89a43f23feb58c600f59190",
+          "message": "Merge pull request #72 from vdiego28/dependabot/julia/CSV-0.10-and-1.1\n\nbuild(deps): update CSV requirement from 0.10 to 0.10, 1.1",
+          "timestamp": "2026-10-02T11:05:29-03:00",
+          "tree_id": "071ccf3349e1aa7126119f48f55f3a57b0523ebf",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/07afbf8d99cfe9a3b89a43f23feb58c600f59190"
+        },
+        "date": 1790950350401,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.881937,
             "unit": "ms/step"
           }
         ]
