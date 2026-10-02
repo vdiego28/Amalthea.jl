@@ -69,7 +69,7 @@ AmaltheaPyPlotExt = "PyPlot"
 [compat]
 ArgParse = "1"
 BlackBoxOptim = "0.6"
-CSV = "0.10"
+CSV = "0.10, 1.1"
 CoolProp = "0.1, 0.2"
 Cubature = "1.5.1"
 DSP = "0.8"
