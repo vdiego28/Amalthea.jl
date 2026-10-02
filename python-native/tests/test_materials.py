@@ -22,7 +22,9 @@ def test_julia_material_setup(gas):
         pytest.skip('set AMALTHEA_MATERIAL_ORACLE for independent gas setup acceptance')
     root = Path(root)
     meta = tomllib.loads((root/'metadata.toml').read_text())
-    assert meta['coolprop'] == CoolProp.__version__ == '7.2.0'
+    # The Julia reference and Python runtime use independently validated pins.
+    assert meta['coolprop'] == '7.2.0', 'unsupported Julia oracle CoolProp version'
+    assert CoolProp.__version__ == '8.0.0', 'unsupported Python runtime CoolProp version'
     assert meta['N_A'] == m.N_A and meta['roomtemp'] == m.ROOMTEMP
     assert abs(meta['epsilon0']/m.EPS0-1) < 1e-15
     data = np.loadtxt(root/gas/'thermo.txt')

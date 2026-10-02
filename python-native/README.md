@@ -22,7 +22,7 @@ entrypoints are outside this beta. PyPI publication is a separate decision.
 Build a development CPU wheel from this directory with
 `RUSTFLAGS="" maturin build --release`. Install the resulting wheel into an
 isolated environment and run `python -m pytest tests`. Runtime imports require
-NumPy, SciPy, CoolProp 7.2.0, and the included Rust extension, with no Julia or system FFTW
+NumPy, SciPy, CoolProp 8.0.0, and the included Rust extension, with no Julia or system FFTW
 dependency.
 A local maturin build is a development artifact. Release wheels require the
 maintained build, binary audit, installed numerical and offline gates; their
@@ -172,7 +172,9 @@ carrier-resolved Kerr propagation with explicit `plasma=False`.
 `polarizability`, `refractive_index`, and default `gamma3` for the Julia gas
 identifiers. Wavelengths are in metres, pressure in bar, temperature in kelvin,
 and density in particles/m³. Numeric arrays broadcast and results own their
-memory. CoolProp 7.2.0 and CODATA2014 normalization match PhysData.
+memory. The Python runtime uses CoolProp 8.0.0 with CODATA2014 normalization.
+Material tests validate this version against the independent Julia PhysData
+oracle using CoolProp 7.2.0, retaining a relative tolerance of 1e-13.
 
 ```python
 from amalthea_native.materials import density, refractive_index
