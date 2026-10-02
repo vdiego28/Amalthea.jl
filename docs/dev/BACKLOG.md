@@ -58,16 +58,37 @@ or "verified" inside a superseded narrative do not outrank this list.
 > wheel builds, 81 focused tests and 17 offline examples per wheel on actual
 > glibc 2.28, and recorded CPU/native gate pass; results are in the
 > [binding refresh log](native-port/PORT_LOG.md#2026-09-30--patched-python-runtime-binding-refresh--codex).
-> This locally validated refresh is ready for delivery and its own fresh
-> exact-source hosted/full minimum-glibc acceptance. PR #68 is merged, and its evidence does
-> not establish this candidate's acceptance. All four matching CPython
-> interpreters load actual glibc 2.28 in the prepared isolated userspace.
-> The four full installed minimum-glibc gates are running; each has passed
-> the checkout tests and complete offline examples for both wheel builds.
-> **Next:** collect the corrected candidate's exact-source hosted and full
-> minimum-glibc acceptance, then integrate the launch and validate/assemble the
-> exact-main candidate before tagging and reviewing the release draft. No release
-> is published; PyPI and standing GPU CI remain separate decisions.
+> The refresh is delivered at `89700c11`; push CI `36787646160` passes all
+> 35 required jobs and independent collection verifies all sixteen cells.
+> PR #71 has no pending or failed hosted checks. Its CPython 3.11 full
+> minimum-glibc gate passes; interrupted 3.12–3.14 attempts are preserved and
+> only those unfinished full gates are restarted in separate evidence directories.
+> The 2026-10-01 recovery was interrupted before completion. The dated
+> 2026-10-02 recovery and guarded handoff run persistently through the checked
+> draft, as recorded in the
+> [persistent recovery log](native-port/PORT_LOG.md#2026-10-02--persistent-launch-execution-recovery--codex).
+> PR #68 is merged; its evidence does not establish this candidate's acceptance.
+> All four matching interpreters load actual glibc 2.28 in the isolated userspace.
+> The superseded `e5e7a123` candidate passes all four full installed
+> minimum-glibc gates; this is a separate checkpoint, recorded in the
+> [runtime completion log](native-port/PORT_LOG.md#2026-09-30--superseded-candidate-minimum-glibc-completion--codex).
+> **Resume checkpoint (2026-10-02 10:46 UTC):** the persistent job is alive at
+> `candidate_runtime`; the three restarted interpreters have passed 34 checkout
+> tests and 17 offline examples per wheel, with their source suites in progress.
+> Read `.rust_test_logs/release-execution-20260930/persistent-launch-state.json`
+> and `persistent-launch-20261002.log` first, then confirm live GitHub state.
+> The job is authorized to continue through candidate acceptance, PR #71's
+> merge, exact-main assembly and the tested tag's checked draft. It stops before
+> publication. Do not start duplicate workers or blindly rerun the pipeline:
+> interrupted actions may already have merged, dispatched CI or pushed the tag.
+> Preserve `.rust_test_logs/release-execution-20260930/`; it holds the frozen
+> source checkouts, exact hosted artifacts, runtime evidence and local helpers.
+> **Next:** after the job reaches its checked draft, review
+> `v110-publication-ready.json` and the actual GitHub draft, then perform the
+> already-authorized publication, public installation verification and separate
+> publication-documentation delivery under PLANS §33/§35. At this checkpoint
+> the launch remains unmerged and v1.0.4 remains public; verify updated state
+> before acting. PyPI and standing GPU CI remain separate decisions.
 
 > **Delivery audit and Windows PPT cache repair (2026-09-29):** all previously
 > prepared local commits are pushed; there are no stashes or local-only branch

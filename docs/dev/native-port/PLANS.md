@@ -3890,3 +3890,37 @@ integration. The earlier metadata-only candidate becomes a superseded
 checkpoint. Record new source/archive/wheel/dependency hashes and results in
 PORT_LOG, update the launch notes/changelog and live queue, and continue the
 authorized release procedure from §33.
+
+
+## 35. Publication documentation and stable-manual correction (2026-09-30)
+
+After verified public v1.1.0 publication, apply the already-authorized current-
+release documentation updates on a separate branch from the integrated main.
+Use the actual GitHub `published_at` date. Update README, the standalone
+package README, Python and Julia installation guides, installer example/help
+text, CHANGELOG, citation metadata and the operator checkpoint. Verify a new
+version DOI independently; otherwise keep the existing concept DOI and make
+no archival claim. Link the delivered release and its accepted assets.
+
+The normal Documenter main deployment updates `dev`; `stable` points to the
+latest tagged version. Thus a post-publication prose correction on main alone
+would leave the stable installation guide's earlier v1.0.4 examples and Python
+candidate wording in place. Rebuild the complete manual from the reviewed
+post-publication documentation commit. Publish that generated documentation
+into the existing v1.1.0 directory on `gh-pages`, preserving its site/version
+metadata, aliases and other version directories. Use a normal commit/push,
+record both the actual documentation source revision and the generated-site
+revision, and verify the stable installation/Python URLs and their current
+release links. Do not forge CI source/tag provenance, change the software tag,
+replace release assets, or create a second software release for prose alone.
+This follows [Documenter's versioned-documentation contract](https://documenter.juliadocs.org/stable/man/hosting/#Documentation-Versions)
+and its separation of documentation corrections from immutable software tags;
+the explicit generated-site update avoids triggering the strict
+software-release workflow with a documentation build-metadata tag.
+
+Build/inspect the full manual and check metadata/diff/shell syntax. Source
+algorithms and binary metadata stay byte-identical; do not repeat numerical
+suites solely for publication prose. Preserve required branch checks and
+merge the documentation PR after its applicable gates pass. Record actual
+publication, public download/installation and stable-site evidence in PORT_LOG;
+BACKLOG is the authoritative resulting status and next-action queue.

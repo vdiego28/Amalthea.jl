@@ -9483,3 +9483,242 @@ Cargo **102 unit + 5 policy**, Julia **43074 pass / 11 expected broken /
 checkout; their completion cannot establish acceptance of these new binding
 artifacts. No tag or publication has occurred.
 **Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-30 — Superseded candidate minimum-glibc completion — Codex
+**Status at this checkpoint:** `e5e7a123` minimum-runtime acceptance is complete;
+patched candidate `89700c11` is pushed and awaits its separate acceptance.
+**Did:** Completed the four unchanged original launch-candidate installed
+suites before synchronizing the workspace to the pushed binding refresh.
+Preserved all original build manifests, relocated-path receipts, archive/wheel
+hashes, oracle manifests, loaded-library probes and numerical XML/logs in
+`.rust_test_logs/release-execution-20260930/launch-glibc-{3.11,3.12,3.13,3.14}/`.
+The aggregate receipt is `superseded-e5-minimum-runtime.json`. Copied the
+prepared userspace, interpreters and dependency wheelhouses into the durable
+ignored evidence root; the new candidate has a separate clean checkout there.
+No source, FFI export or numerical acceptance criterion changed in this unit.
+**Design:** [PLANS §33](PLANS.md#33-authorized-v110-integration-and-publication-2026-09-30).
+**Tests:** For each CPython 3.11.16/3.12.14/3.13.15/3.14.7,
+`python3 test/standalone_wheels/glibc228.py test --rootfs /tmp/amalthea-release-glibc-rootfs-20260930-resume/rootfs --interpreter /tmp/amalthea-release-python-20260930-resume/cpython-PATCH-linux-x86_64-gnu --manifest .rust_test_logs/release-execution-20260930/launch-relocated/MINOR/build.json --oracles .rust_test_logs/release-execution-20260930/launch-artifacts/python-native-oracles --wheelhouse /tmp/amalthea-release-wheelhouse-20260930-resume/MINOR --output .rust_test_logs/release-execution-20260930/launch-glibc-MINOR`
+(using absolute evidence paths) passes on verified loaded **glibc 2.28**,
+network disabled and Julia/Cargo absent: **34 checkout + 946 source tests**,
+zero failures/skips, and **17 complete offline examples per installed wheel**.
+All twenty independent Julia fixture families retain exact source/revision
+provenance. Fourth-/fifth-order adaptive solver errors are **5.237e-13 /
+7.545e-13**; filtered fourth-order error is **1.747e-12**. Independent feature
+effects include **0.01994 / 0.19724 / 0.0009164**, larger than the existing
+asserted tolerances. Source-suite runtimes are about 41 minutes per interpreter.
+These hashes/results establish only `e5e7a123`, never the corrected binding
+candidate or a future release artifact. New push CI `36787646160` at
+`89700c11` is in progress; its PR documentation build passes. No tag or release
+publication has occurred. The original planning edits were backed up under
+`original-pre-sync-backup/` before the authorized fast-forward.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-09-30 — Publication documentation staging preparation — Codex
+**Status at this checkpoint:** preparation complete; source delivery, tag,
+publication and application of the prepared prose remain gated on acceptance.
+**Did:** Wrote the stable-manual correction design before the publication
+updates. Prepared guarded local prose/site staging helpers under the ignored
+release evidence root and a read-only `gh-pages` checkout. Prose staging
+requires an actual non-draft v1.1.0 publication receipt, uses its published
+date, and retains the concept DOI unless a version DOI is independently
+verified. Stable-site staging requires the reviewed complete HTML manual,
+preserves version metadata/aliases and restricts changes to `v1.1.0/`.
+Prepared the fresh tagged Julia install check with Cargo absent; these helpers
+have not been applied or reported as public installation acceptance.
+**Design:** [PLANS §35](PLANS.md#35-publication-documentation-and-stable-manual-correction-2026-09-30).
+**Tests:** `python3 -m py_compile` passes for
+`.rust_test_logs/release-execution-20260930/{update-published-docs,correct-stable-manual,accept-exact-candidate,release-progress}.py`;
+`git diff --check` passes. Read-only inspection confirms the generated site
+uses a `stable` symlink and per-version `siteinfo.js`, consistent with the
+reviewed Documenter contract. The exact-candidate watcher retains CI/source/
+artifact/runtime results in `binding-candidate-89700c11/`; no generated website,
+software tag, release asset, source algorithm or FFI export changed here.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-10-01 — Launch monitoring recovery and reference review — Codex
+**Status at this checkpoint:** patched candidate acceptance continues; no launch
+merge, tag or publication has occurred.
+**Did:** Recovered after the execution server restart by reading live GitHub
+state and the durable evidence before repeating any action. PR #71 remains
+open at `89700c11`; v1.0.4 remains the latest public release. The original
+acceptance watcher survives as process 24250, although its prior tool session
+is unavailable; attached a read-only observer rather than starting duplicate
+builds or runtime tests. Prepared the downloaded-asset architecture/checksum/
+Linux-loader inspector under the ignored evidence root.
+**Design:** [PLANS §33](PLANS.md#33-authorized-v110-integration-and-publication-2026-09-30)
+and [PLANS §35](PLANS.md#35-publication-documentation-and-stable-manual-correction-2026-09-30).
+**Tests:** Exact push CI `36787646160` passes its **19 preceding required jobs**,
+including the independent reference producer, with all sixteen installed-wheel
+jobs running and no failures reported at this checkpoint. Read-only independent
+verification of `binding-candidate-early-references/` against the clean
+`binding-candidate-source/` at `89700c11` verifies all **20 families**, their
+file digests and source/revision provenance. Manifest SHA-256:
+`b0f195efcbd04fb827ecf2622bccd3a4a5b84590b056f38dcbb9a0d31610ec74`;
+producer Julia **1.13.1**, CoolProp **7.2.0**. Receipt:
+`.rust_test_logs/release-execution-20260930/binding-candidate-reference-review.json`.
+`python3 -m py_compile` passes for the prepared asset inspector and the recovery
+observer. Read-only inspection of `amalthea/src/ffi.rs::process_field_inplace`
+confirms the complex-array length/layout contract; `nm -D` confirms the four
+intended install-check exports in the local release library. System PATH
+`/usr/bin:/bin` excludes Cargo. These are preparation checks, not acceptance of
+future hosted libraries or a public package installation. The surviving watcher
+retains exact-source CI/artifact/runtime evidence in `binding-candidate-89700c11/`.
+No product source, numerical criterion or FFI export changed.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-10-01 — First patched wheel review and per-cell runtime start — Codex
+**Status at this checkpoint:** first Linux artifact independently reviewed;
+all-platform/full minimum-runtime acceptance remains in progress.
+**Did:** Downloaded the completed Linux x86_64 CPython 3.11 cell from exact
+push run `36787646160` into `binding-first-cell-review/`. Verified source maps,
+wheel digests, package/import metadata and the corrected HTML guide URL.
+Adjusted only ignored local orchestration to start each minimum-runtime gate
+as its Linux cell finishes. Stopped only the prior pre-runtime watcher after
+proving it had started no runtime test; retained its evidence and resumed the
+same exact-source acceptance directory. No numerical test was interrupted or
+duplicated. The required full suite, four interpreter versions, immutable
+provenance and independent sixteen-cell final collection are unchanged.
+**Design:** [PLANS §33](PLANS.md#33-authorized-v110-integration-and-publication-2026-09-30).
+**Tests:** First reviewed source wheel SHA-256:
+`1d6f28bd86e384e18ce01830bb1b8177ea0f2a070c08e3dbc8ce3ffc8dd65a53`;
+checkout wheel:
+`7d962e3360b99595c4f44cc8901c6eccd2bb35f034465e3fd7b404c9202e0b38`.
+The retained hosted validation passes **34 checkout + 946 source tests**,
+zero failures/skips, and **17 offline examples per wheel**. Both actual
+METADATA records report `amalthea-native 0.1.0` and the correct
+`stable/python_native.html` URL. Receipt:
+`.rust_test_logs/release-execution-20260930/binding-first-cell-review.json`.
+`python3 -m py_compile` passes for the per-cell relocation/acceptance helpers.
+`accept-exact-candidate.py --repository .../binding-candidate-source --run 36787646160 --revision 89700c11c03ceed90f59eb3191644a16ba7a553f --name binding-candidate-89700c11 --resume`
+starts the maintained glibc 2.28 helper at **00:29:16 UTC** for matching
+CPython **3.11.16**; the loaded-library probe and 34 checkout checks pass,
+with the full source suite running. Remaining interpreter gates start as their
+artifacts arrive. Log: `binding-candidate-watch-per-cell.log`. All this evidence
+is for `89700c11`; no launch merge, tag or public v1.1.0 release exists yet.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-10-01 — Interrupted launch runtime recovery — Codex
+**Status at this checkpoint:** exact hosted acceptance is complete; three
+minimum-runtime suites require completion before launch integration.
+**Did:** Read the durable evidence and live process table after the interrupted
+session. No acceptance watcher, minimum-glibc helper or pytest process survives.
+Preserved the successful CPython 3.11 receipt and the unfinished 3.12–3.14
+logs unchanged; their stale `running` fields are interrupted checkpoints, not
+live processes or passing results. Restart only the three unfinished full gates
+in separate `glibc-MINOR-recovery-20261001/` directories against the unchanged
+clean `binding-candidate-source/` at `89700c11`. No source, FFI export,
+artifact bytes or acceptance criteria change.
+**Design:** [PLANS §33](PLANS.md#33-authorized-v110-integration-and-publication-2026-09-30)
+and [PLANS §34](PLANS.md#34-patched-python-binding-dependencies-before-v110-2026-09-30).
+**Tests:** Push CI `36787646160` passes all **35 required jobs**; independent
+sixteen-cell staging is complete in
+`.rust_test_logs/release-execution-20260930/binding-candidate-89700c11/python-assets/`.
+PR #71 remains open at the exact source with **71 successful checks**, no
+pending or failed checks, and a clean merge state. CPython 3.11's actual
+glibc 2.28 receipt passes **34 checkout + 946 source tests**, zero failures/
+skips, and **17 complete offline examples per wheel**. Its source suite
+finished at `2026-10-01T01:08:29.713103+00:00`. The three interrupted source
+suites have no completed numerical XML or passing validation receipt; their
+partial successful assertions cannot substitute for full acceptance. No
+launch merge, software tag or publication has occurred.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-10-01 — Guarded launch handoff preparation — Codex
+**Status at this checkpoint:** integration, main assembly and public checks are
+prepared; three candidate minimum-runtime suites remain in progress.
+**Did:** Prepared ignored orchestration for the already-authorized PR #71 merge
+and exact-main manual release dispatch. The handoff requires the completed
+four-interpreter acceptance receipt, exact PR head and healthy hosted checks,
+uses a merge commit without a Co-Authored-By trailer, and retains the branch.
+A separate clean integrated-main checkout will preserve candidate provenance.
+Prepared the exact-main artifact collector with checksum/inventory/architecture/
+Linux-loader review and a fresh complete offline wheel installation. Prepared
+fresh public-wheel verification that requires an actual non-draft publication
+receipt and verifies the downloaded bytes before isolated installation.
+No source, FFI export, software tag, release publication or website changes
+are part of this preparation unit.
+**Design:** [PLANS §33](PLANS.md#33-authorized-v110-integration-and-publication-2026-09-30)
+and [PLANS §35](PLANS.md#35-publication-documentation-and-stable-manual-correction-2026-09-30).
+**Tests:** Syntax compilation passes for
+`.rust_test_logs/release-execution-20260930/{integrate-accepted-launch,prepare-integrated-candidate,verify-public-python}.py`.
+Read-only review confirms the tracked release body names the standalone beta,
+all sixteen wheel targets, `.html` documentation route, upgrade behavior and
+concept DOI. Live `main` remains `aa6c7d49` and the latest public release is
+v1.0.4. All three recovery runs pass **34 checkout tests** and **17 complete
+offline examples per wheel**, zero checkout failures/skips; their source
+numerical suites are still running. Full gates retain existing math/trajectory
+criteria. Source documentation edits remain held locally for the authorized
+post-publication documentation branch so the frozen candidate is unchanged.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-10-02 — Persistent launch execution recovery — Codex
+**Status at this checkpoint:** hosted candidate acceptance and CPython 3.11
+minimum-runtime acceptance pass; three remaining full gates need completion.
+**Did:** Confirmed that the interrupted 2026-10-01 recovery processes and their
+handoff watchers no longer exist. Their source-test logs stop before completion
+and contain no completed source XML or passing receipts. Preserve both prior
+attempts, retain the successful 3.11 result, and restart only 3.12–3.14 into
+separate `glibc-MINOR-recovery-20261002/` evidence directories. Run the existing
+guarded handoff as a persistent background process so a chat interruption
+cannot repeatedly discard long numerical work. It sequentially completes
+candidate acceptance, exact-head launch integration, exact-main candidate
+inspection and the tested tag's actual draft/runtime review; it stops at the
+checked draft and does not publish. No algorithm, FFI export, acceptance tier
+or source metadata changes. Each numerical process keeps the maintained
+single-thread settings and the three interpreters run concurrently.
+**Design:** [PLANS §33](PLANS.md#33-authorized-v110-integration-and-publication-2026-09-30)
+and [PLANS §34](PLANS.md#34-patched-python-binding-dependencies-before-v110-2026-09-30).
+**Tests:** Syntax compilation passes for the dated recovery and persistent
+handoff helpers under `.rust_test_logs/release-execution-20260930/`. Live PR #71
+is still open at `89700c11`; no merge, v1.1.0 tag or draft is present, and
+v1.0.4 remains the latest public release. Prior hosted 35-job/sixteen-cell
+receipts and the successful 34/946-test CPython 3.11 runtime receipt remain
+unchanged. Partial source assertions from interrupted runs are not accepted
+as completed suites. New numerical results will be recorded after completion.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-10-02 — Requested launch progress checkpoint — Codex
+**Status at this checkpoint:** progress saved at the running minimum-runtime
+stage; launch integration/publication remain unfinished at 10:46 UTC.
+**Did:** Preserved the complete current BACKLOG, the held PLANS §35 design and
+append-only execution history. Prepare their documentation-only checkpoint on
+`release/v1.1.0-progress-20261002` in a separate checkout, leaving the accepted
+launch source and PR #71 head at `89700c11`. Use `[skip ci]` solely on this
+prose checkpoint to avoid starting an unrelated numerical CI matrix; release
+candidate/main/tag acceptance gates remain unchanged. Preserve all local
+artifacts/helpers under `.rust_test_logs/release-execution-20260930/`.
+The persistent job continues toward the checked draft and does not publish.
+**Design:** [PLANS §33](PLANS.md#33-authorized-v110-integration-and-publication-2026-09-30)
+and [PLANS §35](PLANS.md#35-publication-documentation-and-stable-manual-correction-2026-09-30).
+**Tests:** `git diff --check` passes for the held documentation. Live persistent
+process **26913**, parent PID 1/session 26913, survives the execution-server
+restart; state file reports `candidate_runtime`, child 26914. Dated recovery
+starts at **2026-10-02T10:29:36Z**. All three restarted versions have **34
+checkout passes**, zero failures/skips, and **17 complete offline examples per
+wheel**; the 946-test source suites remain in progress. Existing hosted **35
+required jobs/sixteen cells** and CPython 3.11's full minimum-runtime receipt
+remain accepted. No new source algorithm, FFI export, binary metadata,
+numerical floor or release tag changes are part of this checkpoint.
+**Resume:** Read `persistent-launch-state.json` and
+`persistent-launch-20261002.log`, then the active step's dated log. Confirm the
+live process table and GitHub PR/tag/draft state before repeating actions.
+Completed milestones create `binding-candidate-89700c11/acceptance.json`,
+`launch-merge.json`, `main-candidate-dispatch.json`,
+`integrated-main-candidate/review-ready.json`, `v110-tag-workflows.json` and
+`v110-publication-ready.json`. A stale `running` receipt is not proof of a live
+process. If the persistent job is alive, observe it rather than restarting it.
+After the checked draft, publish within the existing authorization, verify
+actual public assets plus fresh Julia/Python installs, and apply the guarded
+publication prose/stable-manual correction. Actual publication date and any
+verified version DOI are still to be established. The held original three
+files must be carried into the post-publication documentation branch.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
