@@ -319,6 +319,12 @@ jobs:
           $hdf5dir = Split-Path -Path $hdf5path -Parent
           echo "$hdf5dir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
+      - name: Require standalone Rust HDF5 tests
+        if: matrix.group == 'rust'
+        run: julia --startup-file=no --project test/run_rust_hdf5.jl
+        env:
+          RUSTFLAGS: ""
+
       # Use the same timing-aware LPT scheduler as the local full gate. Each
       # worker is a separate Julia process; the scheduler bounds Julia,
       # OpenBLAS, and OMP threads against the shared CPU budget.

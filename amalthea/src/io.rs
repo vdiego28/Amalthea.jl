@@ -7,6 +7,7 @@ use std::sync::OnceLock;
 pub const H5F_ACC_RDONLY: libc::c_uint = 0x0000;
 pub const H5F_ACC_RDWR: libc::c_uint = 0x0001;
 pub const H5F_ACC_TRUNC: libc::c_uint = 0x0002;
+pub const H5F_ACC_EXCL: libc::c_uint = 0x0004;
 pub const H5P_DEFAULT: i64 = 0;
 pub const H5S_ALL: i64 = 0;
 pub const H5S_UNLIMITED: u64 = u64::MAX;
@@ -33,7 +34,11 @@ pub struct Hdf5Api {
     pub H5Dwrite: unsafe extern "C" fn(i64, i64, i64, i64, i64, *const libc::c_void) -> libc::c_int,
     pub H5Dread: unsafe extern "C" fn(i64, i64, i64, i64, i64, *mut libc::c_void) -> libc::c_int,
     pub H5Dclose: unsafe extern "C" fn(i64) -> libc::c_int,
+    pub H5Dget_space: unsafe extern "C" fn(i64) -> i64,
     pub H5Screate_simple: unsafe extern "C" fn(libc::c_int, *const u64, *const u64) -> i64,
+    pub H5Sget_simple_extent_ndims: unsafe extern "C" fn(i64) -> libc::c_int,
+    pub H5Sget_simple_extent_dims: unsafe extern "C" fn(i64, *mut u64, *mut u64) -> libc::c_int,
+    pub H5Sget_simple_extent_npoints: unsafe extern "C" fn(i64) -> i64,
     pub H5Sclose: unsafe extern "C" fn(i64) -> libc::c_int,
     pub H5Tcopy: unsafe extern "C" fn(i64) -> i64,
     pub H5Tclose: unsafe extern "C" fn(i64) -> libc::c_int,
@@ -299,11 +304,24 @@ pub fn get_hdf5_api() -> Result<&'static Hdf5Api, String> {
                     unsafe extern "C" fn(i64, i64, i64, i64, i64, *mut libc::c_void) -> libc::c_int
                 );
                 let H5Dclose = load_sym!("H5Dclose", unsafe extern "C" fn(i64) -> libc::c_int);
+                let H5Dget_space = load_sym!("H5Dget_space", unsafe extern "C" fn(i64) -> i64);
                 let H5Screate_simple = load_sym!(
                     "H5Screate_simple",
                     unsafe extern "C" fn(libc::c_int, *const u64, *const u64) -> i64
                 );
                 let H5Sclose = load_sym!("H5Sclose", unsafe extern "C" fn(i64) -> libc::c_int);
+                let H5Sget_simple_extent_ndims = load_sym!(
+                    "H5Sget_simple_extent_ndims",
+                    unsafe extern "C" fn(i64) -> libc::c_int
+                );
+                let H5Sget_simple_extent_dims = load_sym!(
+                    "H5Sget_simple_extent_dims",
+                    unsafe extern "C" fn(i64, *mut u64, *mut u64) -> libc::c_int
+                );
+                let H5Sget_simple_extent_npoints = load_sym!(
+                    "H5Sget_simple_extent_npoints",
+                    unsafe extern "C" fn(i64) -> i64
+                );
                 let H5Tcopy = load_sym!("H5Tcopy", unsafe extern "C" fn(i64) -> i64);
                 let H5Tclose = load_sym!("H5Tclose", unsafe extern "C" fn(i64) -> libc::c_int);
                 let H5Tcreate = load_sym!(
@@ -331,16 +349,29 @@ pub fn get_hdf5_api() -> Result<&'static Hdf5Api, String> {
                 let h5t_native_double_ptr = load_sym!("H5T_NATIVE_DOUBLE_g", *const i64);
                 let h5t_native_int_ptr = load_sym!("H5T_NATIVE_INT_g", *const i64);
 
+                // These globals are initialized by H5open. Julia may already
+                // have opened HDF5, but a standalone Rust process has not.
+                if H5open() < 0 {
+                    return Err("Failed to initialize HDF5".to_string());
+                }
                 let h5t_native_double = *h5t_native_double_ptr;
                 let h5t_native_int = *h5t_native_int_ptr;
+                if h5t_native_double < 0 || h5t_native_int < 0 {
+                    return Err("HDF5 native datatypes are not initialized".to_string());
+                }
 
                 let h5t_complex = H5Tcreate(H5T_COMPOUND, 16);
+                if h5t_complex < 0 {
+                    return Err("Failed to create HDF5 complex datatype".to_string());
+                }
                 let r_name = CString::new("r").unwrap();
                 let i_name = CString::new("i").unwrap();
-                H5Tinsert(h5t_complex, r_name.as_ptr(), 0, h5t_native_double);
-                H5Tinsert(h5t_complex, i_name.as_ptr(), 8, h5t_native_double);
-
-                H5open();
+                if H5Tinsert(h5t_complex, r_name.as_ptr(), 0, h5t_native_double) < 0
+                    || H5Tinsert(h5t_complex, i_name.as_ptr(), 8, h5t_native_double) < 0
+                {
+                    H5Tclose(h5t_complex);
+                    return Err("Failed to define HDF5 complex datatype members".to_string());
+                }
 
                 std::mem::forget(lib);
 
@@ -358,8 +389,12 @@ pub fn get_hdf5_api() -> Result<&'static Hdf5Api, String> {
                     H5Dwrite,
                     H5Dread,
                     H5Dclose,
+                    H5Dget_space,
                     H5Screate_simple,
                     H5Sclose,
+                    H5Sget_simple_extent_ndims,
+                    H5Sget_simple_extent_dims,
+                    H5Sget_simple_extent_npoints,
                     H5Tcopy,
                     H5Tclose,
                     H5Tcreate,
@@ -381,6 +416,63 @@ pub struct Hdf5Writer {
     api: &'static Hdf5Api,
 }
 
+struct Dataspace {
+    id: i64,
+    api: &'static Hdf5Api,
+}
+
+impl Dataspace {
+    fn dataset(api: &'static Hdf5Api, dset_id: i64) -> Result<Self, String> {
+        let id = unsafe { (api.H5Dget_space)(dset_id) };
+        if id < 0 {
+            return Err("Failed to get dataset dataspace".to_string());
+        }
+        Ok(Self { id, api })
+    }
+
+    fn simple(api: &'static Hdf5Api, dims: &[u64], maxdims: &[u64]) -> Result<Self, String> {
+        // HDF5 supports ranks 0 (scalar) through H5S_MAX_RANK (32).
+        if dims.len() != maxdims.len() || dims.len() > 32 {
+            return Err("Invalid dataspace dimension-array lengths".to_string());
+        }
+        let id = unsafe {
+            (api.H5Screate_simple)(dims.len() as libc::c_int, dims.as_ptr(), maxdims.as_ptr())
+        };
+        if id < 0 {
+            return Err("Failed to create dataspace".to_string());
+        }
+        Ok(Self { id, api })
+    }
+
+    fn dimensions(&self) -> Result<Vec<u64>, String> {
+        let rank = unsafe { (self.api.H5Sget_simple_extent_ndims)(self.id) };
+        if !(0..=32).contains(&rank) {
+            return Err("Failed to get dataspace rank".to_string());
+        }
+        let mut dims = vec![0; rank as usize];
+        let result = unsafe {
+            (self.api.H5Sget_simple_extent_dims)(self.id, dims.as_mut_ptr(), std::ptr::null_mut())
+        };
+        if result != rank {
+            return Err("Failed to get dataspace dimensions".to_string());
+        }
+        Ok(dims)
+    }
+
+    fn element_count(&self) -> Result<usize, String> {
+        let count = unsafe { (self.api.H5Sget_simple_extent_npoints)(self.id) };
+        usize::try_from(count).map_err(|_| "Invalid dataspace element count".to_string())
+    }
+}
+
+impl Drop for Dataspace {
+    fn drop(&mut self) {
+        unsafe {
+            (self.api.H5Sclose)(self.id);
+        }
+    }
+}
+
 impl Hdf5Writer {
     pub fn open_or_create(fpath: &str) -> Result<Self, String> {
         let api = get_hdf5_api()?;
@@ -389,7 +481,7 @@ impl Hdf5Writer {
             let file_id = (api.H5Fopen)(c_fpath.as_ptr(), H5F_ACC_RDWR, H5P_DEFAULT);
             if file_id < 0 {
                 let file_id =
-                    (api.H5Fcreate)(c_fpath.as_ptr(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+                    (api.H5Fcreate)(c_fpath.as_ptr(), H5F_ACC_EXCL, H5P_DEFAULT, H5P_DEFAULT);
                 if file_id < 0 {
                     return Err(format!("Failed to open or create HDF5 file: {}", fpath));
                 }
@@ -444,32 +536,41 @@ impl Hdf5Writer {
         maxdims: &[u64],
     ) -> Result<i64, String> {
         let c_name = CString::new(name).map_err(|_| "Invalid dataset name".to_string())?;
+        let space = Dataspace::simple(self.api, dims, maxdims)?;
         unsafe {
             let exists = (self.api.H5Lexists)(loc_id, c_name.as_ptr(), H5P_DEFAULT);
+            if exists < 0 {
+                return Err(format!("Failed to check dataset: {}", name));
+            }
             if exists > 0 {
                 let dset_id = (self.api.H5Dopen2)(loc_id, c_name.as_ptr(), H5P_DEFAULT);
-                if dset_id >= 0 {
-                    return Ok(dset_id);
+                if dset_id < 0 {
+                    return Err(format!("Failed to open dataset: {}", name));
                 }
-            }
-            let space_id = (self.api.H5Screate_simple)(
-                dims.len() as libc::c_int,
-                dims.as_ptr(),
-                maxdims.as_ptr(),
-            );
-            if space_id < 0 {
-                return Err("Failed to create dataspace".to_string());
+                let validation = (|| {
+                    self.validate_dataset_shape(dset_id, dims)?;
+                    // Rank zero can describe a scalar or a null dataspace.
+                    let existing = Dataspace::dataset(self.api, dset_id)?;
+                    if existing.element_count()? != space.element_count()? {
+                        return Err("Existing dataset element count differs".to_string());
+                    }
+                    Ok(())
+                })();
+                if let Err(err) = validation {
+                    self.close_dataset(dset_id);
+                    return Err(err);
+                }
+                return Ok(dset_id);
             }
             let dset_id = (self.api.H5Dcreate2)(
                 loc_id,
                 c_name.as_ptr(),
                 dtype,
-                space_id,
+                space.id,
                 H5P_DEFAULT,
                 H5P_DEFAULT,
                 H5P_DEFAULT,
             );
-            (self.api.H5Sclose)(space_id);
             if dset_id < 0 {
                 return Err(format!("Failed to create dataset: {}", name));
             }
@@ -492,6 +593,15 @@ impl Hdf5Writer {
         }
     }
 
+    pub(crate) fn dataset_exists(&self, name: &str) -> Result<bool, String> {
+        let c_name = CString::new(name).map_err(|_| "Invalid dataset name".to_string())?;
+        let exists = unsafe { (self.api.H5Lexists)(self.file_id, c_name.as_ptr(), H5P_DEFAULT) };
+        if exists < 0 {
+            return Err(format!("Failed to check dataset: {}", name));
+        }
+        Ok(exists > 0)
+    }
+
     pub fn with_existing_int_dataset_2d<T, F>(
         &self,
         name: &str,
@@ -502,18 +612,47 @@ impl Hdf5Writer {
         F: FnMut(&Self, i64, &mut [i32]) -> Result<T, String>,
     {
         let dset_id = self.open_dataset_2d(self.file_id, name)?;
-        let result = op(self, dset_id, data);
+        let result = self
+            .validate_dataset_shape(dset_id, &[data.len() as u64])
+            .and_then(|()| op(self, dset_id, data));
         self.close_dataset(dset_id);
         result
     }
 
+    fn validate_dataset_shape(&self, dset_id: i64, dims: &[u64]) -> Result<(), String> {
+        let actual = Dataspace::dataset(self.api, dset_id)?.dimensions()?;
+        if actual != dims {
+            return Err(format!(
+                "Dataset dimensions {:?} differ from requested {:?}",
+                actual, dims
+            ));
+        }
+        Ok(())
+    }
+
+    fn transfer_spaces(&self, dset_id: i64, len: usize) -> Result<(Dataspace, Dataspace), String> {
+        let file_space = Dataspace::dataset(self.api, dset_id)?;
+        let count = file_space.element_count()?;
+        if count != len {
+            return Err(format!(
+                "Dataset has {} elements but buffer has {}",
+                count, len
+            ));
+        }
+        let dims = [u64::try_from(len).map_err(|_| "Buffer length exceeds HDF5 limits")?];
+        let memory_space = Dataspace::simple(self.api, &dims, &dims)?;
+        // Bound memory independently of the file, even if its extent changes.
+        Ok((memory_space, file_space))
+    }
+
     pub fn write_dataset_f64(&self, dset_id: i64, data: &[f64]) -> Result<(), String> {
+        let (memory_space, file_space) = self.transfer_spaces(dset_id, data.len())?;
         unsafe {
             let res = (self.api.H5Dwrite)(
                 dset_id,
                 self.api.h5t_native_double,
-                H5S_ALL,
-                H5S_ALL,
+                memory_space.id,
+                file_space.id,
                 H5P_DEFAULT,
                 data.as_ptr() as *const libc::c_void,
             );
@@ -525,12 +664,13 @@ impl Hdf5Writer {
     }
 
     pub fn write_dataset_complex(&self, dset_id: i64, data: &[Complex<f64>]) -> Result<(), String> {
+        let (memory_space, file_space) = self.transfer_spaces(dset_id, data.len())?;
         unsafe {
             let res = (self.api.H5Dwrite)(
                 dset_id,
                 self.api.h5t_complex,
-                H5S_ALL,
-                H5S_ALL,
+                memory_space.id,
+                file_space.id,
                 H5P_DEFAULT,
                 data.as_ptr() as *const libc::c_void,
             );
@@ -542,12 +682,13 @@ impl Hdf5Writer {
     }
 
     pub fn write_dataset_int(&self, dset_id: i64, data: &[i32]) -> Result<(), String> {
+        let (memory_space, file_space) = self.transfer_spaces(dset_id, data.len())?;
         unsafe {
             let res = (self.api.H5Dwrite)(
                 dset_id,
                 self.api.h5t_native_int,
-                H5S_ALL,
-                H5S_ALL,
+                memory_space.id,
+                file_space.id,
                 H5P_DEFAULT,
                 data.as_ptr() as *const libc::c_void,
             );
@@ -559,12 +700,13 @@ impl Hdf5Writer {
     }
 
     pub fn read_dataset_int(&self, dset_id: i64, data: &mut [i32]) -> Result<(), String> {
+        let (memory_space, file_space) = self.transfer_spaces(dset_id, data.len())?;
         unsafe {
             let res = (self.api.H5Dread)(
                 dset_id,
                 self.api.h5t_native_int,
-                H5S_ALL,
-                H5S_ALL,
+                memory_space.id,
+                file_space.id,
                 H5P_DEFAULT,
                 data.as_mut_ptr() as *mut libc::c_void,
             );
@@ -576,6 +718,9 @@ impl Hdf5Writer {
     }
 
     pub fn set_dataset_extent(&self, dset_id: i64, size: &[u64]) -> Result<(), String> {
+        if Dataspace::dataset(self.api, dset_id)?.dimensions()?.len() != size.len() {
+            return Err("Dataset resize dimensions have the wrong rank".to_string());
+        }
         unsafe {
             let res = (self.api.H5Dset_extent)(dset_id, size.as_ptr());
             if res < 0 {
@@ -650,8 +795,11 @@ pub fn scan_write_point(
 ) -> Result<(), String> {
     // Validate the field buffer length against the declared dims up front so a
     // caller mistake is a clean error, not an out-of-bounds HDF5 read.
-    let expected: u64 = y_julia_dims.iter().product();
-    if expected as usize != y.len() {
+    let expected = y_julia_dims
+        .iter()
+        .try_fold(1u64, |count, &dim| count.checked_mul(dim))
+        .ok_or_else(|| "scan_write_point: dimension product overflow".to_string())?;
+    if usize::try_from(expected).ok() != Some(y.len()) {
         return Err(format!(
             "scan_write_point: y length {} != product of dims {:?} = {}",
             y.len(),
@@ -660,7 +808,7 @@ pub fn scan_write_point(
         ));
     }
     if let Some(&last) = y_julia_dims.last() {
-        if last as usize != z.len() {
+        if usize::try_from(last).ok() != Some(z.len()) {
             return Err(format!(
                 "scan_write_point: last y dim {} != z length {}",
                 last,

@@ -24,6 +24,12 @@ end
 
 const _LIBAMALTHEA_OUT = _libamalthea_path_out()
 
+function __init__()
+    # Reuse Julia's resolved HDF5 library, including custom depots/preferences.
+    # The standalone Rust loader otherwise has to guess its installation path.
+    get!(ENV, "AMALTHEA_HDF5_LIB", HDF5.API.libhdf5)
+end
+
 abstract type AbstractOutput end
 
 "Output handler for writing only to memory"

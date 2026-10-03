@@ -154,10 +154,13 @@ def main(argv=None):
                                            "-e", preflight_code(), str(REPO_ROOT)]):
             raise RuntimeError("Checkout/library preflight failed; tests were not launched")
         rust_rc = evidence.run("cargo-tests", ["cargo", "test", "--release"], REPO_ROOT / "amalthea")
+        hdf5_rc = evidence.run("rust-hdf5-tests", ["julia", "--startup-file=no",
+                                "--project=" + str(REPO_ROOT),
+                                str(REPO_ROOT / "test" / "run_rust_hdf5.jl")])
         julia_rc = evidence.run("julia-tests", [sys.executable, str(REPO_ROOT / "test" / "run_full_gate.py"),
                                "--groups", *args.groups, "--max-workers", str(args.max_workers),
                                "--log-dir", str(directory / "workers")])
-        code = 1 if rust_rc or julia_rc else 0
+        code = 1 if rust_rc or hdf5_rc or julia_rc else 0
     except KeyboardInterrupt:
         evidence.metadata["error"] = "Interrupted"
         code = 130
