@@ -3929,3 +3929,28 @@ Validate both reproduced failures, required-mode rejection of an unloadable
 library, the full Cargo suite, and the affected Julia Rust/native and I/O
 coverage. Record actual results and platform limitations in PORT_LOG, and
 refresh only live release status/checklists from current GitHub evidence.
+
+## 36. Bound native HDF5 transfers and preserve queue state (2026-10-02)
+
+Manual review reproduced a preexisting safe-Rust buffer contract violation:
+the HDF5 helpers pass `H5S_ALL` for memory and file spaces, allowing the file's
+extent to determine how much memory is accessed regardless of slice length.
+Query and own the dataset dataspace, require an exact element-count match,
+and transfer through an explicit memory dataspace bounded by the supplied
+slice. Check dimension-array lengths before C calls and reject incompatible
+existing datasets. Keep zero-element and scalar transfers supported.
+
+Require queue data to have the exact one-dimensional requested shape. Under
+the queue's file lock, initialize only newly created data and preserve existing
+progress; return null from the initializer on any open, shape or transfer
+failure. Failed opens must never truncate an existing file. Validate all three
+write types, integer reads, rank/extent errors, preserved queue state and
+failure paths in the required standalone HDF5 gate, then run the full Cargo
+suite and affected Julia native-output checks. File locks do not establish
+global thread safety for a non-thread-safe HDF5 build.
+
+Also update only the engine lockfile's `crossbeam-epoch` 0.9.18 to 0.9.21:
+official RUSTSEC-2026-0204 identifies the old version as affected and >=0.9.20
+as patched. The dependency is reached through Rayon; application use of the
+vulnerable pointer-formatting path has not been established. Keep the Python
+crate's already patched lock and separate CoolProp PR unchanged.

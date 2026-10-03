@@ -20,5 +20,5 @@ process = run(pipeline(ignorestatus(addenv(command,
 results = String(take!(output))
 print(results)
 success(process) || error("Required standalone Rust HDF5 tests failed")
-occursin("test result: ok. 2 passed; 0 failed; 0 ignored;", results) ||
-    error("Required standalone Rust HDF5 gate must exercise both tests without skips")
+occursin("test result: ok. 5 passed; 0 failed; 0 ignored;", results) ||
+    error("Required standalone Rust HDF5 gate must exercise all five tests without skips")

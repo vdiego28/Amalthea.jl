@@ -193,12 +193,13 @@ impl ScanQueue {
 
 /// Allocate a `ScanQueue` backed by the HDF5 file at `qfile_ptr`, creating
 /// its `qdata` progress dataset (zero-filled, length `total_points`) if the
-/// file doesn't already have one.
+/// file doesn't already have one. Preserve existing progress when its shape
+/// matches. Return null on a file, lock, dataset shape or transfer error.
 ///
 /// # Safety
 /// `qfile_ptr` must be non-null and point to a valid, NUL-terminated C
 /// string for the duration of this call. Free the returned pointer with
-/// [`free_scan_queue`] exactly once; returns null if `qfile_ptr` is null.
+/// [`free_scan_queue`] exactly once if non-null. A null `qfile_ptr` returns null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn init_scan_queue(
     qfile_ptr: *const libc::c_char,
@@ -209,21 +210,40 @@ pub unsafe extern "C" fn init_scan_queue(
     }
     let qfile_cstr = unsafe { std::ffi::CStr::from_ptr(qfile_ptr) };
     let qfile = qfile_cstr.to_string_lossy().into_owned();
-    if let Ok(writer) = Hdf5Writer::open_or_create(&qfile)
-        && let Ok(api) = get_hdf5_api()
-    {
+    let queue = ScanQueue::new(&qfile, total_points);
+    let initialize = || -> Result<(), String> {
+        let lock = FlockLock::new(&queue.lock_path)?;
+        lock.lock()?;
+        // Closing the lock file also releases the lock on early returns.
+        let writer = Hdf5Writer::open_or_create(&qfile)?;
+        let api = get_hdf5_api()?;
         let dims = [total_points as u64];
-        let maxdims = [total_points as u64];
-        if let Ok(dset_id) =
-            writer.create_dataset_2d(writer.file_id, "qdata", api.h5t_native_int, &dims, &maxdims)
-        {
-            let qdata = vec![0; total_points];
-            let _ = writer.write_dataset_int(dset_id, &qdata);
+        let mut qdata = vec![0; total_points];
+        if writer.dataset_exists("qdata")? {
+            writer.with_existing_int_dataset_2d("qdata", &mut qdata, |writer, dset_id, data| {
+                writer.read_dataset_int(dset_id, data)
+            })?;
+        } else {
+            let dset_id = writer.create_dataset_2d(
+                writer.file_id,
+                "qdata",
+                api.h5t_native_int,
+                &dims,
+                &dims,
+            )?;
+            let result = writer.write_dataset_int(dset_id, &qdata);
             writer.close_dataset(dset_id);
+            result?;
         }
+        // Flush/close the file before another process obtains the queue lock.
+        drop(writer);
+        lock.unlock()
+    };
+    if let Err(err) = initialize() {
+        eprintln!("Error in init_scan_queue: {}", err);
+        return std::ptr::null_mut();
     }
-    let queue = Box::new(ScanQueue::new(&qfile, total_points));
-    Box::into_raw(queue)
+    Box::into_raw(Box::new(queue))
 }
 
 /// Free a `ScanQueue` allocated by [`init_scan_queue`].

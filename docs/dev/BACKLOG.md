@@ -33,7 +33,7 @@ This is the authoritative short queue. The long sections below retain design
 history and measured evidence, but older words such as "next", "not started",
 or "verified" inside a superseded narrative do not outrank this list.
 
-> **Launch readiness — GitHub state verified 2026-10-02:** candidate versions
+> **Launch readiness — GitHub state verified 2026-10-03:** candidate versions
 > remain Julia/Julia-backed Python `1.1.0` and standalone `amalthea-native`
 > `0.1.0` beta. [PR #68](https://github.com/vdiego28/Amalthea.jl/pull/68)
 > merged at `aa6c7d49` on September 30; launch preparation, corrected publication
@@ -56,17 +56,24 @@ or "verified" inside a superseded narrative do not outrank this list.
 > download/checksum verification or publication is claimed. These results do not
 > establish acceptance of later `main` commits or pending dependency/repair work.
 >
-> **Outstanding acceptance:** current-main
+> **Completed branch CI:** current-main
 > [tests 37017449622](https://github.com/vdiego28/Amalthea.jl/actions/runs/37017449622)
-> are in progress; [documentation 37017449062](https://github.com/vdiego28/Amalthea.jl/actions/runs/37017449062)
+> succeeded; [documentation 37017449062](https://github.com/vdiego28/Amalthea.jl/actions/runs/37017449062)
 > succeeded. CoolProp [PR #69](https://github.com/vdiego28/Amalthea.jl/pull/69)
 > remains open at `b478319a88a89b7de8c2577b7d150ddfd397cb86`, with separate
 > Python 8.0.0 and Julia-oracle 7.2.0 version checks and unchanged numerical
-> tolerances. Its fresh [push tests 37017827117](https://github.com/vdiego28/Amalthea.jl/actions/runs/37017827117)
+> tolerances. Its [push tests 37017827117](https://github.com/vdiego28/Amalthea.jl/actions/runs/37017827117)
 > and [PR tests 37017832651](https://github.com/vdiego28/Amalthea.jl/actions/runs/37017832651)
-> are in progress; [documentation 37017832865](https://github.com/vdiego28/Amalthea.jl/actions/runs/37017832865)
-> succeeded. These are dated observations; the complete test gates remain pending.
-> Full actual-glibc 2.28 acceptance for the eventual final candidate is
+> succeeded; [documentation 37017832865](https://github.com/vdiego28/Amalthea.jl/actions/runs/37017832865)
+> succeeded. Its current head has 71 successful and three skipped checks,
+> with no failures or pending jobs. HDF5 [PR #73](https://github.com/vdiego28/Amalthea.jl/pull/73)
+> at `2a159fc` also passed its full
+> [push run 37021123830](https://github.com/vdiego28/Amalthea.jl/actions/runs/37021123830),
+> including required standalone HDF5 execution on Linux, macOS and Windows.
+> These results precede the new buffer-bounds and dependency fixes below.
+>
+> **Outstanding acceptance:** full actual-glibc 2.28 acceptance for the eventual
+> final candidate is
 > **unverified**: earlier reports and formerly running jobs must be checked
 > against that candidate's exact source and wheel hashes, not treated as current
 > results. The manual release workflow does not replace this separate gate.
@@ -83,18 +90,27 @@ or "verified" inside a superseded narrative do not outrank this list.
 > as the latest published release; v1.1.0 is not published. PyPI and standing
 > GPU CI remain separate decisions.
 
-> **HDF5 repair — locally validated 2026-10-02:** standalone Rust now
-> initializes HDF5 before caching datatype IDs, and its queue tests use the
-> existing-file contract. Julia's native writer selects the resolved HDF5
-> library for custom depots while preserving explicit overrides. A required
-> fresh-process HDF5 gate covers both Rust tests in local validation and the
-> three Rust CI platforms. The broad native run exposed four custom-depot
-> writer errors; the final repair passes all 17 writer and 12 Julia/Rust I/O
-> assertions on recheck. The earlier concurrent queue check passes 13/13.
-> Fresh complete hosted acceptance remains pending for this repair. Design:
-> [PLANS §35](native-port/PLANS.md#35-standalone-rust-hdf5-initialization-and-required-checks-2026-10-02).
-> Commands, full-run limits and retained failure evidence:
-> [HDF5 repair log](native-port/PORT_LOG.md#2026-10-02--standalone-hdf5-repair-and-release-status-refresh--codex).
+> **HDF5 repair — PR #73, updated 2026-10-03:** standalone initialization and
+> Julia custom-depot integration passed hosted CI at `2a159fc` above. Manual
+> review then reproduced a preexisting buffer-length defect. The new fix checks
+> exact transfer sizes and dataset shapes, bounds memory through explicit
+> dataspaces, preserves queue progress and rejects initializer failures without
+> truncating existing files. The required gate now executes five tests. The
+> engine lock also updates `crossbeam-epoch` to patched 0.9.21. The full local
+> CPU/native gate passes (105 Cargo unit + 5 policy tests, all five required
+> HDF5 tests, 43,075 Julia assertions and 11 expected broken checks). New hosted
+> acceptance remains pending for this update. Design:
+> [PLANS §36](native-port/PLANS.md#36-bound-native-hdf5-transfers-and-preserve-queue-state-2026-10-02).
+> Commands and evidence:
+> [bounds repair log](native-port/PORT_LOG.md#2026-10-03--native-hdf5-bounds-and-queue-preservation--codex).
+
+> **Cloud runtime maintenance — open:** loaded Julia-bundled libgit2/libcurl
+> have conditional advisory exposures. Official Julia 1.13.1 sources still lack
+> the relevant SSH-path/proxy-credential fixes; a version-only Julia upgrade
+> does not close this item. Select a patched supported distribution, verify
+> actual loaded libraries and rerun affected download/HDF5 checks. This is
+> separate from the repository lock repair; root `Manifest.toml` is untracked.
+> Evidence and scope limits are in the bounds repair log above.
 
 > **Delivery audit and Windows PPT cache repair — integrated through PR #68:**
 > the companion PR run exposed intermittent Windows cache publication failure;
