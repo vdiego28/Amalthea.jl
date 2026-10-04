@@ -323,6 +323,23 @@ PATH=/usr/local/cuda-13.3/bin:$PATH python3 test/validate.py --cuda
 
 The wrapper builds into `amalthea/target/release`, disables prebuilt downloads,
 and verifies Julia loads both the package and RK45 library from this checkout.
+It also runs `julia --startup-file=no --project test/run_rust_hdf5.jl` as a
+required standalone HDF5 gate, recorded in `rust-hdf5-tests.log`. The launcher
+passes Julia's resolved HDF5 library and dependency search paths to a fresh
+Rust process with `AMALTHEA_REQUIRE_HDF5_TESTS=1`; unavailable HDF5 fails this
+gate. Its five serial tests check real/complex dataset readback, exact buffer
+lengths, scalar and empty datasets, rank/extent validation, queue-state
+preservation and safe initializer failures. This includes HDF5 initialization
+before Julia has initialized the library in the child. Rejected transfers
+must leave existing values and caller-buffer sentinels unchanged. The same
+gate runs in the Linux, macOS and Windows Rust CI jobs after Julia dependency
+setup. Ordinary Cargo-only tests keep
+HDF5 optional; a skipped optional test is not HDF5 acceptance.
+The Julia native writer selects `HDF5.API.libhdf5` during module initialization
+when `AMALTHEA_HDF5_LIB` is unset, so custom depots work without scanning
+unrelated cached versions. An explicit override is preserved. Exercise
+`test_scan_native_write.jl` in a fresh process without that override when
+changing this integration.
 CPU mode sets `AMALTHEA_CUDA_BUILD=off` and strict-CUDA tests off. `--cuda`
 sets the build to `required` and `AMALTHEA_REQUIRE_CUDA_TESTS=1`, and always
 includes the Rust group: missing real PTX or GPU dispatch fails validation.

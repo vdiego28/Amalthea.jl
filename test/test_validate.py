@@ -118,6 +118,15 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(summaries[0]["commands"][-1]["name"], "julia-tests")
         self.assertEqual(summaries[0]["status"], "failed")
 
+    def test_required_hdf5_failure_cannot_pass(self):
+        rc, summaries, calls = self.simulate(failure="rust-hdf5-tests")
+        self.assertEqual(rc, 1)
+        self.assertEqual(summaries[0]["status"], "failed")
+        stage = next(c for c in summaries[0]["commands"] if c["name"] == "rust-hdf5-tests")
+        self.assertEqual(stage["exit_code"], 7)
+        self.assertTrue(stage["argv"][-1].endswith("test/run_rust_hdf5.jl"))
+        self.assertEqual(summaries[0]["commands"][-1]["name"], "julia-tests")
+
     def test_julia_failure_and_interrupt_cannot_pass(self):
         for failure, expected in (("julia-tests", 1), ("interrupt", 130)):
             rc, summaries, calls = self.simulate(failure=failure)
