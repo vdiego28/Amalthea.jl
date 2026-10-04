@@ -1017,6 +1017,24 @@ never substitute host execution after a namespace failure. The host kernel and
 CPU remain current; this gate establishes the glibc userspace boundary only.
 Helper regressions: `python3 test/test_glibc228_validation.py -v`.
 
+For release compatibility after the exact wheel's complete hosted numerical
+suite has passed, use the maintained installation/offline command:
+
+```bash
+python3 test/standalone_wheels/glibc228.py smoke --rootfs ROOT_DIRECTORY/rootfs --interpreter PYTHON_HOME --manifest BUILD_DIRECTORY/build.json --wheelhouse WHEELHOUSE --output NEW_COMPATIBILITY_DIRECTORY
+```
+
+Require all seventeen examples, binary-only installation and dependency checks
+on each supported CPython version. Link the matching successful hosted suite,
+verified wheel/source digests and local `smoke_passed` receipt as separate
+evidence scopes. Their combination accepts numerical behavior and minimum-
+runtime compatibility without repeating the full numerical suite locally.
+The smoke receipt alone does not establish numerical acceptance. Completed
+compatibility may be reused only for byte-identical wheels and the same tested
+interpreter/rootfs/dependencies, retaining the original evidence and receipt
+hash. Mark deliberately interrupted numerical reruns as interrupted. This
+release choice is documented in [PLANS §37](PLANS.md#37-final-dependencyrepair-integration-and-v110-execution-2026-10-04).
+
 ### Separate post-repair Python performance gate
 
 Use `test/python_performance/run.py` with the final installed source wheel,

@@ -29,6 +29,10 @@ publication.
    This separate runtime gate is not supplied by the release-preparation
    workflow's successful assembly. Canonical numerical commands and acceptance
    criteria are in [TESTING](../native-port/TESTING.md#5-commands).
+   Once the exact wheels pass hosted full numerical acceptance, the maintained
+   minimum-runtime installation/offline command supplies compatibility evidence
+   without repeating the full numerical suite locally; see
+   [TESTING's minimum-glibc gate](../native-port/TESTING.md#linux-minimum-glibc-runtime-gate).
 4. After the candidate reaches `main`, manually dispatch **Prepare Amalthea
    release** at that commit. This waits for successful exact-source push CI
    (including documentation, whose push trigger covers `main` and tags), runs locked Cargo

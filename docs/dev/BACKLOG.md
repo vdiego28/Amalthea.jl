@@ -99,9 +99,9 @@ or "verified" inside a superseded narrative do not outrank this list.
 > documents. Their pre-pull backup and patch are retained in that evidence
 > directory. Preserve the frozen source checkouts, hosted artifacts, runtime
 > receipts and helpers under `.rust_test_logs/release-execution-20260930/`.
-> **Current execution:** persistent controller PID 68941 runs from
-> `.rust_test_logs/release-execution-20261004/launch-compatibility-through-draft.py`
-> with atomic `launch-state-v2.json` and `launch-v2.log`. It uses independently
+> **Current execution:** persistent controller PID 71528 runs from
+> `.rust_test_logs/release-execution-20261004/resume-tagged-draft.py`
+> with atomic `launch-state-v3.json` and `launch-v3.log`. It uses independently
 > accepted hosted full suites and the four completed compatibility checks, inspects
 > the manual candidate bytes, then tags that reviewed commit and accepts the
 > actual tagged wheels/draft. It stops at the checked draft for publication

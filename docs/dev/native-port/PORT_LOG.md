@@ -10099,3 +10099,49 @@ that all four numerical workers and the old controller exited. Interrupted
 local source suites are not claimed as passed. Evidence:
 `.rust_test_logs/release-execution-20261004/`.
 **Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-10-04 — Final candidate assets reviewed and v1.1.0 tagged — Codex
+**Status at this checkpoint:** reviewed software tag pushed; draft preparation pending.
+**Did:** Independently inspected the manually assembled final-main candidate's
+26 files, checksum inventory, manifest revision, wheel metadata and four
+library architectures. Matched all four selected Linux wheels to completed
+actual-glibc compatibility evidence. Rechecked live main, the clean frozen
+source tree and absence of an existing v1.1.0 tag, then pushed annotated
+`v1.1.0` at `41227f43c920af50bfa4324766d4f9636340a7b9`. The tag message has no
+Co-Authored-By trailer. Kept publication separate from draft preparation.
+**Design:** [PLANS §37](PLANS.md#37-final-dependencyrepair-integration-and-v110-execution-2026-10-04).
+**Tests:** `main-asset-inspection.json` passes all 26 assets and 25 checksums;
+loaded Linux ABI exports resolve and exact complex scaling gives
+`[2.0, 4.0, 6.0, 8.0]`. Manifest test run matches `37225245527`; independent
+release acceptance confirms main documentation. `main-review-ready.json`
+records the reviewed release body hash. `tag-push.json` records creation and
+`tag-workflows.json` identifies tests `37235178219`, release preparation
+`37235178204`, and documentation `37235178281` at that exact source. Their
+completion is pending at this checkpoint. Evidence:
+`.rust_test_logs/release-execution-20261004/`.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-10-04 — Tagged compatibility command and durable resume corrected — Codex
+**Status at this checkpoint:** current tagged workflow continues; no additional
+merge, tag, dispatch or numerical rerun.
+**Did:** Checked the maintained CLI before any new local compatibility phase
+started: omitting references requires the `smoke` subcommand, whereas `test`
+requires `--oracles`. Corrected the ignored acceptance helper to `smoke` and
+resumed the existing immutable tag in `resume-tagged-draft.py`, with separate
+`tagged-compatibility/` evidence and controller/state/log receipts. Preserved
+superseded controllers and logs. The live queue now points to controller
+71528. Documented the distinct hosted-numerical and minimum-runtime scopes in
+`TESTING.md` and linked the canonical choice from the release operator guide.
+**Design:** [PLANS §37](PLANS.md#37-final-dependencyrepair-integration-and-v110-execution-2026-10-04).
+**Gotchas:** Syntax compilation does not validate argparse subcommand contracts;
+check the maintained command help when adapting orchestration. The correction
+occurred before any tagged local compatibility subprocess started.
+**Tests:** `python3 .../source/test/standalone_wheels/glibc228.py smoke --help`
+exits 0 and confirms the reference-free command schema. Adapted helper syntax
+checks pass. Resume verifies the actual annotated tag target, frozen source
+tree, prior inspection and release-body hash, and reuses the existing three
+GitHub workflow IDs. All four tagged CPU library builds have succeeded;
+hosted numerical/reference/documentation acceptance remains in progress.
+Evidence: `.rust_test_logs/release-execution-20261004/`, including
+`persistent-process-v3.json`, `launch-state-v3.json` and `launch-v3.log`.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
