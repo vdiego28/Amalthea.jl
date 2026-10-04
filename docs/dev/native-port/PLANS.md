@@ -3954,3 +3954,76 @@ official RUSTSEC-2026-0204 identifies the old version as affected and >=0.9.20
 as patched. The dependency is reached through Rayon; application use of the
 vulnerable pointer-formatting path has not been established. Keep the Python
 crate's already patched lock and separate CoolProp PR unchanged.
+
+## 37. Final dependency/repair integration and v1.1.0 execution (2026-10-04)
+
+The lead explicitly requested merging HDF5 PR #73, then CoolProp PR #69,
+and continuing the release steps through publication. Preserve both tested
+branch heads and merge commits without Co-Authored-By trailers. Recheck the
+current heads and checks immediately before each merge; preserve the original
+checkout's held documentation. Freeze the resulting main revision and require
+its own tests/documentation rather than relabeling earlier candidate evidence.
+
+Use a new dated evidence directory and clean source clone for this final
+revision. Adapt retained orchestration helpers through explicit revision, run
+and output parameters; do not overwrite prior receipts or retain the old
+assumption that the final tree equals `89700c11`. Independently collect all
+sixteen hosted wheel cells with untouched provenance. Require the maintained
+full numerical/offline gate for all four Linux x86_64 CPython versions on actual
+glibc 2.28, concurrently with one numerical thread per process. Supply binary
+dependencies matching final CoolProp 8.0.0; verify tags/hashes and preserve the
+old 7.2.0 wheelhouses. Obtain the matching CPython patch versions when necessary.
+
+Dispatch the manual release workflow at frozen main, inspect all 26 assembled
+files and checksums, and match selected wheels to accepted hosted bytes. Tag
+only that reviewed revision. Require the tag's successful tests/documentation
+and independently verify its draft's bytes, including full actual-glibc 2.28
+acceptance of the four selected tagged Linux wheels. Publish within the existing
+authorization only after these gates pass, then verify public downloads, fresh
+Julia/Python installations and the stable manual. PyPI and GPU delivery remain
+outside scope.
+
+Make orchestration durable across UI interruptions with timestamped receipts
+and file-backed logs. Report milestones without identical status polls. Check
+actual processes before trusting a running receipt; do not repeat successful
+numerical suites or irreversible merge/tag actions.
+
+Carry held local documentation into a separate publication documentation branch
+after release. PR #73's HDF5 designs use §§35–36; preserve the distinct held
+publication design under §38 with its old explicit anchor so historical links
+resolve. Retain append-only logs from both branches and refresh the live queue.
+
+<a id="35-publication-documentation-and-stable-manual-correction-2026-09-30"></a>
+
+## 38. Publication documentation and stable-manual correction (2026-09-30)
+
+After verified public v1.1.0 publication, apply the already-authorized current-
+release documentation updates on a separate branch from the integrated main.
+Use the actual GitHub `published_at` date. Update README, the standalone
+package README, Python and Julia installation guides, installer example/help
+text, CHANGELOG, citation metadata and the operator checkpoint. Verify a new
+version DOI independently; otherwise keep the existing concept DOI and make
+no archival claim. Link the delivered release and its accepted assets.
+
+The normal Documenter main deployment updates `dev`; `stable` points to the
+latest tagged version. Thus a post-publication prose correction on main alone
+would leave the stable installation guide's earlier v1.0.4 examples and Python
+candidate wording in place. Rebuild the complete manual from the reviewed
+post-publication documentation commit. Publish that generated documentation
+into the existing v1.1.0 directory on `gh-pages`, preserving its site/version
+metadata, aliases and other version directories. Use a normal commit/push,
+record both the actual documentation source revision and the generated-site
+revision, and verify the stable installation/Python URLs and their current
+release links. Do not forge CI source/tag provenance, change the software tag,
+replace release assets, or create a second software release for prose alone.
+This follows [Documenter's versioned-documentation contract](https://documenter.juliadocs.org/stable/man/hosting/#Documentation-Versions)
+and its separation of documentation corrections from immutable software tags;
+the explicit generated-site update avoids triggering the strict
+software-release workflow with a documentation build-metadata tag.
+
+Build/inspect the full manual and check metadata/diff/shell syntax. Source
+algorithms and binary metadata stay byte-identical; do not repeat numerical
+suites solely for publication prose. Preserve required branch checks and
+merge the documentation PR after its applicable gates pass. Record actual
+publication, public download/installation and stable-site evidence in PORT_LOG;
+BACKLOG is the authoritative resulting status and next-action queue.
