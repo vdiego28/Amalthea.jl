@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790950351387,
+  "lastUpdate": 1791139567057,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -1072,6 +1072,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.881937,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "53799316+vdiego28@users.noreply.github.com",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "41227f43c920af50bfa4324766d4f9636340a7b9",
+          "message": "Merge pull request #69 from vdiego28/dependabot/pip/python-native/coolprop-8.0.0\n\nIntegrate the validated CoolProp 8.0.0 Python dependency with independently pinned Julia reference checks for v1.1.0.",
+          "timestamp": "2026-10-04T15:39:00-03:00",
+          "tree_id": "7ae43ff8fbc024601a3549fd4c0384c0b30b9f40",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/41227f43c920af50bfa4324766d4f9636340a7b9"
+        },
+        "date": 1791139566579,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 2.958305,
             "unit": "ms/step"
           }
         ]
