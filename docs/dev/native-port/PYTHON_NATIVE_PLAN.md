@@ -30,7 +30,7 @@ seeded noise, and ensemble APIs follow this release.
 ## Ownership and implementation seams
 
 Python owns setup and results: NumPy arrays, SciPy numerical setup/quadrature,
-and CoolProp 7.2.0 thermodynamics initially. Copy physical constants and model
+and CoolProp 8.0.0 thermodynamics. Copy physical constants and model
 coefficients from `PhysData.jl`, not library defaults. Preserve the grid and
 pulse conventions in `Grid.jl`/`Fields.jl`, including oversampling, windows,
 spectral halves, normalization, and field-axis ordering.
@@ -508,8 +508,10 @@ capillary trajectories. Add a Python `materials` module with SI wavelength,
 number-density, and susceptibility functions, pressure in bar and temperature
 in kelvin. `density`, inverse `pressure`, gas `polarizability`, `refractive_index`,
 and `gamma3` reproduce PhysData for its sixteen gas identifiers, including
-He/HeJ/HeB and Ar/ArB aliases. Pin CoolProp 7.2.0 and call its Python PropsSI
-DMOLAR/P interface. Multiply by the project's CODATA2014 Avogadro constant,
+He/HeJ/HeB and Ar/ArB aliases. Pin CoolProp 8.0.0 and call its Python PropsSI
+DMOLAR/P interface. The Julia oracle remains independently pinned to CoolProp
+7.2.0; require material setup equivalence at a relative tolerance of 1e-13.
+Multiply by the project's CODATA2014 Avogadro constant,
 not the post-2019 SI value. Zero pressure/density returns exactly zero without
 calling CoolProp. Validate names and finite nonnegative pressure/density and
 positive temperatures/wavelengths; broadcast numeric arrays and return owned
@@ -1110,7 +1112,7 @@ sqrt(p0^2 + fraction*(p1^2-p0^2)); density uses `PhysData.densityspline`'s
 sample bounds are min/max supplied pressures, except equal pressures start
 at zero. All-zero gradient nodes give an invalid oracle density spline and
 must raise explicitly (ordinary constant vacuum remains supported). Build
-these thermodynamic samples locally with CoolProp 7.2.0. This is the existing
+these thermodynamic samples locally with CoolProp 8.0.0. This is the existing
 material interpolation convention, not sampling the user profile in position.
 Arbitrary pressure callables instead use direct thermodynamics at each call.
 Extract the already matched normalized spline algorithm from PPT into a

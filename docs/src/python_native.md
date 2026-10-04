@@ -26,7 +26,7 @@ python -m pip install --only-binary=:all: /path/to/amalthea_native-VERSION-TAGS.
 ```
 
 Replace the path with the actual artifact. Installation resolves NumPy, SciPy,
-CoolProp 7.2.0 and mpmath. The installed wheel requires no Julia, Rust compiler,
+CoolProp 8.0.0 and mpmath. The installed wheel requires no Julia, Rust compiler,
 system FFTW or libcubature. Simulations are CPU-only. Dependencies must be
 installed before going offline; no simulation downloads a runtime.
 

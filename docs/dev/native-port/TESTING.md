@@ -560,7 +560,9 @@ Export `julia --startup-file=no --project python-native/tools/export_material_or
 /tmp/amalthea-material-oracle` and supply `AMALTHEA_MATERIAL_ORACLE` with the
 other four fixture variables. All sixteen gases compare density, inverse
 pressure, polarizability, refractive index, and available default gamma3 at
-1e-13. Fixtures record CoolProp 7.2.0 and CODATA2014 constants. Include zero
+1e-13 relative tolerance. Require Python CoolProp 8.0.0 and independently
+require the Julia fixtures to record CoolProp 7.2.0 and CODATA2014 constants.
+Keep both version checks and the numerical comparisons. Include zero
 pressure, 273.15/293.15/330 K, 0.1–50 bar, 200–3000 nm, scalar/array broadcasting,
 alias distinctions, sensitivity and thermodynamic round trips. This proves
 setup coverage, not capillary trajectories. The installed offline gate also
