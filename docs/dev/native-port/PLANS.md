@@ -3992,6 +3992,12 @@ Carry held local documentation into a separate publication documentation branch
 after release. PR #73's HDF5 designs use §§35–36; preserve the distinct held
 publication design under §38 with its old explicit anchor so historical links
 resolve. Retain append-only logs from both branches and refresh the live queue.
+Synchronize the original working checkout only after backing up its three
+owned documents, preserving their named stash and the previous local library.
+Require a fast-forward to the frozen merged main, reinstate the reconciled
+development documents and rebuild its local portable CPU library. Preserve
+the old release branch and all numerical evidence. After the publication
+documentation merges, carry the owned logs before clearing that local diff.
 
 <a id="35-publication-documentation-and-stable-manual-correction-2026-09-30"></a>
 

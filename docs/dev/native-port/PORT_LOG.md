@@ -10005,3 +10005,68 @@ prose checkpoint, preserving the separate main/tag acceptance gates. Full
 held originals and reconciliation receipts remain in
 `.rust_test_logs/release-execution-20261004/`.
 **Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-10-04 — Public-installation and documentation delivery preparation — Codex
+**Status at this checkpoint:** preparation complete; publication, public installs
+and the final manual build remain pending.
+**Did:** Prepared ignored `publish-and-verify.py`, `verify-public-python.py`,
+`verify-public-julia.jl` and guarded `update-published-docs.py` under the October
+evidence directory. Publication requires the completed tagged-wheel and actual
+draft inspection receipts; public downloads are checked against the reviewed
+draft's 26 asset digests. Fresh Python installation uses the accepted CPython
+patch on actual glibc 2.28 with binary dependencies and all seventeen offline
+examples. Fresh Julia installation excludes Cargo, verifies the downloaded
+release library and exercises the resident native stepper. Created separate
+`docs/v1.1.0-publication-20261004` from the pushed progress checkpoint
+`ee611530`, preserving both branches' design/log history, and prepared its
+Documenter environment. Current-release prose has not been applied.
+**Design:** [PLANS §37](PLANS.md#37-final-dependencyrepair-integration-and-v110-execution-2026-10-04)
+and [§38](PLANS.md#38-publication-documentation-and-stable-manual-correction-2026-09-30).
+**Gotchas:** Public Julia receipts belong in the isolated installation evidence
+directory, keeping the release's 26-file inventory unchanged. The operator
+checklist was already generalized in PR #73; preserve that integrated text.
+Select the public Python interpreter from the actual tagged acceptance receipt,
+rather than assuming the old CI patch version.
+**Tests:** `python3 -m py_compile` passes for the three Python helpers. Exact
+source-passage guards are checked against `41227f43` and retained in
+`publication-documentation-preflight.json`. With a separate first depot,
+`JULIA_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+CARGO_BUILD_JOBS=4 AMALTHEA_CUDA_BUILD=off AMALTHEA_RUST_SKIP_DOWNLOAD=1
+RUSTFLAGS='' julia --startup-file=no --project=docs -e 'using Pkg;
+Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate();'` exits 0: 174
+dependencies precompiled, 88 already cached; `documentation-environment.log`
+retains the result. The source checkout remains clean. Main's twenty initial
+CI jobs and documentation have succeeded; all sixteen wheel jobs have built
+their artifacts and are still running installed numerical/offline acceptance.
+No new numerical result or public installation is claimed by these preparatory
+checks. Evidence: `.rust_test_logs/release-execution-20261004/`.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+
+## 2026-10-04 — Working checkout synchronized with final merged main — Codex
+**Status at this checkpoint:** workspace synchronization complete; release
+artifact acceptance remains in progress.
+**Did:** Preserved the three owned development documents, their binary patch,
+and the previous local shared library under `workspace-sync/`. Preserved the
+original documents in named stash `878e08ee9d8334e414026c2c181e93c4e8e7b29f`;
+verified that their dated log headings and publication anchor are retained in
+the reconciled documentation. Fast-forwarded the original `main` checkout to
+`41227f43c920af50bfa4324766d4f9636340a7b9`, retaining the original release branch,
+then reinstated the reconciled BACKLOG, PLANS and append-only PORT_LOG. Rebuilt
+`amalthea/target/release/libamalthea.so` from this merged source.
+**Design:** [PLANS §37](PLANS.md#37-final-dependencyrepair-integration-and-v110-execution-2026-10-04).
+**Tests:** `git merge-base --is-ancestor main origin/main`, `git pull --ff-only`
+and `git diff --check` pass. `RUSTFLAGS='' AMALTHEA_CUDA_BUILD=off
+CARGO_BUILD_JOBS=4 cargo build --release --locked` in `amalthea/` succeeds in
+11.46 seconds, including patched `crossbeam-epoch` 0.9.21. A fresh `ctypes.CDLL`
+load resolves `process_field_inplace`, `init_native_sim`, `native_step` and
+`native_compute_extra_stages`; scaling two complex values yields exactly
+`[2.0, 4.0, 6.0, 8.0]`. Current local library SHA-256:
+`46e712425cf3ab75c7fae85272cdfbef491dab428a071678bc667056ac2259da`.
+This verifies the rebuilt local ABI, not full trajectory or selected release
+wheel acceptance. The original checkout has only the three intended development
+documentation changes. Source clones, prior numerical evidence and active
+release processes remain separate. Evidence:
+`.rust_test_logs/release-execution-20261004/workspace-sync/receipt.json` and
+`build.log`.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
