@@ -78,8 +78,11 @@ or "verified" inside a superseded narrative do not outrank this list.
 > the frozen final release candidate. Its source tree exactly matches the
 > previously reviewed conflict-free combination. Tests `37225245527`,
 > documentation `37225245543` and manual release preparation `37225323809`
-> are started; their final outcomes and independent runtime acceptance remain
-> pending. Execution follows
+> have succeeded. Independent collection accepts all sixteen wheel cells;
+> all four actual-glibc 2.28 installation/offline checks are complete.
+> The lead questioned the redundant full numerical reruns; they were stopped
+> and retained as interrupted evidence. Full numerical acceptance uses CI.
+> Execution follows
 > [PLANS §37](native-port/PLANS.md#37-final-dependencyrepair-integration-and-v110-execution-2026-10-04).
 > Superseded and interrupted evidence remains separate from accepted results.
 > The superseded `e5e7a123` candidate passes all four full installed
@@ -96,19 +99,23 @@ or "verified" inside a superseded narrative do not outrank this list.
 > documents. Their pre-pull backup and patch are retained in that evidence
 > directory. Preserve the frozen source checkouts, hosted artifacts, runtime
 > receipts and helpers under `.rust_test_logs/release-execution-20260930/`.
-> **Current execution:** new persistent controller PID 24715 runs from
-> `.rust_test_logs/release-execution-20261004/launch-through-draft.py` with
-> atomic `launch-state.json` and `launch.log`. It independently accepts the
-> frozen main candidate and all four full actual-glibc 2.28 suites, inspects
+> **Current execution:** persistent controller PID 68941 runs from
+> `.rust_test_logs/release-execution-20261004/launch-compatibility-through-draft.py`
+> with atomic `launch-state-v2.json` and `launch-v2.log`. It uses independently
+> accepted hosted full suites and the four completed compatibility checks, inspects
 > the manual candidate bytes, then tags that reviewed commit and accepts the
 > actual tagged wheels/draft. It stops at the checked draft for publication
 > review. New CoolProp 8.0.0 binary wheelhouses preserve the earlier caches.
+> Completed minimum-runtime evidence is reused for byte-identical tagged
+> wheels with the same tested environment; differing artifacts require their
+> own installation/offline check. The originating receipt remains explicitly linked.
 > **Next:** inspect the controller's real process/state and matching evidence;
 > after `publication-ready.json` exists, perform the already-authorized
 > publication, public installations and documentation/manual correction.
 > Earlier `89700c11` acceptance does not establish acceptance of these new
-> wheel bytes. No v1.1.0 tag or release exists yet; v1.0.4 remains the latest
-> public release. PyPI and standing GPU CI remain separate decisions.
+> wheel bytes. The reviewed `v1.1.0` tag now targets `41227f43`; its hosted
+> release/draft preparation is running. `v1.0.4` remains the latest public
+> release until verified publication. PyPI and standing GPU CI remain separate decisions.
 
 > **HDF5 repair — PR #73, updated 2026-10-03:** standalone initialization and
 > Julia custom-depot integration passed hosted CI at `2a159fc` above. Manual

@@ -3968,17 +3968,21 @@ Use a new dated evidence directory and clean source clone for this final
 revision. Adapt retained orchestration helpers through explicit revision, run
 and output parameters; do not overwrite prior receipts or retain the old
 assumption that the final tree equals `89700c11`. Independently collect all
-sixteen hosted wheel cells with untouched provenance. Require the maintained
-full numerical/offline gate for all four Linux x86_64 CPython versions on actual
-glibc 2.28, concurrently with one numerical thread per process. Supply binary
+sixteen hosted wheel cells with untouched provenance. The lead questioned
+repeating the already-passed numerical suites locally on 2026-10-04. Use the
+hosted full numerical results and actual-glibc 2.28 binary-only installation,
+dependency and complete offline-example checks for all four Linux x86_64
+CPython versions. Preserve interrupted numerical logs as interrupted evidence;
+do not claim their incomplete full suites passed. Supply binary
 dependencies matching final CoolProp 8.0.0; verify tags/hashes and preserve the
 old 7.2.0 wheelhouses. Obtain the matching CPython patch versions when necessary.
 
 Dispatch the manual release workflow at frozen main, inspect all 26 assembled
 files and checksums, and match selected wheels to accepted hosted bytes. Tag
 only that reviewed revision. Require the tag's successful tests/documentation
-and independently verify its draft's bytes, including full actual-glibc 2.28
-acceptance of the four selected tagged Linux wheels. Publish within the existing
+and independently verify its draft's bytes, including actual-glibc 2.28
+installation/offline compatibility of the four selected tagged Linux wheels.
+Do not repeat the full numerical suites locally. Publish within the existing
 authorization only after these gates pass, then verify public downloads, fresh
 Julia/Python installations and the stable manual. PyPI and GPU delivery remain
 outside scope.
@@ -3987,6 +3991,15 @@ Make orchestration durable across UI interruptions with timestamped receipts
 and file-backed logs. Report milestones without identical status polls. Check
 actual processes before trusting a running receipt; do not repeat successful
 numerical suites or irreversible merge/tag actions.
+
+Minimum-runtime compatibility may be reused for byte-identical tagged wheels:
+require the same frozen source inventory, exact interpreter binary, pinned
+glibc rootfs and binary dependencies, and retain the original completed
+installation/offline evidence. Record the originating run and receipt
+hash rather than presenting reused evidence as a new execution. Recheck both
+checkout/source wheel digests against the tagged build. If either artifact or
+the tested environment differs, run its installation/offline gate. The tag's hosted
+checks, independent collection and actual draft inspection remain required.
 
 Carry held local documentation into a separate publication documentation branch
 after release. PR #73's HDF5 designs use §§35–36; preserve the distinct held

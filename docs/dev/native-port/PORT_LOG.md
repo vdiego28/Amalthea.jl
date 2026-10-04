@@ -10070,3 +10070,32 @@ release processes remain separate. Evidence:
 `.rust_test_logs/release-execution-20261004/workspace-sync/receipt.json` and
 `build.log`.
 **Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-10-04 — Completed compatibility accepted; redundant numerical reruns stopped — Codex
+**Status at this checkpoint:** compatibility acceptance complete; reviewed tag and
+release execution continue without local full numerical reruns.
+**Did:** After the lead questioned the duplication, stopped the owned controller
+and four source-suite workers. Preserved their original receipts and logs under
+`stopped-redundant-runs/`, marked their unfinished numerical suites interrupted,
+and independently verified the already-completed binary installations,
+dependency checks, 34 focused checkout tests and seventeen offline examples per
+wheel for CPython 3.11–3.14 on loaded glibc 2.28. Full numerical acceptance comes
+from the successful exact-source hosted matrix. The new durable controller
+`launch-compatibility-through-draft.py` uses these distinct evidence scopes;
+tagged compatibility checks omit numerical suites and reuse completed evidence
+only for byte-identical artifacts and matching environment. Original controller
+24715 is superseded; replacement PID 68941 is saved separately.
+**Design:** [PLANS §37](PLANS.md#37-final-dependencyrepair-integration-and-v110-execution-2026-10-04).
+**Tests:** Main tests `37225245527`, documentation `37225245543` and manual
+assembly `37225323809` succeeded. Independent sixteen-cell collection accepts
+34 checkout / 946 source tests and seventeen examples per wheel, with no
+failures or skips. `accept-completed-compatibility.py` checks exact wheel/source
+hashes, glibc/interpreter probes, dependency inventories and completed local
+reports; `main-compatibility/acceptance.json` passes. The four real retained
+compatibility receipts pass reuse integrity checks, recorded in
+`compatibility-reuse-checks.json`; the earlier six synthetic reuse checks pass.
+Helper syntax and `git diff --check` pass. Host process inspection confirms
+that all four numerical workers and the old controller exited. Interrupted
+local source suites are not claimed as passed. Evidence:
+`.rust_test_logs/release-execution-20261004/`.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
