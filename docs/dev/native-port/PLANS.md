@@ -3954,3 +3954,21 @@ official RUSTSEC-2026-0204 identifies the old version as affected and >=0.9.20
 as patched. The dependency is reached through Rayon; application use of the
 vulnerable pointer-formatting path has not been established. Keep the Python
 crate's already patched lock and separate CoolProp PR unchanged.
+
+## 37. Native queue concurrency regression after release review (2026-10-05)
+
+The HDF5 queue repair has serial persistence tests, while Julia's worker tests
+exercise a separate queue implementation. Add a Rust integration regression
+that starts independent processes against one native queue. Synchronize their
+start, require each scan point to be claimed exactly once, and verify the
+persisted completed state after reopening the queue. Concurrent initialization
+must preserve existing progress. Bound child execution and retain diagnostics
+on failure so a locking regression cannot hang CI indefinitely.
+
+Use the current integration-test executable as the child helper; do not add a
+production executable or change queue behavior. Keep optional HDF5 discovery
+for ordinary Cargo users, but include the regression in the existing required
+HDF5 launcher with Julia's resolved library and dependency paths. Validate the
+existing five unit tests and the process test, then the full Cargo suite. This
+follow-up does not alter the already tagged v1.1.0 candidate or establish
+recovery of claims abandoned by a dead worker.
