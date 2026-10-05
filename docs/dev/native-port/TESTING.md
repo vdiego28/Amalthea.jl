@@ -1017,6 +1017,36 @@ never substitute host execution after a namespace failure. The host kernel and
 CPU remain current; this gate establishes the glibc userspace boundary only.
 Helper regressions: `python3 test/test_glibc228_validation.py -v`.
 
+Before release, verify the four completed helper outputs against the candidate
+checkout and the downloaded release's actual Linux x86_64 source-wheel bytes:
+
+```sh
+python3 test/release.py verify-glibc --repository MATCHING_CHECKOUT \
+  --gates GATE_ROOT --builds BUILD_ROOT --oracles ORACLE_DIRECTORY \
+  --assets RELEASE_ASSETS --output NEW_GLIBC_REPORT.json
+```
+
+`GATE_ROOT` contains `3.11/` through `3.14/`, retaining `validation.json`,
+`probe.json`, both raw JUnit/example results and every helper `.log`/`.log.json`.
+`BUILD_ROOT` contains `linux-x86_64-3.11/` through `linux-x86_64-3.14/`, each with
+the exact runtime-tested `build.json`, `sdist/` and `wheels/{checkout,source}/`.
+Preserve each manifest's bytes when moving this evidence: recorded producer
+paths are resolved by basename under the supplied directories. Independently
+exported complete oracles are allowed when their source/revision and manifest
+hash match the runtime gate. Original hosted export hashes need not match a
+fresh export at the same candidate.
+
+This offline command rejects smoke-only, failed or incomplete runs; wrong
+versions, sources, reference/wheel hashes or glibc probes; skipped/erroring
+JUnit; partial numerical commands; and missing example or command evidence.
+It applies the collector's shared numerical count floors and all seventeen
+examples to both wheel kinds. The new JSON report retains inspected file hashes
+and per-cell errors, with a nonzero exit for incomplete evidence. Existing
+reports and producer records are preserved. This verifies only the four
+minimum-glibc cells; the other platform, CI and publication checks remain
+required. Synthetic regressions in `python3 test/test_release.py -v` establish
+tool behavior, never platform or release acceptance.
+
 ### Separate post-repair Python performance gate
 
 Use `test/python_performance/run.py` with the final installed source wheel,
