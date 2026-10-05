@@ -9622,4 +9622,31 @@ loaded libraries before accepting a future patched distribution. No remote
 attack through Amalthea was demonstrated. Existing ignored HDF5 close errors
 and independent-file calls into non-thread-safe HDF5 remain outside this fix.
 CUDA hardware and final release/minimum-glibc acceptance were not exercised.
+
+## 2026-10-05 — Native queue process regression — Codex
+
+**Design:** [PLANS §37](PLANS.md#37-native-queue-concurrency-regression-after-release-review-2026-10-05).
+
+**Did:** Added `amalthea/tests/hdf5_queue_process.rs` and included it in
+`test/run_rust_hdf5.jl`. Four independent workers exercise concurrent native
+queue initialization, unique claims, completion/failure persistence, and
+reopening while claims are active. A second scenario starts with saved
+successful, failed and in-progress points and verifies they are preserved.
+All native queue calls execute in supervised children with 60-second deadlines;
+failed runs retain their diagnostic directory. Production behavior is unchanged.
+
+**Tests:** With the managed Julia 1.12.7/Rust 1.99.0 toolchains activated,
+`julia --startup-file=no --project test/run_rust_hdf5.jl` passed all five
+existing required HDF5 tests and the new process regression using Julia's
+resolved HDF5 2.2.0 library. `cargo test --locked --release` passed 105 unit
+tests, five build-policy tests and the integration target; its child helper
+is intentionally ignored except when explicitly spawned. Rust formatting,
+11 validation-wrapper tests, five glibc-helper tests and whitespace checks
+also pass. Retained logs:
+`/workspace/.amalthea-cloud/release-review-20261005/queue-followup/`.
+
+**Scope:** Local Linux CPU validation only; the existing mandatory HDF5 CI
+launcher will exercise the added test on Linux, macOS and Windows. This does
+not establish abandoned-worker claim recovery or change the tagged v1.1.0
+candidate. Release verification is recorded separately.
 **Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
