@@ -3954,3 +3954,34 @@ official RUSTSEC-2026-0204 identifies the old version as affected and >=0.9.20
 as patched. The dependency is reached through Rayon; application use of the
 vulnerable pointer-formatting path has not been established. Keep the Python
 crate's already patched lock and separate CoolProp PR unchanged.
+
+## 38. Offline verification of release minimum-glibc evidence (2026-10-05)
+
+The minimum-glibc helper records each completed run separately. Release review
+currently has to join those records to the current candidate and actual release
+assets by hand. Add an offline `test/release.py verify-glibc` command that reads
+four helper output directories, corresponding build directories, independent
+Julia oracles, the candidate checkout and a downloaded assembled release. Keep
+this follow-up isolated from the already tested v1.1.0 candidate; its unit
+fixtures demonstrate verifier behavior, never runtime or release acceptance.
+
+Use fixed CPython 3.11–3.14 cells, with gate directories named by interpreter
+minor and build directories named `linux-x86_64-MINOR`. Resolve retained archive
+and wheel files relative to their supplied build directory using recorded
+basenames. Do not depend on old producer absolute paths, rewrite manifests,
+relabel revisions, invoke network services, or change release workflows.
+
+Require exact candidate versions/revision and source hashes, completed build
+and full numerical helper states, matching manifest/reference/wheel digests,
+the pinned rootfs provenance and actual loaded glibc 2.28 probe. Reuse maintained
+oracle/source verification, JUnit parsing and offline-example checks. Inspect
+raw JUnit, complete seventeen-example results and successful command records;
+reject missing, failed, skipped, smoke-only or incomplete evidence. Bind each
+accepted source wheel to the downloaded release manifest and identical asset
+bytes. Save an independent JSON verification report, including inspected file
+hashes and errors, while preserving all inputs and any existing output report.
+
+Test relocated valid fixtures and adversarial status, version, revision,
+source/reference/asset hash, probe, numerical, example and command-log failures.
+Document the invocation in TESTING and the release checklist. No numerical
+implementation, tolerance, PyPI, GPU or performance policy changes belong here.
