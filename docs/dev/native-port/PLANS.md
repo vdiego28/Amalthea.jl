@@ -3954,3 +3954,24 @@ official RUSTSEC-2026-0204 identifies the old version as affected and >=0.9.20
 as patched. The dependency is reached through Rayon; application use of the
 vulnerable pointer-formatting path has not been established. Keep the Python
 crate's already patched lock and separate CoolProp PR unchanged.
+
+## 39. Bound RK45 progress and format remaining time as a duration (2026-10-05)
+
+The independent modal reference export at the v1.1.0 candidate logs
+`Progress: 125.00 %, ETA: 23:58:40` after its fifth fixed step. The solver
+deliberately steps while `tn <= tmax`; output samples are interpolated through
+the requested endpoint, while accepted-step callbacks can see a later point.
+Changing this stopping or interpolation behavior would change numerical and
+callback semantics. The defect is only that the status message reports the
+unbounded position and formats a negative remaining duration as calendar time.
+
+Clamp only the displayed percentage and remaining duration. Format the ETA
+with total hours, minutes and seconds so durations above one day do not wrap.
+Retain the existing unknown-ETA threshold and display precision. Do not change
+stepping, output, callbacks, status frequency or resumed-solve accounting.
+
+Validate with a small external Julia script that captures every status line
+for an analytic fixed-step solve: require bounded progress and zero final ETA,
+all five accepted callbacks, and output through the requested endpoint. Check
+duration boundaries directly without sleeps. Keep this low-impact display
+repair separate from the already tagged release and its numerical gate.
