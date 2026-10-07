@@ -9644,3 +9644,14 @@ mandatory in the hosted jobs. Actual source archive inspection confirmed the
 precise maturin-added README fields and root manifest path, now checked
 without accepting other metadata changes. These tooling results do not
 establish completion of the pending full numerical runtime suites.
+
+The first hosted attempt (`37603827073`) completed original-reference and
+runtime preparation but all four probes stopped before numerical execution:
+`bwrap` could not traverse the extracted rootfs. Python's safe archive filter
+created runner-owned mode-0700 directories; namespace root cannot override
+that host ownership. Preparation now adds only directory read/traverse bits
+inside the three verified public extraction trees (rootfs, interpreter and
+source), preserves files and links, and records every mode change. Eight
+focused tests pass, including file-mode preservation and symlink exclusion.
+The failed raw reports remain failure evidence; acceptance still requires a
+complete subsequent run with unchanged namespace isolation.

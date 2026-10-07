@@ -116,6 +116,29 @@ class DurablePreparationTests(unittest.TestCase):
                 gate.relocate(self.root, self.root, self.root, '3.11', self.root/'relocated')
         self.assertFalse((self.root/'relocated').exists())
 
+    def test_namespace_access_changes_only_extracted_directory_modes(self):
+        tree = self.root/'extracted'; tree.mkdir(mode=0o700)
+        nested = tree/'usr'; nested.mkdir(mode=0o700)
+        content = nested/'private-mode-file'; content.write_bytes(b'unchanged public archive bytes')
+        content.chmod(0o600)
+        outside = self.root/'outside'; outside.mkdir(mode=0o700)
+        (tree/'link').symlink_to(outside, target_is_directory=True)
+        receipt = self.root/'access.json'
+        gate.namespace_access([tree], receipt)
+        self.assertEqual(tree.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(nested.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(content.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(content.read_bytes(), b'unchanged public archive bytes')
+        self.assertEqual(outside.stat().st_mode & 0o777, 0o700)
+        self.assertTrue((tree/'link').is_symlink())
+        changes = json.loads(receipt.read_text())['directory_changes']
+        self.assertEqual({item['path'] for item in changes}, {'.', 'usr'})
+        self.assertTrue(all(item['before'] == '0o700' and item['after'] == '0o755' for item in changes))
+        with self.assertRaisesRegex(ValueError, 'receipt already exists'):
+            gate.namespace_access([tree], receipt)
+        with self.assertRaisesRegex(ValueError, 'real directories'):
+            gate.namespace_access([tree/'link'], self.root/'bad.json')
+
     def test_root_sdist_metadata_is_bound_to_candidate(self):
         repository, source = self.root/'repository', self.root/'source'
         for name in ('amalthea/Cargo.lock', 'python-native/README.md', 'python-native/LICENSE',

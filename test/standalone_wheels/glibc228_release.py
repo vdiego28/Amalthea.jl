@@ -280,13 +280,39 @@ def dependencies(repository, python, output):
               'active_requirements': sorted(set(active)), 'wheels': records})
 
 
+def namespace_access(trees, output):
+    """Allow namespace UID 0 to traverse public inputs extracted by the runner.
+
+    Python's data extraction filter creates directories with mode 0700. A
+    sudo-created user namespace cannot override the host runner's DAC modes.
+    Only directory read/search bits change; files and links remain untouched.
+    """
+    require(not output.exists(), 'namespace access receipt already exists')
+    require(all(path.is_dir() and not path.is_symlink() for path in trees),
+            'namespace inputs must be real directories')
+    changes = []
+    for root in trees:
+        for path in [root, *sorted(root.rglob('*'))]:
+            if path.is_symlink() or not path.is_dir():
+                continue
+            before = path.stat().st_mode & 0o7777
+            after = before | 0o055
+            if before != after:
+                path.chmod(after)
+                changes.append({'tree': str(root), 'path': path.relative_to(root).as_posix(),
+                                'before': oct(before), 'after': oct(after)})
+    save_json(output, {'status': 'prepared_for_namespace', 'directory_changes': changes,
+                      'file_bytes_modified': False, 'links_modified': False})
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('ci', 'transport', 'relocate', 'interpreter', 'dependencies'))
+    parser.add_argument('command', choices=('ci', 'transport', 'relocate', 'interpreter', 'dependencies', 'access'))
     parser.add_argument('--repository', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--oracles', type=Path)
     parser.add_argument('--artifacts', type=Path)
+    parser.add_argument('--runtime', type=Path)
     parser.add_argument('--python', choices=INTERPRETERS)
     args = parser.parse_args()
     repository, output = args.repository.resolve(), args.output.resolve()
@@ -298,6 +324,12 @@ def main():
         relocate(repository, args.artifacts.resolve(), args.oracles.resolve(), args.python, output)
     elif args.command == 'interpreter':
         interpreter(args.python, output)
+    elif args.command == 'access':
+        candidate(repository)
+        runtime, artifacts = args.runtime.resolve(), args.artifacts.resolve()
+        source = Path(read(artifacts/'build.json')['source']).resolve()
+        require(source.is_relative_to(artifacts/'source'), 'extracted source escaped the build directory')
+        namespace_access([runtime/'rootfs/rootfs', runtime/'cpython/python', source], output)
     else:
         candidate(repository)
         dependencies(repository, args.python, output)

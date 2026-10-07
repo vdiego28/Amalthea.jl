@@ -201,6 +201,12 @@ jobs:
           dpkg-deb --extract bubblewrap_*.deb .
           sha256sum bubblewrap_*.deb > package.sha256
           usr/bin/bwrap --version > version.txt
+      - name: Permit namespace traversal of verified extracted inputs
+        run: >-
+          python orchestration/test/standalone_wheels/glibc228_release.py access
+          --repository candidate --runtime "${{ runner.temp }}/runtime"
+          --artifacts "${{ runner.temp }}/evidence/build"
+          --output "${{ runner.temp }}/evidence/provenance/namespace-access.json"
       - name: Run unchanged candidate full numerical and offline suites
         run: |
           sudo env -i \
