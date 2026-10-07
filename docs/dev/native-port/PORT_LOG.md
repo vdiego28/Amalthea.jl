@@ -9622,4 +9622,76 @@ loaded libraries before accepting a future patched distribution. No remote
 attack through Amalthea was demonstrated. Existing ignored HDF5 close errors
 and independent-file calls into non-thread-safe HDF5 remain outside this fix.
 CUDA hardware and final release/minimum-glibc acceptance were not exercised.
+
+## 2026-10-05 — Native queue process regression — Codex
+
+**Design:** [PLANS §37](PLANS.md#37-native-queue-concurrency-regression-after-release-review-2026-10-05).
+
+**Did:** Added `amalthea/tests/hdf5_queue_process.rs` and included it in
+`test/run_rust_hdf5.jl`. Four independent workers exercise concurrent native
+queue initialization, unique claims, completion/failure persistence, and
+reopening while claims are active. A second scenario starts with saved
+successful, failed and in-progress points and verifies they are preserved.
+All native queue calls execute in supervised children with 60-second deadlines;
+failed runs retain their diagnostic directory. Production behavior is unchanged.
+
+**Tests:** With the managed Julia 1.12.7/Rust 1.99.0 toolchains activated,
+`julia --startup-file=no --project test/run_rust_hdf5.jl` passed all five
+existing required HDF5 tests and the new process regression using Julia's
+resolved HDF5 2.2.0 library. `cargo test --locked --release` passed 105 unit
+tests, five build-policy tests and the integration target; its child helper
+is intentionally ignored except when explicitly spawned. Rust formatting,
+11 validation-wrapper tests, five glibc-helper tests and whitespace checks
+also pass. Retained logs:
+`/workspace/.amalthea-cloud/release-review-20261005/queue-followup/`.
+
+**Scope:** Local Linux CPU validation only; the existing mandatory HDF5 CI
+launcher will exercise the added test on Linux, macOS and Windows. This does
+not establish abandoned-worker claim recovery or change the tagged v1.1.0
+candidate. Release verification is recorded separately.
 **Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-10-05 — RK45 progress display after the requested endpoint — Codex
+
+**Status at this checkpoint:** complete locally; separate from tagged v1.1.0.
+
+**Did:** Clamped the percentage in `src/RK45.jl::solve` to 0–100 and added
+`_format_eta` to clamp negative remaining time and format total hours as a
+duration. Retained the existing unknown-ETA threshold and millisecond rounding.
+The solver loop, interpolation, callbacks, counters, status frequency and
+resumed-solve accounting are unchanged. Independent read-only review found no
+issue in the implementation or scope.
+
+**Design:** [PLANS §39](PLANS.md#39-bound-rk45-progress-and-format-remaining-time-as-a-duration-2026-10-05).
+
+**Observed:** The exact-candidate independent modal export recorded
+`Progress: 125.00 %, ETA: 23:58:40, stepsize 2.50e-06, err 0.12, repeated 0/5 steps`
+in `local-oracles/logs/modal_capillary.log` beneath the validation directory
+below. Its fixed step is one quarter of the requested length. The fifth
+accepted step crosses that length; requested output remains interpolated
+through the endpoint. The old status converted negative ETA into calendar
+time and wrapped to the prior day. This finding does not imply a numerical
+failure or change the release candidate.
+
+**Validation:** One external manual script, no added test-suite coverage or
+heavy numerical rerun. From the isolated `progress-display` worktree:
+
+```bash
+source /workspace/.amalthea-cloud/activate.sh
+JULIA_NUM_THREADS=1 AMALTHEA_USE_RUST_NATIVE=0 AMALTHEA_USE_RUST_STEPPER=0 \
+  julia --startup-file=no --project=. \
+  /workspace/.amalthea-cloud/release-review-20261005/validate_progress_display.jl
+git diff --check
+```
+
+All 18 assertions passed. Forced status emission (`status_period=-1`, no
+sleeps) reported 25, 50, 75, 100 and 100 percent, ending with `ETA: 00:00:00`.
+The analytic `y'=1` solve still made five accepted callbacks at
+`[0.25, 0.5, 0.75, 1.0, 1.25]`, saved only through `t=1.0`, and returned the
+endpoint value `0.9999999999999999` (absolute error below `1e-15`). Direct
+duration checks covered negative and zero values, millisecond rounding, the
+24-hour boundary, the preserved 99-hour threshold and nonfinite values.
+`git diff --check` passed. Julia 1.12.7 precompiled the changed package once;
+the manual assertions took 2.3 seconds. Evidence:
+`/workspace/.amalthea-cloud/release-review-20261005/validate_progress_display.jl`
+and `progress-display-validation.log` in the same directory.

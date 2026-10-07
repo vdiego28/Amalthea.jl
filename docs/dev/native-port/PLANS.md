@@ -3954,3 +3954,73 @@ official RUSTSEC-2026-0204 identifies the old version as affected and >=0.9.20
 as patched. The dependency is reached through Rayon; application use of the
 vulnerable pointer-formatting path has not been established. Keep the Python
 crate's already patched lock and separate CoolProp PR unchanged.
+
+## 37. Native queue concurrency regression after release review (2026-10-05)
+
+The HDF5 queue repair has serial persistence tests, while Julia's worker tests
+exercise a separate queue implementation. Add a Rust integration regression
+that starts independent processes against one native queue. Synchronize their
+start, require each scan point to be claimed exactly once, and verify the
+persisted completed state after reopening the queue. Concurrent initialization
+must preserve existing progress. Bound child execution and retain diagnostics
+on failure so a locking regression cannot hang CI indefinitely.
+
+Use the current integration-test executable as the child helper; do not add a
+production executable or change queue behavior. Keep optional HDF5 discovery
+for ordinary Cargo users, but include the regression in the existing required
+HDF5 launcher with Julia's resolved library and dependency paths. Validate the
+existing five unit tests and the process test, then the full Cargo suite. This
+follow-up does not alter the already tagged v1.1.0 candidate or establish
+recovery of claims abandoned by a dead worker.
+
+## 38. Offline verification of release minimum-glibc evidence (2026-10-05)
+
+The minimum-glibc helper records each completed run separately. Release review
+currently has to join those records to the current candidate and actual release
+assets by hand. Add an offline `test/release.py verify-glibc` command that reads
+four helper output directories, corresponding build directories, independent
+Julia oracles, the candidate checkout and a downloaded assembled release. Keep
+this follow-up isolated from the already tested v1.1.0 candidate; its unit
+fixtures demonstrate verifier behavior, never runtime or release acceptance.
+
+Use fixed CPython 3.11–3.14 cells, with gate directories named by interpreter
+minor and build directories named `linux-x86_64-MINOR`. Resolve retained archive
+and wheel files relative to their supplied build directory using recorded
+basenames. Do not depend on old producer absolute paths, rewrite manifests,
+relabel revisions, invoke network services, or change release workflows.
+
+Require exact candidate versions/revision and source hashes, completed build
+and full numerical helper states, matching manifest/reference/wheel digests,
+the pinned rootfs provenance and actual loaded glibc 2.28 probe. Reuse maintained
+oracle/source verification, JUnit parsing and offline-example checks. Inspect
+raw JUnit, complete seventeen-example results and successful command records;
+reject missing, failed, skipped, smoke-only or incomplete evidence. Bind each
+accepted source wheel to the downloaded release manifest and identical asset
+bytes. Save an independent JSON verification report, including inspected file
+hashes and errors, while preserving all inputs and any existing output report.
+
+Test relocated valid fixtures and adversarial status, version, revision,
+source/reference/asset hash, probe, numerical, example and command-log failures.
+Document the invocation in TESTING and the release checklist. No numerical
+implementation, tolerance, PyPI, GPU or performance policy changes belong here.
+
+## 39. Bound RK45 progress and format remaining time as a duration (2026-10-05)
+
+The independent modal reference export at the v1.1.0 candidate logs
+`Progress: 125.00 %, ETA: 23:58:40` after its fifth fixed step. The solver
+deliberately steps while `tn <= tmax`; output samples are interpolated through
+the requested endpoint, while accepted-step callbacks can see a later point.
+Changing this stopping or interpolation behavior would change numerical and
+callback semantics. The defect is only that the status message reports the
+unbounded position and formats a negative remaining duration as calendar time.
+
+Clamp only the displayed percentage and remaining duration. Format the ETA
+with total hours, minutes and seconds so durations above one day do not wrap.
+Retain the existing unknown-ETA threshold and display precision. Do not change
+stepping, output, callbacks, status frequency or resumed-solve accounting.
+
+Validate with a small external Julia script that captures every status line
+for an analytic fixed-step solve: require bounded progress and zero final ETA,
+all five accepted callbacks, and output through the requested endpoint. Check
+duration boundaries directly without sleeps. Keep this low-impact display
+repair separate from the already tagged release and its numerical gate.
