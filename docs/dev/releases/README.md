@@ -27,7 +27,14 @@ publication.
    artifact and source hashes. Confirm that its jobs actually completed and
    its results match the candidate; old running-job notes are not acceptance.
    This separate runtime gate is not supplied by the release-preparation
-   workflow's successful assembly. Canonical numerical commands and acceptance
+   workflow's successful assembly. After downloading the candidate or draft
+   assets, run `test/release.py verify-glibc` with the four completed helper
+   outputs, their retained builds, matching references and candidate checkout.
+   Require its passing report to bind the runtime-tested source wheels to the
+   actual release bytes; retain that report alongside the unmodified inputs.
+   Directory layout and invocation are in the
+   [minimum-glibc gate](../native-port/TESTING.md#linux-minimum-glibc-runtime-gate).
+   Canonical numerical commands and acceptance
    criteria are in [TESTING](../native-port/TESTING.md#5-commands).
 4. After the candidate reaches `main`, manually dispatch **Prepare Amalthea
    release** at that commit. This waits for successful exact-source push CI

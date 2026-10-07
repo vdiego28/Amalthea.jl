@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Check candidate metadata, gate exact-source CI and stage release assets."""
+"""Check release metadata, exact-source CI, assets and retained glibc evidence."""
 import argparse
 import ast
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -12,11 +13,13 @@ import time
 import tomllib
 import tarfile
 import zipfile
+import zlib
 from email.parser import BytesParser
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'test/standalone_wheels'))
 import collect as wheels
+import glibc228
 
 LIBRARIES = (
     'libamalthea-x86_64-unknown-linux-gnu.so',
@@ -218,6 +221,168 @@ def checksums(directory, repository):
                                            encoding='ascii')
 
 
+def glibc_command(directory, name, expected, inspected):
+    """Inspect retained commands without dereferencing their producer paths."""
+    log = directory / (name + '.log')
+    record_path = log.with_suffix('.log.json')
+    inspected[log.name] = wheels.digest(log)
+    inspected[record_path.name] = wheels.digest(record_path)
+    record = read(record_path)
+    require(record.get('exit_code') == 0 and not record.get('error')
+            and record.get('started') and record.get('finished'), f'{name}: command did not complete')
+    argv = record['argv']
+    separator = argv.index('--')
+    require(wheels.basename(argv[0]) == 'bwrap' and '--unshare-net' in argv[:separator]
+            and '--clearenv' in argv[:separator], f'{name}: missing isolated helper command')
+    require(argv[separator + 1:] == expected, f'{name}: unexpected or partial helper command')
+
+
+def inspect_glibc(directory, build_directory, python, revision, sources, oracle_hash,
+                  version, assets, release_assets, inspected):
+    def evidence(name):
+        inspected[name] = wheels.digest(directory / name)
+        return read(directory / name)
+
+    manifest = build_directory / 'build.json'
+    inspected['build.json'] = wheels.digest(manifest)
+    build = read(manifest)
+    require(build.get('format_version') == 1 and build.get('status') == 'built', 'build incomplete')
+    require(build['revision'] == revision and build['sources'] == sources,
+            'build revision or sources differ from candidate')
+    host = build['host']
+    require(tuple(host[key] for key in ('system', 'machine', 'target', 'tag')) ==
+            wheels.PLATFORMS['linux-x86_64'][:4], 'wrong build platform')
+    require(re.fullmatch(re.escape(python) + r'\.\d+', host['python']), 'wrong build Python version')
+    state = evidence('validation.json')
+    require(state.get('status') == 'passed' and state.get('scope') == 'full installed suite'
+            and state.get('finished') and not state.get('error'), 'full glibc validation incomplete')
+    require(state['build_manifest_sha256'] == inspected['build.json'], 'build manifest digest mismatch')
+    require(state['oracle_manifest_sha256'] == oracle_hash, 'oracle manifest digest mismatch')
+    require(set(state['artifacts']) == set(wheels.MINIMUM_TESTS), 'incomplete wheel-kind inventory')
+    rootfs = state['rootfs_provenance']
+    require(rootfs.get('status') == 'prepared' and rootfs.get('vendor') == glibc228.VENDOR
+            and rootfs.get('revision') == glibc228.REVISION and rootfs.get('git_blob') == glibc228.ARCHIVE_BLOB
+            and rootfs['files']['rootfs.tar.xz']['sha256'] == glibc228.ARCHIVE_SHA256
+            and rootfs['libc_package'].startswith('2.28-'), 'pinned glibc rootfs provenance mismatch')
+    probe = evidence('probe.json')
+    require(probe['glibc'] == '2.28' and probe['python'].split()[0] == host['python'],
+            'runtime glibc or Python version mismatch')
+    require(probe['executable'] == '/opt/python/bin/python3' and probe['prefix'] == '/opt/python',
+            'unexpected probe interpreter')
+    require(any(name.endswith('/libc-2.28.so') for name in probe['libraries']),
+            'probe did not load glibc 2.28')
+    require({line.split(':')[0].strip() for line in probe['interfaces'].splitlines() if ':' in line} == {'lo'},
+            'probe network namespace is not isolated')
+    glibc_command(directory, 'probe', ['/opt/python/bin/python3', '-I', '-X', 'utf8', '-c',
+                                      glibc228.PROBE, '/evidence/probe.json'], inspected)
+    require(read(directory / 'probe.log') == probe, 'raw probe log differs from result')
+    archive = build_directory / 'sdist' / wheels.basename(build['sdist'])
+    inspected['sdist/' + archive.name] = wheels.digest(archive)
+    require(inspected['sdist/' + archive.name] == build['sdist_sha256'], 'source archive digest mismatch')
+    require(archive.name == f'amalthea_native-{version}.tar.gz', 'source archive version mismatch')
+    sdist_metadata(archive, version)
+    result = {'status': 'passed', 'python': host['python'], 'glibc': probe['glibc'], 'wheels': {}}
+    for kind, minimum in wheels.MINIMUM_TESTS.items():
+        record = build['wheels'][kind]
+        wheel = build_directory / 'wheels' / kind / wheels.basename(record['path'])
+        hashed = wheels.digest(wheel)
+        inspected[f'wheels/{kind}/{wheel.name}'] = hashed
+        installed = state['artifacts'][kind]
+        require(hashed == record['sha256'] == installed['wheel_sha256'], 'wheel digest mismatch')
+        cp = 'cp' + python.replace('.', '')
+        require(wheel.name.endswith(f'-{cp}-{cp}-manylinux_2_28_x86_64.whl'), 'wrong wheel interpreter/platform tag')
+        wheel_metadata(wheel, version)
+        with zipfile.ZipFile(wheel) as archive_file:
+            names = archive_file.namelist()
+            require(len(names) == len(set(names)), 'duplicate wheel members')
+            package = {name: hashlib.sha256(archive_file.read(name)).hexdigest() for name in names
+                       if name.startswith('amalthea_native/') and not name.endswith(('/', '.so', '.pyd'))}
+            expected = {name.removeprefix('python-native/python/'): hashed
+                        for name, hashed in sources.items() if name.startswith('python-native/python/')}
+            require(package == record['package'] == expected, 'wheel package inventory mismatch')
+            extensions = [name for name in names if name.endswith(('.so', '.pyd'))]
+        require(len(extensions) == 1 and extensions[0].startswith('amalthea_native/_native.')
+                and extensions[0].endswith('.so'), 'native wheel extension missing or ambiguous')
+        interpreter = f'/work/{kind}/bin/python'
+        commands = {
+            'venv': ['/opt/python/bin/python3', '-m', 'venv', f'/work/{kind}'],
+            'install': [interpreter, '-m', 'pip', 'install', '--no-index', '--only-binary=:all:',
+                        '--find-links', '/wheelhouse', f'/wheels/{kind}/{wheel.name}[hdf5]', 'pytest'],
+            'dependencies': [interpreter, '-m', 'pip', 'check'],
+            'versions': [interpreter, '-m', 'pip', 'list', '--format=json'],
+            'offline': [interpreter, '-I', '-X', 'utf8', '/tools/installed_smoke.py', '--examples',
+                        '/examples', '--output', f'/evidence/{kind}-offline.json', '--isolation', 'linux'],
+            'tests': [interpreter, '-I', '-X', 'utf8', '-m', 'pytest', '/tests', '-q', '-s', '-o',
+                      'cache_dir=/work/pytest-cache', f'--junitxml=/evidence/{kind}-tests.xml'],
+        }
+        if kind == 'checkout':
+            commands['tests'] += ['-k', 'output or test_nonlinear_adaptive_rejection_and_dense_output']
+        for name, command in commands.items():
+            glibc_command(directory, f'{kind}-{name}', command, inspected)
+        offline = evidence(f'{kind}-offline.json')
+        wheels.check_offline(offline, 'Linux', 'linux')
+        require(offline['python'].split()[0] == host['python'] and offline['executable'] == interpreter
+                and offline['prefix'] == f'/work/{kind}', 'offline interpreter mismatch')
+        require(wheels.basename(offline['extension']) == wheels.basename(extensions[0]),
+                'loaded extension filename mismatch')
+        require(not offline.get('error') and offline.get('finished')
+                and installed['offline_examples'] == len(wheels.EXAMPLES), 'incomplete offline examples')
+        require(any(name.endswith('/libc-2.28.so') for name in offline['libraries']),
+                'offline examples did not load glibc 2.28')
+        example_log = (directory / f'{kind}-offline.log').read_text(encoding='utf-8')
+        require([line.removeprefix('Passed example: ') for line in example_log.splitlines()
+                 if line.startswith('Passed example: ')] == list(wheels.EXAMPLES), 'incomplete raw example log')
+        xml = directory / f'{kind}-tests.xml'
+        inspected[xml.name] = wheels.digest(xml)
+        tests = wheels.pytest_result(xml)
+        require(tests == installed['tests'] and tests['passed'] >= minimum, 'incomplete numerical tests')
+        if kind == 'source':
+            asset = assets / wheel.name
+            inspected['release/' + wheel.name] = wheels.digest(asset)
+            require(inspected['release/' + wheel.name] == hashed == release_assets[wheel.name],
+                    'release source wheel differs from glibc-tested bytes')
+        result['wheels'][kind] = {'filename': wheel.name, 'sha256': hashed, 'tests': tests,
+                                  'examples': len(wheels.EXAMPLES)}
+    return result
+
+
+def verify_glibc(gates, builds, repository, oracles, assets):
+    """Verify retained evidence only; never execute a wheel or alter a producer record."""
+    report = {'format_version': 1, 'status': 'incomplete', 'captured': wheels.utcnow(),
+              'scope': 'Linux x86_64 glibc 2.28 release-wheel evidence; other release gates remain separate',
+              'inputs': {name: str(path.resolve()) for name, path in
+                         (('gates', gates), ('builds', builds), ('repository', repository),
+                          ('oracles', oracles), ('assets', assets))},
+              'sha256': {}, 'errors': [], 'cells': {}}
+    try:
+        revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repository, text=True).strip()
+        candidate = metadata(repository)
+        report.update(revision=revision, **candidate)
+        sources = wheels.source_files(repository)
+        wheels.verify_oracles(oracles, repository, revision)
+        oracle_hash = wheels.digest(oracles / 'manifest.json')
+        report['sha256']['oracle-manifest.json'] = oracle_hash
+        manifest = assets / 'release-manifest.json'
+        report['sha256']['release-manifest.json'] = wheels.digest(manifest)
+        release = read(manifest)
+        require(release['revision'] == revision and all(release[key] == value for key, value in candidate.items()),
+                'release manifest revision or metadata differs from candidate')
+        for python in wheels.PYTHONS:
+            inspected = {}
+            try:
+                cell = inspect_glibc(gates / python, builds / ('linux-x86_64-' + python), python,
+                                     revision, sources, oracle_hash, candidate['python_version'],
+                                     assets, release['assets'], inspected)
+            except (*wheels.INVALID_EVIDENCE, IndexError, EOFError, tarfile.TarError, zlib.error) as error:
+                cell = {'status': 'incomplete', 'error': str(error)}
+            report['cells'][python] = cell | {'sha256': inspected}
+        if all(cell['status'] == 'passed' for cell in report['cells'].values()):
+            report['status'] = 'glibc_release_wheels_passed'
+    except (*wheels.INVALID_EVIDENCE, IndexError, subprocess.CalledProcessError) as error:
+        report['errors'].append(str(error))
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
@@ -238,6 +403,10 @@ def main():
     sums = commands.add_parser('checksums')
     sums.add_argument('--repository', type=Path, default=ROOT)
     sums.add_argument('--directory', type=Path, required=True)
+    glibc = commands.add_parser('verify-glibc', help='verify four retained glibc 2.28 gates against release wheels offline')
+    glibc.add_argument('--repository', type=Path, default=ROOT)
+    for name in ('gates', 'builds', 'oracles', 'assets', 'output'):
+        glibc.add_argument('--' + name, type=Path, required=True)
     args = parser.parse_args()
     try:
         if args.command == 'metadata':
@@ -249,6 +418,15 @@ def main():
             wait_ci(args.repo, args.revision, args.output, args.timeout)
         elif args.command == 'stage-python':
             stage_python(args.artifacts, args.repository, read(args.run_json), args.output)
+        elif args.command == 'verify-glibc':
+            require(not args.output.exists() and not args.output.is_symlink(),
+                    'choose a new report path; existing evidence is preserved')
+            report = verify_glibc(args.gates, args.builds, args.repository, args.oracles, args.assets)
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            with args.output.open('x', encoding='utf-8') as stream:
+                stream.write(json.dumps(report, indent=2) + '\n')
+            print(f"{report['status']}: {args.output}")
+            return 0 if report['status'] == 'glibc_release_wheels_passed' else 1
         else:
             checksums(args.directory, args.repository)
     except (ValueError, OSError, KeyError, subprocess.CalledProcessError, zipfile.BadZipFile, tarfile.TarError) as error:
