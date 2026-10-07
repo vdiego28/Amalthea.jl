@@ -9655,3 +9655,15 @@ source), preserves files and links, and records every mode change. Eight
 focused tests pass, including file-mode preservation and symlink exclusion.
 The failed raw reports remain failure evidence; acceptance still requires a
 complete subsequent run with unchanged namespace isolation.
+
+The second attempt (`37604795537`) reproduced the bind-source permission
+failure with an empty directory-change receipt: hosted extraction modes were
+already permissive, so the local mode-0700 observation did not explain it.
+Removed that workaround. Prepared artifacts, references and runtime inputs
+now live under an explicitly mode-0755 task directory in `/tmp`, avoiding
+private runner-home ancestors when namespace root loses host DAC override.
+The candidate checkout stays unchanged. The workflow installs the stock
+Ubuntu bubblewrap package, retains `sudo env -i` and all namespace restrictions,
+and records ancestor modes, process identity/profile, read-only policy values
+and relevant kernel denials. No AppArmor or global filesystem policy changes
+are made; the next real probe must establish whether this resolves the failure.
