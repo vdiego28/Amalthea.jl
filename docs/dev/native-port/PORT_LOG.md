@@ -9623,3 +9623,24 @@ attack through Amalthea was demonstrated. Existing ignored HDF5 close errors
 and independent-file calls into non-thread-safe HDF5 remain outside this fix.
 CUDA hardware and final release/minimum-glibc acceptance were not exercised.
 **Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-10-07 — Durable minimum-glibc acceptance orchestration
+
+**Design:** [PLANS §40](PLANS.md#40-durable-glibc-228-release-acceptance-2026-10-07).
+Two local execution interruptions left the release source-wheel numerical
+suites incomplete. Added an opt-in branch-push workflow for immutable v1.1.0
+source, with separate original CI/reference checks, four hosted glibc 2.28
+runtime jobs, authenticated runtime/dependency preparation, compact raw
+artifacts and bounded transport of the original reference export. The workflow
+uses read-only permissions and cannot publish or modify the tagged candidate.
+
+**Validation:** Seven new preparation/transport regressions, eight wheel
+collector tests, twenty-three reference/distribution validation tests and ten
+release-tool tests pass. Python compilation, whitespace checks and independent
+workflow/helper review pass. All four previously downloaded original Linux
+wheel artifacts pass relocation/source-inventory checks with exactly five
+path fields changed; original oracle and Git tag availability checks remain
+mandatory in the hosted jobs. Actual source archive inspection confirmed the
+precise maturin-added README fields and root manifest path, now checked
+without accepting other metadata changes. These tooling results do not
+establish completion of the pending full numerical runtime suites.

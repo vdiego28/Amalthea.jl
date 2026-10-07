@@ -1057,3 +1057,32 @@ Exit zero means that requested wheel matrix passed. It does not close other
 workflow failures, Apple diagnostics, controlled performance or publication.
 Never substitute synthetic collector fixtures for actual platform results.
 Collector regressions: `python3 test/test_wheel_collection.py -v`.
+
+### Durable v1.1.0 glibc acceptance
+
+The opt-in `ci/glibc228-release-acceptance` branch runs
+`.github/workflows/glibc228_release.yml` when pushed. The orchestration checkout
+is separate from the immutable `41227f43c920af50bfa4324766d4f9636340a7b9`
+candidate. Its helper validates original run `37235178219`, all required jobs,
+the original twenty-family oracle manifest, both original wheel forms and
+the source archive before invoking the candidate's unchanged full glibc gate.
+It runs four Ubuntu 24.04 jobs with pinned Debian glibc 2.28 and CPython
+3.11.16, 3.12.14, 3.13.15 and 3.14.7. All runtime installation is binary-only;
+the numerical/examples command receives no GitHub token and runs in an
+isolated network namespace. No publication occurs in this workflow.
+
+`glibc228-linux-x86_64-<minor>` artifacts preserve `evidence/gate` raw reports,
+command logs and JUnit XML, `evidence/build` original and relocated manifests,
+wheels and sdist, and `runtime` preparation provenance. The five path changes
+are recorded in `relocation.json`; hashes, source inventory and build metadata
+are unchanged. Check the complete source suite and both seventeen-example
+sets in each cell; an uploaded failed/running report is not acceptance.
+
+The original oracle export is also retained as at most eight separately
+uploaded 24 MiB chunks, with an index recording each chunk hash, aggregate
+archive hash, all file hashes and the pinned original manifest hash. Verify
+those hashes before safe extraction and run the maintained `verify_oracles`
+source/inventory check afterward. This transport supports clients with a
+32 MiB per-file limit without recomputing or relabeling references.
+
+Preparation regressions: `python3 test/test_glibc228_release.py -v`.

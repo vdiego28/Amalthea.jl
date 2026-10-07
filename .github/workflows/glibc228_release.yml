@@ -1,0 +1,242 @@
+name: Durable glibc 2.28 release acceptance
+
+# Deliberately opt-in while the tagged source remains unchanged. This workflow
+# prepares evidence only; publication is a separate reviewed operation.
+on:
+  push:
+    branches: [ci/glibc228-release-acceptance]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: glibc228-release-v1.1.0
+  cancel-in-progress: false
+
+env:
+  AMALTHEA_CUDA_BUILD: 'off'
+  AMALTHEA_REQUIRE_CUDA_TESTS: '0'
+  AMALTHEA_NATIVE_GPU: 'off'
+  AMALTHEA_USE_RUST_CUDA_NATIVE: '0'
+
+jobs:
+  references:
+    name: Verify original references and retain transport chunks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: orchestration
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: 41227f43c920af50bfa4324766d4f9636340a7b9
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - name: Test preparation and transport tooling
+        run: python orchestration/test/test_glibc228_release.py -v
+      - name: Require successful exact-source original CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python orchestration/test/standalone_wheels/glibc228_release.py ci
+          --repository candidate --output "${{ runner.temp }}/provenance"
+      - uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: 37235178219
+          name: python-native-oracles
+          path: ${{ runner.temp }}/oracles
+      - name: Verify all reference bytes and prepare bounded chunks
+        id: chunks
+        run: >-
+          python orchestration/test/standalone_wheels/glibc228_release.py transport
+          --repository candidate --oracles "${{ runner.temp }}/oracles"
+          --output "${{ runner.temp }}/transport"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: glibc228-oracle-index
+          path: |
+            ${{ runner.temp }}/transport/index.json
+            ${{ runner.temp }}/provenance/*.json
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v7
+        if: steps.chunks.outputs.count > 0
+        with:
+          name: glibc228-oracle-chunk-00
+          path: ${{ runner.temp }}/transport/oracles.part00
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@v7
+        if: steps.chunks.outputs.count > 1
+        with:
+          name: glibc228-oracle-chunk-01
+          path: ${{ runner.temp }}/transport/oracles.part01
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@v7
+        if: steps.chunks.outputs.count > 2
+        with:
+          name: glibc228-oracle-chunk-02
+          path: ${{ runner.temp }}/transport/oracles.part02
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@v7
+        if: steps.chunks.outputs.count > 3
+        with:
+          name: glibc228-oracle-chunk-03
+          path: ${{ runner.temp }}/transport/oracles.part03
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@v7
+        if: steps.chunks.outputs.count > 4
+        with:
+          name: glibc228-oracle-chunk-04
+          path: ${{ runner.temp }}/transport/oracles.part04
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@v7
+        if: steps.chunks.outputs.count > 5
+        with:
+          name: glibc228-oracle-chunk-05
+          path: ${{ runner.temp }}/transport/oracles.part05
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@v7
+        if: steps.chunks.outputs.count > 6
+        with:
+          name: glibc228-oracle-chunk-06
+          path: ${{ runner.temp }}/transport/oracles.part06
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@v7
+        if: steps.chunks.outputs.count > 7
+        with:
+          name: glibc228-oracle-chunk-07
+          path: ${{ runner.temp }}/transport/oracles.part07
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  runtime:
+    name: Complete glibc 2.28 suite (CPython ${{ matrix.python }})
+    needs: references
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13', '3.14']
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: orchestration
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: 41227f43c920af50bfa4324766d4f9636340a7b9
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - name: Require unchanged source CI and preserve provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python orchestration/test/standalone_wheels/glibc228_release.py ci
+          --repository candidate --output "${{ runner.temp }}/evidence/provenance"
+      - uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: 37235178219
+          name: python-native-oracles
+          path: ${{ runner.temp }}/oracles
+      - uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: 37235178219
+          name: python-native-linux-x86_64-${{ matrix.python }}
+          path: ${{ runner.temp }}/original-build
+      - name: Verify original acceptance and relocate producer paths
+        run: >-
+          python orchestration/test/standalone_wheels/glibc228_release.py relocate
+          --repository candidate --python '${{ matrix.python }}'
+          --oracles "${{ runner.temp }}/oracles" --artifacts "${{ runner.temp }}/original-build"
+          --output "${{ runner.temp }}/evidence/build"
+      - name: Prepare pinned Debian glibc 2.28 userspace
+        run: >-
+          python candidate/test/standalone_wheels/glibc228.py prepare
+          --output "${{ runner.temp }}/runtime/rootfs"
+      - name: Prepare authenticated standalone CPython interpreter
+        run: >-
+          python orchestration/test/standalone_wheels/glibc228_release.py interpreter
+          --repository candidate --python '${{ matrix.python }}'
+          --output "${{ runner.temp }}/runtime/cpython"
+      - name: Prepare and audit binary-only runtime dependencies
+        run: >-
+          python orchestration/test/standalone_wheels/glibc228_release.py dependencies
+          --repository candidate --python '${{ matrix.python }}'
+          --output "${{ runner.temp }}/runtime/wheelhouse"
+      - name: Prepare host namespace tool without installing system packages
+        run: |
+          mkdir -p "${{ runner.temp }}/runtime/bwrap"
+          cd "${{ runner.temp }}/runtime/bwrap"
+          apt-get download bubblewrap
+          dpkg-deb --extract bubblewrap_*.deb .
+          sha256sum bubblewrap_*.deb > package.sha256
+          usr/bin/bwrap --version > version.txt
+      - name: Run unchanged candidate full numerical and offline suites
+        run: |
+          sudo env -i \
+            PATH="${{ runner.temp }}/runtime/bwrap/usr/bin:/usr/bin:/bin" \
+            GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory \
+            GIT_CONFIG_VALUE_0="$GITHUB_WORKSPACE/candidate" \
+            "$(command -v python)" candidate/test/standalone_wheels/glibc228.py test \
+            --rootfs "${{ runner.temp }}/runtime/rootfs/rootfs" \
+            --interpreter "${{ runner.temp }}/runtime/cpython/python" \
+            --manifest "${{ runner.temp }}/evidence/build/build.json" \
+            --oracles "${{ runner.temp }}/oracles" \
+            --wheelhouse "${{ runner.temp }}/runtime/wheelhouse" \
+            --output "${{ runner.temp }}/evidence/gate"
+      - name: Retain raw evidence and distributions, including failures
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: glibc228-linux-x86_64-${{ matrix.python }}
+          path: |
+            ${{ runner.temp }}/evidence/provenance/*.json
+            ${{ runner.temp }}/evidence/build/*.json
+            ${{ runner.temp }}/evidence/build/wheels
+            ${{ runner.temp }}/evidence/build/sdist
+            ${{ runner.temp }}/evidence/gate/*.json
+            ${{ runner.temp }}/evidence/gate/*.xml
+            ${{ runner.temp }}/evidence/gate/*.log
+            ${{ runner.temp }}/runtime/rootfs/*.json
+            ${{ runner.temp }}/runtime/rootfs/*.manifest
+            ${{ runner.temp }}/runtime/rootfs/*.os-release
+            ${{ runner.temp }}/runtime/rootfs/*.dpkg-arch
+            ${{ runner.temp }}/runtime/rootfs/*.sha256
+            ${{ runner.temp }}/runtime/cpython/provenance.json
+            ${{ runner.temp }}/runtime/wheelhouse/*.json
+            ${{ runner.temp }}/runtime/wheelhouse/*.log
+            ${{ runner.temp }}/runtime/wheelhouse/*.txt
+            ${{ runner.temp }}/runtime/bwrap/package.sha256
+            ${{ runner.temp }}/runtime/bwrap/version.txt
+          if-no-files-found: error
+          retention-days: 30
