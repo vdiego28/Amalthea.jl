@@ -3954,3 +3954,28 @@ official RUSTSEC-2026-0204 identifies the old version as affected and >=0.9.20
 as patched. The dependency is reached through Rayon; application use of the
 vulnerable pointer-formatting path has not been established. Keep the Python
 crate's already patched lock and separate CoolProp PR unchanged.
+
+## 40. Durable glibc 2.28 release acceptance (2026-10-07)
+
+Two interrupted local sessions left the complete source-wheel numerical gate
+unfinished. Add an explicitly selected branch-push workflow that runs the
+unchanged tagged candidate's maintained glibc 2.28 gate on four independent
+hosted runners. Keep orchestration and candidate checkouts separate, require
+clean exact-source checkout and successful original required CI jobs, and
+validate the original twenty-family oracle manifest and source inventories.
+Retain both the original wheel-build metadata and receipts for relocation of
+its five producer paths. Reuse verified source extraction and wheel checks.
+
+Prepare pinned Debian rootfs and CPython standalone runtimes with authenticated
+archive hashes. Resolve only binary dependencies for the target interpreter
+and glibc baseline, authenticate their PyPI hashes, and inspect ELF imports.
+Invoke the candidate's full checkout/source numerical and offline-example
+commands in a network-isolated glibc 2.28 namespace without GitHub credentials.
+Upload complete compact JSON, XML, logs, wheel and source archives, including
+failure evidence, while excluding installed environments and runtimes.
+
+Preserve the original oracle artifact in independently checksummed 24 MiB
+transport chunks so clients with a 32 MiB file limit can reconstruct and
+validate it. Test the new source/provenance/transport glue with tampered
+fixtures. This CPU-only workflow never publishes, modifies a release, changes
+the tagged source, or treats incomplete numerical runs as acceptance.

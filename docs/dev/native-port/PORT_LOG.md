@@ -9623,3 +9623,47 @@ attack through Amalthea was demonstrated. Existing ignored HDF5 close errors
 and independent-file calls into non-thread-safe HDF5 remain outside this fix.
 CUDA hardware and final release/minimum-glibc acceptance were not exercised.
 **Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-10-07 — Durable minimum-glibc acceptance orchestration
+
+**Design:** [PLANS §40](PLANS.md#40-durable-glibc-228-release-acceptance-2026-10-07).
+Two local execution interruptions left the release source-wheel numerical
+suites incomplete. Added an opt-in branch-push workflow for immutable v1.1.0
+source, with separate original CI/reference checks, four hosted glibc 2.28
+runtime jobs, authenticated runtime/dependency preparation, compact raw
+artifacts and bounded transport of the original reference export. The workflow
+uses read-only permissions and cannot publish or modify the tagged candidate.
+
+**Validation:** Seven new preparation/transport regressions, eight wheel
+collector tests, twenty-three reference/distribution validation tests and ten
+release-tool tests pass. Python compilation, whitespace checks and independent
+workflow/helper review pass. All four previously downloaded original Linux
+wheel artifacts pass relocation/source-inventory checks with exactly five
+path fields changed; original oracle and Git tag availability checks remain
+mandatory in the hosted jobs. Actual source archive inspection confirmed the
+precise maturin-added README fields and root manifest path, now checked
+without accepting other metadata changes. These tooling results do not
+establish completion of the pending full numerical runtime suites.
+
+The first hosted attempt (`37603827073`) completed original-reference and
+runtime preparation but all four probes stopped before numerical execution:
+`bwrap` could not traverse the extracted rootfs. Python's safe archive filter
+created runner-owned mode-0700 directories; namespace root cannot override
+that host ownership. Preparation now adds only directory read/traverse bits
+inside the three verified public extraction trees (rootfs, interpreter and
+source), preserves files and links, and records every mode change. Eight
+focused tests pass, including file-mode preservation and symlink exclusion.
+The failed raw reports remain failure evidence; acceptance still requires a
+complete subsequent run with unchanged namespace isolation.
+
+The second attempt (`37604795537`) reproduced the bind-source permission
+failure with an empty directory-change receipt: hosted extraction modes were
+already permissive, so the local mode-0700 observation did not explain it.
+Removed that workaround. Prepared artifacts, references and runtime inputs
+now live under an explicitly mode-0755 task directory in `/tmp`, avoiding
+private runner-home ancestors when namespace root loses host DAC override.
+The candidate checkout stays unchanged. The workflow installs the stock
+Ubuntu bubblewrap package, retains `sudo env -i` and all namespace restrictions,
+and records ancestor modes, process identity/profile, read-only policy values
+and relevant kernel denials. No AppArmor or global filesystem policy changes
+are made; the next real probe must establish whether this resolves the failure.
