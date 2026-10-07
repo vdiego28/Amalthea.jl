@@ -333,7 +333,12 @@ preservation and safe initializer failures. This includes HDF5 initialization
 before Julia has initialized the library in the child. Rejected transfers
 must leave existing values and caller-buffer sentinels unchanged. The same
 gate runs in the Linux, macOS and Windows Rust CI jobs after Julia dependency
-setup. Ordinary Cargo-only tests keep
+setup. A separate required integration test starts four independent native
+queue workers, verifies concurrent initialization and exactly-once claims, and
+checks persisted completion/failure states and preservation of existing claims
+on reopening. It runs against both a new queue and a queue with saved progress;
+child execution is bounded and failure logs are retained. This tests native
+file locking separately from Julia's own distributed queue. Ordinary Cargo-only tests keep
 HDF5 optional; a skipped optional test is not HDF5 acceptance.
 The Julia native writer selects `HDF5.API.libhdf5` during module initialization
 when `AMALTHEA_HDF5_LIB` is unset, so custom depots work without scanning
