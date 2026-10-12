@@ -2,7 +2,10 @@
 import hashlib
 import importlib.util
 import json
+import io
 from pathlib import Path
+import sys
+import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -210,6 +213,88 @@ class DurablePreparationTests(unittest.TestCase):
             (source/'pyproject.toml').write_text(project.read_text()+'manifest-path = "other/Cargo.toml"\n')
             with self.assertRaisesRegex(ValueError, 'build metadata'):
                 gate.verify_extracted_inventory(source, repository)
+
+    def test_runtime_recipe_keeps_original_defaults_and_selects_exact_build_patch(self):
+        manifest = self.root/'build.json'
+        for minor, (version, hashed, size) in gate.INTERPRETERS.items():
+            self.assertEqual(gate.interpreter_recipe(minor),
+                             (version, gate.PBS_RELEASE, hashed, size))
+            save_json(manifest, {'host': {'python': version}})
+            self.assertEqual(gate.interpreter_recipe(minor, manifest),
+                             gate.interpreter_recipe(minor))
+        for version in ('3.11.17', '3.12.15', '3.13.16', '3.14.8'):
+            minor = version.rsplit('.', 1)[0]
+            save_json(manifest, {'host': {'python': version}})
+            self.assertEqual(gate.interpreter_recipe(minor, manifest)[0:2],
+                             (version, '20261009'))
+
+    def test_runtime_rejects_unknown_patch_or_wrong_minor_before_writing(self):
+        manifest, output = self.root/'build.json', self.root/'runtime'
+        for version, message in [('3.11.999', 'unauthenticated'), ('3.12.15', 'minor'),
+                                 ('3.11.17-custom', 'minor'), (None, 'minor')]:
+            save_json(manifest, {'host': {'python': version}})
+            with self.subTest(version=version), self.assertRaisesRegex(ValueError, message):
+                gate.interpreter('3.11', output, manifest)
+            self.assertFalse(output.exists())
+        save_json(self.root/'build.json', {'host': {'python': '3.11.999'}})
+        with patch.object(gate, 'candidate'), patch.object(gate, 'oracle_proof'), \
+             patch.object(gate.collect, 'source_options', return_value=({}, {})), \
+             patch.object(gate.collect, 'inspect_cell', return_value={'status': 'passed'}):
+            with self.assertRaisesRegex(ValueError, 'unauthenticated'):
+                gate.relocate(self.root, self.root, self.root, '3.11', self.root/'relocated')
+        self.assertFalse((self.root/'relocated').exists())
+
+    def test_selected_interpreter_records_build_digest_and_authenticated_download(self):
+        manifest, output = self.root/'build.json', self.root/'runtime'
+        save_json(manifest, {'host': {'python': '3.14.8'}})
+        def download(url, destination, expected, size):
+            self.assertIn('/20261009/cpython-3.14.8+20261009-', url)
+            self.assertEqual((expected, size), gate.INTERPRETER_RECIPES['3.14.8'][1:])
+            with tarfile.open(destination, 'w:gz') as archive:
+                member = tarfile.TarInfo('python/synthetic')
+                member.size = 7
+                archive.addfile(member, io.BytesIO(b'fixture'))
+        with patch.object(gate, 'download', side_effect=download):
+            gate.interpreter('3.14', output, manifest)
+        provenance = json.loads((output/'provenance.json').read_text())
+        self.assertEqual(provenance['version'], '3.14.8')
+        self.assertEqual(provenance['release'], '20261009')
+        self.assertEqual(provenance['build_manifest_sha256'], digest(manifest))
+        self.assertEqual((output/'python/synthetic').read_bytes(), b'fixture')
+
+    def test_cli_rejects_build_from_another_candidate_before_runtime_preparation(self):
+        manifest, output = self.root/'build.json', self.root/'runtime'
+        save_json(manifest, {'revision': 'c'*40, 'host': {'python': '3.14.8'}})
+        args = ['helper', 'interpreter', '--repository', str(self.root),
+                '--output', str(output), '--python', '3.14', '--build-manifest', str(manifest),
+                '--revision', 'a'*40, '--run-id', '123', '--oracle-sha256', 'b'*64]
+        with patch.object(sys, 'argv', args), patch.object(gate, 'candidate'), \
+             patch.object(gate, 'interpreter') as prepare:
+            with self.assertRaisesRegex(ValueError, 'runtime build revision'):
+                gate.main()
+            prepare.assert_not_called()
+        self.assertFalse(output.exists())
+
+    def test_dependency_resolution_uses_selected_exact_patch(self):
+        project = self.root/'python-native/pyproject.toml'
+        project.parent.mkdir()
+        project.write_text('[project]\ndependencies = []\n[project.optional-dependencies]\nhdf5 = []\n')
+        manifest, output = self.root/'build.json', self.root/'dependencies'
+        save_json(manifest, {'host': {'python': '3.14.8'}})
+        with patch.object(gate.subprocess, 'run', side_effect=RuntimeError('stop before download')):
+            with self.assertRaisesRegex(RuntimeError, 'stop before download'):
+                gate.dependencies(self.root, '3.14', output, manifest)
+        command = json.loads((output/'download-command.json').read_text())
+        self.assertEqual(command[command.index('--python-version') + 1], '3.14.8')
+        self.assertIn('--only-binary=:all:', command)
+
+    def test_runtime_archive_download_rejects_wrong_hash_and_size(self):
+        source = self.root/'fixture'
+        source.write_bytes(b'fixture')
+        with self.assertRaisesRegex(ValueError, 'hash mismatch'):
+            gate.download(source.as_uri(), self.root/'bad-hash', '0'*64, 7)
+        with self.assertRaisesRegex(ValueError, 'size mismatch'):
+            gate.download(source.as_uri(), self.root/'bad-size', digest(source), 8)
 
 
 if __name__ == '__main__':

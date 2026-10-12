@@ -4121,3 +4121,37 @@ delivery, preserving every distinct design anchor and historical execution
 entry; their old current-state narration is replaced in BACKLOG after actual
 publication. Fresh public installs and stable-manual corrections remain
 required under §43. No published release or tag is replaced.
+
+## 45. Authenticate CPython patches for replacement-release acceptance (2026-10-12)
+
+The accepted new candidate's Linux build manifests name CPython 3.11.17,
+3.12.15, 3.13.16 and 3.14.8. The original durable gate pins earlier patches
+and correctly rejects that mismatch. Keep the software tag frozen at
+`b2902f51`; update only the separate orchestration checkout used for
+minimum-glibc acceptance.
+
+Authenticate each matching non-stripped Linux x86_64 install archive against
+the immutable [Python Build Standalone 20261009 release](https://github.com/astral-sh/python-build-standalone/releases/tag/20261009):
+retain GitHub asset IDs, published SHA-256 digests and byte sizes, download all
+four archives, and compare their actual bytes before adding pins. Keep every
+original 20260929 recipe and default for historical reproduction. Add an
+explicit allowlist of the four authenticated new patch recipes.
+
+Select a recipe from the already verified/relocated build manifest's exact
+`host.python` value. Require the requested CPython minor to match; reject
+unknown patches before writing output. Pass that same build manifest to both
+interpreter preparation and dependency resolution, so runtime version,
+dependency markers and the original wheel producer agree. Bind CLI manifests
+to the selected candidate revision. Do not accept arbitrary runtime URLs,
+discover newer archives automatically or silently choose an older patch.
+Retain the selected manifest digest in runtime/dependency provenance.
+
+Run focused preparation/collector/release regressions, adversarial unknown-
+patch and wrong-minor cases, real archive hash/size and interpreter checks,
+workflow lint and relocation against all four actual accepted build cells.
+Publish the orchestration branch separately; its manually dispatched full
+glibc workflow must run the immutable candidate's unchanged numerical and
+seventeen-example commands with the tagged source-run identity. The final
+release remains gated on tagged CI, actual draft-byte verification and all
+four complete minimum-glibc cells. Merge orchestration maintenance separately
+with its applicable checks; it does not require another software tag move.

@@ -1133,3 +1133,13 @@ and manifest digests and positive run IDs are required. Keep orchestration
 source distinct from candidate source and preserve the original evidence;
 unchanged gate criteria do not accept results from a different candidate.
 Design: [PLANS §44](PLANS.md#44-rebuild-unpublished-v110-from-the-completed-pr-source-2026-10-12).
+
+The orchestration helper also accepts `--build-manifest` for `interpreter`
+and `dependencies`. Supply the already verified relocated `build.json`
+to both commands. Its exact CPython patch selects an authenticated recipe;
+unknown patches, a different minor or a different candidate revision fail.
+The original 20260929 recipes remain the defaults without a manifest.
+The replacement candidate's 3.11.17, 3.12.15, 3.13.16 and 3.14.8 recipes are
+authenticated against the immutable upstream 20261009 release. This changes
+runtime preparation only; full numerical/offline acceptance is still required.
+Design: [PLANS §45](PLANS.md#45-authenticate-cpython-patches-for-replacement-release-acceptance-2026-10-12).
