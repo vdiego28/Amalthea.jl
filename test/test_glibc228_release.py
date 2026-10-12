@@ -106,6 +106,70 @@ class DurablePreparationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'artifact source revision'):
                 gate.verify_ci(self.root, self.root/'bad')
 
+    def test_explicit_release_identity_rejects_malformed_selectors(self):
+        self.assertEqual(gate.release_identity(), {'revision': gate.REVISION,
+                         'run_id': gate.RUN_ID, 'oracle_hash': gate.ORACLE_HASH})
+        for kwargs in ({'revision': 'main'}, {'revision': 'a'*39},
+                       {'run_id': 0}, {'run_id': -1}, {'run_id': True},
+                       {'oracle_hash': 'wrong'}, {'oracle_hash': 'a'*63}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                gate.release_identity(**kwargs)
+
+    def test_candidate_binds_explicit_head_tag_and_clean_source(self):
+        selected = gate.release_identity('a'*40, 123, 'b'*64)
+        with patch.object(gate.release, 'metadata'), \
+             patch.object(gate.subprocess, 'check_output', side_effect=['a'*40, 'a'*40, '']):
+            gate.candidate(self.root, selected)
+        for outputs, message in [(['c'*40], 'HEAD'),
+                                 (['a'*40, gate.REVISION], 'tag'),
+                                 (['a'*40, 'a'*40, ' M src/RK45.jl'], 'tracked')]:
+            with self.subTest(message=message), patch.object(gate.release, 'metadata'), \
+                 patch.object(gate.subprocess, 'check_output', side_effect=outputs):
+                with self.assertRaisesRegex(ValueError, message):
+                    gate.candidate(self.root, selected)
+
+    def test_transport_binds_explicit_candidate_and_reference_manifest(self):
+        repository, oracles = self.oracles()
+        manifest = json.loads((oracles/'manifest.json').read_text())
+        manifest['revision'] = 'a'*40
+        save_json(oracles/'manifest.json', manifest)
+        selected = gate.release_identity('a'*40, 123, digest(oracles/'manifest.json'))
+        with patch.object(gate, 'candidate') as candidate:
+            gate.transport(repository, oracles, self.root/'selected-transport', selected)
+            candidate.assert_called_once_with(repository, selected)
+        index = json.loads((self.root/'selected-transport/index.json').read_text())
+        self.assertEqual(index['revision'], selected['revision'])
+        self.assertEqual(index['run_id'], selected['run_id'])
+        self.assertEqual(index['oracle_manifest_sha256'], selected['oracle_hash'])
+        with patch.object(gate, 'candidate'):
+            with self.assertRaisesRegex(ValueError, 'manifest hash'):
+                gate.transport(repository, oracles, self.root/'wrong-transport')
+        self.assertFalse((self.root/'wrong-transport').exists())
+
+    def test_explicit_source_run_rejects_other_revision_and_run(self):
+        selected = gate.release_identity('a'*40, 123, 'b'*64)
+        raw = {'id': 123, 'path': '.github/workflows/run_tests.yml', 'head_sha': 'a'*40,
+               'event': 'push', 'status': 'completed', 'conclusion': 'success', 'html_url': 'test'}
+        jobs = [{'name': name, 'conclusion': 'success'} for name in gate.release.required_jobs()]
+        artifacts = [{'name': name, 'expired': False, 'workflow_run': {'head_sha': 'a'*40}}
+                     for name in ['python-native-oracles']+[f'python-native-linux-x86_64-{p}' for p in gate.INTERPRETERS]]
+        def responses():
+            return [raw, {'jobs': jobs, 'total_count': len(jobs)},
+                    {'artifacts': artifacts, 'total_count': len(artifacts)}]
+        with patch.object(gate, 'candidate'), patch.object(gate, 'api', side_effect=responses()) as api:
+            gate.verify_ci(self.root, self.root/'selected-proof', selected)
+            self.assertTrue(api.call_args_list[0].args[0].endswith('/123'))
+        raw['head_sha'] = gate.REVISION
+        with patch.object(gate, 'candidate'), patch.object(gate, 'api', side_effect=responses()):
+            with self.assertRaisesRegex(ValueError, 'revision'):
+                gate.verify_ci(self.root, self.root/'wrong-revision', selected)
+        self.assertFalse((self.root/'wrong-revision').exists())
+        raw['head_sha'], raw['id'] = 'a'*40, gate.RUN_ID
+        with patch.object(gate, 'candidate'), patch.object(gate, 'api', side_effect=responses()):
+            with self.assertRaisesRegex(ValueError, 'workflow'):
+                gate.verify_ci(self.root, self.root/'wrong-run', selected)
+        self.assertFalse((self.root/'wrong-run').exists())
+
     def test_relocation_rejects_original_incomplete_validation_before_mutation(self):
         # The original-cell validator is separately exercised by test_wheel_collection.
         # Ensure this orchestration cannot bypass a rejection and still write a relocated build.

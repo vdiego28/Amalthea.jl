@@ -50,11 +50,24 @@ def read(path):
     return json.loads(path.read_text())
 
 
-def candidate(repository):
+def release_identity(revision=None, run_id=None, oracle_hash=None):
+    revision = REVISION if revision is None else revision
+    run_id = RUN_ID if run_id is None else run_id
+    oracle_hash = ORACLE_HASH if oracle_hash is None else oracle_hash
+    require(isinstance(revision, str) and re.fullmatch(r'[0-9a-f]{40}', revision),
+            'candidate revision must be a full commit SHA')
+    require(type(run_id) is int and run_id > 0, 'source run ID must be positive')
+    require(isinstance(oracle_hash, str) and re.fullmatch(r'[0-9a-f]{64}', oracle_hash),
+            'oracle manifest must have a SHA-256 digest')
+    return {'revision': revision, 'run_id': run_id, 'oracle_hash': oracle_hash}
+
+
+def candidate(repository, selection=None):
+    selection = release_identity() if selection is None else selection
     def git(*args):
         return subprocess.check_output(['git', *args], cwd=repository, text=True).strip()
-    require(git('rev-parse', 'HEAD') == REVISION, 'candidate HEAD differs from release')
-    require(git('rev-parse', TAG+'^{commit}') == REVISION, 'candidate tag differs from release')
+    require(git('rev-parse', 'HEAD') == selection['revision'], 'candidate HEAD differs from release')
+    require(git('rev-parse', TAG+'^{commit}') == selection['revision'], 'candidate tag differs from release')
     require(not git('status', '--porcelain', '--untracked-files=no'), 'candidate tracked files changed')
     release.metadata(repository, TAG)
 
@@ -68,11 +81,12 @@ def api(path):
         return json.load(response)
 
 
-def verify_ci(repository, output):
-    candidate(repository)
-    prefix = 'repos/vdiego28/Amalthea.jl/actions/runs/'+str(RUN_ID)
+def verify_ci(repository, output, selection=None):
+    selection = release_identity() if selection is None else selection
+    candidate(repository, selection)
+    prefix = 'repos/vdiego28/Amalthea.jl/actions/runs/'+str(selection['run_id'])
     raw = api(prefix)
-    require(raw['id'] == RUN_ID and raw['path'] == '.github/workflows/run_tests.yml', 'wrong source workflow')
+    require(raw['id'] == selection['run_id'] and raw['path'] == '.github/workflows/run_tests.yml', 'wrong source workflow')
     jobs = []
     page = 1
     while True:
@@ -83,20 +97,21 @@ def verify_ci(repository, output):
         page += 1
     run = {'databaseId': raw['id'], 'headSha': raw['head_sha'], 'event': raw['event'],
            'status': raw['status'], 'conclusion': raw['conclusion'], 'url': raw['html_url'], 'jobs': jobs}
-    release.check_run(run, REVISION, release.required_jobs())
+    release.check_run(run, selection['revision'], release.required_jobs())
     artifacts = api(prefix+'/artifacts?per_page=100')
     require(artifacts['total_count'] <= 100, 'artifact inventory requires pagination')
     for name in ['python-native-oracles'] + [f'python-native-linux-x86_64-{p}' for p in INTERPRETERS]:
         matching = [a for a in artifacts['artifacts'] if a['name'] == name]
         require(len(matching) == 1 and not matching[0]['expired'], 'missing/expired/ambiguous artifact: '+name)
-        require(matching[0]['workflow_run']['head_sha'] == REVISION, 'artifact source revision mismatch')
+        require(matching[0]['workflow_run']['head_sha'] == selection['revision'], 'artifact source revision mismatch')
     save_json(output/'source-run.json', run)
     save_json(output/'source-artifacts.json', artifacts)
 
 
-def oracle_proof(repository, oracles):
-    require(digest(oracles/'manifest.json') == ORACLE_HASH, 'original reference manifest hash mismatch')
-    verify_oracles(oracles, repository, REVISION)
+def oracle_proof(repository, oracles, selection=None):
+    selection = release_identity() if selection is None else selection
+    require(digest(oracles/'manifest.json') == selection['oracle_hash'], 'original reference manifest hash mismatch')
+    verify_oracles(oracles, repository, selection['revision'])
 
 
 def split_archive(archive, output, chunk_bytes=CHUNK_BYTES):
@@ -114,9 +129,10 @@ def split_archive(archive, output, chunk_bytes=CHUNK_BYTES):
             'chunk_bytes': chunk_bytes, 'chunks': records}
 
 
-def transport(repository, oracles, output):
-    candidate(repository)
-    oracle_proof(repository, oracles)
+def transport(repository, oracles, output, selection=None):
+    selection = release_identity() if selection is None else selection
+    candidate(repository, selection)
+    oracle_proof(repository, oracles, selection)
     output.mkdir(parents=True, exist_ok=False)
     # Only regular files are carried; reject links instead of following them.
     files = sorted(oracles.rglob('*'))
@@ -126,7 +142,8 @@ def transport(repository, oracles, output):
         for path in files:
             bundle.add(path, arcname=path.relative_to(oracles).as_posix(), recursive=False)
     record = split_archive(archive, output)
-    record.update(status='verified', revision=REVISION, run_id=RUN_ID, oracle_manifest_sha256=ORACLE_HASH,
+    record.update(status='verified', revision=selection['revision'], run_id=selection['run_id'],
+                  oracle_manifest_sha256=selection['oracle_hash'],
                   files={p.relative_to(oracles).as_posix(): digest(p) for p in files if p.is_file()})
     save_json(output/'index.json', record)
     archive.unlink()  # Only bounded chunks are uploaded.
@@ -156,13 +173,14 @@ def verify_extracted_inventory(source, repository):
                 'source archive root metadata differs: '+name)
 
 
-def relocate(repository, artifacts, oracles, python, output):
-    candidate(repository)
-    oracle_proof(repository, oracles)
+def relocate(repository, artifacts, oracles, python, output, selection=None):
+    selection = release_identity() if selection is None else selection
+    candidate(repository, selection)
+    oracle_proof(repository, oracles, selection)
     version = INTERPRETERS[python][0]
     # Authenticate source bytes, wheels, offline evidence and complete original tests.
-    accepted = collect.inspect_cell(artifacts, 'linux-x86_64', python, REVISION,
-                                   collect.source_options(repository), ORACLE_HASH)
+    accepted = collect.inspect_cell(artifacts, 'linux-x86_64', python, selection['revision'],
+                                   collect.source_options(repository), selection['oracle_hash'])
     original = read(artifacts/'build.json')
     require(original['host']['python'] == version, 'original build Python patch differs')
     output.mkdir(parents=True, exist_ok=False)
@@ -186,7 +204,7 @@ def relocate(repository, artifacts, oracles, python, output):
         release.wheel_metadata(path, '0.1.0')
         change(build['wheels'][kind], 'path', path, f'wheels.{kind}.path')
     save_json(output/'build.json', build)
-    save_json(output/'relocation.json', {'status': 'verified_and_relocated', 'revision': REVISION,
+    save_json(output/'relocation.json', {'status': 'verified_and_relocated', 'revision': selection['revision'],
               'python': version, 'original_manifest_sha256': digest(output/'build-original.json'),
               'relocated_manifest_sha256': digest(output/'build.json'), 'changes': changes,
               'original_acceptance': accepted})
@@ -288,18 +306,22 @@ def main():
     parser.add_argument('--oracles', type=Path)
     parser.add_argument('--artifacts', type=Path)
     parser.add_argument('--python', choices=INTERPRETERS)
+    parser.add_argument('--revision', default=REVISION)
+    parser.add_argument('--run-id', type=int, default=RUN_ID)
+    parser.add_argument('--oracle-sha256', default=ORACLE_HASH)
     args = parser.parse_args()
+    selection = release_identity(args.revision, args.run_id, args.oracle_sha256)
     repository, output = args.repository.resolve(), args.output.resolve()
     if args.command == 'ci':
-        verify_ci(repository, output)
+        verify_ci(repository, output, selection)
     elif args.command == 'transport':
-        transport(repository, args.oracles.resolve(), output)
+        transport(repository, args.oracles.resolve(), output, selection)
     elif args.command == 'relocate':
-        relocate(repository, args.artifacts.resolve(), args.oracles.resolve(), args.python, output)
+        relocate(repository, args.artifacts.resolve(), args.oracles.resolve(), args.python, output, selection)
     elif args.command == 'interpreter':
         interpreter(args.python, output)
     else:
-        candidate(repository)
+        candidate(repository, selection)
         dependencies(repository, args.python, output)
 
 

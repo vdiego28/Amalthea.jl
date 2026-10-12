@@ -1121,3 +1121,15 @@ source/inventory check afterward. This transport supports clients with a
 32 MiB per-file limit without recomputing or relabeling references.
 
 Preparation regressions: `python3 test/test_glibc228_release.py -v`.
+
+For an explicitly reviewed replacement of the unpublished v1.1.0 candidate,
+manually dispatch the same workflow with `revision`, `source_run`, and
+`oracle_sha256` from that candidate's successful exact-source Tests run.
+The helper accepts corresponding `--revision`, `--run-id`, and
+`--oracle-sha256` selectors and checks the clean candidate HEAD, current tag,
+required source jobs, reference inventory and every wheel against that
+identity. The pinned defaults reproduce the original candidate. Full commit
+and manifest digests and positive run IDs are required. Keep orchestration
+source distinct from candidate source and preserve the original evidence;
+unchanged gate criteria do not accept results from a different candidate.
+Design: [PLANS §44](PLANS.md#44-rebuild-unpublished-v110-from-the-completed-pr-source-2026-10-12).

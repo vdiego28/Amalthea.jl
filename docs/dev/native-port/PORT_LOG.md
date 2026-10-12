@@ -9769,3 +9769,54 @@ Ubuntu bubblewrap package, retains `sudo env -i` and all namespace restrictions,
 and records ancestor modes, process identity/profile, read-only policy values
 and relevant kernel denials. No AppArmor or global filesystem policy changes
 are made; the next real probe must establish whether this resolves the failure.
+
+## 2026-10-12 — Combined PRs validated and replacement release orchestration — Codex
+
+**Status at this checkpoint:** local validation and real-evidence integration
+pass; final combined hosted acceptance and replacement v1.1.0 delivery follow.
+
+**Did:** Preserved the original commits of PRs #74–77 in the combined #78
+branch. Resolved only the appended PLANS conflict, retaining §§37–40 and the
+new §§43–44. Added explicit revision/run/oracle identity to
+`test/standalone_wheels/glibc228_release.py` and manual workflow dispatch;
+source CI now runs its identity regressions. The candidate HEAD/tag, source
+workflow, artifacts, oracle transport and relocated builds must share that
+identity. Original defaults and authenticated interpreter recipes remain.
+Updated the release body and live queue for the lead's explicitly requested
+replacement of the unpublished v1.1.0 tag/draft. No FFI export changed.
+
+**Design:** [PLANS §43](PLANS.md#43-authorized-open-pr-completion-and-v110-publication-2026-10-12)
+and [§44](PLANS.md#44-rebuild-unpublished-v110-from-the-completed-pr-source-2026-10-12).
+
+**Tests:** `python3 test/test_glibc228_release.py -v` passes 11 tests; the
+previously completed release/glibc/collector suites pass 24/5/8 tests (48
+combined tooling checks). Both edited workflows pass official actionlint;
+Python compilation, candidate metadata and whitespace checks pass. The
+external `validate-progress.jl` passes 18 assertions, including bounded
+25/50/75/100/100 percent status, nonnegative duration boundaries, unchanged
+five accepted callbacks, and analytic endpoint absolute error
+**1.1102230246251565e-16**.
+
+`JULIA_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 RUSTFLAGS=''
+CARGO_BUILD_JOBS=4 python3 test/validate.py --groups rust --max-workers 4
+--log-dir /home/diego/Documents/fernando_luz/Luna-Rust.jl/.rust_test_logs/pr-completion-20261012/native-gate`
+passes: 105 Cargo unit tests, five policy tests, all five required HDF5 tests,
+the four-worker new/resumed native queue regression, and **43,075 Julia
+assertions / 11 expected broken checks / no failures or errors**. The wrapper
+verifies this isolated package and local release library. Evidence directory:
+`.rust_test_logs/pr-completion-20261012/native-gate/20261012T134048Z-jcc4orjn/`.
+The gate ran on the documented in-progress worktree; subsequent edits are
+workflow registration and documentation only. Full final-head CI is separate.
+
+The original draft's full offline verifier passes all four CPython cells
+against its actual release wheels: **34 checkout + 946 source tests**, zero
+failures/skips, and **17 complete offline examples per wheel kind** on loaded
+glibc 2.28. Reconstructed 7,176 original reference files from six authenticated
+chunks; the reference manifest digest is
+`b295a601e88484543b32efd1da3477a5c381b657f2ea12418ac70c722a36d2b3`.
+`original-glibc-verification.json` binds these raw reports to the downloaded
+old draft; this closes #75's real-evidence integration gate, not acceptance of
+the new candidate. The old draft metadata, annotated tag object and all 26
+assets are retained under `.rust_test_logs/pr-completion-20261012/`.
+
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).

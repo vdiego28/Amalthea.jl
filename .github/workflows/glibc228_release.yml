@@ -5,6 +5,20 @@ name: Durable glibc 2.28 release acceptance
 on:
   push:
     branches: [ci/glibc228-release-acceptance]
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Reviewed v1.1.0 tagged candidate commit SHA
+        required: true
+        default: '41227f43c920af50bfa4324766d4f9636340a7b9'
+      source_run:
+        description: Successful exact-source Tests workflow run ID
+        required: true
+        default: '37235178219'
+      oracle_sha256:
+        description: Independent reference manifest SHA-256 from that source run
+        required: true
+        default: 'b295a601e88484543b32efd1da3477a5c381b657f2ea12418ac70c722a36d2b3'
 
 permissions:
   contents: read
@@ -16,6 +30,9 @@ concurrency:
 
 env:
   GLIBC_ACCEPTANCE_ROOT: /tmp/amalthea-glibc-release-${{ github.run_id }}-${{ github.run_attempt }}
+  RELEASE_CANDIDATE_REVISION: ${{ inputs.revision || '41227f43c920af50bfa4324766d4f9636340a7b9' }}
+  RELEASE_SOURCE_RUN: ${{ inputs.source_run || '37235178219' }}
+  RELEASE_ORACLE_SHA256: ${{ inputs.oracle_sha256 || 'b295a601e88484543b32efd1da3477a5c381b657f2ea12418ac70c722a36d2b3' }}
   AMALTHEA_CUDA_BUILD: 'off'
   AMALTHEA_REQUIRE_CUDA_TESTS: '0'
   AMALTHEA_NATIVE_GPU: 'off'
@@ -33,7 +50,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: 41227f43c920af50bfa4324766d4f9636340a7b9
+          ref: ${{ env.RELEASE_CANDIDATE_REVISION }}
           path: candidate
           fetch-depth: 0
           persist-credentials: false
@@ -50,10 +67,12 @@ jobs:
         run: >-
           python orchestration/test/standalone_wheels/glibc228_release.py ci
           --repository candidate --output "${{ env.GLIBC_ACCEPTANCE_ROOT }}/provenance"
+          --revision "$RELEASE_CANDIDATE_REVISION" --run-id "$RELEASE_SOURCE_RUN"
+          --oracle-sha256 "$RELEASE_ORACLE_SHA256"
       - uses: actions/download-artifact@v8
         with:
           github-token: ${{ github.token }}
-          run-id: 37235178219
+          run-id: ${{ env.RELEASE_SOURCE_RUN }}
           name: python-native-oracles
           path: ${{ env.GLIBC_ACCEPTANCE_ROOT }}/oracles
       - name: Verify all reference bytes and prepare bounded chunks
@@ -62,6 +81,8 @@ jobs:
           python orchestration/test/standalone_wheels/glibc228_release.py transport
           --repository candidate --oracles "${{ env.GLIBC_ACCEPTANCE_ROOT }}/oracles"
           --output "${{ env.GLIBC_ACCEPTANCE_ROOT }}/transport"
+          --revision "$RELEASE_CANDIDATE_REVISION" --run-id "$RELEASE_SOURCE_RUN"
+          --oracle-sha256 "$RELEASE_ORACLE_SHA256"
       - uses: actions/upload-artifact@v7
         with:
           name: glibc228-oracle-index
@@ -151,7 +172,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: 41227f43c920af50bfa4324766d4f9636340a7b9
+          ref: ${{ env.RELEASE_CANDIDATE_REVISION }}
           path: candidate
           fetch-depth: 0
           persist-credentials: false
@@ -166,16 +187,18 @@ jobs:
         run: >-
           python orchestration/test/standalone_wheels/glibc228_release.py ci
           --repository candidate --output "${{ env.GLIBC_ACCEPTANCE_ROOT }}/evidence/provenance"
+          --revision "$RELEASE_CANDIDATE_REVISION" --run-id "$RELEASE_SOURCE_RUN"
+          --oracle-sha256 "$RELEASE_ORACLE_SHA256"
       - uses: actions/download-artifact@v8
         with:
           github-token: ${{ github.token }}
-          run-id: 37235178219
+          run-id: ${{ env.RELEASE_SOURCE_RUN }}
           name: python-native-oracles
           path: ${{ env.GLIBC_ACCEPTANCE_ROOT }}/oracles
       - uses: actions/download-artifact@v8
         with:
           github-token: ${{ github.token }}
-          run-id: 37235178219
+          run-id: ${{ env.RELEASE_SOURCE_RUN }}
           name: python-native-linux-x86_64-${{ matrix.python }}
           path: ${{ env.GLIBC_ACCEPTANCE_ROOT }}/original-build
       - name: Verify original acceptance and relocate producer paths
@@ -184,6 +207,8 @@ jobs:
           --repository candidate --python '${{ matrix.python }}'
           --oracles "${{ env.GLIBC_ACCEPTANCE_ROOT }}/oracles" --artifacts "${{ env.GLIBC_ACCEPTANCE_ROOT }}/original-build"
           --output "${{ env.GLIBC_ACCEPTANCE_ROOT }}/evidence/build"
+          --revision "$RELEASE_CANDIDATE_REVISION" --run-id "$RELEASE_SOURCE_RUN"
+          --oracle-sha256 "$RELEASE_ORACLE_SHA256"
       - name: Prepare pinned Debian glibc 2.28 userspace
         run: >-
           python candidate/test/standalone_wheels/glibc228.py prepare
@@ -198,6 +223,8 @@ jobs:
           python orchestration/test/standalone_wheels/glibc228_release.py dependencies
           --repository candidate --python '${{ matrix.python }}'
           --output "${{ env.GLIBC_ACCEPTANCE_ROOT }}/runtime/wheelhouse"
+          --revision "$RELEASE_CANDIDATE_REVISION" --run-id "$RELEASE_SOURCE_RUN"
+          --oracle-sha256 "$RELEASE_ORACLE_SHA256"
       - name: Install the distribution namespace tool
         run: |
           sudo apt-get update
