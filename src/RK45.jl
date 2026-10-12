@@ -141,6 +141,19 @@ divergence from Julia rather than fix the existing one.
 """
 _native_field_resync!(s) = nothing
 
+# ETA is a duration, not a time of day. Keep total hours beyond one day and
+# clamp the final accepted step's overshoot without changing solver state.
+function _format_eta(eta_in_s)
+    eta_in_s = max(0, eta_in_s)
+    if !isfinite(eta_in_s) || eta_in_s > 356400
+        return "XX:XX:XX"
+    end
+    seconds = ceil(Int, eta_in_s*1000) ÷ 1000
+    hours, seconds = divrem(seconds, 3600)
+    minutes, seconds = divrem(seconds, 60)
+    return @sprintf("%02d:%02d:%02d", hours, minutes, seconds)
+end
+
 function solve(s, tmax; stepfun=donothing!, output=false, outputN=201,
                         status_period=1, repeat_limit=10)
     if output
@@ -163,15 +176,9 @@ function solve(s, tmax; stepfun=donothing!, output=false, outputN=201,
         if Dates.value(Dates.now()-tic) > 1000*status_period
             speed = s.tn/(Dates.value(Dates.now()-start)/1000)
             eta_in_s = (tmax-s.tn)/(speed)
-            if eta_in_s > 356400
-                Logging.@info @sprintf("Progress: %.2f %%, ETA: XX:XX:XX, stepsize %.2e, err %.2f, repeated %d/%d steps",
-                s.tn/tmax*100, s.dt, s.err, repeated_tot, steps)
-            else
-                eta_in_ms = Dates.Millisecond(ceil(eta_in_s*1000))
-                etad = Dates.DateTime(Dates.UTInstant(eta_in_ms))
-                Logging.@info @sprintf("Progress: %.2f %%, ETA: %s, stepsize %.2e, err %.2f, repeated %d/%d steps",
-                    s.tn/tmax*100, Dates.format(etad, "HH:MM:SS"), s.dt, s.err, repeated_tot, steps)
-            end
+            progress = clamp(s.tn/tmax*100, 0.0, 100.0)
+            Logging.@info @sprintf("Progress: %.2f %%, ETA: %s, stepsize %.2e, err %.2f, repeated %d/%d steps",
+                progress, _format_eta(eta_in_s), s.dt, s.err, repeated_tot, steps)
             flush(stderr)
             tic = Dates.now()
         end

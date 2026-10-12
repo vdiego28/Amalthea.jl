@@ -33,62 +33,26 @@ This is the authoritative short queue. The long sections below retain design
 history and measured evidence, but older words such as "next", "not started",
 or "verified" inside a superseded narrative do not outrank this list.
 
-> **Launch readiness — GitHub state verified 2026-10-03:** candidate versions
-> remain Julia/Julia-backed Python `1.1.0` and standalone `amalthea-native`
-> `0.1.0` beta. [PR #68](https://github.com/vdiego28/Amalthea.jl/pull/68)
-> merged at `aa6c7d49` on September 30; launch preparation, corrected publication
-> links and patched PyO3/rust-numpy bindings from
-> [PR #71](https://github.com/vdiego28/Amalthea.jl/pull/71) merged at `e714f83`
-> on October 2. [PR #70](https://github.com/vdiego28/Amalthea.jl/pull/70)
-> (Rust setup action v2) and [PR #72](https://github.com/vdiego28/Amalthea.jl/pull/72)
-> (CSV compatibility) also merged on October 2. GitHub `main` is now
-> `07afbf8d99cfe9a3b89a43f23feb58c600f59190`.
->
-> **Completed evidence, for `e714f83` only:**
-> [push tests 36999314590](https://github.com/vdiego28/Amalthea.jl/actions/runs/36999314590)
-> and [documentation 36999314502](https://github.com/vdiego28/Amalthea.jl/actions/runs/36999314502)
-> succeeded. The manually dispatched
-> [release preparation 36999317736](https://github.com/vdiego28/Amalthea.jl/actions/runs/36999317736)
-> succeeded at that same commit: exact-source acceptance, four platform builds,
-> and checked asset assembly passed. Its `release-candidate` artifact is present
-> and unexpired at this check. Draft creation was correctly skipped for manual
-> dispatch. This verifies workflow outcomes and artifact presence; no new local
-> download/checksum verification or publication is claimed. These results do not
-> establish acceptance of later `main` commits or pending dependency/repair work.
->
-> **Completed branch CI:** current-main
-> [tests 37017449622](https://github.com/vdiego28/Amalthea.jl/actions/runs/37017449622)
-> succeeded; [documentation 37017449062](https://github.com/vdiego28/Amalthea.jl/actions/runs/37017449062)
-> succeeded. CoolProp [PR #69](https://github.com/vdiego28/Amalthea.jl/pull/69)
-> remains open at `b478319a88a89b7de8c2577b7d150ddfd397cb86`, with separate
-> Python 8.0.0 and Julia-oracle 7.2.0 version checks and unchanged numerical
-> tolerances. Its [push tests 37017827117](https://github.com/vdiego28/Amalthea.jl/actions/runs/37017827117)
-> and [PR tests 37017832651](https://github.com/vdiego28/Amalthea.jl/actions/runs/37017832651)
-> succeeded; [documentation 37017832865](https://github.com/vdiego28/Amalthea.jl/actions/runs/37017832865)
-> succeeded. Its current head has 71 successful and three skipped checks,
-> with no failures or pending jobs. HDF5 [PR #73](https://github.com/vdiego28/Amalthea.jl/pull/73)
-> at `2a159fc` also passed its full
-> [push run 37021123830](https://github.com/vdiego28/Amalthea.jl/actions/runs/37021123830),
-> including required standalone HDF5 execution on Linux, macOS and Windows.
-> These results precede the new buffer-bounds and dependency fixes below.
->
-> **Outstanding acceptance:** full actual-glibc 2.28 acceptance for the eventual
-> final candidate is
-> **unverified**: earlier reports and formerly running jobs must be checked
-> against that candidate's exact source and wheel hashes, not treated as current
-> results. The manual release workflow does not replace this separate gate.
->
-> **Next:** finish and review the intended dependency/repair integrations;
-> select the final `main` SHA; require its complete CPU/FFI, sixteen-cell
-> installed/offline Python, Apple/ARM64 and documentation gates; verify the
-> matching CPython 3.11–3.14 actual-glibc 2.28 evidence; then assemble and
-> independently checksum that exact candidate before tag/draft review. Follow
-> the [operator checklist](releases/README.md),
-> [PLANS §32](native-port/PLANS.md#32-launch-preparation-and-exact-source-release-artifacts-2026-09-29)
-> and [§33](native-port/PLANS.md#33-authorized-v110-integration-and-publication-2026-09-30).
-> GitHub still lists [v1.0.4](https://github.com/vdiego28/Amalthea.jl/releases/tag/v1.0.4)
-> as the latest published release; v1.1.0 is not published. PyPI and standing
-> GPU CI remain separate decisions.
+> **Authorized PR completion and replacement v1.1.0 release (2026-10-12):**
+> the lead requested finishing PRs #74–78 before publication and explicitly
+> selected inclusion of their changes in v1.1.0, replacement of its unpublished
+> tag/draft, and necessary commits/pushes/merges. Design:
+> [PLANS §43](native-port/PLANS.md#43-authorized-open-pr-completion-and-v110-publication-2026-10-12)
+> and [§44](native-port/PLANS.md#44-rebuild-unpublished-v110-from-the-completed-pr-source-2026-10-12).
+> The combined PR preserves the original queue, verifier, progress and durable
+> glibc commits; its candidate-selection adaptation is under local review.
+> The old `41227f43` draft's 26 actual assets and full four-interpreter raw
+> glibc evidence pass independent inspection and are preserved separately.
+> These results establish the old candidate only. Execution evidence is in the
+> [PR completion log](native-port/PORT_LOG.md#2026-10-12--open-pr-completion-and-release-evidence-review--codex).
+> **Next:** complete the combined head's focused and hosted gates, integrate
+> the five PRs, freeze final main, prepare its exact-source release assets,
+> replace the unpublished tag as authorized, and require the new tag's own
+> sixteen-wheel and full minimum-glibc acceptance before publication. Verify
+> public downloads/installations and correct the stable manual afterward.
+> The original checkout's five held documents and stash remain preserved.
+> v1.0.4 is still the latest public release. PyPI and standing GPU CI remain
+> separate decisions. Historical candidate execution belongs in PORT_LOG.
 
 > **HDF5 repair — PR #73, updated 2026-10-03:** standalone initialization and
 > Julia custom-depot integration passed hosted CI at `2a159fc` above. Manual
@@ -98,8 +62,8 @@ or "verified" inside a superseded narrative do not outrank this list.
 > truncating existing files. The required gate now executes five tests. The
 > engine lock also updates `crossbeam-epoch` to patched 0.9.21. The full local
 > CPU/native gate passes (105 Cargo unit + 5 policy tests, all five required
-> HDF5 tests, 43,075 Julia assertions and 11 expected broken checks). New hosted
-> acceptance remains pending for this update. Design:
+> HDF5 tests, 43,075 Julia assertions and 11 expected broken checks). Hosted acceptance passed and PR #73 merged on October 4; final
+> source and artifact acceptance continues above. Design:
 > [PLANS §36](native-port/PLANS.md#36-bound-native-hdf5-transfers-and-preserve-queue-state-2026-10-02).
 > Commands and evidence:
 > [bounds repair log](native-port/PORT_LOG.md#2026-10-03--native-hdf5-bounds-and-queue-preservation--codex).

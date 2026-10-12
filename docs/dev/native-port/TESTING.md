@@ -333,7 +333,12 @@ preservation and safe initializer failures. This includes HDF5 initialization
 before Julia has initialized the library in the child. Rejected transfers
 must leave existing values and caller-buffer sentinels unchanged. The same
 gate runs in the Linux, macOS and Windows Rust CI jobs after Julia dependency
-setup. Ordinary Cargo-only tests keep
+setup. A separate required integration test starts four independent native
+queue workers, verifies concurrent initialization and exactly-once claims, and
+checks persisted completion/failure states and preservation of existing claims
+on reopening. It runs against both a new queue and a queue with saved progress;
+child execution is bounded and failure logs are retained. This tests native
+file locking separately from Julia's own distributed queue. Ordinary Cargo-only tests keep
 HDF5 optional; a skipped optional test is not HDF5 acceptance.
 The Julia native writer selects `HDF5.API.libhdf5` during module initialization
 when `AMALTHEA_HDF5_LIB` is unset, so custom depots work without scanning
@@ -1017,6 +1022,36 @@ never substitute host execution after a namespace failure. The host kernel and
 CPU remain current; this gate establishes the glibc userspace boundary only.
 Helper regressions: `python3 test/test_glibc228_validation.py -v`.
 
+Before release, verify the four completed helper outputs against the candidate
+checkout and the downloaded release's actual Linux x86_64 source-wheel bytes:
+
+```sh
+python3 test/release.py verify-glibc --repository MATCHING_CHECKOUT \
+  --gates GATE_ROOT --builds BUILD_ROOT --oracles ORACLE_DIRECTORY \
+  --assets RELEASE_ASSETS --output NEW_GLIBC_REPORT.json
+```
+
+`GATE_ROOT` contains `3.11/` through `3.14/`, retaining `validation.json`,
+`probe.json`, both raw JUnit/example results and every helper `.log`/`.log.json`.
+`BUILD_ROOT` contains `linux-x86_64-3.11/` through `linux-x86_64-3.14/`, each with
+the exact runtime-tested `build.json`, `sdist/` and `wheels/{checkout,source}/`.
+Preserve each manifest's bytes when moving this evidence: recorded producer
+paths are resolved by basename under the supplied directories. Independently
+exported complete oracles are allowed when their source/revision and manifest
+hash match the runtime gate. Original hosted export hashes need not match a
+fresh export at the same candidate.
+
+This offline command rejects smoke-only, failed or incomplete runs; wrong
+versions, sources, reference/wheel hashes or glibc probes; skipped/erroring
+JUnit; partial numerical commands; and missing example or command evidence.
+It applies the collector's shared numerical count floors and all seventeen
+examples to both wheel kinds. The new JSON report retains inspected file hashes
+and per-cell errors, with a nonzero exit for incomplete evidence. Existing
+reports and producer records are preserved. This verifies only the four
+minimum-glibc cells; the other platform, CI and publication checks remain
+required. Synthetic regressions in `python3 test/test_release.py -v` establish
+tool behavior, never platform or release acceptance.
+
 ### Separate post-repair Python performance gate
 
 Use `test/python_performance/run.py` with the final installed source wheel,
@@ -1057,3 +1092,44 @@ Exit zero means that requested wheel matrix passed. It does not close other
 workflow failures, Apple diagnostics, controlled performance or publication.
 Never substitute synthetic collector fixtures for actual platform results.
 Collector regressions: `python3 test/test_wheel_collection.py -v`.
+
+### Durable v1.1.0 glibc acceptance
+
+The opt-in `ci/glibc228-release-acceptance` branch runs
+`.github/workflows/glibc228_release.yml` when pushed. The orchestration checkout
+is separate from the immutable `41227f43c920af50bfa4324766d4f9636340a7b9`
+candidate. Its helper validates original run `37235178219`, all required jobs,
+the original twenty-family oracle manifest, both original wheel forms and
+the source archive before invoking the candidate's unchanged full glibc gate.
+It runs four Ubuntu 24.04 jobs with pinned Debian glibc 2.28 and CPython
+3.11.16, 3.12.14, 3.13.15 and 3.14.7. All runtime installation is binary-only;
+the numerical/examples command receives no GitHub token and runs in an
+isolated network namespace. No publication occurs in this workflow.
+
+`glibc228-linux-x86_64-<minor>` artifacts preserve `evidence/gate` raw reports,
+command logs and JUnit XML, `evidence/build` original and relocated manifests,
+wheels and sdist, and `runtime` preparation provenance. The five path changes
+are recorded in `relocation.json`; hashes, source inventory and build metadata
+are unchanged. Check the complete source suite and both seventeen-example
+sets in each cell; an uploaded failed/running report is not acceptance.
+
+The original oracle export is also retained as at most eight separately
+uploaded 24 MiB chunks, with an index recording each chunk hash, aggregate
+archive hash, all file hashes and the pinned original manifest hash. Verify
+those hashes before safe extraction and run the maintained `verify_oracles`
+source/inventory check afterward. This transport supports clients with a
+32 MiB per-file limit without recomputing or relabeling references.
+
+Preparation regressions: `python3 test/test_glibc228_release.py -v`.
+
+For an explicitly reviewed replacement of the unpublished v1.1.0 candidate,
+manually dispatch the same workflow with `revision`, `source_run`, and
+`oracle_sha256` from that candidate's successful exact-source Tests run.
+The helper accepts corresponding `--revision`, `--run-id`, and
+`--oracle-sha256` selectors and checks the clean candidate HEAD, current tag,
+required source jobs, reference inventory and every wheel against that
+identity. The pinned defaults reproduce the original candidate. Full commit
+and manifest digests and positive run IDs are required. Keep orchestration
+source distinct from candidate source and preserve the original evidence;
+unchanged gate criteria do not accept results from a different candidate.
+Design: [PLANS §44](PLANS.md#44-rebuild-unpublished-v110-from-the-completed-pr-source-2026-10-12).

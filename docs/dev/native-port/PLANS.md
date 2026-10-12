@@ -3954,3 +3954,170 @@ official RUSTSEC-2026-0204 identifies the old version as affected and >=0.9.20
 as patched. The dependency is reached through Rayon; application use of the
 vulnerable pointer-formatting path has not been established. Keep the Python
 crate's already patched lock and separate CoolProp PR unchanged.
+
+## 37. Native queue concurrency regression after release review (2026-10-05)
+
+The HDF5 queue repair has serial persistence tests, while Julia's worker tests
+exercise a separate queue implementation. Add a Rust integration regression
+that starts independent processes against one native queue. Synchronize their
+start, require each scan point to be claimed exactly once, and verify the
+persisted completed state after reopening the queue. Concurrent initialization
+must preserve existing progress. Bound child execution and retain diagnostics
+on failure so a locking regression cannot hang CI indefinitely.
+
+Use the current integration-test executable as the child helper; do not add a
+production executable or change queue behavior. Keep optional HDF5 discovery
+for ordinary Cargo users, but include the regression in the existing required
+HDF5 launcher with Julia's resolved library and dependency paths. Validate the
+existing five unit tests and the process test, then the full Cargo suite. This
+follow-up does not alter the already tagged v1.1.0 candidate or establish
+recovery of claims abandoned by a dead worker.
+
+## 38. Offline verification of release minimum-glibc evidence (2026-10-05)
+
+The minimum-glibc helper records each completed run separately. Release review
+currently has to join those records to the current candidate and actual release
+assets by hand. Add an offline `test/release.py verify-glibc` command that reads
+four helper output directories, corresponding build directories, independent
+Julia oracles, the candidate checkout and a downloaded assembled release. Keep
+this follow-up isolated from the already tested v1.1.0 candidate; its unit
+fixtures demonstrate verifier behavior, never runtime or release acceptance.
+
+Use fixed CPython 3.11–3.14 cells, with gate directories named by interpreter
+minor and build directories named `linux-x86_64-MINOR`. Resolve retained archive
+and wheel files relative to their supplied build directory using recorded
+basenames. Do not depend on old producer absolute paths, rewrite manifests,
+relabel revisions, invoke network services, or change release workflows.
+
+Require exact candidate versions/revision and source hashes, completed build
+and full numerical helper states, matching manifest/reference/wheel digests,
+the pinned rootfs provenance and actual loaded glibc 2.28 probe. Reuse maintained
+oracle/source verification, JUnit parsing and offline-example checks. Inspect
+raw JUnit, complete seventeen-example results and successful command records;
+reject missing, failed, skipped, smoke-only or incomplete evidence. Bind each
+accepted source wheel to the downloaded release manifest and identical asset
+bytes. Save an independent JSON verification report, including inspected file
+hashes and errors, while preserving all inputs and any existing output report.
+
+Test relocated valid fixtures and adversarial status, version, revision,
+source/reference/asset hash, probe, numerical, example and command-log failures.
+Document the invocation in TESTING and the release checklist. No numerical
+implementation, tolerance, PyPI, GPU or performance policy changes belong here.
+
+## 39. Bound RK45 progress and format remaining time as a duration (2026-10-05)
+
+The independent modal reference export at the v1.1.0 candidate logs
+`Progress: 125.00 %, ETA: 23:58:40` after its fifth fixed step. The solver
+deliberately steps while `tn <= tmax`; output samples are interpolated through
+the requested endpoint, while accepted-step callbacks can see a later point.
+Changing this stopping or interpolation behavior would change numerical and
+callback semantics. The defect is only that the status message reports the
+unbounded position and formats a negative remaining duration as calendar time.
+
+Clamp only the displayed percentage and remaining duration. Format the ETA
+with total hours, minutes and seconds so durations above one day do not wrap.
+Retain the existing unknown-ETA threshold and display precision. Do not change
+stepping, output, callbacks, status frequency or resumed-solve accounting.
+
+Validate with a small external Julia script that captures every status line
+for an analytic fixed-step solve: require bounded progress and zero final ETA,
+all five accepted callbacks, and output through the requested endpoint. Check
+duration boundaries directly without sleeps. Keep this low-impact display
+repair separate from the already tagged release and its numerical gate.
+
+## 40. Durable glibc 2.28 release acceptance (2026-10-07)
+
+Two interrupted local sessions left the complete source-wheel numerical gate
+unfinished. Add an explicitly selected branch-push workflow that runs the
+unchanged tagged candidate's maintained glibc 2.28 gate on four independent
+hosted runners. Keep orchestration and candidate checkouts separate, require
+clean exact-source checkout and successful original required CI jobs, and
+validate the original twenty-family oracle manifest and source inventories.
+Retain both the original wheel-build metadata and receipts for relocation of
+its five producer paths. Reuse verified source extraction and wheel checks.
+
+Prepare pinned Debian rootfs and CPython standalone runtimes with authenticated
+archive hashes. Resolve only binary dependencies for the target interpreter
+and glibc baseline, authenticate their PyPI hashes, and inspect ELF imports.
+Invoke the candidate's full checkout/source numerical and offline-example
+commands in a network-isolated glibc 2.28 namespace without GitHub credentials.
+Upload complete compact JSON, XML, logs, wheel and source archives, including
+failure evidence, while excluding installed environments and runtimes.
+
+Preserve the original oracle artifact in independently checksummed 24 MiB
+transport chunks so clients with a 32 MiB file limit can reconstruct and
+validate it. Test the new source/provenance/transport glue with tampered
+fixtures. This CPU-only workflow never publishes, modifies a release, changes
+the tagged source, or treats incomplete numerical runs as acceptance.
+
+## 43. Authorized open-PR completion and v1.1.0 publication (2026-10-12)
+
+The lead requested completion of the open PRs before releasing v1.1.0.
+Review the exact current heads, review discussions and complete hosted checks
+for PRs #74–78. PR #78 retains the original commits from #74–76; prefer
+integrating their reviewed union rather than applying the same changes twice.
+Review the durable minimum-glibc workflow in #77 separately. Preserve source
+commit ancestry, explicit merge messages without co-author trailers, and
+unmodified raw validation evidence. Resolve documentation-only conflicts by
+retaining every distinct design with its existing link anchor and append-only
+execution entry.
+
+Complete #75's real-evidence integration gate using #77's successful durable
+CI outputs. Independently inspect all four numerical reports, runtime and
+reference provenance, full offline examples, build/source digests, and the
+actual draft wheel bytes with the maintained offline verifier. Synthetic
+helper fixtures do not establish release acceptance. Use existing exact-head
+full hosted numerical gates; run focused tooling and affected local native
+checks when needed, without duplicating successful full numerical suites.
+
+The existing v1.1.0 tag targets `41227f43`. The lead explicitly selected
+inclusion of the PR changes and replacement of the unpublished tag/draft,
+with rebuilt release acceptance, and authorized necessary commits, pushes
+and merges on 2026-10-12. Preserve the old annotated tag object, release API
+record, complete asset bytes and validation receipts before replacement.
+Freeze the newly integrated source, require its own accepted artifact matrix,
+and publish only its verified draft. Preserve the original checkout's five
+owned documents and retained documentation stash.
+
+Require completed exact-source tests/documentation, independent sixteen-cell
+wheel collection, the four accepted minimum-glibc numerical cells, and actual
+draft asset/checksum/metadata inspection before authorized publication. Verify
+public downloads and fresh Julia/Python installations afterward, then apply
+the reviewed current-release prose and stable-manual corrections. Record
+commands, achieved numerical criteria, source/tag/merge revisions, actual
+publication and any blocker in PORT_LOG; refresh the authoritative BACKLOG.
+PyPI and standing GPU CI remain separate decisions.
+
+## 44. Rebuild unpublished v1.1.0 from the completed PR source (2026-10-12)
+
+The lead's explicit source choice requires the durable acceptance workflow
+to accept a reviewed candidate beyond its original hard-coded `41227f43`.
+Add manual dispatch with explicit candidate revision, source-test run ID and
+independent oracle-manifest digest. Preserve the original pinned defaults
+for the existing branch trigger and historical reproduction. Validate SHA
+formats and positive run IDs before using them. Pass one explicit release
+identity through source-CI, clean candidate/tag, oracle, transport and relocated
+build checks; reject evidence from a different revision, run or digest.
+The runtime gate and numerical/offline acceptance criteria remain unchanged.
+Retain the authenticated CPython archive recipes and require their exact
+patch versions to match the new build manifest; update a recipe only after
+independently authenticating a different needed archive.
+
+Integrate #77's original commits into the combined PR while preserving all
+designs and execution logs, then add the bounded orchestration changes and
+adversarial identity-selection tests there. Require the final combined head's
+complete hosted checks before integration. Record the new final main revision,
+preserve the old draft/tag, and dispatch manual release assembly at that
+revision. Once its exact-source source-built wheel and documentation gates
+and asset inspection pass, replace the unpublished tag as authorized. Run
+tagged acceptance and dispatch the four full durable minimum-glibc gates
+against the new tagged source run and reference digest. Independently join
+their raw reports to the new draft bytes before publication. Do not relabel
+the October 4/7 candidate's results as acceptance of the replacement.
+
+Update the release notes for the incorporated progress/queue/tooling work.
+Reconcile the held publication documents into the eventual documentation
+delivery, preserving every distinct design anchor and historical execution
+entry; their old current-state narration is replaced in BACKLOG after actual
+publication. Fresh public installs and stable-manual corrections remain
+required under §43. No published release or tag is replaced.

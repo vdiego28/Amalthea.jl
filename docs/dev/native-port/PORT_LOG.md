@@ -9622,4 +9622,201 @@ loaded libraries before accepting a future patched distribution. No remote
 attack through Amalthea was demonstrated. Existing ignored HDF5 close errors
 and independent-file calls into non-thread-safe HDF5 remain outside this fix.
 CUDA hardware and final release/minimum-glibc acceptance were not exercised.
+
+## 2026-10-05 — Native queue process regression — Codex
+
+**Design:** [PLANS §37](PLANS.md#37-native-queue-concurrency-regression-after-release-review-2026-10-05).
+
+**Did:** Added `amalthea/tests/hdf5_queue_process.rs` and included it in
+`test/run_rust_hdf5.jl`. Four independent workers exercise concurrent native
+queue initialization, unique claims, completion/failure persistence, and
+reopening while claims are active. A second scenario starts with saved
+successful, failed and in-progress points and verifies they are preserved.
+All native queue calls execute in supervised children with 60-second deadlines;
+failed runs retain their diagnostic directory. Production behavior is unchanged.
+
+**Tests:** With the managed Julia 1.12.7/Rust 1.99.0 toolchains activated,
+`julia --startup-file=no --project test/run_rust_hdf5.jl` passed all five
+existing required HDF5 tests and the new process regression using Julia's
+resolved HDF5 2.2.0 library. `cargo test --locked --release` passed 105 unit
+tests, five build-policy tests and the integration target; its child helper
+is intentionally ignored except when explicitly spawned. Rust formatting,
+11 validation-wrapper tests, five glibc-helper tests and whitespace checks
+also pass. Retained logs:
+`/workspace/.amalthea-cloud/release-review-20261005/queue-followup/`.
+
+**Scope:** Local Linux CPU validation only; the existing mandatory HDF5 CI
+launcher will exercise the added test on Linux, macOS and Windows. This does
+not establish abandoned-worker claim recovery or change the tagged v1.1.0
+candidate. Release verification is recorded separately.
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-10-05 — RK45 progress display after the requested endpoint — Codex
+
+**Status at this checkpoint:** complete locally; separate from tagged v1.1.0.
+
+**Did:** Clamped the percentage in `src/RK45.jl::solve` to 0–100 and added
+`_format_eta` to clamp negative remaining time and format total hours as a
+duration. Retained the existing unknown-ETA threshold and millisecond rounding.
+The solver loop, interpolation, callbacks, counters, status frequency and
+resumed-solve accounting are unchanged. Independent read-only review found no
+issue in the implementation or scope.
+
+**Design:** [PLANS §39](PLANS.md#39-bound-rk45-progress-and-format-remaining-time-as-a-duration-2026-10-05).
+
+**Observed:** The exact-candidate independent modal export recorded
+`Progress: 125.00 %, ETA: 23:58:40, stepsize 2.50e-06, err 0.12, repeated 0/5 steps`
+in `local-oracles/logs/modal_capillary.log` beneath the validation directory
+below. Its fixed step is one quarter of the requested length. The fifth
+accepted step crosses that length; requested output remains interpolated
+through the endpoint. The old status converted negative ETA into calendar
+time and wrapped to the prior day. This finding does not imply a numerical
+failure or change the release candidate.
+
+**Validation:** One external manual script, no added test-suite coverage or
+heavy numerical rerun. From the isolated `progress-display` worktree:
+
+```bash
+source /workspace/.amalthea-cloud/activate.sh
+JULIA_NUM_THREADS=1 AMALTHEA_USE_RUST_NATIVE=0 AMALTHEA_USE_RUST_STEPPER=0 \
+  julia --startup-file=no --project=. \
+  /workspace/.amalthea-cloud/release-review-20261005/validate_progress_display.jl
+git diff --check
+```
+
+All 18 assertions passed. Forced status emission (`status_period=-1`, no
+sleeps) reported 25, 50, 75, 100 and 100 percent, ending with `ETA: 00:00:00`.
+The analytic `y'=1` solve still made five accepted callbacks at
+`[0.25, 0.5, 0.75, 1.0, 1.25]`, saved only through `t=1.0`, and returned the
+endpoint value `0.9999999999999999` (absolute error below `1e-15`). Direct
+duration checks covered negative and zero values, millisecond rounding, the
+24-hour boundary, the preserved 99-hour threshold and nonfinite values.
+`git diff --check` passed. Julia 1.12.7 precompiled the changed package once;
+the manual assertions took 2.3 seconds. Evidence:
+`/workspace/.amalthea-cloud/release-review-20261005/validate_progress_display.jl`
+and `progress-display-validation.log` in the same directory.
+
+## 2026-10-12 — Open-PR completion and release evidence review — Codex
+
+**Status at this checkpoint:** reviewed PR heads and preparation complete;
+real minimum-glibc evidence integration, combined delivery and publication
+continue. The original checkout's five held documents are backed up unchanged.
+
+**Did:** Fetched current GitHub references and created an isolated
+`integration/finish-prs-v110-20261012` worktree from PR #78 at `26e0b42f`.
+Reviewed the original queue, progress display and offline verifier changes,
+and the durable glibc workflow at PR #77's `688634c9`. The combined PR retains
+the original commits of #74–76. Checked both current heads' hosted jobs and
+downloaded the successful durable run `37606202203` and actual v1.1.0 draft
+assets. No production algorithm or FFI export changed in this checkpoint.
+
+**Design:** [PLANS §43](PLANS.md#43-authorized-open-pr-completion-and-v110-publication-2026-10-12).
+
+**Tests:** In the isolated worktree, `python3 test/test_release.py -v` passes
+24 tests, `python3 test/test_glibc228_validation.py -v` passes five, and
+`python3 test/test_wheel_collection.py -v` passes eight. `git diff --check`
+passes. Downloaded glibc receipts for CPython 3.11–3.14 each record 34 checkout
+and 946 source tests with no failures/skips; independent raw-evidence joining
+is still required. The retained asset inspector passes all 26 downloaded
+draft files, 25 checksums, sixteen wheel records, four CPU architectures,
+manifest revision `41227f43`, Linux loading and four FFI exports. Exact complex
+scaling gives `[2.0, 4.0, 6.0, 8.0]`. This asset inspection is distinct from
+numerical acceptance. Evidence: `.rust_test_logs/pr-completion-20261012/`,
+including the three tooling logs and `draft-inspection.json`.
+
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-10-07 — Durable minimum-glibc acceptance orchestration
+
+**Design:** [PLANS §40](PLANS.md#40-durable-glibc-228-release-acceptance-2026-10-07).
+Two local execution interruptions left the release source-wheel numerical
+suites incomplete. Added an opt-in branch-push workflow for immutable v1.1.0
+source, with separate original CI/reference checks, four hosted glibc 2.28
+runtime jobs, authenticated runtime/dependency preparation, compact raw
+artifacts and bounded transport of the original reference export. The workflow
+uses read-only permissions and cannot publish or modify the tagged candidate.
+
+**Validation:** Seven new preparation/transport regressions, eight wheel
+collector tests, twenty-three reference/distribution validation tests and ten
+release-tool tests pass. Python compilation, whitespace checks and independent
+workflow/helper review pass. All four previously downloaded original Linux
+wheel artifacts pass relocation/source-inventory checks with exactly five
+path fields changed; original oracle and Git tag availability checks remain
+mandatory in the hosted jobs. Actual source archive inspection confirmed the
+precise maturin-added README fields and root manifest path, now checked
+without accepting other metadata changes. These tooling results do not
+establish completion of the pending full numerical runtime suites.
+
+The first hosted attempt (`37603827073`) completed original-reference and
+runtime preparation but all four probes stopped before numerical execution:
+`bwrap` could not traverse the extracted rootfs. Python's safe archive filter
+created runner-owned mode-0700 directories; namespace root cannot override
+that host ownership. Preparation now adds only directory read/traverse bits
+inside the three verified public extraction trees (rootfs, interpreter and
+source), preserves files and links, and records every mode change. Eight
+focused tests pass, including file-mode preservation and symlink exclusion.
+The failed raw reports remain failure evidence; acceptance still requires a
+complete subsequent run with unchanged namespace isolation.
+
+The second attempt (`37604795537`) reproduced the bind-source permission
+failure with an empty directory-change receipt: hosted extraction modes were
+already permissive, so the local mode-0700 observation did not explain it.
+Removed that workaround. Prepared artifacts, references and runtime inputs
+now live under an explicitly mode-0755 task directory in `/tmp`, avoiding
+private runner-home ancestors when namespace root loses host DAC override.
+The candidate checkout stays unchanged. The workflow installs the stock
+Ubuntu bubblewrap package, retains `sudo env -i` and all namespace restrictions,
+and records ancestor modes, process identity/profile, read-only policy values
+and relevant kernel denials. No AppArmor or global filesystem policy changes
+are made; the next real probe must establish whether this resolves the failure.
+
+## 2026-10-12 — Combined PRs validated and replacement release orchestration — Codex
+
+**Status at this checkpoint:** local validation and real-evidence integration
+pass; final combined hosted acceptance and replacement v1.1.0 delivery follow.
+
+**Did:** Preserved the original commits of PRs #74–77 in the combined #78
+branch. Resolved only the appended PLANS conflict, retaining §§37–40 and the
+new §§43–44. Added explicit revision/run/oracle identity to
+`test/standalone_wheels/glibc228_release.py` and manual workflow dispatch;
+source CI now runs its identity regressions. The candidate HEAD/tag, source
+workflow, artifacts, oracle transport and relocated builds must share that
+identity. Original defaults and authenticated interpreter recipes remain.
+Updated the release body and live queue for the lead's explicitly requested
+replacement of the unpublished v1.1.0 tag/draft. No FFI export changed.
+
+**Design:** [PLANS §43](PLANS.md#43-authorized-open-pr-completion-and-v110-publication-2026-10-12)
+and [§44](PLANS.md#44-rebuild-unpublished-v110-from-the-completed-pr-source-2026-10-12).
+
+**Tests:** `python3 test/test_glibc228_release.py -v` passes 11 tests; the
+previously completed release/glibc/collector suites pass 24/5/8 tests (48
+combined tooling checks). Both edited workflows pass official actionlint;
+Python compilation, candidate metadata and whitespace checks pass. The
+external `validate-progress.jl` passes 18 assertions, including bounded
+25/50/75/100/100 percent status, nonnegative duration boundaries, unchanged
+five accepted callbacks, and analytic endpoint absolute error
+**1.1102230246251565e-16**.
+
+`JULIA_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 RUSTFLAGS=''
+CARGO_BUILD_JOBS=4 python3 test/validate.py --groups rust --max-workers 4
+--log-dir /home/diego/Documents/fernando_luz/Luna-Rust.jl/.rust_test_logs/pr-completion-20261012/native-gate`
+passes: 105 Cargo unit tests, five policy tests, all five required HDF5 tests,
+the four-worker new/resumed native queue regression, and **43,075 Julia
+assertions / 11 expected broken checks / no failures or errors**. The wrapper
+verifies this isolated package and local release library. Evidence directory:
+`.rust_test_logs/pr-completion-20261012/native-gate/20261012T134048Z-jcc4orjn/`.
+The gate ran on the documented in-progress worktree; subsequent edits are
+workflow registration and documentation only. Full final-head CI is separate.
+
+The original draft's full offline verifier passes all four CPython cells
+against its actual release wheels: **34 checkout + 946 source tests**, zero
+failures/skips, and **17 complete offline examples per wheel kind** on loaded
+glibc 2.28. Reconstructed 7,176 original reference files from six authenticated
+chunks; the reference manifest digest is
+`b295a601e88484543b32efd1da3477a5c381b657f2ea12418ac70c722a36d2b3`.
+`original-glibc-verification.json` binds these raw reports to the downloaded
+old draft; this closes #75's real-evidence integration gate, not acceptance of
+the new candidate. The old draft metadata, annotated tag object and all 26
+assets are retained under `.rust_test_logs/pr-completion-20261012/`.
+
 **Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
