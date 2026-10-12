@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791139567057,
+  "lastUpdate": 1791827126479,
   "repoUrl": "https://github.com/vdiego28/Amalthea.jl",
   "entries": {
     "Benchmark": [
@@ -1101,6 +1101,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "native mode-avg+plasma per-step (fixed dt)",
             "value": 2.958305,
+            "unit": "ms/step"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "53799316+vdiego28@users.noreply.github.com",
+            "name": "vdiego28",
+            "username": "vdiego28"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b2902f51ec021921fe0d282031c7ca47ea81b6db",
+          "message": "Merge PR #78: complete queue, progress, and release-evidence work for v1.1.0\n\nIntegrate the reviewed changes from PRs #74–77 and the explicit candidate selection for rebuilt v1.1.0 release acceptance.",
+          "timestamp": "2026-10-12T14:40:54-03:00",
+          "tree_id": "2263d1ae97d335343ef41b1cb94a07590ee525e3",
+          "url": "https://github.com/vdiego28/Amalthea.jl/commit/b2902f51ec021921fe0d282031c7ca47ea81b6db"
+        },
+        "date": 1791827125130,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "native mode-avg+plasma per-step (fixed dt)",
+            "value": 1.518017,
             "unit": "ms/step"
           }
         ]
