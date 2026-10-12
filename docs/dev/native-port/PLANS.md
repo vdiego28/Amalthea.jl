@@ -4024,3 +4024,75 @@ for an analytic fixed-step solve: require bounded progress and zero final ETA,
 all five accepted callbacks, and output through the requested endpoint. Check
 duration boundaries directly without sleeps. Keep this low-impact display
 repair separate from the already tagged release and its numerical gate.
+
+## 43. Authorized open-PR completion and v1.1.0 publication (2026-10-12)
+
+The lead requested completion of the open PRs before releasing v1.1.0.
+Review the exact current heads, review discussions and complete hosted checks
+for PRs #74–78. PR #78 retains the original commits from #74–76; prefer
+integrating their reviewed union rather than applying the same changes twice.
+Review the durable minimum-glibc workflow in #77 separately. Preserve source
+commit ancestry, explicit merge messages without co-author trailers, and
+unmodified raw validation evidence. Resolve documentation-only conflicts by
+retaining every distinct design with its existing link anchor and append-only
+execution entry.
+
+Complete #75's real-evidence integration gate using #77's successful durable
+CI outputs. Independently inspect all four numerical reports, runtime and
+reference provenance, full offline examples, build/source digests, and the
+actual draft wheel bytes with the maintained offline verifier. Synthetic
+helper fixtures do not establish release acceptance. Use existing exact-head
+full hosted numerical gates; run focused tooling and affected local native
+checks when needed, without duplicating successful full numerical suites.
+
+The existing v1.1.0 tag targets `41227f43`. The lead explicitly selected
+inclusion of the PR changes and replacement of the unpublished tag/draft,
+with rebuilt release acceptance, and authorized necessary commits, pushes
+and merges on 2026-10-12. Preserve the old annotated tag object, release API
+record, complete asset bytes and validation receipts before replacement.
+Freeze the newly integrated source, require its own accepted artifact matrix,
+and publish only its verified draft. Preserve the original checkout's five
+owned documents and retained documentation stash.
+
+Require completed exact-source tests/documentation, independent sixteen-cell
+wheel collection, the four accepted minimum-glibc numerical cells, and actual
+draft asset/checksum/metadata inspection before authorized publication. Verify
+public downloads and fresh Julia/Python installations afterward, then apply
+the reviewed current-release prose and stable-manual corrections. Record
+commands, achieved numerical criteria, source/tag/merge revisions, actual
+publication and any blocker in PORT_LOG; refresh the authoritative BACKLOG.
+PyPI and standing GPU CI remain separate decisions.
+
+## 44. Rebuild unpublished v1.1.0 from the completed PR source (2026-10-12)
+
+The lead's explicit source choice requires the durable acceptance workflow
+to accept a reviewed candidate beyond its original hard-coded `41227f43`.
+Add manual dispatch with explicit candidate revision, source-test run ID and
+independent oracle-manifest digest. Preserve the original pinned defaults
+for the existing branch trigger and historical reproduction. Validate SHA
+formats and positive run IDs before using them. Pass one explicit release
+identity through source-CI, clean candidate/tag, oracle, transport and relocated
+build checks; reject evidence from a different revision, run or digest.
+The runtime gate and numerical/offline acceptance criteria remain unchanged.
+Retain the authenticated CPython archive recipes and require their exact
+patch versions to match the new build manifest; update a recipe only after
+independently authenticating a different needed archive.
+
+Integrate #77's original commits into the combined PR while preserving all
+designs and execution logs, then add the bounded orchestration changes and
+adversarial identity-selection tests there. Require the final combined head's
+complete hosted checks before integration. Record the new final main revision,
+preserve the old draft/tag, and dispatch manual release assembly at that
+revision. Once its exact-source source-built wheel and documentation gates
+and asset inspection pass, replace the unpublished tag as authorized. Run
+tagged acceptance and dispatch the four full durable minimum-glibc gates
+against the new tagged source run and reference digest. Independently join
+their raw reports to the new draft bytes before publication. Do not relabel
+the October 4/7 candidate's results as acceptance of the replacement.
+
+Update the release notes for the incorporated progress/queue/tooling work.
+Reconcile the held publication documents into the eventual documentation
+delivery, preserving every distinct design anchor and historical execution
+entry; their old current-state narration is replaced in BACKLOG after actual
+publication. Fresh public installs and stable-manual corrections remain
+required under §43. No published release or tag is replaced.

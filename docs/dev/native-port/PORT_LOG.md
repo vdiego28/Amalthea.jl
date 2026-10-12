@@ -9695,3 +9695,33 @@ duration checks covered negative and zero values, millisecond rounding, the
 the manual assertions took 2.3 seconds. Evidence:
 `/workspace/.amalthea-cloud/release-review-20261005/validate_progress_display.jl`
 and `progress-display-validation.log` in the same directory.
+
+## 2026-10-12 — Open-PR completion and release evidence review — Codex
+
+**Status at this checkpoint:** reviewed PR heads and preparation complete;
+real minimum-glibc evidence integration, combined delivery and publication
+continue. The original checkout's five held documents are backed up unchanged.
+
+**Did:** Fetched current GitHub references and created an isolated
+`integration/finish-prs-v110-20261012` worktree from PR #78 at `26e0b42f`.
+Reviewed the original queue, progress display and offline verifier changes,
+and the durable glibc workflow at PR #77's `688634c9`. The combined PR retains
+the original commits of #74–76. Checked both current heads' hosted jobs and
+downloaded the successful durable run `37606202203` and actual v1.1.0 draft
+assets. No production algorithm or FFI export changed in this checkpoint.
+
+**Design:** [PLANS §43](PLANS.md#43-authorized-open-pr-completion-and-v110-publication-2026-10-12).
+
+**Tests:** In the isolated worktree, `python3 test/test_release.py -v` passes
+24 tests, `python3 test/test_glibc228_validation.py -v` passes five, and
+`python3 test/test_wheel_collection.py -v` passes eight. `git diff --check`
+passes. Downloaded glibc receipts for CPython 3.11–3.14 each record 34 checkout
+and 946 source tests with no failures/skips; independent raw-evidence joining
+is still required. The retained asset inspector passes all 26 downloaded
+draft files, 25 checksums, sixteen wheel records, four CPU architectures,
+manifest revision `41227f43`, Linux loading and four FFI exports. Exact complex
+scaling gives `[2.0, 4.0, 6.0, 8.0]`. This asset inspection is distinct from
+numerical acceptance. Evidence: `.rust_test_logs/pr-completion-20261012/`,
+including the three tooling logs and `draft-inspection.json`.
+
+**Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
