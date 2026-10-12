@@ -1,0 +1,266 @@
+name: Durable glibc 2.28 release acceptance
+
+# Deliberately opt-in while the tagged source remains unchanged. This workflow
+# prepares evidence only; publication is a separate reviewed operation.
+on:
+  push:
+    branches: [ci/glibc228-release-acceptance]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: glibc228-release-v1.1.0
+  cancel-in-progress: false
+
+env:
+  GLIBC_ACCEPTANCE_ROOT: /tmp/amalthea-glibc-release-${{ github.run_id }}-${{ github.run_attempt }}
+  AMALTHEA_CUDA_BUILD: 'off'
+  AMALTHEA_REQUIRE_CUDA_TESTS: '0'
+  AMALTHEA_NATIVE_GPU: 'off'
+  AMALTHEA_USE_RUST_CUDA_NATIVE: '0'
+
+jobs:
+  references:
+    name: Verify original references and retain transport chunks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: orchestration
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: 41227f43c920af50bfa4324766d4f9636340a7b9
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - name: Prepare public artifact workspace outside private runner ancestors
+        run: install -d -m 0755 "$GLIBC_ACCEPTANCE_ROOT"
+      - name: Test preparation and transport tooling
+        run: python orchestration/test/test_glibc228_release.py -v
+      - name: Require successful exact-source original CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python orchestration/test/standalone_wheels/glibc228_release.py ci
+          --repository candidate --output "${{ env.GLIBC_ACCEPTANCE_ROOT }}/provenance"
+      - uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: 37235178219
+          name: python-native-oracles
+          path: ${{ env.GLIBC_ACCEPTANCE_ROOT }}/oracles
+      - name: Verify all reference bytes and prepare bounded chunks
+        id: chunks
+        run: >-
+          python orchestration/test/standalone_wheels/glibc228_release.py transport
+          --repository candidate --oracles "${{ env.GLIBC_ACCEPTANCE_ROOT }}/oracles"
+          --output "${{ env.GLIBC_ACCEPTANCE_ROOT }}/transport"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: glibc228-oracle-index
+          path: |
+            ${{ env.GLIBC_ACCEPTANCE_ROOT }}/transport/index.json
+            ${{ env.GLIBC_ACCEPTANCE_ROOT }}/provenance/*.json
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v7
+        if: steps.chunks.outputs.count > 0
+        with:
+          name: glibc228-oracle-chunk-00
+          path: ${{ env.GLIBC_ACCEPTANCE_ROOT }}/transport/oracles.part00
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@v7
+        if: steps.chunks.outputs.count > 1
+        with:
+          name: glibc228-oracle-chunk-01
+          path: ${{ env.GLIBC_ACCEPTANCE_ROOT }}/transport/oracles.part01
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@v7
+        if: steps.chunks.outputs.count > 2
+        with:
+          name: glibc228-oracle-chunk-02
+          path: ${{ env.GLIBC_ACCEPTANCE_ROOT }}/transport/oracles.part02
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@v7
+        if: steps.chunks.outputs.count > 3
+        with:
+          name: glibc228-oracle-chunk-03
+          path: ${{ env.GLIBC_ACCEPTANCE_ROOT }}/transport/oracles.part03
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@v7
+        if: steps.chunks.outputs.count > 4
+        with:
+          name: glibc228-oracle-chunk-04
+          path: ${{ env.GLIBC_ACCEPTANCE_ROOT }}/transport/oracles.part04
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@v7
+        if: steps.chunks.outputs.count > 5
+        with:
+          name: glibc228-oracle-chunk-05
+          path: ${{ env.GLIBC_ACCEPTANCE_ROOT }}/transport/oracles.part05
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@v7
+        if: steps.chunks.outputs.count > 6
+        with:
+          name: glibc228-oracle-chunk-06
+          path: ${{ env.GLIBC_ACCEPTANCE_ROOT }}/transport/oracles.part06
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@v7
+        if: steps.chunks.outputs.count > 7
+        with:
+          name: glibc228-oracle-chunk-07
+          path: ${{ env.GLIBC_ACCEPTANCE_ROOT }}/transport/oracles.part07
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  runtime:
+    name: Complete glibc 2.28 suite (CPython ${{ matrix.python }})
+    needs: references
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13', '3.14']
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: orchestration
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: 41227f43c920af50bfa4324766d4f9636340a7b9
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - name: Prepare public artifact workspace outside private runner ancestors
+        run: install -d -m 0755 "$GLIBC_ACCEPTANCE_ROOT"
+      - name: Require unchanged source CI and preserve provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python orchestration/test/standalone_wheels/glibc228_release.py ci
+          --repository candidate --output "${{ env.GLIBC_ACCEPTANCE_ROOT }}/evidence/provenance"
+      - uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: 37235178219
+          name: python-native-oracles
+          path: ${{ env.GLIBC_ACCEPTANCE_ROOT }}/oracles
+      - uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: 37235178219
+          name: python-native-linux-x86_64-${{ matrix.python }}
+          path: ${{ env.GLIBC_ACCEPTANCE_ROOT }}/original-build
+      - name: Verify original acceptance and relocate producer paths
+        run: >-
+          python orchestration/test/standalone_wheels/glibc228_release.py relocate
+          --repository candidate --python '${{ matrix.python }}'
+          --oracles "${{ env.GLIBC_ACCEPTANCE_ROOT }}/oracles" --artifacts "${{ env.GLIBC_ACCEPTANCE_ROOT }}/original-build"
+          --output "${{ env.GLIBC_ACCEPTANCE_ROOT }}/evidence/build"
+      - name: Prepare pinned Debian glibc 2.28 userspace
+        run: >-
+          python candidate/test/standalone_wheels/glibc228.py prepare
+          --output "${{ env.GLIBC_ACCEPTANCE_ROOT }}/runtime/rootfs"
+      - name: Prepare authenticated standalone CPython interpreter
+        run: >-
+          python orchestration/test/standalone_wheels/glibc228_release.py interpreter
+          --repository candidate --python '${{ matrix.python }}'
+          --output "${{ env.GLIBC_ACCEPTANCE_ROOT }}/runtime/cpython"
+      - name: Prepare and audit binary-only runtime dependencies
+        run: >-
+          python orchestration/test/standalone_wheels/glibc228_release.py dependencies
+          --repository candidate --python '${{ matrix.python }}'
+          --output "${{ env.GLIBC_ACCEPTANCE_ROOT }}/runtime/wheelhouse"
+      - name: Install the distribution namespace tool
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y bubblewrap
+          mkdir -p "$GLIBC_ACCEPTANCE_ROOT/runtime/bwrap"
+          dpkg-query -W bubblewrap apparmor > "$GLIBC_ACCEPTANCE_ROOT/runtime/bwrap/packages.txt"
+          dpkg --verify bubblewrap > "$GLIBC_ACCEPTANCE_ROOT/runtime/bwrap/package-verification.txt"
+          sha256sum /usr/bin/bwrap > "$GLIBC_ACCEPTANCE_ROOT/runtime/bwrap/binary.sha256"
+          /usr/bin/bwrap --version > "$GLIBC_ACCEPTANCE_ROOT/runtime/bwrap/version.txt"
+      - name: Record host identity, traversal and namespace policy diagnostics
+        run: |
+          {
+            id
+            namei -l "$GLIBC_ACCEPTANCE_ROOT/runtime/rootfs/rootfs"
+            namei -l "$GLIBC_ACCEPTANCE_ROOT/runtime/cpython/python"
+            namei -l "$GLIBC_ACCEPTANCE_ROOT/evidence/build/source"
+            namei -l "$GITHUB_WORKSPACE/candidate"
+            cat /proc/self/attr/current || true
+            sysctl kernel.apparmor_restrict_unprivileged_userns kernel.unprivileged_userns_clone || true
+            dpkg-query -L apparmor | rg '/etc/apparmor.d/(bwrap|bubblewrap|unprivileged_userns)$' || true
+          } > "$GLIBC_ACCEPTANCE_ROOT/runtime/bwrap/host-diagnostics.log" 2>&1
+      - name: Run unchanged candidate full numerical and offline suites
+        run: |
+          sudo env -i \
+            PATH="/usr/bin:/bin" \
+            GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory \
+            GIT_CONFIG_VALUE_0="$GITHUB_WORKSPACE/candidate" \
+            "$(command -v python)" candidate/test/standalone_wheels/glibc228.py test \
+            --rootfs "${{ env.GLIBC_ACCEPTANCE_ROOT }}/runtime/rootfs/rootfs" \
+            --interpreter "${{ env.GLIBC_ACCEPTANCE_ROOT }}/runtime/cpython/python" \
+            --manifest "${{ env.GLIBC_ACCEPTANCE_ROOT }}/evidence/build/build.json" \
+            --oracles "${{ env.GLIBC_ACCEPTANCE_ROOT }}/oracles" \
+            --wheelhouse "${{ env.GLIBC_ACCEPTANCE_ROOT }}/runtime/wheelhouse" \
+            --output "${{ env.GLIBC_ACCEPTANCE_ROOT }}/evidence/gate"
+      - name: Retain relevant kernel denials after the namespace command
+        if: always()
+        run: |
+          mkdir -p "$GLIBC_ACCEPTANCE_ROOT/runtime/bwrap"
+          sudo dmesg --color=never | rg 'apparmor="DENIED".*(bwrap|amalthea-glibc|_temp/runtime)' > "$GLIBC_ACCEPTANCE_ROOT/runtime/bwrap/kernel-denials.log" || true
+      - name: Retain raw evidence and distributions, including failures
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: glibc228-linux-x86_64-${{ matrix.python }}
+          path: |
+            ${{ env.GLIBC_ACCEPTANCE_ROOT }}/evidence/provenance/*.json
+            ${{ env.GLIBC_ACCEPTANCE_ROOT }}/evidence/build/*.json
+            ${{ env.GLIBC_ACCEPTANCE_ROOT }}/evidence/build/wheels
+            ${{ env.GLIBC_ACCEPTANCE_ROOT }}/evidence/build/sdist
+            ${{ env.GLIBC_ACCEPTANCE_ROOT }}/evidence/gate/*.json
+            ${{ env.GLIBC_ACCEPTANCE_ROOT }}/evidence/gate/*.xml
+            ${{ env.GLIBC_ACCEPTANCE_ROOT }}/evidence/gate/*.log
+            ${{ env.GLIBC_ACCEPTANCE_ROOT }}/runtime/rootfs/*.json
+            ${{ env.GLIBC_ACCEPTANCE_ROOT }}/runtime/rootfs/*.manifest
+            ${{ env.GLIBC_ACCEPTANCE_ROOT }}/runtime/rootfs/*.os-release
+            ${{ env.GLIBC_ACCEPTANCE_ROOT }}/runtime/rootfs/*.dpkg-arch
+            ${{ env.GLIBC_ACCEPTANCE_ROOT }}/runtime/rootfs/*.sha256
+            ${{ env.GLIBC_ACCEPTANCE_ROOT }}/runtime/cpython/provenance.json
+            ${{ env.GLIBC_ACCEPTANCE_ROOT }}/runtime/wheelhouse/*.json
+            ${{ env.GLIBC_ACCEPTANCE_ROOT }}/runtime/wheelhouse/*.log
+            ${{ env.GLIBC_ACCEPTANCE_ROOT }}/runtime/wheelhouse/*.txt
+            ${{ env.GLIBC_ACCEPTANCE_ROOT }}/runtime/bwrap/*.sha256
+            ${{ env.GLIBC_ACCEPTANCE_ROOT }}/runtime/bwrap/*.txt
+            ${{ env.GLIBC_ACCEPTANCE_ROOT }}/runtime/bwrap/*.log
+          if-no-files-found: error
+          retention-days: 30
