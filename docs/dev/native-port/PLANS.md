@@ -4175,3 +4175,30 @@ Replace the unpublished v1.1.0 tag/draft only after preserving prior metadata;
 rebuild all assets, require sixteen-wheel and four full glibc 2.28 acceptance
 cells, verify actual draft bytes, publish, and verify public downloads. No
 PyPI publication or standing GPU CI change is included.
+
+## 47. Verify release artifacts inside the durable acceptance workflow (2026-11-13)
+
+The managed workspace cannot download GitHub Actions ZIPs from its Azure
+artifact-storage host; the connected file bridge is also unavailable to this
+workspace. Keep the software candidate/tag frozen at `124dc5a`. Add a separate
+orchestration-only verification job to the existing glibc workflow, where
+GitHub artifact downloads are already part of the authorized release process.
+Do not change environment network policy or numerical acceptance commands.
+
+After all four runtime cells succeed, download their raw receipts, the original
+references, the release workflow's assembled candidate and the actual draft
+assets. Require the release producer's successful exact-source push run and
+compare all 26 actual files byte-for-byte with that producer. Validate canonical
+inventory, metadata, checksums and the sixteen-wheel evidence/source-run/oracle
+bindings. Copy retained receipts without rewriting them and run the existing
+`release.verify_glibc` against the actual distributed bytes. Retain JSON reports
+and a bounded JSON summary in the job log; the job has read-only permissions
+and cannot itself publish. A verify-only mode can re-inspect retained cells
+without rerunning numerical tests if a transport/assembly repair is needed.
+
+Run existing release/glibc refusal tests, new altered/missing/substituted-byte
+and wrong-source tests, and actionlint before dispatch. The orchestration
+branch skips automatic product CI: it changes no candidate numerical source,
+and its explicit workflow validates the verifier plus all numerical/runtime
+requirements. Publication still requires the frozen software tag's full CI,
+four actual glibc cells and the final verified-draft report.
