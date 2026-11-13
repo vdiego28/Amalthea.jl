@@ -10013,3 +10013,17 @@ A fresh final eight-group run uses the maintained `run_full_gate.py` with
 `.rust_test_logs/luna-physics-20261113/final-workers/` and `final-groups.log`.
 This changes scheduling only. Cargo and required HDF5 gates passed; no Rust
 source changed. Hosted exact-source acceptance is still required.
+
+### Affected regressions accepted
+
+The preserved complex-coefficient PhysData and gradient tests pass **277/277**.
+With identical seeded input, the legacy full-solve comparison's independent
+adaptive step sequences differed by `1.4199430461040119e-6` at the default
+`rtol=1e-6`. Following TESTING §3, compare identical fixed step bounds through
+`Amalthea.run` (including its window/output callbacks), retaining explicit
+backend assertions, identical initial fields and the unchanged `1e-6` parity
+threshold. The final Julia/legacy relative error is
+`3.4314363685796233e-19`; the complete legacy item passes **98/98**. Adaptive
+controller coverage remains in the item's separate analytic cases and the
+broader solver suite. Logs: `complex-coefficient-regression.log` and
+`fixed-step-legacy-equivalence.log` in the release evidence directory.
