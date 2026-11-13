@@ -185,8 +185,9 @@ https://doi.org/10.5194/acp-21-14927-2021.
 """
 # The published fit is (n-1)*1e8 at the reference density. Consumers expect
 # single-particle susceptibility (n²-1)/dens, not n/dens (Luna #455).
+# Retain the complex-valued API used by gas-gradient metadata.
 function γ_QuanfuHe(A, B, C, dens)
-    return μm -> ((1 + 1e-8*(A + B/(C - (1e4/μm)^2)))^2 - 1)/dens
+    return μm -> complex((1 + 1e-8*(A + B/(C - (1e4/μm)^2)))^2 - 1)/dens
 end
 
 """

@@ -9983,3 +9983,14 @@ No numerical tolerance or product configuration was changed for that repair.
 All 26 old draft assets were downloaded and verified against API sizes and
 available digests. The old annotated tag is retained locally at
 `refs/archive/unpublished-v1.1.0-20261113`, resolving to `b2902f51`.
+
+
+### Gas coefficient return-type compatibility
+
+The broad native gate found six type-contract failures in the existing
+real-valued-complex gradient regression, while all 66 physical gradient checks
+passed. Preserve the existing complex return type of `γ_QuanfuHe`, with zero
+imaginary part at real wavelengths, around the corrected susceptibility
+formula. The standalone Python API already returns owned complex arrays.
+No gradient assertion or tolerance is removed or relaxed. Rerun the affected
+gradient and PhysData checks; the other full-gate groups continue.
