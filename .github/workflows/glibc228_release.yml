@@ -217,11 +217,15 @@ jobs:
         run: >-
           python orchestration/test/standalone_wheels/glibc228_release.py interpreter
           --repository candidate --python '${{ matrix.python }}'
+          --build-manifest "${{ env.GLIBC_ACCEPTANCE_ROOT }}/evidence/build/build.json"
           --output "${{ env.GLIBC_ACCEPTANCE_ROOT }}/runtime/cpython"
+          --revision "$RELEASE_CANDIDATE_REVISION" --run-id "$RELEASE_SOURCE_RUN"
+          --oracle-sha256 "$RELEASE_ORACLE_SHA256"
       - name: Prepare and audit binary-only runtime dependencies
         run: >-
           python orchestration/test/standalone_wheels/glibc228_release.py dependencies
           --repository candidate --python '${{ matrix.python }}'
+          --build-manifest "${{ env.GLIBC_ACCEPTANCE_ROOT }}/evidence/build/build.json"
           --output "${{ env.GLIBC_ACCEPTANCE_ROOT }}/runtime/wheelhouse"
           --revision "$RELEASE_CANDIDATE_REVISION" --run-id "$RELEASE_SOURCE_RUN"
           --oracle-sha256 "$RELEASE_ORACLE_SHA256"

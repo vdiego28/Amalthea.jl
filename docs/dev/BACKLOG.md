@@ -33,26 +33,25 @@ This is the authoritative short queue. The long sections below retain design
 history and measured evidence, but older words such as "next", "not started",
 or "verified" inside a superseded narrative do not outrank this list.
 
-> **Authorized PR completion and replacement v1.1.0 release (2026-10-12):**
-> the lead requested finishing PRs #74–78 before publication and explicitly
-> selected inclusion of their changes in v1.1.0, replacement of its unpublished
-> tag/draft, and necessary commits/pushes/merges. Design:
-> [PLANS §43](native-port/PLANS.md#43-authorized-open-pr-completion-and-v110-publication-2026-10-12)
-> and [§44](native-port/PLANS.md#44-rebuild-unpublished-v110-from-the-completed-pr-source-2026-10-12).
-> The combined PR preserves the original queue, verifier, progress and durable
-> glibc commits; its candidate-selection adaptation is under local review.
-> The old `41227f43` draft's 26 actual assets and full four-interpreter raw
-> glibc evidence pass independent inspection and are preserved separately.
-> These results establish the old candidate only. Execution evidence is in the
-> [PR completion log](native-port/PORT_LOG.md#2026-10-12--open-pr-completion-and-release-evidence-review--codex).
-> **Next:** complete the combined head's focused and hosted gates, integrate
-> the five PRs, freeze final main, prepare its exact-source release assets,
-> replace the unpublished tag as authorized, and require the new tag's own
-> sixteen-wheel and full minimum-glibc acceptance before publication. Verify
-> public downloads/installations and correct the stable manual afterward.
-> The original checkout's five held documents and stash remain preserved.
-> v1.0.4 is still the latest public release. PyPI and standing GPU CI remain
-> separate decisions. Historical candidate execution belongs in PORT_LOG.
+> **Replacement v1.1.0 tagged; final acceptance pending — 2026-10-12:**
+> PRs #74–78 are merged. Frozen source `b2902f51ec021921fe0d282031c7ca47ea81b6db`
+> passed all required main tests/docs, independent sixteen-cell collection and
+> inspection of all 26 manual assets. The preserved unpublished tag/draft were
+> replaced under explicit authorization; new tag object `ba9f71bf` targets
+> that frozen source. Tagged tests `38307758253`, documentation `38307758193`
+> and draft preparation `38307758192` are running. v1.0.4 remains public latest.
+> Matching CPython runtime preparation is validated separately on
+> `ci/v1.1.0-matching-cpython-20261012`; the candidate tag stays fixed.
+> **Next:** inspect completed tagged checks and actual new draft/wheel bytes,
+> then dispatch the updated full-glibc workflow from that orchestration branch
+> using the tagged source run and its own oracle digest. Require all four full
+> numerical/example cells and offline draft verification before publication.
+> Public installs, held publication documentation and stable-manual correction
+> follow. No local watcher or agent waiting task is running. Existing backups,
+> named stash and all historical evidence remain preserved.
+> Read the [tag acceptance log](native-port/PORT_LOG.md#2026-10-12--replacement-candidate-accepted-and-unpublished-tag-replaced--codex)
+> and [runtime preparation log](native-port/PORT_LOG.md#2026-10-12--authenticate-build-matching-cpython-runtimes-for-release-acceptance--codex).
+> Resume receipt: `.rust_test_logs/pr-completion-20261012/tagged-acceptance-checkpoint.json`.
 
 > **HDF5 repair — PR #73, updated 2026-10-03:** standalone initialization and
 > Julia custom-depot integration passed hosted CI at `2a159fc` above. Manual
