@@ -9994,3 +9994,22 @@ imaginary part at real wavelengths, around the corrected susceptibility
 formula. The standalone Python API already returns owned complex arrays.
 No gradient assertion or tolerance is removed or relaxed. Rerun the affected
 gradient and PhysData checks; the other full-gate groups continue.
+
+
+### Seeded legacy-stepper comparison and executor-sized validation
+
+The broad native gate also found a preexisting capillary equivalence fixture
+using two independent default noise realizations (9.59e-5 difference versus
+1e-6 tolerance). Supply the same seed, assert identical initial saved fields,
+and explicitly select/observe the Julia reference and legacy Rust steppers;
+the former test did not disable the default resident backend. Preserve the
+original final-field tolerance. Focused legacy and complex-gradient/PhysData
+reruns are in progress at this checkpoint.
+
+The first local gate recorded all physics and native bucket results. Before
+its next ten-process batch, stop that gate to fit this executor's 10 GB RAM.
+A fresh final eight-group run uses the maintained `run_full_gate.py` with
+`--max-workers 2 --no-batch`, saving evidence under
+`.rust_test_logs/luna-physics-20261113/final-workers/` and `final-groups.log`.
+This changes scheduling only. Cargo and required HDF5 gates passed; no Rust
+source changed. Hosted exact-source acceptance is still required.

@@ -5,6 +5,7 @@ using TestItems
     using Amalthea
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
+    import Random: MersenneTwister
     using Amalthea.RK45: NativeIneligible, PreconStepper, RustNativeStepper,
                          RustPreconStepper, maxnorm, step!, weaknorm
 
@@ -172,26 +173,33 @@ using TestItems
         radius = 125e-6; L = 0.1; gas = :Ar; pres = 1.0
         λ0 = 800e-9; τ = 30e-15; energy = 1e-7
 
-        # ── Julia stepper (default) ───────────────────────────────────────────
-        out_julia = with_logger(NullLogger()) do
-            prop_capillary(radius, L, gas, pres;
-                           λ0=λ0, τfwhm=τ, energy=energy,
-                           modes=:HE11, loss=false,
-                           saveN=2, trange=0.5e-12,
-                           λlims=(200e-9, 4e-6))
-        end
-        Eω_julia = out_julia["Eω"][:, end]
-
-        # ── Rust stepper path ─────────────────────────────────────────────────
-        out_rust = withenv("AMALTHEA_USE_RUST_STEPPER" => "1") do
+        # ── Explicit Julia reference stepper ───────────────────────────────────────────
+        out_julia = withenv("AMALTHEA_USE_RUST_NATIVE" => "0",
+                            "AMALTHEA_USE_RUST_STEPPER" => "0") do
             with_logger(NullLogger()) do
                 prop_capillary(radius, L, gas, pres;
                                λ0=λ0, τfwhm=τ, energy=energy,
                                modes=:HE11, loss=false,
                                saveN=2, trange=0.5e-12,
-                               λlims=(200e-9, 4e-6))
+                               rng=MersenneTwister(42), λlims=(200e-9, 4e-6))
             end
         end
+        @test RK45._LAST_STEPPER_TYPE[] <: PreconStepper
+        Eω_julia = out_julia["Eω"][:, end]
+
+        # ── Rust stepper path ─────────────────────────────────────────────────
+        out_rust = withenv("AMALTHEA_USE_RUST_NATIVE" => "0",
+                           "AMALTHEA_USE_RUST_STEPPER" => "1") do
+            with_logger(NullLogger()) do
+                prop_capillary(radius, L, gas, pres;
+                               λ0=λ0, τfwhm=τ, energy=energy,
+                               modes=:HE11, loss=false,
+                               saveN=2, trange=0.5e-12,
+                               rng=MersenneTwister(42), λlims=(200e-9, 4e-6))
+            end
+        end
+        @test RK45._LAST_STEPPER_TYPE[] <: RustPreconStepper
+        @test out_julia["Eω"][:, 1] == out_rust["Eω"][:, 1]
         Eω_rust = out_rust["Eω"][:, end]
 
         # Both steppers call the same Julia fbar!/prop! callbacks, so the physics
