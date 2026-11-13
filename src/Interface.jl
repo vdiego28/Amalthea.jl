@@ -294,16 +294,9 @@ In this case, all keyword arguments except for `λ0` are ignored.
     elliptical polarisation is always the y-axis.
 - `propagator`: A function `propagator!(Eω, grid)` which **mutates** its first argument to
                 apply an arbitrary propagation to the pulse before the simulation starts.
-- `shotnoise`: Whether and how to include quantum noise. Can be one of:
-    - `true` (default) -- same as `:modified`.
-    - `false` -- disable all noise.
-    - `:modified` -- use the modified shot-noise model of Chen & Wise
-      (arXiv:2410.20567), where a constant noise field enters the nonlinear operator
-      at every step but is excluded from dispersion. This prevents artificial FWM
-      phase-matching and elevated noise floor artefacts.
-    - `:input` -- use traditional one-photon-per-mode shot noise added to the input
-      field at `z = 0`.
-    See the [Noise model](@ref) documentation for details.
+- `shotnoise`: `true` (default) adds one-photon-per-mode noise to the input field.
+    `false` disables noise; `:input` is an alias for `true`. The withdrawn
+    `:modified` nonlinear-source model is rejected (Luna #461).
 - `rng`: Random number generator for noise field generation. Defaults to `GLOBAL_RNG`.
     Pass a seeded RNG (e.g. `MersenneTwister(seed)`) for reproducible noise realisations,
     or different seeds for ensemble/shot-to-shot statistics.
@@ -890,21 +883,15 @@ function ellfields(pulse::Pulses.DataPulse, pf)
 end
 
 function makenoise(grid, mode_s, inputs, shotnoise::Bool, rng)
-    shotnoise ? makenoise(grid, mode_s, inputs, :modified, rng) : (inputs, nothing)
+    shotnoise ? makenoise(grid, mode_s, inputs, :input, rng) : (inputs, nothing)
 end
 
 function makenoise(grid, mode_s, inputs, shotnoise::Symbol, rng)
-    if shotnoise == :modified
-        nm = mode_s isa AbstractArray ? length(mode_s) : 1
-        noise_field = Fields.generate_noise_field(grid; rng, nmodes=nm)
-        @info("Modified shot-noise model enabled. Traditional input shot noise is " *
-              "disabled (noise enters through nonlinear operator instead).")
-        return (inputs, noise_field)
-    elseif shotnoise == :input
+    if shotnoise == :input
         inputs = _add_input_shotnoise(inputs, mode_s, rng)
         return (inputs, nothing)
     else
-        throw(DomainError(shotnoise, "Unknown shotnoise=$shotnoise. Use true, false, :modified, or :input."))
+        throw(DomainError(shotnoise, "Unknown shotnoise=$shotnoise. Use true, false, or :input; :modified was withdrawn because it gives incorrect physics."))
     end
 end
 
@@ -1016,16 +1003,9 @@ Note that the current GNLSE model is single mode only.
     elliptical polarisation is always the y-axis.
 - `propagator`: A function `propagator!(Eω, grid)` which **mutates** its first argument to
                 apply an arbitrary propagation to the pulse before the simulation starts.
-- `shotnoise`: Whether and how to include quantum noise. Can be one of:
-    - `true` (default) -- same as `:modified`.
-    - `false` -- disable all noise.
-    - `:modified` -- use the modified shot-noise model of Chen & Wise
-      (arXiv:2410.20567), where a constant noise field enters the nonlinear operator
-      at every step but is excluded from dispersion. This prevents artificial FWM
-      phase-matching and elevated noise floor artefacts.
-    - `:input` -- use traditional one-photon-per-mode shot noise added to the input
-      field at `z = 0`.
-    See the [Noise model](@ref) documentation for details.
+- `shotnoise`: `true` (default) adds one-photon-per-mode noise to the input field.
+    `false` disables noise; `:input` is an alias for `true`. The withdrawn
+    `:modified` nonlinear-source model is rejected (Luna #461).
 - `rng`: Random number generator for noise field generation. Defaults to `GLOBAL_RNG`.
     Pass a seeded RNG (e.g. `MersenneTwister(seed)`) for reproducible noise realisations,
     or different seeds for ensemble/shot-to-shot statistics.

@@ -4155,3 +4155,23 @@ seventeen-example commands with the tagged source-run identity. The final
 release remains gated on tagged CI, actual draft-byte verification and all
 four complete minimum-glibc cells. Merge orchestration maintenance separately
 with its applicable checks; it does not require another software tag move.
+
+
+## 46. Bring Luna physics corrections into v1.1.0 (2026-11-13)
+
+The user authorized adding Luna #455 and #461 and publishing v1.1.0 after
+acceptance. Correct QuanfuHe single-particle susceptibility in Julia and
+standalone Python, with independent reference-state refractivity tests.
+Restore seeded one-photon-per-mode input noise for `shotnoise=true`; retain
+`:input` as an alias and reject `:modified`. Reject nonlinear `noise_field`
+construction while retaining native ABI/layout compatibility. Update native
+noise tests to propagate noisy initial fields, rather than a constant noise
+source in the RHS. Verify disabled noise, independent seeds, multiple modes,
+carrier/envelope inputs, and Julia/native stepping.
+
+Integrate PR #79's authenticated runtime selection. Run the maintained local
+CPU gate and focused Python checks, then exact-source hosted platform checks.
+Replace the unpublished v1.1.0 tag/draft only after preserving prior metadata;
+rebuild all assets, require sixteen-wheel and four full glibc 2.28 acceptance
+cells, verify actual draft bytes, publish, and verify public downloads. No
+PyPI publication or standing GPU CI change is included.

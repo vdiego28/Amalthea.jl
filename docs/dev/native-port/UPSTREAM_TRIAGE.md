@@ -8,6 +8,20 @@ implement every upstream change. A candidate becomes live work only after its
 design is recorded in [`PLANS.md`](PLANS.md) and promoted in
 [`BACKLOG.md`](../BACKLOG.md).
 
+## 2026-11-13 v1.1.0 physics refresh
+
+Reviewed master through `7bc2f156feb0df62fdd48c5678cef2ade8fedd94`:
+
+- `b2a7721` (#455): correct QuanfuHe susceptibility in Julia and standalone
+  Python; add independent reference-state refractivity regressions.
+- `10e9933` (#442): spectral centering fix already present; no duplicate port.
+- `7bc2f15` (#461): restore seeded input noise by default. Reject the withdrawn
+  modified source at high-level selection and low-level transform construction;
+  preserve native layouts/ABI, seeded RNGs and the existing queue repairs.
+
+Implementation design: PLANS §46. Local and hosted acceptance and publication
+status are recorded in BACKLOG and PORT_LOG; review does not imply publication.
+
 ## 2026-09-20 low-load review
 
 Read-only GitHub inspection confirms `master` is still

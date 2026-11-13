@@ -9941,3 +9941,27 @@ prepared 3.14.7 runtime.
 `authenticated-cpython-archives/`, `authenticated-cpython-recipes.json`,
 `runtime-focused-validation.json`, `runtime-*.log`,
 `runtime-relocation-acceptance.json` and `runtime-relocation-checks/`.
+
+## 2026-11-13 — Luna physics corrections for authorized v1.1.0 publication — Codex
+
+The user requested Luna #455 and #461 in v1.1.0, followed by publication.
+PLANS §46 defines the implementation and acceptance boundary. Integrated the
+existing PR #79 runtime-selection commits on `release/1.1-luna-physics`.
+Corrected QuanfuHe susceptibility in Julia and standalone Python. Restored
+seeded input noise by default; `:input` remains accepted and `:modified` and
+nonlinear-only `noise_field` sources now fail explicitly. Retained native
+buffer layouts/FFI so release libraries remain consistent with retained Julia
+constructors. Reworked noisy-step regressions to use initial spectral noise,
+retained amplitude/seed tests and added independent gas refractivity checks.
+
+The source-built CPython 3.12 wheel completed with the locked offline Rust
+build. Its focused material tests pass 5 checks; 16 oracle checks await fresh
+Julia exports at this checkpoint. Release metadata/tooling tests pass 24 and
+17 checks respectively. Full local CPU validation and focused Julia/material
+oracle checks are running; no hosted acceptance or publication is claimed.
+Evidence directory: `.rust_test_logs/luna-physics-20261113/`; full gate:
+`.rust_test_logs/validation/20261113T162518Z-0walbyou/`.
+
+Preserved prior draft metadata (release ID 411049885, 26 assets) and annotated
+tag object `ba9f71bfe160393530fa95e624aa531bb3fdad20` under the evidence
+directory. The existing public v1.0.4 release is untouched.

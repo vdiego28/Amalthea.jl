@@ -24,6 +24,11 @@ Legend: ✅ native · ⚠️ native with a restriction (see note) · ❌ falls b
 (Julia `PreconStepper`, retained reference/fallback) · — not applicable / no such
 Julia response exists.
 
+As of v1.1.0, shot noise means a seeded one-photon-per-mode initial field,
+propagated by the same linear/nonlinear equations as any other input. The
+withdrawn nonlinear-source `noise_field` model is rejected before stepping;
+legacy noise buffer fields remain only for native layout/ABI compatibility.
+
 ## Mode-averaged (`TransModeAvg`)
 
 | Response | RealGrid | EnvGrid |
@@ -33,7 +38,7 @@ Julia response exists.
 | Plasma (ADK) | ✅ | — (same EnvGrid oracle/API limitation as PPT) |
 | Raman (SDO, `CombinedRamanResponse`, any `thg`) | ✅ | ✅ (`RamanPolarEnv`) |
 | Raman (`:SiO2` intermediate-broadening) | — (Julia has no field-resolved `:SiO2` path) | ✅ (`prop_gnlse` only) |
-| Shot noise (`Et_noise`/`Emω_noise`) | ✅ | ✅ |
+| Input shot noise | ✅ | ✅ |
 | Gas mixtures | ⚠️ Kerr-only (plasma/Raman mixtures ❌) | ⚠️ Kerr-only |
 | z-dependent linop (pressure gradient) | ⚠️ two-point `Capillary.gradient`, Kerr-only, constant-radius `MarcatiliMode` only; multi-point/plasma/Raman combined with z-dep ❌ | — (no EnvGrid z-dep mode-avg case exists) |
 
@@ -63,7 +68,7 @@ see the Modal table below).
 | Kerr | ✅ | ✅ |
 | Plasma (PPT/ADK) | ✅ | — (Julia has no EnvGrid `PlasmaCumtrapz`) |
 | Raman (SDO, `CombinedRamanResponse`) | ✅ | ✅ (`RamanPolarEnv` wired 2026-07-22 via `apply_raman_radial_env`; `:SiO2` intermediate-broadening still ❌ — FFT-conv kernel is mode-averaged-only) |
-| Shot noise | ✅ | ✅ |
+| Input shot noise | ✅ | ✅ |
 | Gas mixtures | ⚠️ Kerr-only | ⚠️ Kerr-only (the mixture branch is grid-independent; performance-audit runtime probe verified resident CPU construction and Julia agreement on 2026-08-11) |
 | z-dependent linop/normfun | ❌ (not ported for radial geometry) | ❌ |
 
@@ -74,7 +79,7 @@ see the Modal table below).
 | Kerr | ✅ (`MarcatiliMode`, `kind ∈ {HE,TE,TM}`, any order, `full=true`or `false`, npol 1-2, tapered or constant radius) | ✅ (npol 1-2, `full=true`/`false`) |
 | Raman (SDO) | ⚠️ npol=1 only; CUDA Plan 16 is explicit-on scalar RealGrid SDO only | ❌ (modal CUDA Plan 16 is RealGrid-only; CPU native still supports no EnvGrid modal Raman) |
 | Plasma | ❌ native; correct Julia fallback supports npol 1-2, including `full=true` (`test/test_transmodal_vector_plasma.jl`; construct `PlasmaCumtrapz` with an example field matching the N×npol transform shape) | ❌ native |
-| Shot noise (`Emω_noise`) | ❌ (explicitly rejected — `NativeIneligible`) | ❌ |
+| Input shot noise | ✅ | ✅ |
 | Gas mixtures | ⚠️ Kerr-only (resident per-species Kerr collapse) | ⚠️ Kerr-only (same grid-independent mixture branch; performance-audit runtime probes verified both grids on 2026-08-11) |
 | Multi-mode `ZeisbergerMode`/`VincettiMode` (several such modes via `TransModal`) | ✅ (2026-07-22, Phase I.5a: `RK45.jl`'s modal guard unwraps to the inner `Capillary.MarcatiliMode` for the field-synthesis accessors — both wrappers delegate `field`/`N` verbatim, and dispersion is baked into `linop` by Julia before the native RHS runs. `test/test_native_modal_zv.jl`) | ✅ (same) |
 | Multi-mode `StepIndexMode` (several such modes via `TransModal`) | ❌ (no closed-form `neff` — numerical root-finding only, doesn't fit the "bake dispersion into `linop`, unwrap for accessors" pattern above without further design work. High-level-reachable via `prop_stepindex`. Phase I.5b — feasibility studied, `native-port/PLANS.md` §5) | ❌ |
@@ -86,7 +91,7 @@ see the Modal table below).
 | Kerr | ✅ (CUDA Plan 17 explicit-on for constant-linop/constant-norm scalar RealGrid) | ✅ (CUDA Plan 18 explicit-on for constant-linop/constant-norm scalar EnvGrid) |
 | Plasma (PPT/ADK) | ✅ (CUDA Plans 19–20 add explicit-on free-space PPT and thresholded ADK) | ❌ (RealGrid-only) |
 | Raman (SDO) | ✅ (CUDA Plan 21 explicit-on for scalar `RamanPolarField` beside Kerr, 1–64 flattened oscillators) | ❌ (RealGrid-only; no `RamanPolarEnv` wiring for free-space) |
-| Shot noise (`Et_noise`) | ❌ (explicitly rejected — `NativeIneligible`) | ❌ |
+| Input shot noise | ✅ | ✅ |
 | Gas mixtures | ⚠️ Kerr-only (resident per-species Kerr collapse) | ⚠️ Kerr-only (same grid-independent mixture branch; performance-audit runtime probes verified both grids on 2026-08-11) |
 | z-dependent normfun (two-point pressure gradient) | ⚠️ Kerr-only — combined with plasma or Raman ❌ | ❌ |
 
@@ -154,11 +159,11 @@ see the Modal table below).
   THG modes, with `1.28e-15`–`1.35e-15` direct stage error, `2.62e-16`/
   `2.68e-16` fixed-solve error, and `1.18e-3` Julia Raman effect. Free-space
   z-dependent norm/linop, EnvGrid plasma/Raman, unthresholded ADK, mixed
-  plasma+Raman, noise, and free-space `:auto` remain CPU-selected.
+  plasma+Raman, and free-space `:auto` remain CPU-selected.
   Modal `:auto` is deliberately disabled because the
   recorded callback traffic is a correctness measurement, not a retained
   production threshold. Radial EnvGrid plasma, intermediate-broadening radial
-  Raman, noise, tapered/modal non-Kerr physics, and `:SiO2` outside
+  Raman, tapered/modal non-Kerr physics, and `:SiO2` outside
   mode-averaged EnvGrid remain CPU-only. Radial CUDA `:auto` is deliberately
   disabled.
   See `GPU.md` and `BACKLOG.md` S3. **Status 2026-08-08:** the nonlinear RHS,

@@ -29,6 +29,16 @@ end
     @test abs(real(n_bk7)) < 1e-8
 end
 
+@testset "QuanfuHe reference-state refractivity (Luna #455)" begin
+    for (gas, expected) in ((:CH4, 4.161530433349878e-4),
+                            (:N2O, 4.730584716366409e-4),
+                            (:SF6, 7.230228780000065e-4))
+        @test real(PhysData.ref_index(gas, 800e-9, PhysData.atm/PhysData.bar, 288.15)) - 1 ≈ expected rtol=1e-6
+        @test 1 < real(PhysData.ref_index(gas, 800e-9)) < 1.001
+        @test PhysData.ref_index(gas, 800e-9, 0) == 1
+    end
+end
+
 @testset "Function equivalence" begin
     @test PhysData.ref_index_fun(:SiO2)(800e-9) == PhysData.ref_index(:SiO2, 800e-9)
     @test PhysData.ref_index_fun(:HeB)(800e-9) == PhysData.ref_index(:HeB, 800e-9)

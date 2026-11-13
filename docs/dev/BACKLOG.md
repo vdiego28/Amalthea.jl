@@ -33,6 +33,16 @@ This is the authoritative short queue. The long sections below retain design
 history and measured evidence, but older words such as "next", "not started",
 or "verified" inside a superseded narrative do not outrank this list.
 
+> **v1.1.0 physics refresh and publication — authorized 2026-11-13:**
+> the user requested Luna #455 and #461 in 1.1.0 and publication after acceptance.
+> Both gas susceptibility implementations and default seeded input noise are
+> repaired under [PLANS §46](native-port/PLANS.md#46-bring-luna-physics-corrections-into-v110-2026-11-13).
+> PR #79's authenticated runtime selection is integrated on the release branch.
+> Next: finish local and hosted exact-source gates, rebuild the unpublished
+> candidate, verify sixteen wheels and four full glibc 2.28 cells against the
+> actual draft bytes, publish, and verify public downloads. v1.0.4 remains public.
+> This entry supersedes older candidate next-action instructions below.
+
 > **Replacement v1.1.0 tagged; final acceptance pending — 2026-10-12:**
 > PRs #74–78 are merged. Frozen source `b2902f51ec021921fe0d282031c7ca47ea81b6db`
 > passed all required main tests/docs, independent sixteen-cell collection and
