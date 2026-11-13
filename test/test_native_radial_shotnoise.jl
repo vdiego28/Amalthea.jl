@@ -30,11 +30,12 @@ using TestItems
         noise_field = Fields.generate_noise_field(grid; rng=MersenneTwister(7), nmodes=N)
 
         Eω, transform, FT = with_logger(NullLogger()) do
-            Amalthea.setup(grid, q, densityfun, normfun, responses, inputs; noise_field)
+            Amalthea.setup(grid, q, densityfun, normfun, responses, inputs)
         end
 
         @assert transform isa Amalthea.NonlinearRHS.TransRadial "Expected TransRadial"
-        @test !isnothing(transform.Et_noise)
+        @test isnothing(transform.Et_noise)
+        Eω .+= noise_field
 
         t0 = 0.0
         dt = 0.001

@@ -183,7 +183,7 @@ n = refractive_index("Ar", [400e-9, 800e-9], pressure=2.0)
 ```
 
 These functions retain the implemented Julia material conventions, including
-the QuanfuHe expression for CH4/N2O/SF6. Air has no default gamma3 source.
+the corrected QuanfuHe susceptibility (n²−1)/ρ for CH4/N2O/SF6 (Luna #455). Air has no default gamma3 source.
 The development `tools/export_material_oracle.jl` supplies the fifth fixture
 variable, `AMALTHEA_MATERIAL_ORACLE`, for complete installed setup acceptance.
 

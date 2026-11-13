@@ -390,27 +390,11 @@ end
 """
     generate_noise_field(grid::Grid.RealGrid; rng=GLOBAL_RNG, nmodes=1)
 
-Generate a one-photon-per-mode spectral noise field for the modified shot-noise model
-(Chen & Wise, arXiv:2410.20567).
-
-Returns a complex frequency-domain array with amplitude `√(ħω/δω) × √(2π)/(2δt)` and
-uniformly random spectral phase, matching the convention of [`ShotNoise`](@ref) for a
-real-valued field (rFFT normalisation). When `nmodes > 1`, returns an `(nω, nmodes)` array
-with independent noise per mode for multimode propagation.
-
-Unlike [`ShotNoise`](@ref), which is added to the input field at `z = 0`, this noise field
-is intended to be injected into the **nonlinear operator** at every propagation step via the
-`noise_field` keyword argument. The dispersion operator does not act on this noise,
-preventing artificial FWM phase-matching — the key advantage over the traditional shot-noise
-approach.
-
-The noise field is generated once before propagation and held constant throughout. Different
-random seeds (via `rng`) produce different noise realisations for ensemble/shot-to-shot
-statistics.
-
-# References
-- Chen & Wise, "A simple accurate way to model noise-seeded ultrafast nonlinear processes",
-  arXiv:2410.20567 (2024)
+Generate one-photon-per-mode input spectral noise, with independent random
+phases per mode. Returns a vector for `nmodes=1` and an `(nω, nmodes)` array
+otherwise, using the same rFFT normalization as [`ShotNoise`](@ref).
+Add the result to the initial field. Nonlinear-only noise sources were
+withdrawn (Luna #461); `noise_field` source keywords reject these arrays.
 """
 function generate_noise_field(grid::Grid.RealGrid; rng=GLOBAL_RNG, nmodes=1)
     # Frequency spacing on the angular-frequency grid
@@ -435,16 +419,9 @@ end
 """
     generate_noise_field(grid::Grid.EnvGrid; rng=GLOBAL_RNG, nmodes=1)
 
-Generate a one-photon-per-mode spectral noise field for the modified shot-noise model
-(Chen & Wise, arXiv:2410.20567), for envelope-field propagation.
-
-Returns a complex frequency-domain array with amplitude `√(ħω/δω) × √(2π)/δt` and
-uniformly random spectral phase, matching the convention of [`ShotNoise`](@ref) for a
-complex envelope field (full FFT normalisation). Only frequency bins within `grid.sidx`
-(the signal window) receive non-zero noise.
-
-See [`generate_noise_field(::Grid.RealGrid)`](@ref) for details on the modified shot-noise
-model.
+Generate one-photon-per-mode input spectral noise for an envelope field.
+Only signal bins are populated, with the full FFT normalization of
+[`ShotNoise`](@ref). Add the result to the initial field.
 """
 function generate_noise_field(grid::Grid.EnvGrid; rng=GLOBAL_RNG, nmodes=1)
     δω = grid.ω[2] - grid.ω[1]

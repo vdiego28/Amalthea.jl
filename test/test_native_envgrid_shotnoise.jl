@@ -12,11 +12,8 @@ using TestItems
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
-        # docs/dev/BACKLOG.md Phase I item 1: the ComplexF64 (EnvGrid) counterpart of
-        # test_native_shotnoise.jl. This is also the config that determines
-        # whether the DEFAULT prop_gnlse workload (envelope, mode-averaged,
-        # shotnoise=true) actually runs natively — see docs/dev/BACKLOG.md's note on
-        # this item.
+        # Default input shot noise is seeded before stepping. Both steppers
+        # must propagate that same field without a nonlinear-only source.
         radius = 125e-6
         flength = 0.15
         gas = :He
@@ -38,7 +35,8 @@ using TestItems
 
         @assert grid isa Amalthea.Grid.EnvGrid "Expected EnvGrid for envelope=true"
         @test transform_jl.Et_noise == transform_ru.Et_noise
-        @test !isnothing(transform_jl.Et_noise)
+        @test isnothing(transform_jl.Et_noise)
+        @test Eω == Eω2
 
         t0 = 0.0
         dt = 0.01
@@ -102,11 +100,12 @@ end
         noise_field = Fields.generate_noise_field(grid; rng=MersenneTwister(7), nmodes=N)
 
         Eω, transform, FT = with_logger(NullLogger()) do
-            Amalthea.setup(grid, q, densityfun, normfun, responses, inputs; noise_field)
+            Amalthea.setup(grid, q, densityfun, normfun, responses, inputs)
         end
 
         @assert transform isa Amalthea.NonlinearRHS.TransRadial "Expected TransRadial"
-        @test !isnothing(transform.Et_noise)
+        @test isnothing(transform.Et_noise)
+        Eω .+= noise_field
 
         t0 = 0.0
         dt = 0.001

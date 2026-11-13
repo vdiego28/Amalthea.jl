@@ -12,14 +12,8 @@ using TestItems
     if !isfile(libpath)
         @test_skip "Rust library not found"
     else
-        # docs/dev/BACKLOG.md Phase I item 1: `native_set_mode_avg_params` never
-        # received a noise buffer, so `shotnoise=true` (the default for
-        # `prop_capillary`/`prop_gnlse`) silently ran the native path with
-        # no noise term at all. This test drives a config where noise seeds
-        # a large downstream effect (broadband, near dispersion zero, long
-        # enough propagation for MI-like growth) with a fixed RNG seed
-        # shared between both steppers, so its presence/absence in the
-        # native path is unmistakable rather than lost in a loose tolerance.
+        # Default input shot noise is seeded before stepping. Both steppers
+        # must propagate that same field without a nonlinear-only source.
         radius = 125e-6
         flength = 0.15
         gas = :He
@@ -40,7 +34,8 @@ using TestItems
         end
 
         @test transform_jl.Et_noise == transform_ru.Et_noise
-        @test !isnothing(transform_jl.Et_noise)
+        @test isnothing(transform_jl.Et_noise)
+        @test Eω == Eω2
 
         t0 = 0.0
         dt = 0.01
@@ -76,7 +71,7 @@ using TestItems
             # Shot noise is a vacuum-level perturbation on a microjoule pulse,
             # so it moves the result by far less than a full-solve MI-growth
             # scenario would — this only needs to catch "still exactly zero",
-            # i.e. native silently ignoring Et_noise again.
+            # i.e. native silently dropping the input noise again.
             @test rel_diff > 0.0
         end
     end

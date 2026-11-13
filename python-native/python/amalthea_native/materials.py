@@ -96,8 +96,8 @@ def polarizability(gas, wavelength):
         a,b,c = {'CH4':(3603.09,4.40362e14,1.1741e10),
                  'N2O':(22095.,1.66291e14,6.75226e9),
                  'SF6':(18997.7,8.27663e14,1.56833e10)}[gas]
-        # Preserve PhysData's implemented QuanfuHe convention exactly.
-        value = (1+1e-8*(a+b/(c-(1e4/um)**2))).astype(complex)/_reference_density(gas,1.01325,288.15)
+        # The refractivity fit must become single-particle susceptibility (Luna #455).
+        value = ((1+1e-8*(a+b/(c-(1e4/um)**2)))**2-1)/_reference_density(gas,1.01325,288.15)
     return _owned(value)
 
 

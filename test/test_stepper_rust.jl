@@ -5,6 +5,7 @@ using TestItems
     using Amalthea
     import Logging: with_logger, NullLogger
     import LinearAlgebra: norm
+    import Random: MersenneTwister
     using Amalthea.RK45: NativeIneligible, PreconStepper, RustNativeStepper,
                          RustPreconStepper, maxnorm, step!, weaknorm
 
@@ -172,26 +173,32 @@ using TestItems
         radius = 125e-6; L = 0.1; gas = :Ar; pres = 1.0
         λ0 = 800e-9; τ = 30e-15; energy = 1e-7
 
-        # ── Julia stepper (default) ───────────────────────────────────────────
-        out_julia = with_logger(NullLogger()) do
-            prop_capillary(radius, L, gas, pres;
-                           λ0=λ0, τfwhm=τ, energy=energy,
-                           modes=:HE11, loss=false,
-                           saveN=2, trange=0.5e-12,
-                           λlims=(200e-9, 4e-6))
+        # Match the full propagation sequence, including window callbacks.
+        # Adaptive controllers can select different steps after FP reassociation;
+        # the fixed-step comparison follows TESTING.md §3 without relaxing parity.
+        function seeded_simulation()
+            setup = Interface.prop_capillary_args(radius, L, gas, pres;
+                λ0, τfwhm=τ, energy, modes=:HE11, loss=false,
+                saveN=2, trange=0.5e-12, rng=MersenneTwister(42),
+                λlims=(200e-9, 4e-6))
+            initial = copy(setup[1])
+            Amalthea.run(setup...; init_dz=1e-3, min_dz=1e-3, max_dz=1e-3)
+            initial, setup[end]
         end
+
+        initial_julia, out_julia = withenv("AMALTHEA_USE_RUST_NATIVE" => "0",
+                                          "AMALTHEA_USE_RUST_STEPPER" => "0") do
+            with_logger(seeded_simulation, NullLogger())
+        end
+        @test RK45._LAST_STEPPER_TYPE[] <: PreconStepper
         Eω_julia = out_julia["Eω"][:, end]
 
-        # ── Rust stepper path ─────────────────────────────────────────────────
-        out_rust = withenv("AMALTHEA_USE_RUST_STEPPER" => "1") do
-            with_logger(NullLogger()) do
-                prop_capillary(radius, L, gas, pres;
-                               λ0=λ0, τfwhm=τ, energy=energy,
-                               modes=:HE11, loss=false,
-                               saveN=2, trange=0.5e-12,
-                               λlims=(200e-9, 4e-6))
-            end
+        initial_rust, out_rust = withenv("AMALTHEA_USE_RUST_NATIVE" => "0",
+                                        "AMALTHEA_USE_RUST_STEPPER" => "1") do
+            with_logger(seeded_simulation, NullLogger())
         end
+        @test RK45._LAST_STEPPER_TYPE[] <: RustPreconStepper
+        @test initial_julia == initial_rust
         Eω_rust = out_rust["Eω"][:, end]
 
         # Both steppers call the same Julia fbar!/prop! callbacks, so the physics
@@ -199,6 +206,7 @@ using TestItems
         # whose FP summation order varies run-to-run (Julia-vs-Julia reproducibility
         # is itself ~2e-8 for this setup), so we accept any error below rtol=1e-6.
         rel_err = norm(Eω_rust - Eω_julia) / norm(Eω_julia)
+        println("Seeded fixed-step Julia/legacy capillary relative error: ", rel_err)
         @test rel_err < 1e-6
     end
 end

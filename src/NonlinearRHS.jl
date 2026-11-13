@@ -355,9 +355,8 @@ Construct a `TransModal`, transform E(ω) -> Pₙₗ(ω) for modal fields.
 - `atol::Float=0.0` : absolute tolerance on the `HCubature` integration
 - `mfcn::Int=512` : maximum number of function evaluations for one modal integration
 - `full::Bool=false` : if `true`, use full 2-D mode integral, if `false`, only do radial integral
-- `noise_field=nothing` : optional `(nω, nmodes)` noise field for the modified shot-noise
-  model. Each mode column should contain independent noise with the one-photon-per-mode
-  spectral density. Generate with [`Fields.generate_noise_field`](@ref Amalthea.Fields.generate_noise_field).
+- `noise_field=nothing`: retained for compatibility; non-`nothing` values are rejected.
+  Add one-photon-per-mode noise to the input field instead (Luna #461).
 - `threaded=true`: parallelise independent Cubature callback columns when Julia has more
   than one thread and every response can be cloned safely. Plain Kerr, Julia-only
   `PlasmaCumtrapz`, and Julia-only Raman responses are supported; arbitrary/stateful
@@ -366,6 +365,7 @@ Construct a `TransModal`, transform E(ω) -> Pₙₗ(ω) for modal fields.
 function TransModal(tT, grid, ts::Modes.ToSpace, FT, resp, densityfun, norm!;
                     rtol=1e-3, atol=0.0, mfcn=512, full=false, noise_field=nothing,
                     threaded=true)
+    isnothing(noise_field) || throw(ArgumentError("Nonlinear noise_field was withdrawn (Luna #461); add shot noise to the input field instead."))
     Emω = Array{ComplexF64,2}(undef, length(grid.ω), ts.nmodes)
     Erω = Array{ComplexF64,2}(undef, length(grid.ω), ts.npol)
     Erωo = Array{ComplexF64,2}(undef, length(grid.ωo), ts.npol)
@@ -662,12 +662,11 @@ end
 Construct a `TransModeAvg` transform for mode-averaged propagation.
 
 # Keyword arguments
-- `noise_field=nothing`: optional frequency-domain noise field (on the normal grid) for the
-  modified shot-noise model. When provided, it is converted to the oversampled time grid and
-  stored as `Et_noise` for injection into the nonlinear operator at every propagation step.
-  Generate with [`Fields.generate_noise_field`](@ref Amalthea.Fields.generate_noise_field).
+- `noise_field=nothing`: retained for compatibility; non-`nothing` values are rejected.
+  Add one-photon-per-mode noise to the input field instead (Luna #461).
 """
 function TransModeAvg(TT, grid, FT, resp, densityfun, norm!, aeff; noise_field=nothing)
+    isnothing(noise_field) || throw(ArgumentError("Nonlinear noise_field was withdrawn (Luna #461); add shot noise to the input field instead."))
     Eωo = zeros(ComplexF64, length(grid.ωo))
     Eto = zeros(TT, length(grid.to))
     Pto = similar(Eto)
@@ -810,12 +809,11 @@ end
 Construct a `TransRadial` to calculate the reciprocal-domain nonlinear polarisation.
 
 # Keyword arguments
-- `noise_field=nothing`: optional `(nω, nk)` frequency/k-space noise field for the modified
-  shot-noise model. When provided, it is converted to the real-space time domain `(nto, nr)`
-  via inverse FFT and inverse Hankel transform, and stored as `Et_noise`.
-  Generate with [`Fields.generate_noise_field`](@ref Amalthea.Fields.generate_noise_field).
+- `noise_field=nothing`: retained for compatibility; non-`nothing` values are rejected.
+  Add one-photon-per-mode noise to the input field instead (Luna #461).
 """
 function TransRadial(TT, grid, HT, FT, responses, densityfun, normfun; noise_field=nothing)
+    isnothing(noise_field) || throw(ArgumentError("Nonlinear noise_field was withdrawn (Luna #461); add shot noise to the input field instead."))
     Eωo = zeros(ComplexF64, (length(grid.ωo), HT.N))
     Eto = zeros(TT, (length(grid.to), HT.N))
     Pto = similar(Eto)
@@ -962,13 +960,12 @@ Construct a `TransFree` to calculate the reciprocal-domain nonlinear polarisatio
 free-space propagation.
 
 # Keyword arguments
-- `noise_field=nothing`: optional `(nω, ny, nx)` frequency/k-space noise field for the
-  modified shot-noise model. When provided, it is converted to the real-space oversampled
-  time domain `(nto, ny, nx)` via `copy_scale!` and 3D inverse FFT, and stored as `Et_noise`.
-  Generate with [`Fields.generate_noise_field`](@ref Amalthea.Fields.generate_noise_field).
+- `noise_field=nothing`: retained for compatibility; non-`nothing` values are rejected.
+  Add one-photon-per-mode noise to the input field instead (Luna #461).
 """
 function TransFree(TT, scale, grid, xygrid, FT, responses, densityfun, normfun;
                    noise_field=nothing)
+    isnothing(noise_field) || throw(ArgumentError("Nonlinear noise_field was withdrawn (Luna #461); add shot noise to the input field instead."))
     Ny = length(xygrid.y)
     Nx = length(xygrid.x)
     Eωo = zeros(ComplexF64, (length(grid.ωo), Ny, Nx))

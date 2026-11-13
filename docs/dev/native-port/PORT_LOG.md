@@ -9820,3 +9820,210 @@ the new candidate. The old draft metadata, annotated tag object and all 26
 assets are retained under `.rust_test_logs/pr-completion-20261012/`.
 
 **Tracking:** [BACKLOG resume queue](../BACKLOG.md#start-here--current-resume-queue-2026-09-06).
+
+## 2026-10-12 — Replacement candidate accepted and unpublished tag replaced — Codex
+
+**Status at this checkpoint:** pre-tag acceptance passes for frozen source
+`b2902f51ec021921fe0d282031c7ca47ea81b6db`. The unpublished v1.1.0 tag now
+targets that source; its annotated object is
+`ba9f71bfe160393530fa95e624aa531bb3fdad20`. The old draft was removed after
+backup verification. New tagged tests/draft preparation are running; no public
+release has been published. v1.0.4 remains the latest public release.
+
+**Did:** Rechecked exact-source main tests `38285827395`, documentation
+`38285827430` and manual assembly `38285943953`: every required job passed.
+Downloaded the untouched raw matrix and independent twenty-family references,
+collected all sixteen cells against a clean candidate, inspected the actual
+26 assembled assets and compared every source wheel with independently
+accepted bytes. Verified the manual acceptance receipt names the correct
+tests/docs and source.
+
+Rechecked that tag object `7d2550a4` and draft `403248614` were still the
+preserved unpublished objects. Verified all old downloaded checksums, the
+raw annotated-tag object, asset IDs/sizes/digests and unchanged draft body.
+Created the replacement annotated tag, deleted only that draft, and pushed
+with `--force-with-lease=refs/tags/v1.1.0:7d2550a4c7ae78dd3e4631ab835d2d9e6ecb0089`.
+Updated the local tag by compare-and-swap and independently checked the new
+remote tag object/target. All old bytes, metadata and numerical evidence are
+retained. Tagged workflows: tests `38307758253`, documentation
+`38307758193`, release preparation `38307758192`.
+
+**Design:** [PLANS §44](PLANS.md#44-rebuild-unpublished-v110-from-the-completed-pr-source-2026-10-12).
+The lead explicitly approved inclusion of the PR changes and replacement of
+the unpublished tag/draft. The tagged software is now frozen.
+
+**Tests:** The maintained `test/standalone_wheels/collect.py` reports
+`wheel_matrix_passed` for sixteen cells, each with 34 checkout and 946
+source tests, zero failures/skips and seventeen completed offline examples
+per wheel kind. Source inventories, reference/wheel/source hashes and original
+JUnit evidence pass. These are hosted numerical results; no local numerical
+suite was repeated. The unchanged same-input/trajectory acceptance criteria
+remain those in TESTING. Minimum-glibc acceptance for the replacement is still
+pending.
+
+`inspect-release-assets.py` verifies 26 files/25 checksums, sixteen wheels,
+four CPU-library architectures, correct 1.1.0/0.1.0 metadata and source/run
+provenance. The downloaded Linux library loads, all four required FFI exports
+resolve, and its scaling result is exactly [2, 4, 6, 8]. Library imports do not
+require Julia, FFTW, cubature or CUDA. Manual asset bytes match independently
+collected source wheels.
+
+**Next:** Verify tagged workflows and actual new draft bytes. Use the matching
+runtime orchestration from PLANS §45 for all four full glibc cells, selecting
+the tagged source run and its own reference digest. Publish only after joining
+those complete reports to the actual draft. Public installs and publication/
+stable-manual delivery follow. No local watcher or waiting process is running.
+
+**Evidence:** `.rust_test_logs/pr-completion-20261012/`:
+`accepted-merged-*-run.json`, `accepted-merged-*-jobs.json`,
+`rebuilt-main-artifacts/`, `rebuilt-main-wheel-evidence.json`,
+`rebuilt-manual-artifacts/`, `rebuilt-manual-inspection.json`,
+`rebuilt-pretag-acceptance.json`, `tag-replacement.json`,
+`pre-replacement-draft.json`, `replacement-tag.raw` and
+`replacement-tagged-runs.json`.
+
+## 2026-10-12 — Authenticate build-matching CPython runtimes for release acceptance — Codex
+
+**Status at this checkpoint:** matching runtime preparation is implemented and
+locally validated on separate branch
+`ci/v1.1.0-matching-cpython-20261012`. Tagged software remains `b2902f51`;
+no numerical/source-wheel code or tolerance changed. Four full minimum-glibc
+cells still require execution with the successful tagged source run.
+
+**Did:** Read the real accepted Linux build manifests: CPython 3.11.17,
+3.12.15, 3.13.16 and 3.14.8 differ from the October 4/7 gate's pins. Retained
+all original 20260929 recipes/defaults, authenticated all four matching
+20261009 non-stripped install archives against upstream immutable GitHub
+asset IDs, SHA-256 digests and sizes, and checked their interpreter versions
+and ELF requirements. Added only those four recipes to the allowlist.
+
+`test/standalone_wheels/glibc228_release.py::interpreter_recipe` selects
+the exact authenticated patch from a verified build manifest and rejects a
+wrong minor or unknown patch before writing output. `relocate` now accepts
+those verified patches. `interpreter` and `dependencies` share
+`--build-manifest`, bind CLI manifests to the selected candidate revision,
+and retain the manifest digest in provenance. The glibc workflow supplies
+the same verified relocated manifest to both commands. Added six adversarial/
+selection regressions in `test/test_glibc228_release.py` and documented the
+new preparation contract in TESTING. No FFI export changed.
+
+**Design:** [PLANS §45](PLANS.md#45-authenticate-cpython-patches-for-replacement-release-acceptance-2026-10-12),
+written before implementation. The software tag stays fixed; orchestration
+and candidate checkouts remain separate.
+
+**Tests:** `python3 test/test_glibc228_release.py -v` passes 17 tests;
+`test_glibc228_validation.py` passes five, `test_wheel_collection.py`
+passes eight and `test_release.py` passes 24 (54 focused regressions total).
+Actionlint passes `.github/workflows/glibc228_release.yml`;
+`python3 -m py_compile` for the changed helper/tests and
+`git diff --check` pass. All four actual accepted main-run build cells
+relocate successfully with five recorded path changes, original wheel/source
+hashes intact and exact matching authenticated runtime recipes.
+
+Every downloaded interpreter archive matches its upstream published size/hash.
+Actual executable versions match all four selected patches; each executable's
+maximum required glibc symbol is 2.17. This authenticates preparation inputs,
+not full runtime or numerical acceptance. No local full numerical suite was
+repeated. Original full-glibc reports remain original-candidate evidence only.
+
+**Next:** After tagged tests `38307758253` pass, download their own reference
+manifest and validate/collect the actual tagged wheel matrix. Manually dispatch
+the updated glibc workflow from this separate orchestration branch with frozen
+revision `b2902f51`, that tagged Tests run ID and its reference SHA-256.
+Require four complete full numerical/offline cells and offline verification
+against the actual new draft bytes. Merge orchestration maintenance with its
+applicable checks without moving the software tag again. Public installation
+helpers must use the newly authenticated matching runtime, not the older
+prepared 3.14.7 runtime.
+
+**Evidence:** `.rust_test_logs/pr-completion-20261012/`,
+`cpython-20261009-release.json`, `cpython-20261009-selected-assets.json`,
+`authenticated-cpython-archives/`, `authenticated-cpython-recipes.json`,
+`runtime-focused-validation.json`, `runtime-*.log`,
+`runtime-relocation-acceptance.json` and `runtime-relocation-checks/`.
+
+## 2026-11-13 — Luna physics corrections for authorized v1.1.0 publication — Codex
+
+The user requested Luna #455 and #461 in v1.1.0, followed by publication.
+PLANS §46 defines the implementation and acceptance boundary. Integrated the
+existing PR #79 runtime-selection commits on `release/1.1-luna-physics`.
+Corrected QuanfuHe susceptibility in Julia and standalone Python. Restored
+seeded input noise by default; `:input` remains accepted and `:modified` and
+nonlinear-only `noise_field` sources now fail explicitly. Retained native
+buffer layouts/FFI so release libraries remain consistent with retained Julia
+constructors. Reworked noisy-step regressions to use initial spectral noise,
+retained amplitude/seed tests and added independent gas refractivity checks.
+
+The source-built CPython 3.12 wheel completed with the locked offline Rust
+build. Its focused material tests pass 5 checks; 16 oracle checks await fresh
+Julia exports at this checkpoint. Release metadata/tooling tests pass 24 and
+17 checks respectively. Full local CPU validation and focused Julia/material
+oracle checks are running; no hosted acceptance or publication is claimed.
+Evidence directory: `.rust_test_logs/luna-physics-20261113/`; full gate:
+`.rust_test_logs/validation/20261113T162518Z-0walbyou/`.
+
+Preserved prior draft metadata (release ID 411049885, 26 assets) and annotated
+tag object `ba9f71bfe160393530fa95e624aa531bb3fdad20` under the evidence
+directory. The existing public v1.0.4 release is untouched.
+
+### Focused validation follow-up
+
+Fresh Julia material exports and the rebuilt installed Python wheel pass all
+21 material checks, including every gas's setup/gamma3 comparison. The full
+local physics group passes 2,028/2,028 assertions. The focused Julia pass
+found four errors in the new noise test's diagnostic inspection: modal
+transforms store `Emω_noise`, whereas the scalar transform uses `Et_noise`.
+Seeded-input comparisons passed; the test now selects the correct diagnostic
+field. The remaining local groups and hosted checks continue.
+
+The first ad-hoc focused launcher omitted the maintained runner's FFTW
+`:estimate` setting and spent time planning FFTs; those superseded processes
+were stopped and the corrected launcher uses `:estimate` and one FFTW thread.
+No numerical tolerance or product configuration was changed for that repair.
+All 26 old draft assets were downloaded and verified against API sizes and
+available digests. The old annotated tag is retained locally at
+`refs/archive/unpublished-v1.1.0-20261113`, resolving to `b2902f51`.
+
+
+### Gas coefficient return-type compatibility
+
+The broad native gate found six type-contract failures in the existing
+real-valued-complex gradient regression, while all 66 physical gradient checks
+passed. Preserve the existing complex return type of `γ_QuanfuHe`, with zero
+imaginary part at real wavelengths, around the corrected susceptibility
+formula. The standalone Python API already returns owned complex arrays.
+No gradient assertion or tolerance is removed or relaxed. Rerun the affected
+gradient and PhysData checks; the other full-gate groups continue.
+
+
+### Seeded legacy-stepper comparison and executor-sized validation
+
+The broad native gate also found a preexisting capillary equivalence fixture
+using two independent default noise realizations (9.59e-5 difference versus
+1e-6 tolerance). Supply the same seed, assert identical initial saved fields,
+and explicitly select/observe the Julia reference and legacy Rust steppers;
+the former test did not disable the default resident backend. Preserve the
+original final-field tolerance. Focused legacy and complex-gradient/PhysData
+reruns are in progress at this checkpoint.
+
+The first local gate recorded all physics and native bucket results. Before
+its next ten-process batch, stop that gate to fit this executor's 10 GB RAM.
+A fresh final eight-group run uses the maintained `run_full_gate.py` with
+`--max-workers 2 --no-batch`, saving evidence under
+`.rust_test_logs/luna-physics-20261113/final-workers/` and `final-groups.log`.
+This changes scheduling only. Cargo and required HDF5 gates passed; no Rust
+source changed. Hosted exact-source acceptance is still required.
+
+### Affected regressions accepted
+
+The preserved complex-coefficient PhysData and gradient tests pass **277/277**.
+With identical seeded input, the legacy full-solve comparison's independent
+adaptive step sequences differed by `1.4199430461040119e-6` at the default
+`rtol=1e-6`. Following TESTING §3, compare identical fixed step bounds through
+`Amalthea.run` (including its window/output callbacks), retaining explicit
+backend assertions, identical initial fields and the unchanged `1e-6` parity
+threshold. The final Julia/legacy relative error is
+`3.4314363685796233e-19`; the complete legacy item passes **98/98**. Adaptive
+controller coverage remains in the item's separate analytic cases and the
+broader solver suite. Logs: `complex-coefficient-regression.log` and
+`fixed-step-legacy-equivalence.log` in the release evidence directory.

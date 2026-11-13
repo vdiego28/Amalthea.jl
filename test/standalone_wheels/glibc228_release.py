@@ -40,6 +40,16 @@ INTERPRETERS = {
     '3.13': ('3.13.15', 'd6b4e09474dfc219befabeae16264466f09615a991dcd080ae698833bdb3ed44', 75170574),
     '3.14': ('3.14.7', '0056208b5fdfcec939bc5b3908f5e7c89d11c6e2f1fdf02c9cc6aa98d10c5d05', 74997980),
 }
+# Exact patch recipes authenticated against immutable upstream asset digests.
+# Preserve the original recipes/defaults for historical reproduction.
+INTERPRETER_RECIPES = {version: (PBS_RELEASE, hashed, size)
+                      for version, hashed, size in INTERPRETERS.values()}
+INTERPRETER_RECIPES.update({
+    '3.11.17': ('20261009', '035b0ccfe7f3d38ab3ddab505290d200c6a265b95fbd5fac76c358751d6bb6a8', 48949967),
+    '3.12.15': ('20261009', '5864001bf969db329fadc2b654c4878c6027d170c6bd77e28f88666260bcaf63', 66913335),
+    '3.13.16': ('20261009', '1cca1041f693f110a2e0d16417090b8996258c7a121e90eeab66c2f40ea407f2', 75275675),
+    '3.14.8': ('20261009', '83f9cb480b702548c592443f86209cf0fc03448d90692df257f095c01791dccc', 74948766),
+})
 PLATFORMS = [f'manylinux_2_{minor}_x86_64' for minor in range(28, 4, -1)]
 PLATFORMS += ['manylinux2014_x86_64', 'manylinux2010_x86_64', 'manylinux1_x86_64']
 CHUNK_BYTES = 24 * 1024 * 1024
@@ -48,6 +58,16 @@ require = release.require
 
 def read(path):
     return json.loads(path.read_text())
+
+
+def interpreter_recipe(python, build_manifest=None):
+    require(python in INTERPRETERS, 'unsupported CPython minor')
+    version = (INTERPRETERS[python][0] if build_manifest is None
+               else read(build_manifest)['host']['python'])
+    require(isinstance(version, str) and re.fullmatch(re.escape(python) + r'\.[0-9]+', version),
+            'build Python patch differs from requested minor')
+    require(version in INTERPRETER_RECIPES, 'unauthenticated CPython patch: ' + version)
+    return (version, *INTERPRETER_RECIPES[version])
 
 
 def release_identity(revision=None, run_id=None, oracle_hash=None):
@@ -177,12 +197,11 @@ def relocate(repository, artifacts, oracles, python, output, selection=None):
     selection = release_identity() if selection is None else selection
     candidate(repository, selection)
     oracle_proof(repository, oracles, selection)
-    version = INTERPRETERS[python][0]
     # Authenticate source bytes, wheels, offline evidence and complete original tests.
     accepted = collect.inspect_cell(artifacts, 'linux-x86_64', python, selection['revision'],
                                    collect.source_options(repository), selection['oracle_hash'])
     original = read(artifacts/'build.json')
-    require(original['host']['python'] == version, 'original build Python patch differs')
+    version, _, _, _ = interpreter_recipe(python, artifacts/'build.json')
     output.mkdir(parents=True, exist_ok=False)
     shutil.copy2(artifacts/'build.json', output/'build-original.json')
     shutil.copytree(artifacts/'wheels', output/'wheels')
@@ -219,21 +238,22 @@ def download(url, destination, expected=None, size=None):
         require(destination.stat().st_size == size, 'download size mismatch: '+destination.name)
 
 
-def interpreter(python, output):
-    version, hashed, size = INTERPRETERS[python]
+def interpreter(python, output, build_manifest=None):
+    version, pbs_release, hashed, size = interpreter_recipe(python, build_manifest)
     output.mkdir(parents=True, exist_ok=False)
-    name = f'cpython-{version}+{PBS_RELEASE}-x86_64-unknown-linux-gnu-install_only.tar.gz'
-    url = f'https://github.com/astral-sh/python-build-standalone/releases/download/{PBS_RELEASE}/'+name
+    name = f'cpython-{version}+{pbs_release}-x86_64-unknown-linux-gnu-install_only.tar.gz'
+    url = f'https://github.com/astral-sh/python-build-standalone/releases/download/{pbs_release}/'+name
     archive = output/name
     download(url, archive, hashed, size)
     with tarfile.open(archive) as bundle:
         bundle.extractall(output, filter='data')
-    save_json(output/'provenance.json', {'version': version, 'release': PBS_RELEASE,
-              'url': url, 'sha256': hashed, 'bytes': size, 'interpreter': str(output/'python')})
+    save_json(output/'provenance.json', {'version': version, 'release': pbs_release,
+              'url': url, 'sha256': hashed, 'bytes': size, 'interpreter': str(output/'python'),
+              'build_manifest_sha256': digest(build_manifest) if build_manifest is not None else None})
 
 
-def dependencies(repository, python, output):
-    version = INTERPRETERS[python][0]
+def dependencies(repository, python, output, build_manifest=None):
+    version, _, _, _ = interpreter_recipe(python, build_manifest)
     abi = 'cp'+python.replace('.', '')
     project = tomllib.loads((repository/'python-native/pyproject.toml').read_text())['project']
     requirements = project['dependencies'] + project['optional-dependencies']['hdf5'] + ['pytest']
@@ -294,6 +314,7 @@ def dependencies(repository, python, output):
         require(name in selected and selected[name] in requirement.specifier, 'dependency closure failed: '+text)
         active.append(text)
     save_json(output/'provenance.json', {'status': 'verified', 'python': version, 'requirements': requirements,
+              'build_manifest_sha256': digest(build_manifest) if build_manifest is not None else None,
               'pyproject_sha256': digest(repository/'python-native/pyproject.toml'), 'maximum_glibc': '2.28',
               'active_requirements': sorted(set(active)), 'wheels': records})
 
@@ -306,12 +327,19 @@ def main():
     parser.add_argument('--oracles', type=Path)
     parser.add_argument('--artifacts', type=Path)
     parser.add_argument('--python', choices=INTERPRETERS)
+    parser.add_argument('--build-manifest', type=Path,
+                        help='verified relocated build selecting the exact authenticated CPython patch')
     parser.add_argument('--revision', default=REVISION)
     parser.add_argument('--run-id', type=int, default=RUN_ID)
     parser.add_argument('--oracle-sha256', default=ORACLE_HASH)
     args = parser.parse_args()
     selection = release_identity(args.revision, args.run_id, args.oracle_sha256)
     repository, output = args.repository.resolve(), args.output.resolve()
+    build_manifest = args.build_manifest.resolve() if args.build_manifest is not None else None
+    if build_manifest is not None:
+        require(args.command in ('interpreter', 'dependencies'), 'build manifest is for runtime preparation')
+        candidate(repository, selection)
+        require(read(build_manifest)['revision'] == selection['revision'], 'runtime build revision mismatch')
     if args.command == 'ci':
         verify_ci(repository, output, selection)
     elif args.command == 'transport':
@@ -319,10 +347,10 @@ def main():
     elif args.command == 'relocate':
         relocate(repository, args.artifacts.resolve(), args.oracles.resolve(), args.python, output, selection)
     elif args.command == 'interpreter':
-        interpreter(args.python, output)
+        interpreter(args.python, output, build_manifest)
     else:
         candidate(repository, selection)
-        dependencies(repository, args.python, output)
+        dependencies(repository, args.python, output, build_manifest)
 
 
 if __name__ == '__main__':

@@ -78,3 +78,16 @@ def test_material_validation_and_zero_pressure():
     for value in [0.,-1.,float('nan')]:
         with pytest.raises(ValueError): m.density('Ar',0.,value)
         with pytest.raises(ValueError): m.polarizability('Ar',value)
+
+
+@pytest.mark.parametrize('gas,refractivity', [
+    ('CH4',4.161530433349878e-4),
+    ('N2O',4.730584716366409e-4),
+    ('SF6',7.230228780000065e-4),
+])
+def test_quanfuhe_reference_refractivity(gas, refractivity):
+    # Independent published-fit reference state; parity alone missed n/rho.
+    index = m.refractive_index(gas,800e-9,1.01325,288.15)
+    assert float(index.real)-1 == pytest.approx(refractivity,rel=1e-6)
+    assert 1 < m.refractive_index(gas,800e-9).real < 1.001
+    assert m.refractive_index(gas,800e-9,0.) == 1

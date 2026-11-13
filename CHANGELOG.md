@@ -28,6 +28,13 @@ Publication and final candidate validation are pending.
   deprecated alias. Spectral phase now unwraps along the frequency axis.
 
 ### Fixed
+
+- Restore seeded one-photon-per-mode input noise for Julia's default
+  `shotnoise=true`; reject the withdrawn `:modified` nonlinear-source model
+  (Luna #461). Recompute results that used that model.
+- Correct CH4, N2O and SF6 refractive indices in Julia and standalone Python
+  by converting refractivity to single-particle susceptibility; this also
+  corrects the derived N2O Kerr coefficient (Luna #455).
 - Update the private Python bindings to PyO3 0.29.3 and rust-numpy 0.29.0,
   including upstream sequence-bound and closure thread-safety fixes; retain
   the GIL requirement and the existing CPython 3.11–3.14 support boundary.
