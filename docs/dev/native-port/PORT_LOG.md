@@ -9965,3 +9965,21 @@ Evidence directory: `.rust_test_logs/luna-physics-20261113/`; full gate:
 Preserved prior draft metadata (release ID 411049885, 26 assets) and annotated
 tag object `ba9f71bfe160393530fa95e624aa531bb3fdad20` under the evidence
 directory. The existing public v1.0.4 release is untouched.
+
+### Focused validation follow-up
+
+Fresh Julia material exports and the rebuilt installed Python wheel pass all
+21 material checks, including every gas's setup/gamma3 comparison. The full
+local physics group passes 2,028/2,028 assertions. The focused Julia pass
+found four errors in the new noise test's diagnostic inspection: modal
+transforms store `Emω_noise`, whereas the scalar transform uses `Et_noise`.
+Seeded-input comparisons passed; the test now selects the correct diagnostic
+field. The remaining local groups and hosted checks continue.
+
+The first ad-hoc focused launcher omitted the maintained runner's FFTW
+`:estimate` setting and spent time planning FFTs; those superseded processes
+were stopped and the corrected launcher uses `:estimate` and one FFTW thread.
+No numerical tolerance or product configuration was changed for that repair.
+All 26 old draft assets were downloaded and verified against API sizes and
+available digests. The old annotated tag is retained locally at
+`refs/archive/unpublished-v1.1.0-20261113`, resolving to `b2902f51`.

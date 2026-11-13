@@ -110,8 +110,9 @@ end
     @test noisy[1] != another[1]
     @test noisy[1] != clean[1]
     @test clean[1] == clean2[1]
-    @test isnothing(noisy[4].Et_noise)
-    @test isnothing(clean[4].Et_noise)
+    noise_buffer = modes == 2 ? :Emω_noise : :Et_noise
+    @test isnothing(getproperty(noisy[4], noise_buffer))
+    @test isnothing(getproperty(clean[4], noise_buffer))
     if modes == 2
         delta = noisy[1] - clean[1]
         @test any(!iszero, delta[:, 1])
