@@ -10027,3 +10027,21 @@ threshold. The final Julia/legacy relative error is
 controller coverage remains in the item's separate analytic cases and the
 broader solver suite. Logs: `complex-coefficient-regression.log` and
 `fixed-step-legacy-equivalence.log` in the release evidence directory.
+
+## 2026-11-13 — hosted final asset verification — Codex
+
+The managed workspace's allowed hosts exclude GitHub Actions' Azure artifact
+storage endpoint. A normal `gh run download` was denied. The connected GitHub
+artifact tool retrieved a file reference, but its managed file download was
+also denied locally. Public GitHub release-asset downloads remain available
+(the old 26 draft assets were already archived and checked).
+
+Under PLANS §47, add final read-only verification to the existing durable
+acceptance workflow on a separate orchestration branch; the software tag
+remains `124dc5a`. The job binds actual draft bytes to the successful release
+producer and runs the existing raw glibc verifier, retaining reports and a
+bounded log summary. Six new synthetic refusal/transport checks pass, plus
+24 release and 17 glibc preparation/refusal checks. YAML parses, Python compiles,
+and official actionlint 1.7.9 (archive checksum verified) passes. These fixtures
+are tooling tests, not numerical/platform acceptance. Actual runtime cells
+and draft-byte verification have not yet run at this checkpoint.

@@ -15,6 +15,16 @@ on:
         description: Successful exact-source Tests workflow run ID
         required: true
         default: '37235178219'
+      release_run:
+        description: Successful exact-source release workflow that assembled the draft
+        required: true
+      verify_only:
+        description: Verify retained runtime evidence without rerunning numerical cells
+        type: boolean
+        default: false
+      glibc_run:
+        description: Completed glibc workflow run ID (required for verify_only)
+        default: ''
       oracle_sha256:
         description: Independent reference manifest SHA-256 from that source run
         required: true
@@ -41,6 +51,7 @@ env:
 jobs:
   references:
     name: Verify original references and retain transport chunks
+    if: ${{ !inputs.verify_only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -295,3 +306,87 @@ jobs:
             ${{ env.GLIBC_ACCEPTANCE_ROOT }}/runtime/bwrap/*.log
           if-no-files-found: error
           retention-days: 30
+
+  verify-assets:
+    name: Verify actual draft assets against all four runtime cells
+    needs: [references, runtime]
+    if: ${{ always() && (inputs.verify_only || (needs.references.result == 'success' && needs.runtime.result == 'success')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: orchestration
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_CANDIDATE_REVISION }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - name: Test read-only release verification
+        run: |
+          python orchestration/test/test_release.py -v
+          python orchestration/test/test_verify_release_assets.py -v
+      - name: Select retained runtime run
+        env:
+          VERIFY_ONLY: ${{ inputs.verify_only }}
+          SELECTED_GLIBC_RUN: ${{ inputs.glibc_run }}
+        run: |
+          python - <<'PYCODE'
+          import os
+          selected = os.environ['SELECTED_GLIBC_RUN']
+          if os.environ['VERIFY_ONLY'] == 'true':
+              assert selected.isdecimal() and int(selected) > 0, 'verify_only requires a runtime run ID'
+          else:
+              selected = os.environ['GITHUB_RUN_ID']
+          with open(os.environ['GITHUB_ENV'], 'a') as stream:
+              stream.write('VERIFIED_GLIBC_RUN=' + selected + '\n')
+          PYCODE
+      - uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ env.VERIFIED_GLIBC_RUN }}
+          pattern: glibc228-linux-x86_64-*
+          path: raw-runtime
+      - uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ env.RELEASE_SOURCE_RUN }}
+          name: python-native-oracles
+          path: original-oracles
+      - uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.release_run }}
+          name: release-candidate
+          path: producer-assets
+      - name: Download actual draft assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_BUILD_RUN: ${{ inputs.release_run }}
+        run: |
+          gh run view "$RELEASE_BUILD_RUN" --repo "$RELEASE_REPOSITORY" \
+            --json databaseId,url,headSha,event,status,conclusion,jobs > release-run.json
+          gh release download v1.1.0 --repo "$RELEASE_REPOSITORY" --dir actual-assets
+      - name: Verify retained raw evidence against actual distributed bytes
+        run: >-
+          python orchestration/test/verify_release_assets.py --repository candidate
+          --artifacts raw-runtime --oracles original-oracles --assets actual-assets
+          --produced-assets producer-assets --release-run release-run.json
+          --output verification --revision "$RELEASE_CANDIDATE_REVISION"
+          --source-run "$RELEASE_SOURCE_RUN" --oracle-sha256 "$RELEASE_ORACLE_SHA256"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: verified-release-assets
+          path: |
+            verification/*.json
+            actual-assets/SHA256SUMS.txt
+            actual-assets/release-manifest.json
+          if-no-files-found: warn
+          retention-days: 90
